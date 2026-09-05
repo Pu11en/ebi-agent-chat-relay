@@ -35,7 +35,6 @@ from claude_code_core.frontend import (
     Mention,
     Notice,
     NoticeLevel,
-    OutboundFile,
     StatusKind,
 )
 from claude_code_core.types import ElicitationRequest
@@ -81,35 +80,21 @@ async def _send_attachment_requests(
     """Read .ccdb-attachments-{thread_id} and deliver them through the surface.
 
     If the marker file does not exist or is empty, this is a no-op.
-    The marker file is deleted after sending so it does not persist into
-    future sessions.  Any error (missing file, Discord API failure, etc.)
-    is suppressed — file attachment is non-fatal.
+    Requests move to a durable pending outbox and are acknowledged individually
+    after delivery. Failed files remain pending for the next completed turn;
+    attachment errors do not fail the session itself.
     """
     if not working_dir:
         logger.debug("_send_attachment_requests: no working_dir, skipping")
         return
     marker = Path(working_dir) / _attachment_marker_name(thread_id)
-    if not marker.exists():
+    if not marker.exists() and not marker.with_name(marker.name + ".pending").exists():
         logger.debug("_send_attachment_requests: %s not found, skipping", marker)
         return
     logger.info("_send_attachment_requests: found %s", marker)
-    with contextlib.suppress(OSError):
-        paths = [p.strip() for p in marker.read_text(encoding="utf-8").splitlines() if p.strip()]
-        marker.unlink(missing_ok=True)
-        if paths:
-            # Resolve relative paths against working_dir.  Claude is instructed to
-            # write absolute paths, but may write a bare filename.  Resolving here
-            # ensures the file is found even when the bot process has a different cwd.
-            wd = Path(working_dir)
-            abs_paths = [raw if Path(raw).is_absolute() else str(wd / raw) for raw in paths]
-            logger.info(
-                "_send_attachment_requests: sending %d file(s): %s",
-                len(abs_paths),
-                abs_paths,
-            )
-            await surface.deliver_files(
-                [OutboundFile(path=path, display_name=Path(path).name) for path in abs_paths]
-            )
+    from ..attachment_outbox import deliver_pending
+
+    await deliver_pending(surface, marker)
 
 
 # Max characters for tool result display.
