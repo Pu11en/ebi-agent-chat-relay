@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "run_id": "trial-1546685954167672912",
+  "foundation_sha": "7d46035ddcc9fc36b6e2aab1813ba792607410cf",
+  "integration_owner": "1546685954167672912",
+  "backup_remote": "voice-backup",
+  "features": [
+    {
+      "id": "greeting",
+      "change": "trial-greeting",
+      "plan_owner": "1546687948588589086",
+      "approved_revision": "fa15aed26f61a3336adbe6dd1dc0b1696824f82fec14e96113dd7e1ba2b052e3",
+      "plan_files": [
+        "openspec/changes/trial-greeting/.openspec.yaml",
+        "openspec/changes/trial-greeting/design.md",
+        "openspec/changes/trial-greeting/owner.json",
+        "openspec/changes/trial-greeting/proposal.md",
+        "openspec/changes/trial-greeting/specs/trial-greeting/spec.md",
+        "openspec/changes/trial-greeting/tasks.md"
+      ]
+    },
+    {
+      "id": "word-count",
+      "change": "trial-word-count",
+      "plan_owner": "1546687950375493752",
+      "approved_revision": "58cb2b7c0b936d430e3e167a812728c5ca07e7c5a5477c51f777b4e216d2f1e9",
+      "plan_files": [
+        "openspec/changes/trial-word-count/.openspec.yaml",
+        "openspec/changes/trial-word-count/design.md",
+        "openspec/changes/trial-word-count/owner.json",
+        "openspec/changes/trial-word-count/proposal.md",
+        "openspec/changes/trial-word-count/specs/trial-word-count/spec.md",
+        "openspec/changes/trial-word-count/tasks.md"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "greeting-build",
+      "feature": "greeting",
+      "depends_on": [],
+      "owned_paths": [
+        "examples/feature_workflow_trial/greeting.py",
+        "examples/feature_workflow_trial/test_greeting.py"
+      ],
+      "prompt": "Implement ONLY the small approved greeting feature. Follow the approved tasks and preserve its decision. Use standard-library unittest; run the focused test file for this module FIRST to show RED, then implement and verify GREEN. Shared foundation is already committed. Integration belongs to lead. Use existing tools /home/drewp/main-projects/ebi-agent-chat-relay/.venv/bin/ruff and pyright for just your two owned files. No new dependencies, no other tests or files needed. Record actual RED/GREEN/check evidence and completed task IDs in result tests strings. Preserve the work in one committed feature change; push the existing voice-backup remote session branch. Do not edit OpenSpec task checkboxes, shared README, CLI, or other feature files. Your assigned trial build is explicitly authorized by Drew in the root setup request."
+    },
+    {
+      "id": "word-count-build",
+      "feature": "word-count",
+      "depends_on": [],
+      "owned_paths": [
+        "examples/feature_workflow_trial/counter.py",
+        "examples/feature_workflow_trial/test_counter.py"
+      ],
+      "prompt": "Implement ONLY the small approved word-count feature. Follow the approved tasks and preserve its decision. Use standard-library unittest; run the focused test file for this module FIRST to show RED, then implement and verify GREEN. Shared foundation is already committed. Integration belongs to lead. Use existing tools /home/drewp/main-projects/ebi-agent-chat-relay/.venv/bin/ruff and pyright for just your two owned files. No new dependencies, no other tests or files needed. Record actual RED/GREEN/check evidence and completed task IDs in result tests strings. Preserve the work in one committed feature change; push the existing voice-backup remote session branch. Do not edit OpenSpec task checkboxes, shared README, CLI, or other feature files. Your assigned trial build is explicitly authorized by Drew in the root setup request."
+    }
+  ]
+}
