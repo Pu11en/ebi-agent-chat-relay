@@ -1524,6 +1524,10 @@ class ApiServer:
 
         thread_name: str | None = data.get("thread_name") or None
         auto_start: bool = data.get("auto_start", True)
+        raw_working_dir = data.get("working_dir")
+        if raw_working_dir is not None and not isinstance(raw_working_dir, str):
+            return web.json_response({"error": "working_dir must be a string"}, status=400)
+        working_dir = raw_working_dir.strip() if raw_working_dir else None
 
         # Validated here rather than swallowed downstream: a typo'd user_id is a
         # caller bug and should say so, while a Discord-side failure to add the
@@ -1553,6 +1557,7 @@ class ApiServer:
                 auto_start=auto_start,
                 attachments=decoded_attachments or None,
                 invite_user_id=invite_user_id,
+                working_dir=working_dir,
             )
         except Exception as exc:
             logger.error("spawn_session failed: %s", exc, exc_info=True)
@@ -2104,6 +2109,7 @@ class ApiServer:
                 thread_name=thread_name,
                 auto_start=auto_start,
                 result_sink=result_sink,
+                working_dir=self.working_dir,
             )
         except Exception as exc:
             logger.error("ingest spawn_session failed: %s", exc, exc_info=True)

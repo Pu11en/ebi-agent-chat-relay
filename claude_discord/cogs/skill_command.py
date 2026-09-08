@@ -264,7 +264,10 @@ class SkillCommandCog(commands.Cog):
             display = f"`/{name} {args}`" if args else f"`/{name}`"
             await interaction.followup.send(f"Running {display} in this thread…")
 
-            runner = self.runner.clone(thread_id=channel.id)
+            clone_kwargs: dict[str, object] = {"thread_id": channel.id}
+            if record is not None and record.working_dir:
+                clone_kwargs["working_dir"] = record.working_dir
+            runner = self.runner.clone(**clone_kwargs)
             await run_claude_with_config(
                 RunConfig(
                     thread=channel,

@@ -126,6 +126,7 @@ class SchedulerCog(commands.Cog):
         try:
             thread_id = task.get("thread_id")
             session_id: str | None = None
+            working_dir: str | None = task.get("working_dir")
             surface: ConversationSurface | None = None
 
             if thread_id:
@@ -147,6 +148,7 @@ class SchedulerCog(commands.Cog):
                         record = await self.session_repo.get(thread_id)
                         if record is not None:
                             session_id = record.session_id
+                            working_dir = record.working_dir
                             logger.info(
                                 "SchedulerCog: resuming session %s in thread %d",
                                 session_id,
@@ -163,7 +165,7 @@ class SchedulerCog(commands.Cog):
                 factory=self.backend_factory,
                 settings=self.backend_settings,
                 thread_id=surface.thread_key,
-                working_dir=task.get("working_dir"),
+                working_dir=working_dir,
             )
 
             registry = getattr(self.bot, "session_registry", None)

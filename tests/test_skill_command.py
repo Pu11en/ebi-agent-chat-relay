@@ -511,6 +511,26 @@ class TestInThreadMode:
 
         cog.runner.clone.assert_called_once_with(thread_id=7777)
 
+    @pytest.mark.asyncio
+    async def test_in_thread_runner_uses_saved_working_directory(self) -> None:
+        cog = _make_cog(skills=[{"name": "recall", "description": ""}])
+        thread = _make_thread(thread_id=7777, parent_id=999)
+        interaction = _make_interaction(channel=thread)
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = "/home/user/project"
+        cog.repo.get = AsyncMock(return_value=record)
+
+        with patch(
+            "claude_discord.cogs.skill_command.run_claude_with_config", new_callable=AsyncMock
+        ):
+            await cog.run_skill.callback(cog, interaction, name="recall", args=None)
+
+        cog.runner.clone.assert_called_once_with(
+            thread_id=7777,
+            working_dir="/home/user/project",
+        )
+
 
 # ---------------------------------------------------------------------------
 # _is_claude_thread

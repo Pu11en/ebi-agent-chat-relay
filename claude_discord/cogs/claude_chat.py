@@ -685,6 +685,7 @@ class ClaudeChatCog(commands.Cog):
             thread_name=fork_name,
             session_id=record.session_id,
             fork=True,
+            working_dir=record.working_dir,
         )
 
         await interaction.followup.send(
@@ -752,12 +753,16 @@ class ClaudeChatCog(commands.Cog):
             # would restart cold on each message, which threads never do (see
             # _handle_thread_reply). The channel is the conversation; /clear ends it.
             record = await self.repo.get(message.channel.id)
+            working_dir = getattr(record, "working_dir", None)
+            if not isinstance(working_dir, str):
+                working_dir = None
             await self._run_claude(
                 message,
                 message.channel,
                 prompt,
                 session_id=record.session_id if record else None,
                 images=images,
+                working_dir_override=working_dir,
                 chat_only=chat_only,
             )
         else:
@@ -810,6 +815,7 @@ class ClaudeChatCog(commands.Cog):
         result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None,
         attachments: list[tuple[str, bytes]] | None = None,
         invite_user_id: int | None = None,
+        working_dir: str | None = None,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -847,10 +853,17 @@ class ClaudeChatCog(commands.Cog):
                         a thread nobody was watching still lands in their joined
                         list. Best-effort: a failure here is a visibility miss,
                         never a reason to fail a spawn that already succeeded.
+            working_dir: Optional project directory to bind to the new thread.
+                        The binding is stored before an automatic run starts so
+                        replies and restarts cannot fall back to another project.
 
         Returns:
             The newly created :class:`discord.Thread`.
         """
+        default_working_dir = getattr(self.runner, "working_dir", None)
+        effective_working_dir = working_dir or (
+            default_working_dir if isinstance(default_working_dir, str) else None
+        )
         name = (thread_name or prompt)[:100]
         thread = await channel.create_thread(
             name=name,
@@ -876,6 +889,8 @@ class ClaudeChatCog(commands.Cog):
         # viewable alongside the prompt (e.g. files attached to a Forgejo Issue).
         if attachments:
             await send_file_blobs(thread, attachments)
+        if effective_working_dir is not None:
+            await self.repo.bind_working_dir(thread.id, effective_working_dir)
         if auto_start:
             # Run Claude in the background so /api/spawn returns immediately.
             # The caller gets the thread reference without waiting for Claude to finish.
@@ -887,6 +902,7 @@ class ClaudeChatCog(commands.Cog):
                     session_id=session_id,
                     fork=fork,
                     result_sink=result_sink,
+                    working_dir_override=effective_working_dir,
                 )
             )
         return thread
@@ -1052,6 +1068,10 @@ class ClaudeChatCog(commands.Cog):
                 "Before making any code changes, commits, or PRs, "
                 "re-confirm with the user that they want you to proceed."
             )
+            record = await self.repo.get(thread_id)
+            working_dir = getattr(record, "working_dir", None)
+            if not isinstance(working_dir, str):
+                working_dir = None
 
             logger.info(
                 "Resuming session in thread %d (session_id=%s, reason=%s)",
@@ -1068,6 +1088,7 @@ class ClaudeChatCog(commands.Cog):
                         thread,
                         resume_prompt,
                         session_id=entry.session_id,
+                        working_dir_override=working_dir,
                     )
                 )
             except Exception:

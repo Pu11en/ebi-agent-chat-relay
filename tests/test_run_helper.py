@@ -357,6 +357,30 @@ class TestRunClaudeInThread:
         return gen
 
     @pytest.mark.asyncio
+    async def test_working_directory_is_bound_before_cli_starts(
+        self, thread: MagicMock, runner: MagicMock, repo: MagicMock
+    ) -> None:
+        runner.working_dir = "/home/drewp/main-projects/example"
+        repo.bind_working_dir = AsyncMock()
+        binding_was_ready: list[bool] = []
+
+        async def gen(*args, **kwargs):
+            binding_was_ready.append(repo.bind_working_dir.await_count == 1)
+            if False:
+                yield
+
+        runner.run = gen
+
+        await run_claude_in_thread(thread, runner, repo, "test", None)
+
+        assert binding_was_ready == [True]
+        repo.bind_working_dir.assert_awaited_once_with(
+            thread_id=thread.id,
+            working_dir="/home/drewp/main-projects/example",
+            origin="discord",
+        )
+
+    @pytest.mark.asyncio
     async def test_intermediate_text_posted_immediately(
         self, thread: MagicMock, runner: MagicMock, repo: MagicMock
     ) -> None:
