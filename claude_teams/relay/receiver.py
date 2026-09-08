@@ -145,9 +145,11 @@ class RelayReceiver:
         declared = request.content_length
         if declared is not None and declared > self._max_body_bytes:
             raise _TooLargeError
-        raw = await request.content.read(self._max_body_bytes + 1)
-        if len(raw) > self._max_body_bytes:
-            raise _TooLargeError
+        raw = bytearray()
+        async for chunk in request.content.iter_any():
+            raw.extend(chunk)
+            if len(raw) > self._max_body_bytes:
+                raise _TooLargeError
         try:
             return json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
