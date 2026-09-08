@@ -131,11 +131,13 @@ class Coordinator:
         channel_id: int | None = None,
         max_running: int = 3,
         worktree_root: Path | None = None,
+        queue_ready: bool = False,
     ) -> None:
         self.repo = repo.resolve()
         self.manifest_path = manifest.resolve()
         self.state_dir = state_dir.resolve()
         self.api, self.channel_id, self.max_running = api, channel_id, max_running
+        self.queue_ready = queue_ready
         self.worktree_root = (worktree_root or self.repo.parent).resolve()
         if max_running < 1 or (channel_id is not None and channel_id < 1):
             raise WorkflowError("Capacity and channel ID must be positive")
@@ -516,7 +518,16 @@ class Coordinator:
                 return state
             await self._collect(manifest, state)
             sessions = await self.api("GET", "/api/sessions?state=running")
-            capacity = max(0, self.max_running - len(sessions["sessions"]))
+            if self.queue_ready:
+                # Ebi's semaphore controls actual execution. Bound this run's
+                # outstanding queue without waiting for the whole server to idle.
+                occupied = sum(
+                    entry["status"] in {"dispatched", "spawning", "ambiguous"}
+                    for entry in state["tasks"].values()
+                )
+            else:
+                occupied = len(sessions["sessions"])
+            capacity = max(0, self.max_running - occupied)
             for task in manifest["tasks"]:
                 entry = state["tasks"][task["id"]]
                 if (
@@ -589,6 +600,11 @@ async def _main() -> None:
     parser.add_argument("--channel-id", type=int)
     parser.add_argument("--max-running", type=int, default=3)
     parser.add_argument("--worktree-root", type=Path)
+    parser.add_argument(
+        "--queue-ready",
+        action="store_true",
+        help="Queue approved ready tasks; Ebi retains its global execution limit.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     approve = sub.add_parser("approve")
     approve.add_argument("--authorization-ref", required=True)
@@ -613,6 +629,7 @@ async def _main() -> None:
         channel_id=args.channel_id,
         max_running=args.max_running,
         worktree_root=args.worktree_root,
+        queue_ready=args.queue_ready,
     )
     if args.command == "plan-digest":
         feature = next(

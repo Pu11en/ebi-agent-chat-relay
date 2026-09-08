@@ -46,6 +46,32 @@ class FakeAPI:
         return {"status": "delivered"}
 
 
+async def test_queue_admission_preserves_approval_and_bounds_outstanding_work(setup: tuple) -> None:
+    original, api, _ = setup
+    coordinator = Coordinator(
+        original.repo,
+        original.manifest_path,
+        original.state_dir,
+        api,
+        channel_id=30,
+        max_running=1,
+        queue_ready=True,
+    )
+    api.sessions = [{"thread_id": str(i), "state": "running"} for i in range(5)]
+    await coordinator.tick()
+    assert not api.spawns
+    await coordinator.approve("Drew approved both trial features", ["alpha", "beta"])
+    await coordinator.tick()
+    await coordinator.tick()
+    assert len(api.spawns) == 1
+    assert api.spawns[0]["auto_start"] is True
+    assert (await coordinator.status())["tasks"]["beta"]["status"] == "pending"
+    await result(coordinator, "alpha")
+    await coordinator.tick()
+    assert len(api.spawns) == 2
+    assert not api.messages  # No stop/interrupt sent to any existing conversation.
+
+
 @pytest.fixture
 async def setup(tmp_path: Path) -> tuple[Coordinator, FakeAPI, dict]:
     repo = tmp_path / "repo"

@@ -27,3 +27,9 @@ files, existing plan content, or unrelated live thread was modified. The
 coordinator is a separate process using the existing localhost APIs. Normal Ebi
 cleanup removed the clean greeting planning worktree; the branch survived,
 which prompted a tested collector fix for normal worker cleanup.
+
+Follow-up after the plan handoff: the server remained busy, and waiting for
+two free slots delayed the trial. Added opt-in --queue-ready admission with
+a failing-first regression test. It bounds this run's outstanding workers,
+retains the actual Ebi execution semaphore, approval and dependency gates,
+and sends no stop/interrupt to existing conversations.

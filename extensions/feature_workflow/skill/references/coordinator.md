@@ -49,7 +49,11 @@ create a reviewed revision/new run when scope changes.
 
 Invoke the CLI with absolute `--repo`, `--state-dir`, and `--api-url`, plus
 relative `--manifest`. Set `--channel-id` to this server's existing workers
-channel and `--max-running` to the actual Ebi global session limit.
+channel and `--max-running` to the actual Ebi global session limit. Use
+`--queue-ready` when the server is busy: approved dependency-ready tasks enter
+Ebi's existing queue, bounded to that many outstanding workers for this run.
+Ebi's semaphore still enforces its global execution limit. This avoids waiting
+for the entire server to become idle while other conversations keep arriving.
 
 1. `approve --authorization-ref "<user message permalink or scoped request>"
    --feature <id>` records approval for just that feature. Repeat for other
@@ -62,8 +66,9 @@ channel and `--max-running` to the actual Ebi global session limit.
    a queue-mode handoff to the integration owner when results need integration.
 
 The coordinator counts all Ebi sessions reported running, which includes some
-queued turns. Capacity is conservative; Ebi's semaphore is authoritative and
-races with other new sessions can queue a worker. Existing sessions are never
+queued turns. Without `--queue-ready`, capacity is conservative. With it, the run bounds
+its own queued/dispatched workers while Ebi controls execution. A race with
+other new sessions can queue a worker in either mode. Existing sessions are never
 stopped to make room.
 
 ## Results and integration

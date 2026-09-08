@@ -1,7 +1,9 @@
 # Resume the authorized Lockin AI setup trial
 
 This is continuation of the setup request in Discord thread
-1546685954167672912. The task is NOT ready yet. Do not ask Drew to authorize
+1546685954167672912. The task is NOT ready yet. The original cohort wait was replaced with tested
+queue admission (`--queue-ready`): builders now enter Ebi's existing queue
+without waiting for the whole server to idle. Do not ask Drew to authorize
 this trial again. The two small feature builds were explicitly authorized.
 Other projects/conversations must remain intact; no bot restart.
 

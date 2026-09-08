@@ -50,7 +50,9 @@ Use the selected skills' task descriptions: objective, owned files, interface,
 acceptance criteria, and scope. Shared files have one owner. Independent tasks
 can run together; real prerequisites must be integrated before dependents start.
 
-Run the standalone coordinator with a separate state directory per run. It
+Run the standalone coordinator with a separate state directory per run. On a
+busy server, use `--queue-ready` so approved builders enter Ebi's existing queue
+while current conversations finish; keep the configured execution limit intact. It
 creates actual Discord threads and verifies worker results. Use the existing
 Ebi API URL, discover the current server's workers channel and concurrency
 setting, and keep these in local run configuration. Do not reconfigure/restart
