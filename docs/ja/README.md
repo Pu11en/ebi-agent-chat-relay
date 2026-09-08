@@ -9,8 +9,8 @@
 すべて引き続き利用できます。パッケージ名は `claude-code-discord-bridge`（ケバブケース）、
 コマンドは `ccdb` で、このドキュメントでも略称として `ccdb` を使用します。*
 
-[![CI](https://github.com/ebibibi/ebi-agent-chat-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/ebibibi/ebi-agent-chat-relay/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/ebibibi/ebi-agent-chat-relay/actions/workflows/codeql.yml/badge.svg)](https://github.com/ebibibi/ebi-agent-chat-relay/actions/workflows/codeql.yml)
+[![CI](https://github.com/Pu11en/ebi-agent-chat-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/Pu11en/ebi-agent-chat-relay/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Pu11en/ebi-agent-chat-relay/actions/workflows/codeql.yml/badge.svg)](https://github.com/Pu11en/ebi-agent-chat-relay/actions/workflows/codeql.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -571,10 +571,10 @@ ccdb がバックエンド情報を記録する前に作成されたレコード
 
 ```bash
 # uvx を使う場合（インストール不要）:
-uvx --from "git+https://github.com/ebibibi/ebi-agent-chat-relay.git" ccdb setup
+uvx --from "git+https://github.com/Pu11en/ebi-agent-chat-relay.git" ccdb setup
 
 # または、クローン後:
-git clone https://github.com/ebibibi/ebi-agent-chat-relay.git
+git clone https://github.com/Pu11en/ebi-agent-chat-relay.git
 cd ebi-agent-chat-relay
 uv run ccdb setup
 ```
@@ -721,7 +721,7 @@ async def setup(bot, runner, components):
 すでに discord.py Bot を動かしている場合は、ccdb をパッケージとして追加します:
 
 ```bash
-uv add git+https://github.com/ebibibi/ebi-agent-chat-relay.git
+uv add git+https://github.com/Pu11en/ebi-agent-chat-relay.git
 ```
 
 `bot.py` を作成します:

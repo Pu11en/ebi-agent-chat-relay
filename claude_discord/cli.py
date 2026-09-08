@@ -6,7 +6,7 @@ Usage:
     ccdb         — show help
 
 Install via:
-    uvx --from git+https://github.com/ebibibi/ebi-agent-chat-relay ccdb setup
+    uvx --from git+https://github.com/Pu11en/ebi-agent-chat-relay ccdb setup
 """
 
 from __future__ import annotations

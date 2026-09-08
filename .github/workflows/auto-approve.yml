@@ -21,7 +21,7 @@ jobs:
     # Skip 'external-issue' PRs — these are created from external user Issues via
     # Docker sandbox and require manual review before merging.
     if: >
-      github.event.pull_request.user.login == 'ebibibi' &&
+      github.event.pull_request.user.login == github.repository_owner &&
       github.event.pull_request.draft == false &&
       !contains(github.event.pull_request.labels.*.name, 'external-issue')
     # This control-plane job polls for required checks. Running it on the same
@@ -48,6 +48,7 @@ jobs:
           WEBHOOK_URL: ${{ secrets.DOCS_SYNC_WEBHOOK_URL }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          AUTO_VERSION_BUMP_ENABLED: ${{ vars.AUTO_VERSION_BUMP_ENABLED }}
         run: |
           # GITHUB_TOKEN merges don't trigger other workflows (push/PR events).
           # So we poll for merge completion and send the webhooks directly.
@@ -57,7 +58,7 @@ jobs:
             STATE=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state -q .state)
             if [ "$STATE" = "MERGED" ]; then
               # --- EbiBot upgrade webhook (skip for docs-sync and auto-bump PRs) ---
-              if [[ "$HEAD_REF" != docs-sync/* ]] && [[ "$PR_TITLE" != '[docs-sync]'* ]] && [[ "$HEAD_REF" != auto/bump-* ]]; then
+              if [ -n "$WEBHOOK_URL" ] && [[ "$HEAD_REF" != docs-sync/* ]] && [[ "$PR_TITLE" != '[docs-sync]'* ]] && [[ "$HEAD_REF" != auto/bump-* ]]; then
                 echo "PR merged! Sending upgrade webhook..."
                 curl -s -o /dev/null -w "%{http_code}" \
                   -H "Content-Type: application/json" \
@@ -68,7 +69,7 @@ jobs:
               fi
 
               # --- Docs-sync webhook (skip for docs-sync and auto-bump PRs) ---
-              if [[ "$HEAD_REF" != docs-sync/* ]] && [[ "$PR_TITLE" != '[docs-sync]'* ]] && [[ "$HEAD_REF" != auto/bump-* ]]; then
+              if [ -n "$WEBHOOK_URL" ] && [[ "$HEAD_REF" != docs-sync/* ]] && [[ "$PR_TITLE" != '[docs-sync]'* ]] && [[ "$HEAD_REF" != auto/bump-* ]]; then
                 OPEN_PR=$(gh pr list \
                   --repo "$GITHUB_REPOSITORY" \
                   --state open \
@@ -89,7 +90,7 @@ jobs:
               fi
 
               # --- Version bump dispatch (skip for docs-sync PRs) ---
-              if [[ "$HEAD_REF" != docs-sync/* ]] && [[ "$PR_TITLE" != '[docs-sync]'* ]]; then
+              if [[ "$AUTO_VERSION_BUMP_ENABLED" == "true" ]] && [[ "$HEAD_REF" != docs-sync/* ]] && [[ "$PR_TITLE" != '[docs-sync]'* ]]; then
                 echo "Dispatching pr-merged event for version bump..."
                 DISPATCH_PAYLOAD=$(jq -c -n \
                   --arg event_type "pr-merged" \
@@ -116,16 +117,16 @@ jobs:
     # human (or Claude) to review instead of merging automatically.
     #
     # This is a SEPARATE job from auto-approve-and-merge on purpose: the owner
-    # job is gated on user.login == 'ebibibi' and carries the EbiBot-restart
+    # job is gated on the current repository owner and carries the EbiBot-restart
     # webhook + version-bump dispatch. Dependabot PRs must NOT trigger those —
     # the lock change reaches the running bot on its next natural restart via
     # pre-start.sh (uv sync), so no disruptive restart is needed here.
     #
     # Security: only non-major updates are merged, and the repository Ruleset's
-    # required status checks (CI on 3 Python versions) must pass before --auto
+    # required status checks (CI on supported Python versions) must pass before --auto
     # completes the merge.
     if: github.event.pull_request.user.login == 'dependabot[bot]'
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     permissions:
       pull-requests: write
       contents: write

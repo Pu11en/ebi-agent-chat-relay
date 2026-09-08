@@ -16,7 +16,7 @@ v1.3.2  ← 同上
 v1.4.0  ← 手動マイナーリリース（このスキルの対象）
 ```
 
-- **自動パッチバンプ**: 普通の PR をマージするたびに `.1` ずつ自動インクリメント。操作不要
+- **自動パッチバンプ**: `AUTO_VERSION_BUMP_ENABLED=true` と `ADMIN_PAT` を設定した場合のみ、普通の PR のマージごとに `.1` ずつ自動インクリメント
 - **手動リリース**: マイナー/メジャーの区切りを付けたいときに使う（このスキル）
 
 ---
@@ -26,8 +26,8 @@ v1.4.0  ← 手動マイナーリリース（このスキルの対象）
 ### Step 1: リポジトリに入る
 
 ```bash
-cd /home/ebi/claude-code-discord-bridge
-git checkout main && git pull
+cd "$(git rev-parse --show-toplevel)"
+git switch main && git pull --ff-only
 ```
 
 ### Step 2: ブランチを作る
@@ -66,7 +66,6 @@ PATH="/home/ebi/.local/bin:$PATH" git commit -m "release: v1.4.0 [release]"
 git push -u origin release/v1.4.0
 
 gh pr create \
-  --repo ebibibi/ebi-agent-chat-relay \
   --base main \
   --title "release: v1.4.0 [release]" \
   --body "Release v1.4.0
@@ -75,14 +74,14 @@ gh pr create \
 See CHANGELOG.md for details."
 ```
 
-**⚠️ 重要**: PR タイトルに `[release]` を含めること。これがないと自動パッチバンプが走って v1.4.1 になってしまう。
+**⚠️ 重要**: 自動バージョン更新を有効にしている場合、PR タイトルに `[release]` を含めること。これがないとパッチバンプが走って v1.4.1 になってしまう。
 
 ### Step 6: 確認（数分後）
 
 auto-approve により PR が自動マージされ、タグ `v1.4.0` と GitHub Release が作成される:
 
 ```bash
-gh release view v1.4.0 --repo ebibibi/ebi-agent-chat-relay
+gh release view v1.4.0
 ```
 
 ---
@@ -107,5 +106,6 @@ PR マージ（auto-approve.yml）
 
 | 状況 | 原因 | 対処 |
 |------|------|------|
+| 自動リリースが始まらない | `AUTO_VERSION_BUMP_ENABLED` または `ADMIN_PAT` が未設定 | リポジトリ変数とシークレットを設定してから再実行する |
 | v1.4.1 になってしまった | PR タイトルに `[release]` がなかった | タグを削除して再度 release PR を作る |
-| タグが既に存在するエラー | 同じバージョンでタグを作ろうとした | タグを削除: `gh api repos/ebibibi/ebi-agent-chat-relay/git/refs/tags/v1.4.0 --method DELETE` |
+| タグが既に存在するエラー | 同じバージョンでタグを作ろうとした | タグを削除: `gh api "repos/{owner}/{repo}/git/refs/tags/v1.4.0" --method DELETE` |

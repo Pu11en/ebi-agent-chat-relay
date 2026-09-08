@@ -7,7 +7,7 @@ on:
 
 jobs:
   cleanup:
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
 
@@ -15,6 +15,7 @@ jobs:
       - name: Delete branches with merged/closed PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           # squash merge を使うと git branch --merged では検出できないため
           # GitHub API で「マージ済み or クローズ済みの PR を持つブランチ」を削除する
@@ -44,9 +45,9 @@ jobs:
 
           echo "Deleted $DELETED branch(es)."
 
-          if [ "$DELETED" -gt 0 ]; then
+          if [ "$DELETED" -gt 0 ] && [ -n "$DISCORD_WEBHOOK_URL" ]; then
             curl -s -o /dev/null -w "%{http_code}" \
               -H "Content-Type: application/json" \
               -d "{\"content\": \"🧹 **Branch cleanup** — ${DELETED} merged/closed branch(es) deleted.\"}" \
-              "${{ secrets.DISCORD_WEBHOOK_URL }}"
+              "$DISCORD_WEBHOOK_URL"
           fi

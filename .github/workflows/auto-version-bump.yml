@@ -9,16 +9,15 @@ name: Auto Patch Version Bump
 #   [release] in title → tag & release the current version as-is (no bump)
 #   anything else      → bump patch only (1.3.0 → 1.3.1), commit to main; no tag/release
 #
-# Uses ADMIN_PAT (classic PAT with repo scope) to push to main.
-# The PAT owner (ebibibi) has admin RepositoryRole, which bypasses
-# the Ruleset's required status checks.
+# Optional: set AUTO_VERSION_BUMP_ENABLED=true and provide ADMIN_PAT to enable.
 on:
   repository_dispatch:
     types: [pr-merged]
 
 jobs:
   version-bump:
-    runs-on: [self-hosted, linux, x64]
+    if: vars.AUTO_VERSION_BUMP_ENABLED == 'true'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
 
