@@ -1,0 +1,14 @@
+{
+  "thread_id": "1546687950375493752",
+  "change_id": "trial-word-count",
+  "decision": "Split only on whitespace; punctuation remains part of each token. Empty input is zero. count_words(text: str) -> int.",
+  "root_manager_thread_id": "1546685954167672912",
+  "foundation_commit": "1b19dba258393c9e49e4e16631ed0bff70ea8b32",
+  "planning_worktree": "/home/drewp/main-projects/wt-1546687950375493752",
+  "planning_owned_directory": "openspec/changes/trial-word-count/",
+  "builder_owned_files": [
+    "examples/feature_workflow_trial/counter.py",
+    "examples/feature_workflow_trial/test_counter.py"
+  ],
+  "integration_owner_thread_id": "1546685954167672912"
+}
