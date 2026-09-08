@@ -234,17 +234,18 @@ async def _cleanup_session_worktree(config: RunConfig) -> None:
                 result.path,
                 result.reason,
             )
-            # Notify the Discord thread if there are uncommitted changes
+            # Explain the safety decision without encouraging destructive cleanup.
             if "uncommitted changes" in result.reason:
                 with contextlib.suppress(Exception):
                     await config.surface.send_notice(
                         Notice(
                             level=NoticeLevel.WARNING,
-                            title="Worktree not cleaned up",
+                            title="Worktree preserved",
                             body=(
-                                f"`{result.path}` has uncommitted changes. Please commit or "
-                                f"stash them, then run:\n```\ngit worktree remove "
-                                f"{result.path}\n```"
+                                f"`{result.path}` contains local changes or ignored files, "
+                                "so it was kept safely inside its project. No immediate action "
+                                "is required. Review those files before choosing to merge or "
+                                "clean up the worktree."
                             ),
                         )
                     )
