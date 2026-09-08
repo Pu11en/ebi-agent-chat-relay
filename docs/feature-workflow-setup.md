@@ -1,87 +1,54 @@
-# Switch Lockin AI to feature-based planning
+# Using the new Lockin AI planning workflow
 
-Status recorded September 7, 2026.
+The two-feature Discord trial passed. OpenSpec, the two selected coordination
+skills, and the Ebi coordinator are installed. The workflow applies to new
+feature requests from the next Codex turn after activation; active turns and
+existing plans are preserved. No bot restart or new Discord command is needed.
 
-Setup has started in thread 1546685954167672912. OpenSpec and the selected
-skills are installed; the standalone coordinator passes 32 focused checks.
-Two separate planning threads produced validated plans. Approved build workers
-are waiting for two free session slots; readiness is not yet established.
-The external watcher will return to the integration owner automatically.
-See [continuation notes](feature-workflow-resume.md). The original setup
-handoff below is preserved for reference.
+## What you do
 
-## What is already done
+1. New feature: `/cdnew` in #control-center, choose the project, and describe
+   what you want. For example: “Plan a saved-search feature. Don't build yet.”
+2. Discuss the plan in that feature's thread. Each feature keeps its own plan.
+3. When satisfied: “Build this plan.” The lead queues approved tasks in real
+   worker threads and handles combining the results.
+4. Continue or change that feature by replying in its existing thread.
+5. Try the combined result when the lead hands it back; report what happened
+   in that same feature thread.
 
-The Portable Planner plugin was already disabled. The shared Codex
-`/mnt/c/Users/drewp/.codex/AGENTS.md` no longer directs agents to invoke it.
-Its old planning files remain reference material; no project plan was deleted
-or migrated. The prior shared instructions were backed up in
-`setup-evidence/codex-agents-before-planner-retirement-2026-09-07.md`.
+You do not need OpenSpec commands, terminal commands, or to coordinate workers
+by hand. Ordinary questions and small direct fixes stay direct. Existing
+projects and older plans were not moved, deleted, or migrated.
 
-Normal Codex planning is the interim behavior. OpenSpec plus automatic Ebi
-worker coordination is a selected direction, not a deployed capability.
-Existing in-flight turns were not stopped or restarted.
+## What the trial proved
 
-## Drew's next action in Discord
+The greeting and word counter were disposable test features, not additions to
+Discord. Separate planning threads retained separate decisions. The two
+approved builder processes overlapped at 20:44 Chicago time on September 7,
+2026, from the same committed foundation in different worktrees. Both were
+reviewed, merged, and verified together: 14 demo tests and 33 coordinator tests
+pass. Repeated result collection created no new workers. The completion
+handoff reached the lead through Ebi's actual thread-message API.
 
-1. In `#control-center`, use `/cdnew`, type `lockin`, and select `Lockin AI`.
-   This creates a fresh conversation about the same project, leaving the
-   voice-transcription conversation alone. The picker may name the thread
-   `ebi-agent-chat-relay`; that is the real folder behind the Lockin AI shortcut.
-2. Send this message:
+- [Greeting worker](https://discord.com/channels/1546639912848199742/1546696547390197793)
+- [Word-count worker](https://discord.com/channels/1546639912848199742/1546696552670830672)
+- [Saved verification evidence](setup-evidence/feature-workflow/verification.md)
 
-   > Set up the agreed feature-based planning and parallel-build workflow for
-   > Lockin AI. Read LOCKIN-AI.md and docs/feature-workflow-setup.md first.
-   > Use OpenSpec and the two coordination skills we selected. Keep existing
-   > projects and plans intact. Prove it with two small isolated features and
-   > real Discord worker threads before calling it ready. Keep my other
-   > running conversations intact. Walk me through only the parts I need to do.
+For a quick try in this setup thread, say:
+“Try the demo with name Drew and text Lockin AI works.”
+The integrated result should be `Hello, Drew!` and a word count of `3`.
+You can also choose your own name and text. This human try-it step remains
+available; automated verification does not claim Drew has already tried it.
 
-You do not need to enter terminal commands or remember full folder paths.
+## Where this is maintained
 
-## Setup handoff for the agent receiving that message
+The installed source and current guides live in the retained Git worktree
+`/home/drewp/main-projects/lockin-workflow-runtime`. `lockin-workflow` invokes
+that source. Shared Codex instructions route new feature work to the installed
+`lockin-feature-workflow` skill. Runtime records live separately under
+`~/.local/state/lockin-ai/feature-workflow/`, one directory per build run.
+The canonical relay checkout and its local research notes remain intact.
 
-The detailed source review is `docs/parallel-feature-workflow-2026-09-07.md`.
-When working in an isolated worktree, read these setup notes from the canonical
-repository `/home/drewp/main-projects/ebi-agent-chat-relay` if the notes are not
-present in the checkout; they were local untracked documentation at handoff.
-
-1. Inspect current installed tools and active Ebi sessions. Continue from
-   actual state; avoid duplicating installations or another session's work.
-2. Set up OpenSpec and the narrowly selected `parallel-feature-development`
-   and `task-coordination-strategies` skills through supported Codex paths.
-   Keep source provenance and required references. Select only this workflow,
-   not the entire Claude Agent Teams runtime. Keep development source on WSL.
-3. Bind each feature conversation to its own named OpenSpec change and plan
-   owner, preserving shared project constraints and confirmed old decisions.
-   Replace planning state only within the trial's agreed scope.
-4. Implement the Ebi-specific handoff: approved plan revision, dependency-ready
-   task selection, actual Discord worker threads, isolated worktrees based on
-   the agreed foundation, worker results, and one integration owner. Reuse
-   Ebi's existing interfaces; preserve upstream core behavior where possible.
-   Account for the actual global session limit and release idle manager turns
-   so queued workers can run. Worker recovery must not duplicate finished work.
-5. Prove a small disposable two-feature trial: separate planning conversations
-   retain separate decisions; only approved tasks run; independent builds use
-   distinct worktrees and visible Discord threads; the lead collects results
-   and integrates them; focused checks and a human try-it step are available.
-   Code isolation alone is not proof of correct integration. Keep existing
-   feature work, live data, credentials, and running sessions outside the trial.
-6. Report readiness against those observations. If a restart is needed, arrange
-   it without interrupting unrelated active work. Update the cheat sheet with
-   the verified workflow and show Drew the exact next Discord action.
-
-No new repository on GitHub, remote publication, full-server restructuring, or
-replacement of other projects' planning state is implied by this setup handoff.
-
-## Everyday usage after the trial passes
-
-- New feature: `/cdnew` → choose the project → describe the feature.
-- Continue a feature: reply in that feature's existing thread.
-- Planning: discuss outcomes and trade-offs; the agent maintains the feature plan.
-- Build: approve the plan; the configured coordinator dispatches eligible work.
-- Inspect or steer: open the relevant worker thread and use its supported controls.
-- Finish: review the integrated build and try it yourself.
-
-These last steps describe the intended verified end state, not functionality
-already established by retiring Portable Planner.
+The full relay suite has one pre-existing Teams oversized-body test failure,
+reproduced on unchanged main. It is separate from the passing workflow/demo
+checks; this setup is not a claim that every upstream repository test passes.

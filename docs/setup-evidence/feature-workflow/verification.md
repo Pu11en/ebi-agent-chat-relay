@@ -33,3 +33,23 @@ two free slots delayed the trial. Added opt-in --queue-ready admission with
 a failing-first regression test. It bounds this run's outstanding workers,
 retains the actual Ebi execution semaphore, approval and dependency gates,
 and sends no stop/interrupt to existing conversations.
+
+## Completed trial
+
+Both actual builders completed, committed and pushed their assigned files.
+Their Codex processes overlapped at 2026-09-08T01:44:07Z (20:44 Chicago); see
+worker-process-overlap.json. Both used foundation 7d46035 and separate session
+branches/worktrees. Greeting commit ad094786 and counter commit 8cc12dbb were
+reviewed and merged with ancestry preserved. Integrated commit 13de390 passed
+all 14 unittest cases, Ruff lint/format, and Pyright. Mixed-case/trimmed name
+and punctuation-count behavior worked together; blank inputs produced friend/0.
+Both OpenSpec changes still pass strict validation.
+
+The coordinator recorded both tasks integrated and repeated collect/tick
+kept the same two worker IDs with no additional dispatch. The real completion
+relay is marked sent. See completed-state.json.
+
+The final coordinator has 33 passing focused tests, including tested queue
+admission. The full-suite baseline exception described above remains unchanged.
+The human try-it step is available in the usage guide; no claim is made that
+Drew has already performed it.
