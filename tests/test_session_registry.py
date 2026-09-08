@@ -110,6 +110,7 @@ class TestConcurrencyNotice:
         notice = registry.build_concurrency_notice(1001)
         assert "task B" in notice
         assert "repo-b" in notice
+        assert "isolation is REQUIRED" not in notice
 
     def test_with_multiple_others(self) -> None:
         registry = SessionRegistry()
@@ -126,6 +127,38 @@ class TestConcurrencyNotice:
         registry.register(1001, "my task")
         notice = registry.build_concurrency_notice(1001)
         assert "worktree" in notice.lower()
+
+    def test_notice_uses_project_directly_when_no_session_shares_it(self) -> None:
+        """An isolated project should not get a disposable worktree."""
+        registry = SessionRegistry()
+        registry.register(1001, "my task", "/home/ebi/projects/repo-a")
+
+        notice = registry.build_concurrency_notice(1001)
+
+        assert "work directly in your assigned project directory" in notice.lower()
+        assert "create `.worktrees/wt-1001` on a new" not in notice
+
+    def test_same_project_requires_project_local_worktree(self) -> None:
+        """Equivalent project paths trigger isolation inside the owning project."""
+        registry = SessionRegistry()
+        registry.register(1001, "my task", "/home/ebi/projects/repo-a")
+        registry.register(1002, "other task", "/home/ebi/projects/repo-a/")
+
+        notice = registry.build_concurrency_notice(1001)
+
+        assert "isolation is required" in notice.lower()
+        assert ".worktrees/wt-1001" in notice
+        assert "../wt-1001" not in notice
+
+    def test_notice_preserves_an_existing_session_branch(self) -> None:
+        """A cleaned checkout can be recreated without trying to duplicate its branch."""
+        registry = SessionRegistry()
+        registry.register(1001, "my task", "/home/ebi/projects/repo-a")
+
+        notice = registry.build_concurrency_notice(1001)
+
+        assert "branch `session/1001` already exists" in notice
+        assert "git worktree add .worktrees/wt-1001 session/1001" in notice
 
     def test_notice_mentions_shared_resources(self) -> None:
         """The notice should warn about non-git conflicts too."""

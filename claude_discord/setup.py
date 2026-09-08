@@ -309,12 +309,11 @@ async def setup_bridge(
             bot.worktree_manager = WorktreeManager(base_dir=worktree_base_dir)  # type: ignore[attr-defined]
         logger.info("WorktreeManager enabled (base_dir=%s)", worktree_base_dir)
     else:
-        # Every session is told to create ``wt-{thread_id}``; without a base dir
-        # nothing ever removes them, and the leak is silent because the enabled
-        # branch is the only one that used to log. Say so on the disabled path.
+        # Same-project collisions may create a project-local worktree; without a
+        # base dir nothing removes it, so keep the disabled path visible.
         logger.warning(
-            "WorktreeManager disabled: WORKTREE_BASE_DIR is not set. Sessions will "
-            "keep creating wt-{thread_id} worktrees and nothing will clean them up."
+            "WorktreeManager disabled: WORKTREE_BASE_DIR is not set. Worktrees created "
+            "for same-project collisions will not be cleaned up automatically."
         )
 
     # --- Deployment layout -------------------------------------------------
