@@ -1,0 +1,9 @@
+{
+  "id": 1546700220845531196,
+  "author": "drewai",
+  "is_bot": true,
+  "content": "**Planning update \u2014 ready now (replaces section 3 above)**\n\nThe new feature workflow is enabled for new requests from your next turn. The greeting and word-count jobs were disposable setup tests; both finished and their combined result passed.\n\n**New feature:** `/cdnew` \u2192 choose your project \u2192 describe the feature. Example: \u201cPlan saved searches. Don\u2019t build yet.\u201d\n**Discuss:** stay in that feature\u2019s thread while deciding what you want.\n**Build:** say \u201cBuild this plan.\u201d The lead creates approved worker tasks, combines their results, and tells you how to try the result.\n**Continue later:** reply in that same feature thread. Use a new thread for a different feature in the same project.\n\nNo new commands or terminal work to learn. Existing conversations and plans stay intact. You can inspect worker links, but you do not need to copy their completion messages back to the lead.\n\nOptional setup demo: in <#1546685954167672912>, say \u201cTry the demo with name Drew and text Lockin AI works.\u201d Expected: `Hello, Drew!` and `3` words.",
+  "truncated": false,
+  "created_at": "2026-09-08T01:54:28.950000+00:00",
+  "jump_url": "https://discord.com/channels/1546639912848199742/1546670029422985226/1546700220845531196"
+}
