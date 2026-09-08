@@ -196,6 +196,26 @@ class TestResumeSelectView:
         desc = selects[0].options[0].description or ""
         assert "2026-04-25" in desc
 
+    async def test_selected_session_resumes_in_its_saved_working_directory(self):
+        from claude_discord.discord_ui.views import ResumeSelectView
+
+        record = _make_record(working_dir="/home/user/project")
+        chat_cog = MagicMock()
+        chat_cog.spawn_session = AsyncMock()
+        bot = MagicMock()
+        bot.channel_id = 999
+        bot.get_cog.return_value = chat_cog
+        bot.get_channel.return_value = MagicMock(spec=discord.TextChannel)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.data = {"values": ["0"]}
+        interaction.response.edit_message = AsyncMock()
+        interaction.followup.send = AsyncMock()
+        view = ResumeSelectView(records=[record], bot=bot)
+
+        await view._on_select(interaction)
+
+        assert chat_cog.spawn_session.await_args.kwargs["working_dir"] == record.working_dir
+
 
 class TestResumeCommandWithQuery:
     """Tests for /resume with query parameter."""

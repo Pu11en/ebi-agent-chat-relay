@@ -18,6 +18,9 @@ class _StubStatus:
 
     _stall_hard = 300
 
+    async def set_queued(self) -> None:
+        return None
+
     async def set_thinking(self) -> None:
         return None
 
@@ -476,6 +479,60 @@ class TestSpawnSession:
         assert call_kwargs["type"] == discord.ChannelType.public_thread
 
     @pytest.mark.asyncio
+    async def test_spawn_persists_and_runs_in_explicit_working_directory(self) -> None:
+        """A spawned thread is project-bound before its first run begins."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 42
+        thread.send = AsyncMock(return_value=MagicMock())
+        channel = MagicMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+        repo = MagicMock()
+        repo.ensure_working_dir = AsyncMock()
+        cog = ClaudeChatCog(bot=MagicMock(), repo=repo, runner=MagicMock())
+        run = AsyncMock()
+
+        with patch.object(cog, "_run_claude", new=run):
+            await cog.spawn_session(
+                channel,
+                "Do the thing",
+                working_dir="/home/user/project",
+            )
+            await asyncio.sleep(0)
+
+        repo.ensure_working_dir.assert_awaited_once_with(thread.id, "/home/user/project")
+        assert run.await_args.kwargs["working_dir_override"] == "/home/user/project"
+
+    @pytest.mark.asyncio
+    async def test_spawn_binds_runner_default_before_first_run(self) -> None:
+        """Callers that omit a directory still get one stable project binding."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 42
+        thread.send = AsyncMock(return_value=MagicMock())
+        channel = MagicMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+        repo = MagicMock()
+        repo.ensure_working_dir = AsyncMock()
+        runner = MagicMock()
+        runner.working_dir = "/home/user/default-project"
+        cog = ClaudeChatCog(bot=MagicMock(), repo=repo, runner=runner)
+        run = AsyncMock()
+
+        with patch.object(cog, "_run_claude", new=run):
+            await cog.spawn_session(channel, "Do the thing")
+            await asyncio.sleep(0)
+
+        repo.ensure_working_dir.assert_awaited_once_with(thread.id, "/home/user/default-project")
+        assert run.await_args.kwargs["working_dir_override"] == "/home/user/default-project"
+
+    @pytest.mark.asyncio
     async def test_spawn_adds_invited_user_to_thread(self) -> None:
         """invite_user_id makes the requester a thread member, before the seed message."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -814,7 +871,9 @@ class TestOnReady:
         resume_repo.get_pending = AsyncMock(return_value=[])
 
         bot = MagicMock()
-        cog = ClaudeChatCog(bot=bot, repo=MagicMock(), runner=MagicMock(), resume_repo=resume_repo)
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=None)
+        cog = ClaudeChatCog(bot=bot, repo=repo, runner=MagicMock(), resume_repo=resume_repo)
         await cog.on_ready()
         bot.get_channel.assert_not_called()
 
@@ -848,7 +907,9 @@ class TestOnReady:
         bot = MagicMock()
         bot.get_channel.return_value = thread
 
-        cog = ClaudeChatCog(bot=bot, repo=MagicMock(), runner=MagicMock(), resume_repo=resume_repo)
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=None)
+        cog = ClaudeChatCog(bot=bot, repo=repo, runner=MagicMock(), resume_repo=resume_repo)
 
         call_order: list[str] = []
         resume_repo.delete.side_effect = lambda _: call_order.append("delete")
@@ -864,6 +925,42 @@ class TestOnReady:
         assert call_order == ["delete", "run_claude"], (
             "delete() must be called before _run_claude to prevent double-resume"
         )
+
+    @pytest.mark.asyncio
+    async def test_on_ready_resumes_in_the_session_working_directory(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import discord
+
+        from claude_discord.database.resume_repo import PendingResume
+
+        entry = PendingResume(
+            id=7,
+            thread_id=555,
+            session_id="sess-abc",
+            reason="bot_shutdown",
+            resume_prompt="Continue please.",
+            created_at="2026-02-21 20:00:00",
+        )
+        resume_repo = MagicMock()
+        resume_repo.get_pending = AsyncMock(return_value=[entry])
+        resume_repo.delete = AsyncMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = entry.thread_id
+        thread.parent = MagicMock(spec=discord.TextChannel)
+        thread.send = AsyncMock(return_value=MagicMock())
+        bot = MagicMock()
+        bot.get_channel.return_value = thread
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=SimpleNamespace(working_dir="/home/user/project"))
+        cog = ClaudeChatCog(bot=bot, repo=repo, runner=MagicMock(), resume_repo=resume_repo)
+        run = AsyncMock()
+
+        with patch.object(cog, "_run_claude", new=run):
+            await cog.on_ready()
+            await asyncio.sleep(0)
+
+        assert run.await_args.kwargs["working_dir_override"] == "/home/user/project"
 
     @pytest.mark.asyncio
     async def test_on_ready_skips_non_thread_channels(self) -> None:
@@ -1071,7 +1168,9 @@ class TestOnReadyFallbackResumePrompt:
         bot = MagicMock()
         bot.get_channel.return_value = thread
 
-        cog = ClaudeChatCog(bot=bot, repo=MagicMock(), runner=MagicMock(), resume_repo=resume_repo)
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=None)
+        cog = ClaudeChatCog(bot=bot, repo=repo, runner=MagicMock(), resume_repo=resume_repo)
 
         with patch.object(cog, "_run_claude", new=AsyncMock()):
             await cog.on_ready()
@@ -2000,6 +2099,21 @@ class TestInlineReplyChannels:
 
         cog.repo.get.assert_awaited_once_with(222)
         assert cog._run_claude.call_args.kwargs["session_id"] == "sess-abc"
+
+    @pytest.mark.asyncio
+    async def test_inline_channel_resumes_in_stored_working_directory(self) -> None:
+        cog = self._make_cog(channel_ids={111, 222}, inline_reply_channel_ids={222})
+        cog.repo.get = AsyncMock(
+            return_value=SimpleNamespace(
+                session_id="sess-abc",
+                working_dir="/home/user/project",
+            )
+        )
+        cog._run_claude = AsyncMock()
+
+        await cog._handle_new_conversation(self._make_channel_message(channel_id=222))
+
+        assert cog._run_claude.await_args.kwargs["working_dir_override"] == "/home/user/project"
 
     @pytest.mark.asyncio
     async def test_inline_channel_without_prior_session_starts_fresh(self) -> None:

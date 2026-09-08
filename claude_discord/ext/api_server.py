@@ -1250,7 +1250,7 @@ class ApiServer:
         Query params:
             limit: Max persisted sessions to consider (default 20, max 100).
                    Live sessions are always included regardless of this cap.
-            state: ``running`` to return only sessions with a turn in flight.
+            state: ``running``, ``queued``, or ``history`` to filter execution state.
             exclude_thread: Thread ID to omit (typically the caller's own).
         """
         if err := self._require_session_repo():
@@ -1287,12 +1287,20 @@ class ApiServer:
             thread_names=self._thread_names(thread_ids),
         )
 
-        if request.rel_url.query.get("state") == STATE_RUNNING:
-            views = [v for v in views if v["state"] == STATE_RUNNING]
+        from ..cogs._run_helper import session_limit
+
+        capacity = {
+            "limit": session_limit(),
+            "running": sum(v["state"] == STATE_RUNNING for v in views),
+            "queued": sum(v["state"] == "queued" for v in views),
+        }
+        state_filter = request.rel_url.query.get("state")
+        if state_filter in {STATE_RUNNING, "queued", STATE_HISTORY}:
+            views = [v for v in views if v["state"] == state_filter]
         if exclude_thread is not None:
             views = [v for v in views if v["thread_id"] != exclude_thread]
 
-        return web.json_response({"sessions": views})
+        return web.json_response({"sessions": views, "capacity": capacity})
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.
@@ -1516,6 +1524,10 @@ class ApiServer:
 
         thread_name: str | None = data.get("thread_name") or None
         auto_start: bool = data.get("auto_start", True)
+        raw_working_dir = data.get("working_dir")
+        if raw_working_dir is not None and not isinstance(raw_working_dir, str):
+            return web.json_response({"error": "working_dir must be a string"}, status=400)
+        working_dir = raw_working_dir.strip() if raw_working_dir else None
 
         # Validated here rather than swallowed downstream: a typo'd user_id is a
         # caller bug and should say so, while a Discord-side failure to add the
@@ -1545,6 +1557,7 @@ class ApiServer:
                 auto_start=auto_start,
                 attachments=decoded_attachments or None,
                 invite_user_id=invite_user_id,
+                working_dir=working_dir,
             )
         except Exception as exc:
             logger.error("spawn_session failed: %s", exc, exc_info=True)
@@ -2096,6 +2109,7 @@ class ApiServer:
                 thread_name=thread_name,
                 auto_start=auto_start,
                 result_sink=result_sink,
+                working_dir=self.working_dir,
             )
         except Exception as exc:
             logger.error("ingest spawn_session failed: %s", exc, exc_info=True)

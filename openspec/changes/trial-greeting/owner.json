@@ -1,0 +1,17 @@
+{
+  "thread_id": "1546687948588589086",
+  "change_id": "trial-greeting",
+  "decision": "Preserve case. Strip exterior whitespace only. Empty name becomes friend. greet(name: str) -> str returns Hello, <name>!.",
+  "role": "planning-owner",
+  "planning_only": true,
+  "root_manager_thread_id": "1546685954167672912",
+  "foundation_commit": "1b19dba258393c9e49e4e16631ed0bff70ea8b32",
+  "worktree": "/home/drewp/main-projects/wt-1546687948588589086",
+  "branch": "session/1546687948588589086",
+  "owned_path": "openspec/changes/trial-greeting/",
+  "builder_owned_files": [
+    "examples/feature_workflow_trial/greeting.py",
+    "examples/feature_workflow_trial/test_greeting.py"
+  ],
+  "integration_owner_thread_id": "1546685954167672912"
+}

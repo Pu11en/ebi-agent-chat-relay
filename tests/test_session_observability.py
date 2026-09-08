@@ -243,6 +243,21 @@ async def test_get_sessions_rejects_bad_limit(api_client: TestClient) -> None:
     assert resp.status == 400
 
 
+async def test_queued_sessions_have_separate_filter_and_capacity(
+    api_client: TestClient, bot: MagicMock
+) -> None:
+    bot.session_registry.register(1, "running", None)
+    bot.session_registry.register(2, "queued", None)
+    bot.session_registry.update(2, execution_state="queued")
+    response = await api_client.get("/api/sessions?state=queued")
+    body = await response.json()
+    assert [s["thread_id"] for s in body["sessions"]] == [2]
+    assert body["capacity"]["running"] == 1
+    assert body["capacity"]["queued"] == 1
+    response = await api_client.get("/api/sessions?state=running")
+    assert [s["thread_id"] for s in (await response.json())["sessions"]] == [1]
+
+
 async def test_get_sessions_without_session_repo_returns_503(db_path: str, bot: MagicMock) -> None:
     notif_repo = NotificationRepository(db_path)
     await notif_repo.init_db()

@@ -146,6 +146,17 @@ class TestIsClean:
         with patch("claude_discord.worktree._run", return_value=mock_result):
             assert _is_clean("/some/path") is False
 
+    def test_ignored_files_are_not_safe_to_delete(self) -> None:
+        """Secrets, generated evidence, and other ignored files still belong to the user."""
+
+        def git_status(args: list[str], cwd: str | None = None) -> MagicMock:
+            del cwd
+            output = "!! .secrets/reddit-session-cookie\n" if "--ignored=matching" in args else ""
+            return MagicMock(returncode=0, stdout=output)
+
+        with patch("claude_discord.worktree._run", side_effect=git_status):
+            assert _is_clean("/some/path") is False
+
     def test_git_error_treated_as_dirty(self) -> None:
         mock_result = MagicMock()
         mock_result.returncode = 128
@@ -224,6 +235,21 @@ class TestFindSessionWorktrees:
         ]
         assert {w.thread_id for w in worktrees} == {12345}
 
+    def test_finds_session_worktree_inside_owning_project(self, tmp_path: Path) -> None:
+        """Project-local worktrees are discoverable without scanning arbitrary descendants."""
+        wt = tmp_path / "repo-a" / ".worktrees" / "wt-12345"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /fake/repo/.git/worktrees/wt-12345\n")
+
+        with (
+            patch("claude_discord.worktree._get_branch", return_value="session/12345"),
+            patch("claude_discord.worktree._get_commit", return_value="abc1234"),
+            patch("claude_discord.worktree._find_main_repo", return_value="/fake/repo"),
+        ):
+            worktrees = WorktreeManager(base_dir=str(tmp_path)).find_session_worktrees()
+
+        assert [item.path for item in worktrees] == [str(wt)]
+
     def test_empty_when_no_session_worktrees(self, tmp_path: Path) -> None:
         wm = WorktreeManager(base_dir=str(tmp_path))
         assert wm.find_session_worktrees() == []
@@ -251,6 +277,24 @@ class TestCleanupForThread:
 
         assert result.removed is True
         assert result.thread_id == 999
+
+    def test_removes_clean_project_local_worktree(self, tmp_path: Path) -> None:
+        wt_path = tmp_path / "repo-a" / ".worktrees" / "wt-999"
+        wt_path.mkdir(parents=True)
+        (wt_path / ".git").write_text("gitdir: /repo/.git/worktrees/wt-999\n")
+
+        with (
+            patch("claude_discord.worktree._get_branch", return_value="session/999"),
+            patch("claude_discord.worktree._get_commit", return_value="abc"),
+            patch("claude_discord.worktree._is_clean", return_value=True),
+            patch("claude_discord.worktree._find_main_repo", return_value="/repo"),
+            patch("claude_discord.worktree._run") as mock_run,
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            result = WorktreeManager(base_dir=str(tmp_path)).cleanup_for_thread(999)
+
+        assert result.removed is True
+        assert result.path == str(wt_path)
 
     def test_skips_dirty_worktree(self, tmp_path: Path) -> None:
         wt_path = tmp_path / "wt-999"

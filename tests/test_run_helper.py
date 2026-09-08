@@ -21,6 +21,7 @@ from claude_discord.claude.types import (
 from claude_discord.cogs import _run_helper as _rh_module
 from claude_discord.cogs._run_helper import (
     TOOL_RESULT_MAX_CHARS,
+    _cleanup_session_worktree,
     _make_error_embed,
     _truncate_result,
     configure_session_limit,
@@ -31,6 +32,30 @@ from claude_discord.cogs.run_config import RunConfig
 from claude_discord.concurrency import SessionRegistry
 from claude_discord.discord_ui.streaming_manager import StreamingMessageManager
 from claude_discord.discord_ui.tool_timer import LiveToolTimer
+from claude_discord.worktree import CleanupResult
+
+
+@pytest.mark.asyncio
+async def test_protected_worktree_notice_does_not_recommend_removal() -> None:
+    """Discord should reassure the user when cleanup preserved local files."""
+    manager = MagicMock()
+    manager.cleanup_for_thread.return_value = CleanupResult(
+        path="/projects/example/.worktrees/wt-42",
+        thread_id=42,
+        removed=False,
+        reason="worktree has uncommitted changes or ignored local files — skipped",
+    )
+    surface = MagicMock()
+    surface.thread_key = 42
+    surface.send_notice = AsyncMock()
+    config = MagicMock(worktree_manager=manager, surface=surface)
+
+    await _cleanup_session_worktree(config)
+
+    notice = surface.send_notice.await_args.args[0]
+    assert "kept safely" in notice.body
+    assert "No immediate action is required" in notice.body
+    assert "git worktree remove" not in notice.body
 
 
 class TestTruncateResult:
@@ -355,6 +380,53 @@ class TestRunClaudeInThread:
                 yield e
 
         return gen
+
+    @pytest.mark.asyncio
+    async def test_working_directory_is_bound_before_cli_starts(
+        self, thread: MagicMock, runner: MagicMock, repo: MagicMock
+    ) -> None:
+        runner.working_dir = "/home/drewp/main-projects/example"
+        repo.ensure_working_dir = AsyncMock(
+            return_value=MagicMock(working_dir="/home/drewp/main-projects/example")
+        )
+        binding_was_ready: list[bool] = []
+
+        async def gen(*args, **kwargs):
+            binding_was_ready.append(repo.ensure_working_dir.await_count == 1)
+            if False:
+                yield
+
+        runner.run = gen
+
+        await run_claude_in_thread(thread, runner, repo, "test", None)
+
+        assert binding_was_ready == [True]
+        repo.ensure_working_dir.assert_awaited_once_with(
+            thread_id=thread.id,
+            working_dir="/home/drewp/main-projects/example",
+            origin="discord",
+        )
+
+    @pytest.mark.asyncio
+    async def test_saved_working_directory_overrides_a_wrong_runner_default(
+        self, thread: MagicMock, runner: MagicMock, repo: MagicMock
+    ) -> None:
+        runner.working_dir = "/home/drewp/main-projects"
+        repo.ensure_working_dir = AsyncMock(
+            return_value=MagicMock(working_dir="/home/drewp/main-projects/correct-project")
+        )
+        observed_working_dirs: list[str] = []
+
+        async def gen(*args, **kwargs):
+            observed_working_dirs.append(runner.working_dir)
+            if False:
+                yield
+
+        runner.run = gen
+
+        await run_claude_in_thread(thread, runner, repo, "test", "existing-session")
+
+        assert observed_working_dirs == ["/home/drewp/main-projects/correct-project"]
 
     @pytest.mark.asyncio
     async def test_intermediate_text_posted_immediately(

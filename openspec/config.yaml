@@ -1,0 +1,8 @@
+schema: spec-driven
+context: |
+  ccdb is a reusable Python Discord relay; local Lockin workflows belong in extensions.
+  Preserve existing projects, historic plans, live data, and active conversations.
+  Each feature has one named openspec/changes directory and one planning thread owner.
+  Build only the approved revision. Use separate git worktrees and visible Ebi workers.
+  Shared interfaces have one owner; the integration owner combines and verifies results.
+  The disposable setup trial is limited to examples/feature_workflow_trial.

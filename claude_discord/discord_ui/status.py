@@ -81,6 +81,11 @@ class StatusManager:
         self._hard_stall_notified = False
         self._stall_soft, self._stall_hard = _stall_thresholds(model)
 
+    async def set_queued(self) -> None:
+        """Waiting for admission is not a stalled model."""
+        self._cancel_stall_timer()
+        await self._set_status(EMOJI_STALL_SOFT)
+
     async def set_thinking(self) -> None:
         """Set status to thinking."""
         await self._set_status(EMOJI_THINKING)

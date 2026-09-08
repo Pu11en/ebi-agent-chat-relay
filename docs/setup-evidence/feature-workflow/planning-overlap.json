@@ -1,0 +1,32 @@
+[
+  {
+    "thread_id": 1546687950375493752,
+    "state": "running",
+    "working_dir": "/home/drewp/main-projects",
+    "created_at": "2026-09-07 20:11:39"
+  },
+  {
+    "thread_id": 1546687948588589086,
+    "state": "running",
+    "working_dir": "/home/drewp/main-projects",
+    "created_at": "2026-09-07 20:08:44"
+  },
+  {
+    "thread_id": 1546681327871336560,
+    "state": "running",
+    "working_dir": "/home/drewp/main-projects/reddit",
+    "created_at": "2026-09-07 19:39:25"
+  },
+  {
+    "thread_id": 1546685954167672912,
+    "state": "running",
+    "working_dir": "/home/drewp/main-projects/ebi-agent-chat-relay",
+    "created_at": "2026-09-07 19:57:48"
+  },
+  {
+    "thread_id": 1546684580940218369,
+    "state": "running",
+    "working_dir": "/home/drewp/main-projects/drewpullen-site",
+    "created_at": "2026-09-07 19:52:20"
+  }
+]

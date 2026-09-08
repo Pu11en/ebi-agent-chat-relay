@@ -675,6 +675,29 @@ class TestSpawn:
         assert kwargs.get("thread_name") == "Custom title"
 
     @pytest.mark.asyncio
+    async def test_spawn_forwards_working_directory(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        await spawn_client.post(
+            "/api/spawn",
+            json={"prompt": "Inspect project", "working_dir": "/home/user/project"},
+        )
+
+        assert mock_cog.spawn_session.await_args.kwargs["working_dir"] == "/home/user/project"
+
+    @pytest.mark.asyncio
+    async def test_spawn_rejects_non_string_working_directory(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        response = await spawn_client.post(
+            "/api/spawn",
+            json={"prompt": "Inspect project", "working_dir": {"path": "/tmp"}},
+        )
+
+        assert response.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_spawn_thread_name_defaults_to_none(
         self, spawn_client: TestClient, mock_cog: MagicMock
     ) -> None:
@@ -987,6 +1010,22 @@ class TestIngest:
             assert resp.status == 503
         finally:
             await client.close()
+
+    @pytest.mark.asyncio
+    async def test_ingest_runs_in_the_directory_that_owns_its_saved_files(
+        self,
+        ingest_client: TestClient,
+        mock_cog: MagicMock,
+        tmp_path,
+    ) -> None:
+        response = await ingest_client.post(
+            "/api/ingest",
+            json={"content": "Inspect the imported material"},
+            headers=self.AUTH,
+        )
+
+        assert response.status == 201
+        assert mock_cog.spawn_session.await_args.kwargs["working_dir"] == str(tmp_path)
 
     @pytest.mark.asyncio
     async def test_ingest_missing_auth_returns_401(self, ingest_client: TestClient) -> None:

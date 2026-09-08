@@ -109,6 +109,8 @@ def build_session_views(
         view.setdefault("working_dir", None)
         view["thread_name"] = names.get(thread_id)
         view["state"] = STATE_RUNNING if thread_id in running_thread_ids else STATE_HISTORY
+        if thread_id in running_thread_ids and thread_id in by_thread:
+            view["state"] = by_thread[thread_id].execution_state
         msg = latest_lounge.get(thread_id)
         view["latest_lounge"] = (
             None

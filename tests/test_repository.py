@@ -47,6 +47,34 @@ class TestSessionRepository:
         assert record.working_dir == "/home/user/project"
         assert record.model == "opus"
 
+    async def test_ensure_working_dir_creates_pending_mapping(self, repo):
+        record = await repo.ensure_working_dir(
+            thread_id=201,
+            working_dir="/home/user/new-project",
+        )
+
+        assert record.session_id == ""
+        assert record.working_dir == "/home/user/new-project"
+
+    async def test_ensure_working_dir_preserves_existing_session_binding(self, repo):
+        await repo.save(
+            thread_id=202,
+            session_id="existing-session",
+            working_dir="/home/user/old-project",
+            model="opus",
+            backend="claude",
+        )
+
+        record = await repo.ensure_working_dir(
+            thread_id=202,
+            working_dir="/home/user/new-project",
+        )
+
+        assert record.session_id == "existing-session"
+        assert record.working_dir == "/home/user/old-project"
+        assert record.model == "opus"
+        assert record.backend == "claude"
+
     async def test_delete(self, repo):
         await repo.save(thread_id=300, session_id="sess-to-delete")
         assert await repo.delete(300) is True

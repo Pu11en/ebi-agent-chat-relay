@@ -1,0 +1,20 @@
+{
+  "openspec_version": "1.12.0",
+  "openspec_executable": "/home/drewp/.local/bin/openspec",
+  "openspec_package_root": "/home/drewp/.local/node/lib/node_modules/@fission-ai/openspec",
+  "coordination_source_commit": "a30778f8c4e6b0a87567941b7cca4f534bf642b6",
+  "skills_root": "/mnt/c/Users/drewp/.codex/skills",
+  "skills": [
+    "parallel-feature-development",
+    "task-coordination-strategies",
+    "openspec-explore",
+    "openspec-propose",
+    "openspec-apply-change",
+    "openspec-update-change",
+    "openspec-sync-specs",
+    "openspec-archive-change"
+  ],
+  "source_worktree": "/home/drewp/main-projects/wt-1546685954167672912",
+  "bot_pid_before": 36020,
+  "global_session_limit": 3
+}

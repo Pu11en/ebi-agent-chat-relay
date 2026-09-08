@@ -50,8 +50,15 @@ def configure_session_limit(max_concurrent: int) -> None:
     honour the limit.
     """
     global _global_semaphore, _max_concurrent  # noqa: PLW0603
+    if type(max_concurrent) is not int or max_concurrent < 1:
+        raise ValueError("Session capacity must be a positive integer")
     _max_concurrent = max_concurrent
     _global_semaphore = asyncio.Semaphore(max_concurrent)
+
+
+def session_limit() -> int | None:
+    """Configured process-wide capacity, or None for unconfigured embedded use."""
+    return _max_concurrent if _global_semaphore is not None else None
 
 
 def configure_pr_completion_gate(owner: str | None) -> None:
@@ -227,17 +234,18 @@ async def _cleanup_session_worktree(config: RunConfig) -> None:
                 result.path,
                 result.reason,
             )
-            # Notify the Discord thread if there are uncommitted changes
+            # Explain the safety decision without encouraging destructive cleanup.
             if "uncommitted changes" in result.reason:
                 with contextlib.suppress(Exception):
                     await config.surface.send_notice(
                         Notice(
                             level=NoticeLevel.WARNING,
-                            title="Worktree not cleaned up",
+                            title="Worktree preserved",
                             body=(
-                                f"`{result.path}` has uncommitted changes. Please commit or "
-                                f"stash them, then run:\n```\ngit worktree remove "
-                                f"{result.path}\n```"
+                                f"`{result.path}` contains local changes or ignored files, "
+                                "so it was kept safely inside its project. No immediate action "
+                                "is required. Review those files before choosing to merge or "
+                                "clean up the worktree."
                             ),
                         )
                     )
@@ -373,6 +381,16 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
     Returns:
         The final session_id, or None if the run failed.
     """
+    working_dir = getattr(config.runner, "working_dir", None)
+    if config.repo is not None and isinstance(working_dir, str) and working_dir:
+        record = await config.repo.ensure_working_dir(
+            thread_id=config.surface.thread_key,
+            working_dir=working_dir,
+            origin=config.session_origin,
+        )
+        if record.working_dir:
+            config.runner.working_dir = record.working_dir
+
     system_context = await _build_system_context(config)
     runner = (
         config.runner.clone(append_system_prompt=system_context)
@@ -403,21 +421,34 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
 
     # --- Session slot limiter (global semaphore) ---
     sem = _global_semaphore
-    if sem is not None and sem.locked():
-        with contextlib.suppress(Exception):
-            await config.surface.send_notice(
-                Notice(
-                    level=NoticeLevel.SUBTLE,
-                    body=(
-                        f"\u23f3 Waiting for a free session slot\u2026 "
-                        f"({_max_concurrent} max sessions running)"
-                    ),
-                )
-            )
-    if sem is not None:
-        await sem.acquire()
-
+    acquired = False
     try:
+        if config.registry is not None:
+            config.registry.update(config.surface.thread_key, execution_state="queued")
+        if config.stop_view is not None:
+            config.stop_view.set_queued_task(asyncio.current_task())
+            await config.stop_view.set_label("Queued — waiting for capacity")
+        if config.status is not None:
+            await config.status.set_queued()
+        if sem is not None and sem.locked():
+            with contextlib.suppress(Exception):
+                await config.surface.send_notice(
+                    Notice(
+                        level=NoticeLevel.SUBTLE,
+                        body=f"⏳ Waiting for capacity ({_max_concurrent} max sessions running)",
+                    )
+                )
+        if sem is not None:
+            await sem.acquire()
+            acquired = True
+        if config.registry is not None:
+            config.registry.update(config.surface.thread_key, execution_state="running")
+        if config.stop_view is not None:
+            await config.stop_view.set_label("⏺ Session running")
+        if config.status is not None:
+            await config.status.set_thinking()
+        if config.stop_view is not None:
+            config.stop_view.set_queued_task(None)
         async for event in runner.run(config.prompt, session_id=config.session_id):
             if processor.should_drain and not event.is_complete:
                 continue
@@ -439,12 +470,14 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
         await _emit_result_sink(config, None, f"{type(exc).__name__}: {exc}")
         return processor.session_id
     finally:
-        if sem is not None:
+        if sem is not None and acquired:
             sem.release()
+        if config.stop_view is not None:
+            config.stop_view.set_queued_task(None)
         await processor.finalize()
         if config.registry is not None:
             config.registry.unregister(config.surface.thread_key)
-        if config.worktree_manager is not None:
+        if config.worktree_manager is not None and (sem is None or acquired):
             await _cleanup_session_worktree(config)
 
     # After compact_boundary, rerun with a guardrail to prevent Claude from

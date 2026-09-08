@@ -1,8 +1,8 @@
 """Git worktree lifecycle management for Claude Code sessions.
 
-Each Claude Code session may create a git worktree (wt-{thread_id}) to work
-in isolation from other concurrent sessions.  These worktrees accumulate over
-time because Claude has no built-in mechanism to remove them.
+When two sessions edit the same project, the later session may create a git
+worktree at ``<project>/.worktrees/wt-{thread_id}`` for isolation. Legacy
+deployments created ``wt-{thread_id}`` directly under the configured base.
 
 This module provides WorktreeManager to:
   - Identify session worktrees (branches matching ``session/\\d+``)
@@ -14,7 +14,8 @@ Cleanup is triggered at three points:
   2. Bot startup — remove all orphaned clean session worktrees
   3. Manual — via /worktree-list and /worktree-cleanup Discord commands
 
-Safety invariant: a worktree with uncommitted changes is NEVER auto-removed.
+Safety invariant: a worktree with tracked, untracked, or ignored local files is
+NEVER auto-removed.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Branch pattern created by the concurrency notice template:
-# git worktree add ../wt-{thread_id} -b session/{thread_id}
+# git worktree add .worktrees/wt-{thread_id} -b session/{thread_id}
 #
 # A session that needs a second worktree appends a label to both names
 # (``wt-{thread_id}-obsidian`` on ``session/{thread_id}-obsidian``), so the
@@ -128,8 +129,11 @@ def _find_main_repo(worktree_path: str) -> str | None:
 
 
 def _is_clean(worktree_path: str) -> bool:
-    """Return True if the worktree has no uncommitted changes."""
-    result = _run(["git", "status", "--porcelain"], cwd=worktree_path)
+    """Return True only when removing the checkout cannot discard local files."""
+    result = _run(
+        ["git", "status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
+        cwd=worktree_path,
+    )
     if result.returncode != 0:
         # Can't determine status — treat as dirty to be safe
         return False
@@ -155,8 +159,8 @@ def _get_commit(worktree_path: str) -> str:
 class WorktreeManager:
     """Manages Claude Code session git worktrees.
 
-    Scans ``base_dir`` for directories matching ``wt-{digits}`` and
-    determines whether they are session worktrees (branch ``session/{digits}``).
+    Scans ``base_dir`` for legacy ``wt-*`` directories and each direct project's
+    ``.worktrees`` directory, then identifies session branches.
 
     Args:
         base_dir: Directory to scan for session worktrees.
@@ -169,8 +173,8 @@ class WorktreeManager:
     def find_session_worktrees(self) -> list[WorktreeInfo]:
         """Return all session worktrees (branch matching ``session/\\d+``).
 
-        Scans ``base_dir`` for directories whose basename matches ``wt-\\d+``,
-        then filters to those with a ``session/{id}`` branch.
+        Scans only the supported legacy and project-local layouts, then filters
+        candidates by their ``session/{id}`` branch.
         """
         results: list[WorktreeInfo] = []
         base = Path(self._base_dir)
@@ -181,11 +185,24 @@ class WorktreeManager:
             logger.error("Cannot scan base_dir %s: %s", self._base_dir, exc)
             return results
 
+        candidates: list[Path] = []
         for entry in entries:
             if not entry.is_dir():
                 continue
-            if not entry.name.startswith(_SESSION_WORKTREE_DIR_PREFIX):
-                continue
+            if entry.name.startswith(_SESSION_WORKTREE_DIR_PREFIX):
+                candidates.append(entry)
+            project_worktrees = entry / ".worktrees"
+            if project_worktrees.is_dir():
+                try:
+                    candidates.extend(
+                        child
+                        for child in project_worktrees.iterdir()
+                        if child.is_dir() and child.name.startswith(_SESSION_WORKTREE_DIR_PREFIX)
+                    )
+                except OSError as exc:
+                    logger.warning("Cannot scan worktree directory %s: %s", project_worktrees, exc)
+
+        for entry in candidates:
             if not (entry / ".git").exists():
                 continue
 
@@ -203,20 +220,36 @@ class WorktreeManager:
     def cleanup_for_thread(self, thread_id: int) -> CleanupResult:
         """Remove the worktree for ``thread_id`` if it is clean.
 
-        The worktree path is expected to be ``{base_dir}/wt-{thread_id}``.
-        If the path does not exist this is a no-op (returns removed=False).
+        Supports both the legacy ``{base_dir}/wt-{thread_id}`` layout and the
+        project-local ``<project>/.worktrees/wt-{thread_id}`` layout.
 
         Returns:
             CleanupResult describing what happened.
         """
         path = str(Path(self._base_dir) / f"wt-{thread_id}")
         if not Path(path).is_dir():
-            return CleanupResult(
-                path=path,
-                thread_id=thread_id,
-                removed=False,
-                reason="worktree directory does not exist",
+            matches = sorted(
+                info.path for info in self.find_session_worktrees() if info.thread_id == thread_id
             )
+            exact = [item for item in matches if Path(item).name == f"wt-{thread_id}"]
+            if exact:
+                path = exact[0]
+            elif len(matches) == 1:
+                path = matches[0]
+            elif not matches:
+                return CleanupResult(
+                    path=path,
+                    thread_id=thread_id,
+                    removed=False,
+                    reason="worktree directory does not exist",
+                )
+            else:
+                return CleanupResult(
+                    path=path,
+                    thread_id=thread_id,
+                    removed=False,
+                    reason="multiple session worktrees require manual cleanup",
+                )
 
         return self._try_remove(path, thread_id)
 
@@ -264,7 +297,10 @@ class WorktreeManager:
                 path=path,
                 thread_id=thread_id,
                 removed=False,
-                reason="worktree has uncommitted changes — skipped to prevent data loss",
+                reason=(
+                    "worktree has uncommitted changes or ignored local files — "
+                    "skipped to prevent data loss"
+                ),
             )
 
         main_repo = _find_main_repo(path)
