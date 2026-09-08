@@ -78,7 +78,8 @@ See CHANGELOG.md for details."
 
 ### Step 6: 確認（数分後）
 
-auto-approve により PR が自動マージされ、タグ `v1.4.0` と GitHub Release が作成される:
+`OWNER_AUTO_MERGE_ENABLED=true` の場合は PR が自動マージされる。マージ後、
+`AUTO_VERSION_BUMP_ENABLED=true` の場合はタグ `v1.4.0` と GitHub Release が作成される:
 
 ```bash
 gh release view v1.4.0
@@ -106,6 +107,7 @@ PR マージ（auto-approve.yml）
 
 | 状況 | 原因 | 対処 |
 |------|------|------|
+| PR が自動マージされない | `OWNER_AUTO_MERGE_ENABLED` が未設定 | 手動でマージするか、リポジトリ変数を `true` に設定する |
 | 自動リリースが始まらない | `AUTO_VERSION_BUMP_ENABLED` または `ADMIN_PAT` が未設定 | リポジトリ変数とシークレットを設定してから再実行する |
 | v1.4.1 になってしまった | PR タイトルに `[release]` がなかった | タグを削除して再度 release PR を作る |
 | タグが既に存在するエラー | 同じバージョンでタグを作ろうとした | タグを削除: `gh api "repos/{owner}/{repo}/git/refs/tags/v1.4.0" --method DELETE` |

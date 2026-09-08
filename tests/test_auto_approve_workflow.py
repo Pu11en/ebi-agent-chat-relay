@@ -28,6 +28,7 @@ def test_owner_auto_merge_follows_the_current_repository_owner() -> None:
     owner_job = _job_block(workflow, "auto-approve-and-merge", "auto-merge-dependabot")
 
     assert "github.event.pull_request.user.login == github.repository_owner" in owner_job
+    assert "vars.OWNER_AUTO_MERGE_ENABLED == 'true'" in owner_job
     assert "ebibibi" not in owner_job
 
 

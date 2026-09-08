@@ -21,6 +21,7 @@ jobs:
     # Skip 'external-issue' PRs — these are created from external user Issues via
     # Docker sandbox and require manual review before merging.
     if: >
+      vars.OWNER_AUTO_MERGE_ENABLED == 'true' &&
       github.event.pull_request.user.login == github.repository_owner &&
       github.event.pull_request.draft == false &&
       !contains(github.event.pull_request.labels.*.name, 'external-issue')
@@ -117,7 +118,7 @@ jobs:
     # human (or Claude) to review instead of merging automatically.
     #
     # This is a SEPARATE job from auto-approve-and-merge on purpose: the owner
-    # job is gated on the current repository owner and carries the EbiBot-restart
+    # job is opt-in and gated on the current repository owner. It carries the EbiBot-restart
     # webhook + version-bump dispatch. Dependabot PRs must NOT trigger those —
     # the lock change reaches the running bot on its next natural restart via
     # pre-start.sh (uv sync), so no disruptive restart is needed here.
