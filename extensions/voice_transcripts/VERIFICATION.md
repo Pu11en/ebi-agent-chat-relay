@@ -25,8 +25,12 @@
   existing bot identity and zero restarts; the existing ccdb chat PID stayed the same.
 - Voice and text channels were read back from Discord. The output denies Everyone
   View Channel, with explicit owner and bot access. A room disclosure was posted.
-- Live microphone acceptance is pending a person joining the designated room,
-  speaking, and leaving. No actual conversation has been claimed as verified.
+- First live microphone test passed on September 7, 2026, at approximately
+  20:50–20:51 America/Chicago. The owner joined, spoke, and left. The service
+  automatically connected, stored a speaker-attributed transcript segment, and
+  stopped the session on departure. The published Discord attachment was fetched
+  independently and checked against the captured test speech, speaker attribution,
+  stopped state, and zero pending/failed jobs. Private speech stays out of this log.
 
 The readiness recheck found that normal session cleanup had removed the original
 session worktree, including its ignored deployment files. The old process was
@@ -40,4 +44,6 @@ candidate list were checked to exclude this checkout. The tracked
 `ops/voice-transcripts.service` passes systemd unit verification. Configuration,
 lock, recovered database, and new recordings live outside all source worktrees,
 under `~/.local/share/drew-ai-voice-transcripts/` (private permissions).
-Live microphone acceptance remains required before claiming end-to-end capture.
+The first real microphone test now verifies the single-speaker path end to end.
+Multi-speaker capture and failure recovery have automated coverage; they have not
+yet been exercised together in a live Discord conversation.
