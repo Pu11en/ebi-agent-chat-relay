@@ -9,6 +9,7 @@ See: https://github.com/ebibibi/ebi-agent-chat-relay/issues/52
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 
@@ -28,19 +29,14 @@ class ActiveSession:
 
 
 _BASE_CONCURRENCY_NOTICE = """\
-[CONCURRENCY NOTICE — MANDATORY] You are one of MULTIPLE Claude Code sessions \
+[CONCURRENCY NOTICE — MANDATORY] You may be one of multiple Claude Code sessions \
 running simultaneously via Discord. Your thread ID is {thread_id}. \
 Messages marked [this thread] in the AI Lounge are YOUR earlier posts from \
 this same thread — not from other sessions. After context compaction you may \
 see your own lounge messages; do NOT treat them as another session's work. \
-Other sessions ARE active right now. \
 You MUST follow these rules to avoid destroying each other's work:
 
-1. **Git — USE A WORKTREE (REQUIRED)**: Run \
-`git worktree add ../wt-{thread_id} -b session/{thread_id}` BEFORE making \
-any changes. Work ONLY inside your worktree. NEVER modify the main working \
-directory directly. Always commit and push before finishing — uncommitted \
-changes WILL be lost.
+1. **Git**: {git_guidance}
 2. **Files**: Another session may be editing the same files RIGHT NOW. \
 Check `git status` and recent file modification times before overwriting.
 3. **Ports & processes**: Shared network ports or lock files may already be in use.
@@ -54,10 +50,28 @@ message will silently run in the WRONG directory later. ALWAYS use absolute \
 paths (for scripts, `os.chdir` to an absolute path at startup); for long jobs \
 or large output, write results to an absolute-path log file and read it back.
 
-CRITICAL: If your target repository is the same as another active session's, \
-you MUST use a separate worktree or stop and warn the user. \
-Do NOT proceed without isolation.\
+CRITICAL: Do not create loose `wt-*` directories beside projects.\
 """
+
+_DIRECT_GIT_GUIDANCE = """\
+No other active session is registered in your assigned project. First run \
+`git worktree list` and continue an existing `session/{thread_id}` worktree if \
+one is listed. If branch `session/{thread_id}` already exists without a \
+worktree, restore it with \
+`git worktree add .worktrees/wt-{thread_id} session/{thread_id}`. Otherwise, \
+work directly in your assigned project directory; do not create a disposable \
+worktree. Keep `/.worktrees/` in the repository's local `.git/info/exclude`. \
+Always commit before finishing."""
+
+_ISOLATED_GIT_GUIDANCE = """\
+Another active session is using your assigned project, so isolation is REQUIRED. \
+First run `git worktree list` and continue an existing `session/{thread_id}` \
+worktree if one is listed. If branch `session/{thread_id}` already exists \
+without a worktree, restore it with \
+`git worktree add .worktrees/wt-{thread_id} session/{thread_id}`. Otherwise \
+create `.worktrees/wt-{thread_id}` on a new `session/{thread_id}` branch. Ensure \
+`/.worktrees/` is present in the repository's local `.git/info/exclude` before \
+creating it. Work only inside that worktree and commit before finishing."""
 
 _OTHER_SESSIONS_HEADER = """
 ⚠️ ACTIVE SESSIONS RIGHT NOW (you MUST avoid conflicts with these):
@@ -129,8 +143,26 @@ class SessionRegistry:
         Combines the base Layer 1 warning with Layer 2 context about
         other active sessions.
         """
-        notice = _BASE_CONCURRENCY_NOTICE.format(thread_id=thread_id)
+        current = next((s for s in self.list_active() if s.thread_id == thread_id), None)
         others = self.list_others(thread_id)
+        current_dir = (
+            os.path.normcase(os.path.normpath(current.working_dir))
+            if current and current.working_dir
+            else None
+        )
+        shares_project = bool(
+            current_dir
+            and any(
+                other.working_dir
+                and os.path.normcase(os.path.normpath(other.working_dir)) == current_dir
+                for other in others
+            )
+        )
+        git_guidance = _ISOLATED_GIT_GUIDANCE if shares_project else _DIRECT_GIT_GUIDANCE
+        notice = _BASE_CONCURRENCY_NOTICE.format(
+            thread_id=thread_id,
+            git_guidance=git_guidance.format(thread_id=thread_id),
+        )
         if others:
             notice += _OTHER_SESSIONS_HEADER
             for s in others:
@@ -138,8 +170,9 @@ class SessionRegistry:
                 if s.working_dir:
                     line += f" (working in {s.working_dir})"
                 notice += line + "\n"
-            notice += (
-                "\nIf your work targets the same repository as any session above, "
-                "you MUST use a git worktree. Do NOT proceed without isolation.\n"
-            )
+            if shares_project:
+                notice += (
+                    "\nA session above is in this same project. Continue or create the "
+                    "project-local worktree described above before editing.\n"
+                )
         return notice
