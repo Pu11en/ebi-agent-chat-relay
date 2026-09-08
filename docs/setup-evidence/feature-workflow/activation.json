@@ -1,0 +1,10 @@
+{
+  "enabled_at": "2026-09-07T20:53:10.218458-05:00",
+  "scope": "New Lockin AI Discord feature requests, effective on the next Codex turn; preserve current conversations and old plans",
+  "skill_path": "/mnt/c/Users/drewp/.codex/skills/lockin-feature-workflow",
+  "instructions_path": "/mnt/c/Users/drewp/.codex/AGENTS.md",
+  "before_sha256": "8172763b1df68e11f95e4ea256f9f70d21dc8b99d656666c1b2be6e4379a4514",
+  "after_sha256": "d18ad52c0e0119edbc4aa8d0334e8e9245adcc0d6c05e946f702d3e319678ccb",
+  "bot_restart": false,
+  "integration_commit": "13de390c801cf55b4845bde3baf24bdb5a356729"
+}

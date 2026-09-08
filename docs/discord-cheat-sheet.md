@@ -50,26 +50,29 @@ In #control-center use `/search`, with `query` set to the project name, then ope
 
 ---
 
-## 3 · Your everyday plan → build → try flow
+## 3 · Plan and build one feature at a time per conversation
 
-Stay in your **project thread** for these steps.
+The new feature workflow is ready. OpenSpec keeps a separate plan for each
+feature; your project conversation coordinates the builders and integration.
+You don't need to learn OpenSpec commands.
 
-**A. Plan**
-> Help me plan [what I want to build]. Ask me the questions that actually change the result. Save the plan in the project. Don't build yet.
+**New feature:** `/cdnew` → choose the project → describe the feature.
+For planning without building, say:
+> Plan [feature]. Help me think through the options. Don't build yet.
 
-**B. Build when you're ready**
-> Build the plan. Use separate Ebi worker threads in #workers for tasks that can be done independently, and link them here. Combine the results into one working build. Run focused checks, then tell me how to try it, with a preview link if available.
+**Approve the build in that same thread:**
+> Build this plan.
 
-**C. Try the result yourself**
-Open the preview or follow the instructions it gives you. Then report what happened in the same project thread:
-> I tried [action]. I expected [result], but [what happened]. Here is a screenshot.
+The lead queues approved tasks in #workers, combines the results, checks the
+combined behavior, and tells you how to try it. You can inspect worker links,
+but you don't need to relay their messages manually.
 
-**D. Pick up later**
-> Summarize where we are, what's finished, and the next useful step.
+**Continue the feature:** reply in its existing thread. Start another thread
+for a different feature in the same project. Existing plans remain reference
+material and existing conversations retain their current work.
 
-“Manager” just means **the project conversation you ask to coordinate the work**. It is not another bot you need to install. Worker threads are created when work is delegated; they do not automatically appear after every plan.
-
-A worker saying “done” is not the same as the whole app being ready. Keep the project conversation responsible for combining and handing off the result.
+The greeting/word-count trial was a setup check, not a Discord feature.
+Both builders completed and the combined result passed verification.
 
 ---
 

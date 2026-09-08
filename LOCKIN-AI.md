@@ -1,9 +1,9 @@
 # Lockin AI
 
-Setup checkpoint: OpenSpec, the two selected coordination skills, and the Ebi
-coordinator are installed. The two-feature live build trial is still pending;
-read [the automatic continuation notes](docs/feature-workflow-resume.md).
-The retained installed worktree is `/home/drewp/main-projects/lockin-workflow-runtime`.
+The new feature planning workflow is installed and its two-feature Discord
+trial passed. Read [the current usage guide](docs/feature-workflow-setup.md).
+The maintained installed checkout is `/home/drewp/main-projects/lockin-workflow-runtime`;
+the canonical relay folder and existing projects remain intact.
 
 Lockin AI is Drew's Discord-based development workspace. Ebi Agent Chat Relay
 is the upstream software powering it; Codex runs the coding sessions on WSL.
@@ -62,9 +62,6 @@ has now been removed from the shared Codex AGENTS.md. Existing plans remain
 reference material. Until the replacement is set up, planning uses normal
 Codex conversation, not Portable Planner.
 
-The replacement and automatic worker handoff are not yet verified as ready.
-Follow [the one-time setup walkthrough](docs/feature-workflow-setup.md) to
-continue setup in a separate Lockin AI Discord conversation.
-
-Start with [the planning shortlist](docs/planner-shortlist-2026-09-07.md), which
-links the detailed source-backed comparisons in `docs/`.
+The selected replacement has now passed the two-feature trial. Follow
+[the current usage guide](docs/feature-workflow-setup.md). The research notes
+in the canonical checkout are preserved as historical reference.

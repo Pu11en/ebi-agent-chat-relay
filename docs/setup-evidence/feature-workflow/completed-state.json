@@ -1,0 +1,67 @@
+{
+  "approval_digest": "dbfa7b870d16800628fad42acd7afa2c58927a8d1e0294bd714e35bf06394e55",
+  "foundation_sha": "13de390c801cf55b4845bde3baf24bdb5a356729",
+  "tasks": {
+    "greeting-build": {
+      "status": "integrated",
+      "foundation_sha": "7d46035ddcc9fc36b6e2aab1813ba792607410cf",
+      "thread_id": "1546696547390197793",
+      "result": {
+        "task": "greeting-build",
+        "approval_digest": "dbfa7b870d16800628fad42acd7afa2c58927a8d1e0294bd714e35bf06394e55",
+        "commit": "ad09478677addd9f450e50ca19c4d7aaf3c38b95",
+        "worktree": "/home/drewp/main-projects/wt-1546696547390197793",
+        "plan_revision": "fa15aed26f61a3336adbe6dd1dc0b1696824f82fec14e96113dd7e1ba2b052e3",
+        "builder_thread_id": "1546696547390197793",
+        "completed_task_ids": [
+          "1.1",
+          "1.2",
+          "2.1",
+          "3.1",
+          "3.2"
+        ],
+        "decision": "Preserve case. Strip exterior whitespace only. Empty name becomes friend. greet(name: str) -> str returns Hello, <name>!.",
+        "tests": [
+          "Tasks 1.1 and 1.2 RED: python3 -m unittest discover -s /home/drewp/main-projects/wt-1546696547390197793/examples/feature_workflow_trial -p test_greeting.py -v -> exit 1 before greeting.py existed; ModuleNotFoundError: No module named 'greeting'; six exact-string scenario tests written without mocks.",
+          "Task 2.1 GREEN: python3 -m unittest discover -s /home/drewp/main-projects/wt-1546696547390197793/examples/feature_workflow_trial -p test_greeting.py -v -> exit 0, Ran 6 tests, OK (Python 3.12).",
+          "Task 3.1: /home/drewp/main-projects/ebi-agent-chat-relay/.venv/bin/ruff check /home/drewp/main-projects/wt-1546696547390197793/examples/feature_workflow_trial/greeting.py /home/drewp/main-projects/wt-1546696547390197793/examples/feature_workflow_trial/test_greeting.py -> exit 0, All checks passed!",
+          "Task 3.1: /home/drewp/main-projects/ebi-agent-chat-relay/.venv/bin/ruff format --check /home/drewp/main-projects/wt-1546696547390197793/examples/feature_workflow_trial/greeting.py /home/drewp/main-projects/wt-1546696547390197793/examples/feature_workflow_trial/test_greeting.py -> exit 0, 2 files already formatted.",
+          "Task 3.1: /home/drewp/main-projects/ebi-agent-chat-relay/.venv/bin/pyright /home/drewp/main-projects/wt-1546696547390197793/examples/feature_workflow_trial/greeting.py /home/drewp/main-projects/wt-1546696547390197793/examples/feature_workflow_trial/test_greeting.py -> exit 0, 0 errors, 0 warnings, 0 informations.",
+          "Task 3.1: git -C /home/drewp/main-projects/wt-1546696547390197793 diff --check and git -C /home/drewp/main-projects/wt-1546696547390197793 diff --cached --check -> exit 0; reviewed both owned files; pure string formatting and unittest only, no I/O, subprocesses, secrets, or new dependencies.",
+          "Task 3.2: git -C /home/drewp/main-projects/wt-1546696547390197793 push voice-backup session/1546696547390197793 -> exit 0; git -C /home/drewp/main-projects/wt-1546696547390197793 ls-remote voice-backup refs/heads/session/1546696547390197793 -> exit 0, remote SHA matches ad09478677addd9f450e50ca19c4d7aaf3c38b95.",
+          "Task 3.2: git -C /home/drewp/main-projects/wt-1546696547390197793 status --porcelain -> exit 0, empty; git diff-tree --no-commit-id --name-only -r HEAD -> exactly the two owned files; git rev-list --count 7d46035ddcc9fc36b6e2aab1813ba792607410cf..HEAD -> 1.",
+          "Foundation/plan: git -C /home/drewp/main-projects/wt-1546696547390197793 merge-base --is-ancestor 7d46035ddcc9fc36b6e2aab1813ba792607410cf HEAD -> exit 0; git diff 7d46035ddcc9fc36b6e2aab1813ba792607410cf HEAD -- openspec/changes/trial-greeting -> empty. Plan preserved; task 4.1 remains lead-only."
+        ]
+      },
+      "integration_commit": "13de390c801cf55b4845bde3baf24bdb5a356729"
+    },
+    "word-count-build": {
+      "status": "integrated",
+      "foundation_sha": "7d46035ddcc9fc36b6e2aab1813ba792607410cf",
+      "thread_id": "1546696552670830672",
+      "result": {
+        "task": "word-count-build",
+        "approval_digest": "dbfa7b870d16800628fad42acd7afa2c58927a8d1e0294bd714e35bf06394e55",
+        "commit": "8cc12dbb9975a5dee4f641783201e9cb3e298aba",
+        "worktree": "/home/drewp/main-projects/wt-1546696552670830672",
+        "branch": "session/1546696552670830672",
+        "decision": "Split only on whitespace; punctuation remains part of each token. Empty input is zero. count_words(text: str) -> int.",
+        "tests": [
+          "Completed task 1.1 \u2014 RED: python3 -m unittest discover -s /home/drewp/main-projects/wt-1546696552670830672/examples/feature_workflow_trial -p test_counter.py -v => exit 1, ModuleNotFoundError: No module named counter, before creating counter.py; not a syntax error.",
+          "Completed task 2.1 \u2014 GREEN: python3 -m unittest discover -s /home/drewp/main-projects/wt-1546696552670830672/examples/feature_workflow_trial -p test_counter.py -v => exit 0, all 5 tests passed (single token integer, mixed/Unicode whitespace, punctuation, empty input, whitespace-only).",
+          "Completed task 3.1 \u2014 /home/drewp/main-projects/ebi-agent-chat-relay/.venv/bin/ruff check /home/drewp/main-projects/wt-1546696552670830672/examples/feature_workflow_trial/counter.py /home/drewp/main-projects/wt-1546696552670830672/examples/feature_workflow_trial/test_counter.py => exit 0, All checks passed!",
+          "Completed task 3.1 \u2014 /home/drewp/main-projects/ebi-agent-chat-relay/.venv/bin/ruff format --check /home/drewp/main-projects/wt-1546696552670830672/examples/feature_workflow_trial/counter.py /home/drewp/main-projects/wt-1546696552670830672/examples/feature_workflow_trial/test_counter.py => exit 0, 2 files already formatted.",
+          "Completed task 3.1 \u2014 /home/drewp/main-projects/ebi-agent-chat-relay/.venv/bin/pyright /home/drewp/main-projects/wt-1546696552670830672/examples/feature_workflow_trial/counter.py /home/drewp/main-projects/wt-1546696552670830672/examples/feature_workflow_trial/test_counter.py => exit 0, 0 errors, 0 warnings, 0 informations.",
+          "Completed task 3.1 \u2014 reviewed both files against spec, Python conventions and repository security checklist: pure string splitting, no I/O, subprocesses, secrets, evaluation, or new dependencies; tests use independent expected counts.",
+          "Completed task 3.2 \u2014 git -C /home/drewp/main-projects/wt-1546696552670830672 diff --check and git diff --cached --check => exit 0; full staged diff contains only the two owned files; git diff 7d46035ddcc9fc36b6e2aab1813ba792607410cf -- openspec/changes/trial-word-count => empty.",
+          "Completed task 3.2 \u2014 git -C /home/drewp/main-projects/wt-1546696552670830672 push -u voice-backup session/1546696552670830672 => exit 0; git ls-remote --heads voice-backup session/1546696552670830672 => 8cc12dbb9975a5dee4f641783201e9cb3e298aba; matches HEAD.",
+          "Completed task 3.2 \u2014 git -C /home/drewp/main-projects/wt-1546696552670830672 status --porcelain => empty; git rev-list --count 7d46035ddcc9fc36b6e2aab1813ba792607410cf..HEAD => 1; clean worktree and one feature commit."
+        ]
+      },
+      "integration_commit": "13de390c801cf55b4845bde3baf24bdb5a356729"
+    }
+  },
+  "handoffs": {
+    "0ba089e8232172f8f5503add6544b187efcfa390affd30b09539012835069b77": "sent"
+  }
+}
