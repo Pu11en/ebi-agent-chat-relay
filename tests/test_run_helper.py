@@ -361,11 +361,13 @@ class TestRunClaudeInThread:
         self, thread: MagicMock, runner: MagicMock, repo: MagicMock
     ) -> None:
         runner.working_dir = "/home/drewp/main-projects/example"
-        repo.bind_working_dir = AsyncMock()
+        repo.ensure_working_dir = AsyncMock(
+            return_value=MagicMock(working_dir="/home/drewp/main-projects/example")
+        )
         binding_was_ready: list[bool] = []
 
         async def gen(*args, **kwargs):
-            binding_was_ready.append(repo.bind_working_dir.await_count == 1)
+            binding_was_ready.append(repo.ensure_working_dir.await_count == 1)
             if False:
                 yield
 
@@ -374,11 +376,32 @@ class TestRunClaudeInThread:
         await run_claude_in_thread(thread, runner, repo, "test", None)
 
         assert binding_was_ready == [True]
-        repo.bind_working_dir.assert_awaited_once_with(
+        repo.ensure_working_dir.assert_awaited_once_with(
             thread_id=thread.id,
             working_dir="/home/drewp/main-projects/example",
             origin="discord",
         )
+
+    @pytest.mark.asyncio
+    async def test_saved_working_directory_overrides_a_wrong_runner_default(
+        self, thread: MagicMock, runner: MagicMock, repo: MagicMock
+    ) -> None:
+        runner.working_dir = "/home/drewp/main-projects"
+        repo.ensure_working_dir = AsyncMock(
+            return_value=MagicMock(working_dir="/home/drewp/main-projects/correct-project")
+        )
+        observed_working_dirs: list[str] = []
+
+        async def gen(*args, **kwargs):
+            observed_working_dirs.append(runner.working_dir)
+            if False:
+                yield
+
+        runner.run = gen
+
+        await run_claude_in_thread(thread, runner, repo, "test", "existing-session")
+
+        assert observed_working_dirs == ["/home/drewp/main-projects/correct-project"]
 
     @pytest.mark.asyncio
     async def test_intermediate_text_posted_immediately(

@@ -380,6 +380,16 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
     Returns:
         The final session_id, or None if the run failed.
     """
+    working_dir = getattr(config.runner, "working_dir", None)
+    if config.repo is not None and isinstance(working_dir, str) and working_dir:
+        record = await config.repo.ensure_working_dir(
+            thread_id=config.surface.thread_key,
+            working_dir=working_dir,
+            origin=config.session_origin,
+        )
+        if record.working_dir:
+            config.runner.working_dir = record.working_dir
+
     system_context = await _build_system_context(config)
     runner = (
         config.runner.clone(append_system_prompt=system_context)
@@ -412,13 +422,6 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
     sem = _global_semaphore
     acquired = False
     try:
-        working_dir = getattr(runner, "working_dir", None)
-        if config.repo is not None and isinstance(working_dir, str) and working_dir:
-            await config.repo.bind_working_dir(
-                thread_id=config.surface.thread_key,
-                working_dir=working_dir,
-                origin=config.session_origin,
-            )
         if config.registry is not None:
             config.registry.update(config.surface.thread_key, execution_state="queued")
         if config.stop_view is not None:

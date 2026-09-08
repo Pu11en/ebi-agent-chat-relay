@@ -47,8 +47,8 @@ class TestSessionRepository:
         assert record.working_dir == "/home/user/project"
         assert record.model == "opus"
 
-    async def test_bind_working_dir_creates_pending_mapping(self, repo):
-        record = await repo.bind_working_dir(
+    async def test_ensure_working_dir_creates_pending_mapping(self, repo):
+        record = await repo.ensure_working_dir(
             thread_id=201,
             working_dir="/home/user/new-project",
         )
@@ -56,7 +56,7 @@ class TestSessionRepository:
         assert record.session_id == ""
         assert record.working_dir == "/home/user/new-project"
 
-    async def test_bind_working_dir_preserves_existing_session_identity(self, repo):
+    async def test_ensure_working_dir_preserves_existing_session_binding(self, repo):
         await repo.save(
             thread_id=202,
             session_id="existing-session",
@@ -65,13 +65,13 @@ class TestSessionRepository:
             backend="claude",
         )
 
-        record = await repo.bind_working_dir(
+        record = await repo.ensure_working_dir(
             thread_id=202,
             working_dir="/home/user/new-project",
         )
 
         assert record.session_id == "existing-session"
-        assert record.working_dir == "/home/user/new-project"
+        assert record.working_dir == "/home/user/old-project"
         assert record.model == "opus"
         assert record.backend == "claude"
 

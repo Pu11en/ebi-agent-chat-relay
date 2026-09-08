@@ -491,7 +491,7 @@ class TestSpawnSession:
         channel = MagicMock()
         channel.create_thread = AsyncMock(return_value=thread)
         repo = MagicMock()
-        repo.bind_working_dir = AsyncMock()
+        repo.ensure_working_dir = AsyncMock()
         cog = ClaudeChatCog(bot=MagicMock(), repo=repo, runner=MagicMock())
         run = AsyncMock()
 
@@ -503,7 +503,7 @@ class TestSpawnSession:
             )
             await asyncio.sleep(0)
 
-        repo.bind_working_dir.assert_awaited_once_with(thread.id, "/home/user/project")
+        repo.ensure_working_dir.assert_awaited_once_with(thread.id, "/home/user/project")
         assert run.await_args.kwargs["working_dir_override"] == "/home/user/project"
 
     @pytest.mark.asyncio
@@ -519,7 +519,7 @@ class TestSpawnSession:
         channel = MagicMock()
         channel.create_thread = AsyncMock(return_value=thread)
         repo = MagicMock()
-        repo.bind_working_dir = AsyncMock()
+        repo.ensure_working_dir = AsyncMock()
         runner = MagicMock()
         runner.working_dir = "/home/user/default-project"
         cog = ClaudeChatCog(bot=MagicMock(), repo=repo, runner=runner)
@@ -529,7 +529,7 @@ class TestSpawnSession:
             await cog.spawn_session(channel, "Do the thing")
             await asyncio.sleep(0)
 
-        repo.bind_working_dir.assert_awaited_once_with(thread.id, "/home/user/default-project")
+        repo.ensure_working_dir.assert_awaited_once_with(thread.id, "/home/user/default-project")
         assert run.await_args.kwargs["working_dir_override"] == "/home/user/default-project"
 
     @pytest.mark.asyncio
