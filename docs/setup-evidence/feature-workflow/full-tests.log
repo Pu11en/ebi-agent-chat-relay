@@ -99,7 +99,7 @@ tests/test_runner.py::TestRunTimeout::test_run_yields_error_on_asyncio_timeout
 
 tests/test_statusline.py::TestRenderStatusline::test_returns_none_on_missing_command
   /home/drewp/main-projects/ebi-agent-chat-relay/.venv/lib/python3.12/site-packages/_pytest/unraisableexception.py:67: PytestUnraisableExceptionWarning: Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x761cb5103060>
-  
+
   Traceback (most recent call last):
     File "/usr/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
       self.close()
@@ -114,7 +114,7 @@ tests/test_statusline.py::TestRenderStatusline::test_returns_none_on_missing_com
     File "/usr/lib/python3.12/asyncio/base_events.py", line 541, in _check_closed
       raise RuntimeError('Event loop is closed')
   RuntimeError: Event loop is closed
-  
+
   Enable tracemalloc to get traceback where the object was allocated.
   See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
     warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
