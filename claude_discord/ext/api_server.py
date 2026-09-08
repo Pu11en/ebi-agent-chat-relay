@@ -1250,7 +1250,7 @@ class ApiServer:
         Query params:
             limit: Max persisted sessions to consider (default 20, max 100).
                    Live sessions are always included regardless of this cap.
-            state: ``running`` to return only sessions with a turn in flight.
+            state: ``running``, ``queued``, or ``history`` to filter execution state.
             exclude_thread: Thread ID to omit (typically the caller's own).
         """
         if err := self._require_session_repo():
@@ -1287,12 +1287,20 @@ class ApiServer:
             thread_names=self._thread_names(thread_ids),
         )
 
-        if request.rel_url.query.get("state") == STATE_RUNNING:
-            views = [v for v in views if v["state"] == STATE_RUNNING]
+        from ..cogs._run_helper import session_limit
+
+        capacity = {
+            "limit": session_limit(),
+            "running": sum(v["state"] == STATE_RUNNING for v in views),
+            "queued": sum(v["state"] == "queued" for v in views),
+        }
+        state_filter = request.rel_url.query.get("state")
+        if state_filter in {STATE_RUNNING, "queued", STATE_HISTORY}:
+            views = [v for v in views if v["state"] == state_filter]
         if exclude_thread is not None:
             views = [v for v in views if v["thread_id"] != exclude_thread]
 
-        return web.json_response({"sessions": views})
+        return web.json_response({"sessions": views, "capacity": capacity})
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.

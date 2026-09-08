@@ -49,11 +49,13 @@ create a reviewed revision/new run when scope changes.
 
 Invoke the CLI with absolute `--repo`, `--state-dir`, and `--api-url`, plus
 relative `--manifest`. Set `--channel-id` to this server's existing workers
-channel and `--max-running` to the actual Ebi global session limit. Use
-`--queue-ready` when the server is busy: approved dependency-ready tasks enter
-Ebi's existing queue, bounded to that many outstanding workers for this run.
-Ebi's semaphore still enforces its global execution limit. This avoids waiting
-for the entire server to become idle while other conversations keep arriving.
+channel. Queue admission is the default: approved dependency-ready tasks enter
+Ebi's existing queue even when other projects are busy. `--max-running` bounds
+this run's outstanding workers (including uncertain submissions); it is separate
+from the relay's global execution limit. Start with three outstanding workers
+per run. Ebi's shared semaphore decides when they execute. The compatibility
+option `--no-queue-ready` waits for globally free capacity and may delay a run
+under continuous traffic; normal builds use the default.
 
 1. `approve --authorization-ref "<user message permalink or scoped request>"
    --feature <id>` records approval for just that feature. Repeat for other
@@ -65,11 +67,12 @@ for the entire server to become idle while other conversations keep arriving.
 3. Link workers from `status`, then end an idle manager turn. The watcher sends
    a queue-mode handoff to the integration owner when results need integration.
 
-The coordinator counts all Ebi sessions reported running, which includes some
-queued turns. Without `--queue-ready`, capacity is conservative. With it, the run bounds
-its own queued/dispatched workers while Ebi controls execution. A race with
-other new sessions can queue a worker in either mode. Existing sessions are never
-stopped to make room.
+An idle manager ends its AI turn after starting the independent watcher and
+posting the worker links. The watcher waits without using a model slot and
+resumes the manager through a completion message. This remains necessary at
+any finite global capacity. The relay's sessions endpoint distinguishes queued
+and running turns; use its capacity summary for status, not as a second
+admission gate before submitting workers.
 
 ## Results and integration
 

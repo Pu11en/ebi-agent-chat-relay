@@ -185,6 +185,7 @@ async def test_feature_subset_approval_and_idempotent_recovery(setup: tuple) -> 
 
 async def test_capacity_defers_without_mutating_other_threads(setup: tuple) -> None:
     coordinator, api, _ = setup
+    coordinator.queue_ready = False
     await coordinator.approve("Drew authorized trial", features=["alpha", "beta"])
     api.sessions = [{"thread_id": str(i), "state": "running"} for i in range(3)]
     await coordinator.tick()
@@ -193,6 +194,25 @@ async def test_capacity_defers_without_mutating_other_threads(setup: tuple) -> N
     await coordinator.tick()
     assert len(api.spawns) == 1
     assert not api.messages
+
+
+async def test_busy_projects_do_not_prevent_default_worker_submission(setup: tuple) -> None:
+    coordinator, api, _ = setup
+    await coordinator.approve("Drew authorized trial", features=["alpha", "beta"])
+    api.sessions = [{"thread_id": str(i), "state": "running"} for i in range(10)]
+    await coordinator.tick()
+    assert len(api.spawns) == 2
+    assert not api.messages
+
+
+async def test_worker_window_counts_ambiguous_tasks(setup: tuple) -> None:
+    coordinator, api, _ = setup
+    coordinator.max_running = 1
+    await coordinator.approve("Drew authorized trial", features=["alpha", "beta"])
+    api.fail_spawn = True
+    await coordinator.tick()
+    await coordinator.tick()
+    assert len(api.spawns) == 1
 
 
 async def test_dirty_or_committed_manifest_drift_blocks_dispatch(setup: tuple) -> None:

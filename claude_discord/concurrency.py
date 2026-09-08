@@ -24,6 +24,7 @@ class ActiveSession:
     thread_id: int
     description: str
     working_dir: str | None = None
+    execution_state: str = "running"
 
 
 _BASE_CONCURRENCY_NOTICE = """\
@@ -98,6 +99,7 @@ class SessionRegistry:
         *,
         description: str | None = None,
         working_dir: str | None = None,
+        execution_state: str | None = None,
     ) -> None:
         """Update fields of an existing session. No-op if not registered."""
         with self._lock:
@@ -108,6 +110,8 @@ class SessionRegistry:
                 session.description = description
             if working_dir is not None:
                 session.working_dir = working_dir
+            if execution_state is not None:
+                session.execution_state = execution_state
 
     def list_active(self) -> list[ActiveSession]:
         """Return all active sessions."""

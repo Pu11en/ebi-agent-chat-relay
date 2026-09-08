@@ -1386,7 +1386,7 @@ class ClaudeChatCog(commands.Cog):
                 on_hard_stall=_notify_stall,
                 model=effective_model,
             )
-            await status.set_thinking()
+            await status.set_queued()
 
             tools_override = await self._get_allowed_tools()
             effort_override = await self._get_current_effort()
@@ -1409,7 +1409,7 @@ class ClaudeChatCog(commands.Cog):
             stop_view: StopView | None = None
             if not chat_only:
                 stop_view = StopView(runner)
-                stop_msg = await thread.send("-# ⏺ Session running", view=stop_view)
+                stop_msg = await thread.send("-# Preparing session…", view=stop_view)
                 stop_view.set_message(stop_msg)
 
         # --- Phase 2: run the subprocess OUTSIDE the lock --------------------

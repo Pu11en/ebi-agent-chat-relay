@@ -18,6 +18,9 @@ class _StubStatus:
 
     _stall_hard = 300
 
+    async def set_queued(self) -> None:
+        return None
+
     async def set_thinking(self) -> None:
         return None
 

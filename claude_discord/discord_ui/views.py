@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from pathlib import Path
@@ -39,6 +40,17 @@ class StopView(discord.ui.View):
         self._runner = runner
         self._stopped = False
         self._message: discord.Message | None = None
+        self._queued_task: asyncio.Task | None = None
+
+    def set_queued_task(self, task: asyncio.Task | None) -> None:
+        """Cancel admission on Stop when no subprocess exists yet."""
+        self._queued_task = task
+
+    async def set_label(self, label: str) -> None:
+        """Keep the status card honest while waiting for admission."""
+        if self._message is not None and not self._stopped:
+            with contextlib.suppress(discord.HTTPException, RuntimeError):
+                await self._message.edit(content=f"-# {label}", view=self)
 
     def set_message(self, message: discord.Message) -> None:
         """Store the message this view is attached to."""
@@ -89,7 +101,10 @@ class StopView(discord.ui.View):
 
         with contextlib.suppress(discord.HTTPException):
             await interaction.response.edit_message(view=self)
-        await self._runner.interrupt()
+        if self._queued_task is not None:
+            self._queued_task.cancel()
+        else:
+            await self._runner.interrupt()
 
         with contextlib.suppress(discord.HTTPException):
             await interaction.followup.send(embed=stopped_embed())
@@ -112,7 +127,7 @@ class StopView(discord.ui.View):
 
         if target:
             with contextlib.suppress(discord.HTTPException, RuntimeError):
-                await target.edit(view=self)
+                await target.edit(content="-# Turn finished", view=self)
 
 
 class ToolResultView(discord.ui.View):

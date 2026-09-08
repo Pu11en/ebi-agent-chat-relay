@@ -131,7 +131,7 @@ class Coordinator:
         channel_id: int | None = None,
         max_running: int = 3,
         worktree_root: Path | None = None,
-        queue_ready: bool = False,
+        queue_ready: bool = True,
     ) -> None:
         self.repo = repo.resolve()
         self.manifest_path = manifest.resolve()
@@ -517,7 +517,6 @@ class Coordinator:
             if not approval:
                 return state
             await self._collect(manifest, state)
-            sessions = await self.api("GET", "/api/sessions?state=running")
             if self.queue_ready:
                 # Ebi's semaphore controls actual execution. Bound this run's
                 # outstanding queue without waiting for the whole server to idle.
@@ -526,6 +525,7 @@ class Coordinator:
                     for entry in state["tasks"].values()
                 )
             else:
+                sessions = await self.api("GET", "/api/sessions?state=running")
                 occupied = len(sessions["sessions"])
             capacity = max(0, self.max_running - occupied)
             for task in manifest["tasks"]:
@@ -598,12 +598,18 @@ async def _main() -> None:
         "--api-url", default=os.environ.get("CCDB_API_URL", "http://127.0.0.1:8080")
     )
     parser.add_argument("--channel-id", type=int)
-    parser.add_argument("--max-running", type=int, default=3)
+    parser.add_argument(
+        "--max-running",
+        type=int,
+        default=3,
+        help="Outstanding workers per run in queue mode; Ebi limits global execution",
+    )
     parser.add_argument("--worktree-root", type=Path)
     parser.add_argument(
         "--queue-ready",
-        action="store_true",
-        help="Queue approved ready tasks; Ebi retains its global execution limit.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Queue approved ready tasks (default); Ebi retains its global execution limit.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     approve = sub.add_parser("approve")
