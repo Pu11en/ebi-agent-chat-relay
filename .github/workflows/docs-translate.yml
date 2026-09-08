@@ -7,12 +7,16 @@ on:
 
 jobs:
   trigger-docs-translate:
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - name: Trigger full translation via Discord webhook
         env:
           WEBHOOK_URL: ${{ secrets.DOCS_SYNC_WEBHOOK_URL }}
         run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DOCS_SYNC_WEBHOOK_URL is not configured; skipping."
+            exit 0
+          fi
           # Full translation to all languages (ja, zh-CN, ko, es, pt-BR, fr)
           curl -s -o /dev/null -w "%{http_code}" \
             -H "Content-Type: application/json" \

@@ -7,7 +7,7 @@ jobs:
     if: >-
       github.event.check_suite.conclusion == 'failure' &&
       startsWith(github.event.check_suite.head_branch, 'docs-sync/')
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - name: Find the PR
         id: pr
@@ -23,6 +23,10 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
           BRANCH: ${{ github.event.check_suite.head_branch }}
         run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DOCS_SYNC_WEBHOOK_URL is not configured; skipping."
+            exit 0
+          fi
           MSG="🚨 **docs-sync CI failed** on \`${BRANCH}\`"
           if [ -n "$PR_URL" ]; then MSG="${MSG}\nPR: ${PR_URL}"; fi
           MSG="${MSG}\nAuto-merge will not proceed. Manual review needed."

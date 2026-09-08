@@ -1,6 +1,6 @@
 # EbiBot — Example Custom Bot using ccdb
 
-Personal Discord bot built on top of [claude-code-discord-bridge](https://github.com/ebibibi/ebi-agent-chat-relay).
+Personal Discord bot built on top of [claude-code-discord-bridge](https://github.com/Pu11en/ebi-agent-chat-relay).
 
 This example demonstrates how to extend ccdb with custom Cogs using the `CUSTOM_COGS_DIR` mechanism — no need for a separate repository.
 
@@ -20,7 +20,7 @@ This example demonstrates how to extend ccdb with custom Cogs using the `CUSTOM_
 
 ```bash
 # 1. Clone and install ccdb
-git clone https://github.com/ebibibi/ebi-agent-chat-relay.git
+git clone https://github.com/Pu11en/ebi-agent-chat-relay.git
 cd ebi-agent-chat-relay
 uv sync
 

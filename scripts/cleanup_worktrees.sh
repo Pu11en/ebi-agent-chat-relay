@@ -95,7 +95,8 @@ while IFS= read -r line; do
         echo "--- Worktree: $current_path (branch: $current_branch)"
 
         # Check PR status via gh CLI
-        pr_json=$(gh pr list --repo ebibibi/ebi-agent-chat-relay \
+        # Run from REPO_ROOT so gh resolves the current checkout's repository.
+        pr_json=$(gh pr list \
             --head "$current_branch" --state all --json state --limit 1 2>/dev/null || echo "[]")
 
         pr_state=$(echo "$pr_json" | jq -r '.[0].state // empty' 2>/dev/null || true)
