@@ -1,0 +1,13 @@
+{
+  "approval_digest": "dbfa7b870d16800628fad42acd7afa2c58927a8d1e0294bd714e35bf06394e55",
+  "foundation_sha": "7d46035ddcc9fc36b6e2aab1813ba792607410cf",
+  "tasks": {
+    "greeting-build": {
+      "status": "pending"
+    },
+    "word-count-build": {
+      "status": "pending"
+    }
+  },
+  "handoffs": {}
+}

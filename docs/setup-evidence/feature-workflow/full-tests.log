@@ -1,0 +1,242 @@
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 15%]
+........................................................................ [ 17%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+........................................................................ [ 50%]
+........................................................................ [ 52%]
+........................................................................ [ 55%]
+........................................................................ [ 57%]
+........................................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 85%]
+........................................................................ [ 87%]
+.................................................................F...... [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+........................................................................ [100%]
+=================================== FAILURES ===================================
+_ TestTheReceiverVerifiesBeforeEnqueueing.test_an_oversized_activity_is_dropped_not_retried _
+
+self = <tests.test_teams_relay.TestTheReceiverVerifiesBeforeEnqueueing object at 0x761cb0b9df70>
+
+    async def test_an_oversized_activity_is_dropped_not_retried(self) -> None:
+        # Retrying would fail identically forever. Answer 200 so Teams stops,
+        # and log it — the operator can act on "too big", not on a retry loop.
+        queue = MemoryQueue()
+        client = await client_for(RelayReceiver(AcceptingVerifier(), queue))
+        try:
+            response = await client.post(
+                "/api/teams/messages", json=activity(text="x" * (MAX_ENVELOPE_BYTES + 1000))
+            )
+>           assert response.status == 200
+E           AssertionError: assert 400 == 200
+E            +  where 400 = <ClientResponse(http://127.0.0.1:45917/api/teams/messages) [400 Bad Request]>\n<CIMultiDictProxy('Content-Type': 'appli...rset=utf-8', 'Content-Length': '28', 'Date': 'Tue, 08 Sep 2026 01:15:38 GMT', 'Server': 'Python/3.12 aiohttp/3.14.3')>\n.status
+
+tests/test_teams_relay.py:140: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     aiohttp.access:web_log.py:229 127.0.0.1 [07/Sep/2026:20:15:38 -0500] "POST /api/teams/messages HTTP/1.1" 400 196 "-" "Python/3.12 aiohttp/3.14.3"
+=============================== warnings summary ===============================
+../ebi-agent-chat-relay/.venv/lib/python3.12/site-packages/discord/player.py:30
+  /home/drewp/main-projects/ebi-agent-chat-relay/.venv/lib/python3.12/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+tests/test_api_server.py::TestIngest::test_zip_members_with_the_same_name_both_survive
+  /usr/lib/python3.12/zipfile/__init__.py:1620: UserWarning: Duplicate name: 'image.png'
+    return self._open_to_write(zinfo, force_zip64=force_zip64)
+
+tests/test_ask_feature.py::TestCollectAskAnswersMention::test_collect_ask_answers_mentions_notify_user
+  /usr/lib/python3.12/unittest/mock.py:2188: RuntimeWarning: coroutine 'Queue.get' was never awaited
+    def __init__(self, name, parent):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_auto_upgrade.py::TestUpgradeSteps::test_restart_command_fired
+tests/test_auto_upgrade.py::TestApprovalButton::test_button_approval_posts_to_parent_channel
+tests/test_claude_chat.py::TestSpawnSession::test_spawn_posts_seed_message
+tests/test_runner.py::TestRunTimeout::test_run_yields_error_on_asyncio_timeout
+tests/test_upgrade_slash.py::TestUpgradeSlashCommandEnabled::test_already_running_sends_ephemeral
+tests/test_upgrade_slash.py::TestUpgradeSlashCommandFromThread::test_creates_thread_in_parent_channel_when_invoked_from_thread
+  /usr/lib/python3.12/unittest/mock.py:2188: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    def __init__(self, name, parent):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_auto_upgrade.py::TestMarkSessionsForResume::test_mark_sessions_no_op_when_no_resume_repo
+  /usr/lib/python3.12/inspect.py:3050: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    @classmethod
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_runner.py::TestRunTimeout::test_run_yields_error_on_asyncio_timeout
+  /home/drewp/main-projects/wt-1546685954167672912/claude_code_core/runner.py:248: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    self._process.stdin.write(line.encode())
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_statusline.py::TestRenderStatusline::test_returns_none_on_missing_command
+  /home/drewp/main-projects/ebi-agent-chat-relay/.venv/lib/python3.12/site-packages/_pytest/unraisableexception.py:67: PytestUnraisableExceptionWarning: Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x761cb5103060>
+  
+  Traceback (most recent call last):
+    File "/usr/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+      self.close()
+    File "/usr/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+      proto.pipe.close()
+    File "/usr/lib/python3.12/asyncio/unix_events.py", line 568, in close
+      self._close(None)
+    File "/usr/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+      self._loop.call_soon(self._call_connection_lost, exc)
+    File "/usr/lib/python3.12/asyncio/base_events.py", line 795, in call_soon
+      self._check_closed()
+    File "/usr/lib/python3.12/asyncio/base_events.py", line 541, in _check_closed
+      raise RuntimeError('Event loop is closed')
+  RuntimeError: Event loop is closed
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+tests/test_upgrade_slash.py::TestUpgradeSlashCommandFromThread::test_creates_thread_in_parent_channel_when_invoked_from_thread
+  /usr/lib/python3.12/inspect.py:3045: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    params = OrderedDict((param.name, param) for param in parameters)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_upgrade_slash.py::TestUpgradeSlashCommandFromThread::test_defers_response_from_thread
+  /usr/lib/python3.12/selectors.py:451: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    def select(self, timeout=None):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_views.py::TestStopViewButtonClick::test_click_sends_stopped_embed_via_followup
+  /usr/lib/python3.12/unittest/mock.py:767: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    def __setattr__(self, name, value):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.12.3-final-0 ________________
+
+Name                                              Stmts   Miss  Cover
+---------------------------------------------------------------------
+claude_discord/__init__.py                           30      0   100%
+claude_discord/attachment_outbox.py                  50      3    94%
+claude_discord/backend_factory.py                    55      1    98%
+claude_discord/backend_settings.py                  125      6    95%
+claude_discord/bot.py                                80     64    20%
+claude_discord/claude/__init__.py                     0      0   100%
+claude_discord/claude/parser.py                       3      0   100%
+claude_discord/claude/rewind.py                       3      0   100%
+claude_discord/claude/runner.py                       3      0   100%
+claude_discord/claude/types.py                       17      0   100%
+claude_discord/cli.py                               224    132    41%
+claude_discord/cog_loader.py                         38      2    95%
+claude_discord/cogs/__init__.py                      14      0   100%
+claude_discord/cogs/_run_helper.py                  194     28    86%
+claude_discord/cogs/ask_command.py                   48     32    33%
+claude_discord/cogs/auto_upgrade.py                 249     14    94%
+claude_discord/cogs/backend_command.py              219     65    70%
+claude_discord/cogs/claude_chat.py                  461     68    85%
+claude_discord/cogs/collision_watch.py               68     17    75%
+claude_discord/cogs/context_links.py                 92      3    97%
+claude_discord/cogs/event_processor.py              476     45    91%
+claude_discord/cogs/headless_backend.py              27      1    96%
+claude_discord/cogs/notification_dispatch.py         73      7    90%
+claude_discord/cogs/ollama_command.py               308    126    59%
+claude_discord/cogs/prompt_builder.py               153     13    92%
+claude_discord/cogs/run_config.py                    57      1    98%
+claude_discord/cogs/scheduler.py                     80     14    82%
+claude_discord/cogs/session_manage.py               406    101    75%
+claude_discord/cogs/session_sync.py                  67      5    93%
+claude_discord/cogs/skill_command.py                164      2    99%
+claude_discord/cogs/webhook_trigger.py               78      0   100%
+claude_discord/collision.py                          65      0   100%
+claude_discord/concurrency.py                        47      0   100%
+claude_discord/cross_backend_handoff.py             116     16    86%
+claude_discord/database/__init__.py                   0      0   100%
+claude_discord/database/ask_repo.py                  44     21    52%
+claude_discord/database/claims_repo.py               67      0   100%
+claude_discord/database/frontend_thread_repo.py      57      0   100%
+claude_discord/database/inbox_repo.py                37      0   100%
+claude_discord/database/ingest_repo.py               55      1    98%
+claude_discord/database/lounge_repo.py                3      0   100%
+claude_discord/database/models.py                    16      0   100%
+claude_discord/database/notification_repo.py         42      0   100%
+claude_discord/database/repository.py                 3      0   100%
+claude_discord/database/resume_repo.py               42      0   100%
+claude_discord/database/settings_repo.py             26      0   100%
+claude_discord/database/summary_repo.py              46      1    98%
+claude_discord/database/task_repo.py                156      4    97%
+claude_discord/deployment.py                         37      0   100%
+claude_discord/discord_ui/__init__.py                 4      0   100%
+claude_discord/discord_ui/ask_bus.py                 24      0   100%
+claude_discord/discord_ui/ask_handler.py             42      4    90%
+claude_discord/discord_ui/ask_view.py                74     23    69%
+claude_discord/discord_ui/chunker.py                 13      0   100%
+claude_discord/discord_ui/embeds.py                 119     20    83%
+claude_discord/discord_ui/engine_status.py          141     45    68%
+claude_discord/discord_ui/file_sender.py             78     11    86%
+claude_discord/discord_ui/inbox_classifier.py        33      5    85%
+claude_discord/discord_ui/mentions.py                 7      0   100%
+claude_discord/discord_ui/prompt_views.py            85     45    47%
+claude_discord/discord_ui/status.py                 117     14    88%
+claude_discord/discord_ui/statusline.py              43      1    98%
+claude_discord/discord_ui/streaming_manager.py       68     14    79%
+claude_discord/discord_ui/table_renderer.py           3      0   100%
+claude_discord/discord_ui/thread_context.py          49      2    96%
+claude_discord/discord_ui/thread_dashboard.py       113      5    96%
+claude_discord/discord_ui/thread_renamer.py          61      1    98%
+claude_discord/discord_ui/tool_timer.py              29      0   100%
+claude_discord/discord_ui/views.py                  164     41    75%
+claude_discord/ext/__init__.py                        0      0   100%
+claude_discord/ext/api_server.py                   1228    190    85%
+claude_discord/ext/ingest_manifest.py               219     18    92%
+claude_discord/ext/teams_store.py                   305     41    87%
+claude_discord/ext/teams_sync.py                    201     11    95%
+claude_discord/frontend.py                           50      0   100%
+claude_discord/lounge.py                             25      0   100%
+claude_discord/main.py                               85     52    39%
+claude_discord/model_catalog.py                     157     11    93%
+claude_discord/ollama_catalog.py                     23      8    65%
+claude_discord/pr_completion_gate.py                 55     11    80%
+claude_discord/protocols.py                           4      0   100%
+claude_discord/relay.py                              40      0   100%
+claude_discord/session_sync.py                      135     15    89%
+claude_discord/session_view.py                       33      0   100%
+claude_discord/setup.py                             196     14    93%
+claude_discord/stores.py                             40      0   100%
+claude_discord/surface.py                           282     41    85%
+claude_discord/teams_integration.py                 131     38    71%
+claude_discord/thread_policy.py                       1      0   100%
+claude_discord/utils/__init__.py                      0      0   100%
+claude_discord/utils/logger.py                       22      0   100%
+claude_discord/worktree.py                          119     23    81%
+---------------------------------------------------------------------
+TOTAL                                              9339   1497    84%
+=========================== short test summary info ============================
+FAILED tests/test_teams_relay.py::TestTheReceiverVerifiesBeforeEnqueueing::test_an_oversized_activity_is_dropped_not_retried
+1 failed, 2879 passed, 15 warnings in 72.45s (0:01:12)
