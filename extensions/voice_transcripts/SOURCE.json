@@ -1,0 +1,10 @@
+{
+  "source": "hanoi-community/message-operator/src/voice (owner-provided workspace source)",
+  "copied_sha256": {
+    "store.mjs": "11fe60f03c54309918f38470f5004e472fa034c8fcc5142472969bcc8d8c1e74",
+    "job-queue.mjs": "8f0add90ab1d91cfb236c999182a4d54b310e725d6fe02719493346b05263017",
+    "service.mjs": "052f88113bbbddbcdfe071b6c9400dd565d7303a20b7ca61d8f9970f8b741f47",
+    "wav.mjs": "07166a6d58b2e5a7dcad1fe36919d162f87fc6ee1d7c3177a867244d7291b772",
+    "faster_whisper_worker.py": "98d2362a0a16c7a7f4afaebfb61cc0dd9fcb096fddf4c53f132dc51f0fb38a20"
+  }
+}
