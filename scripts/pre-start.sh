@@ -12,8 +12,13 @@ cd "$CCDB_HOME"
 source "$SCRIPT_DIR/deploy-checkout.sh"
 ccdb_resume_updates
 
-# Locate uv: prefer the local installation, fall back to whatever is on PATH.
+# Locate uv: prefer an explicit path, then the standard user install location.
+# systemd user services intentionally receive a minimal PATH that commonly omits
+# ~/.local/bin even when an interactive shell finds uv there.
 UV="${CCDB_UV_BIN:-}"
+if [ -z "$UV" ] && [ -x "$HOME/.local/bin/uv" ]; then
+    UV="$HOME/.local/bin/uv"
+fi
 if [ -z "$UV" ]; then
     UV="$(command -v uv 2>/dev/null || true)"
 fi
