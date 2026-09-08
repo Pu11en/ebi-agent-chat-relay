@@ -44,7 +44,9 @@ class TestEnvVarRename:
         from claude_discord.main import load_config
 
         merged = {**self._REQUIRED, **env}
-        with patch.dict("os.environ", merged, clear=True):
+        # These tests exercise the supplied environment, not a developer's
+        # repository-local .env file discovered by load_config().
+        with patch("claude_discord.main.load_dotenv"), patch.dict("os.environ", merged, clear=True):
             return load_config()
 
     def test_ccdb_model_takes_precedence(self) -> None:
