@@ -890,7 +890,7 @@ class ClaudeChatCog(commands.Cog):
         if attachments:
             await send_file_blobs(thread, attachments)
         if effective_working_dir is not None:
-            await self.repo.bind_working_dir(thread.id, effective_working_dir)
+            await self.repo.ensure_working_dir(thread.id, effective_working_dir)
         if auto_start:
             # Run Claude in the background so /api/spawn returns immediately.
             # The caller gets the thread reference without waiting for Claude to finish.
