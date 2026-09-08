@@ -28,6 +28,16 @@
 - Live microphone acceptance is pending a person joining the designated room,
   speaking, and leaving. No actual conversation has been claimed as verified.
 
-Deployment values and IDs are in the ignored `data/setup.json` receipt and
-`data/voice.env`. The supervised unit is in ignored `data/` with a user-systemd
-symlink. Private runtime transcripts stay in ignored `data/runtime/`.
+The readiness recheck found that normal session cleanup had removed the original
+session worktree, including its ignored deployment files. The old process was
+still alive, so a green systemd status did not establish a usable deployment.
+Its database and WAL were recovered from open process descriptors; SQLite integrity
+passed and there were zero sessions, segments, or pending audio jobs.
+
+Deployment now uses the permanent `drew-ai-voice-runtime` checkout on
+`deploy/drew-ai-voice-transcripts`. Both the branch classification and the cleanup
+candidate list were checked to exclude this checkout. The tracked
+`ops/voice-transcripts.service` passes systemd unit verification. Configuration,
+lock, recovered database, and new recordings live outside all source worktrees,
+under `~/.local/share/drew-ai-voice-transcripts/` (private permissions).
+Live microphone acceptance remains required before claiming end-to-end capture.

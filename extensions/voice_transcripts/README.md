@@ -45,8 +45,15 @@ recording. Everyone mentions and mentions from transcript text are disabled.
 4. Copy `.env.example` to a private file and fill the IDs and absolute data path.
    Set `VOICE_BRIDGE_ENV_FILE` to the existing bridge env file and
    `VOICE_CONFIG_FILE` to the new private voice config. Both must be absolute paths.
-5. Run `node src/index.mjs` under a service supervisor with a single-instance lock.
-   Use a private data directory, umask 0077, and an automatic failure restart.
+5. Deploy the code to a permanent checkout, such as
+   `~/main-projects/drew-ai-voice-runtime` on `deploy/drew-ai-voice-transcripts`.
+   Never run the service from a `session/<thread-id>` worktree: ccdb removes clean
+   session worktrees at turn completion, including their ignored runtime files.
+   Keep the config, SQLite, transcripts, and lock under
+   `~/.local/share/drew-ai-voice-transcripts/`, outside the source checkout.
+   `ops/voice-transcripts.service` provides the matching supervised launcher;
+   adjust the Node and bridge paths for a different installation. Use a private
+   data directory, umask 0077, and an automatic failure restart.
 
 `ops/create-channels.mjs` is an explicit provisioning helper, never invoked by the
 runtime. It creates the room, a transcript channel accessible to the owner and bot,
