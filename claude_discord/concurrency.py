@@ -53,10 +53,11 @@ CRITICAL: Do not create loose `wt-*` directories beside projects.\
 """
 
 _DIRECT_GIT_GUIDANCE = """\
-No other active session is registered in your assigned project. First run \
-`git worktree list` and continue an existing `session/{thread_id}` worktree if \
-one is listed. If branch `session/{thread_id}` already exists without a \
-worktree, restore it with \
+No other active session is registered in your assigned project. If \
+`.worktrees/wt-{thread_id}` exists, enter it and continue there. Otherwise, if \
+the assigned project is a Git checkout, run `git worktree list` and continue an \
+existing `session/{thread_id}` worktree if one is listed. If branch \
+`session/{thread_id}` already exists without a worktree, restore it with \
 `git worktree add .worktrees/wt-{thread_id} session/{thread_id}`. Otherwise, \
 work directly in your assigned project directory; do not create a disposable \
 worktree. Keep `/.worktrees/` in the repository's local `.git/info/exclude`. \
@@ -64,9 +65,10 @@ Always commit before finishing."""
 
 _ISOLATED_GIT_GUIDANCE = """\
 Another active session is using your assigned project, so isolation is REQUIRED. \
-First run `git worktree list` and continue an existing `session/{thread_id}` \
-worktree if one is listed. If branch `session/{thread_id}` already exists \
-without a worktree, restore it with \
+If `.worktrees/wt-{thread_id}` exists, enter it and continue there. Otherwise, \
+if the assigned project is a Git checkout, run `git worktree list` and continue \
+an existing `session/{thread_id}` worktree if one is listed. If branch \
+`session/{thread_id}` already exists without a worktree, restore it with \
 `git worktree add .worktrees/wt-{thread_id} session/{thread_id}`. Otherwise \
 create `.worktrees/wt-{thread_id}` on a new `session/{thread_id}` branch. Ensure \
 `/.worktrees/` is present in the repository's local `.git/info/exclude` before \

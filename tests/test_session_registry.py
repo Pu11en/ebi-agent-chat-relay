@@ -160,6 +160,17 @@ class TestConcurrencyNotice:
         assert "branch `session/1001` already exists" in notice
         assert "git worktree add .worktrees/wt-1001 session/1001" in notice
 
+    def test_notice_checks_project_local_path_before_running_git(self) -> None:
+        """Container projects can hold a worktree even when the parent is not a checkout."""
+        registry = SessionRegistry()
+        registry.register(1001, "my task", "/home/ebi/projects/repo-a")
+
+        notice = registry.build_concurrency_notice(1001)
+
+        local_path = "If `.worktrees/wt-1001` exists"
+        assert local_path in notice
+        assert notice.index(local_path) < notice.index("git worktree list")
+
     def test_notice_mentions_shared_resources(self) -> None:
         """The notice should warn about non-git conflicts too."""
         registry = SessionRegistry()
