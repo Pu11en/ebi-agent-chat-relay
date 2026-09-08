@@ -92,6 +92,37 @@ class SessionRepository:
             raise RuntimeError(f"Failed to retrieve session after save for thread {thread_id}")
         return record
 
+    async def bind_working_dir(
+        self,
+        thread_id: int,
+        working_dir: str,
+        origin: str = "discord",
+    ) -> SessionRecord:
+        """Bind a conversation to a directory without changing its session ID.
+
+        A newly created conversation has no CLI session ID until its first
+        system event arrives.  Persisting the directory before launch closes
+        that gap while preserving the identity and metadata of resumed
+        sessions.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """INSERT INTO sessions (thread_id, session_id, working_dir, origin)
+                   VALUES (?, '', ?, ?)
+                   ON CONFLICT(thread_id) DO UPDATE SET
+                     working_dir = excluded.working_dir,
+                     last_used_at = datetime('now', 'localtime')""",
+                (thread_id, working_dir, origin),
+            )
+            await db.commit()
+
+        record = await self.get(thread_id)
+        if record is None:
+            raise RuntimeError(
+                f"Failed to retrieve session after binding directory for thread {thread_id}"
+            )
+        return record
+
     async def get_by_session_id(self, session_id: str) -> SessionRecord | None:
         """Reverse lookup: get session by Claude Code session ID."""
         async with aiosqlite.connect(self.db_path) as db:

@@ -325,6 +325,24 @@ class TestForkCommand:
         assert call_kwargs.get("session_id") == session_id
 
     @pytest.mark.asyncio
+    async def test_fork_preserves_parent_working_directory(self) -> None:
+        """A fork stays bound to the project that owns the parent session."""
+        cog = _make_cog()
+        record = _make_session_record(working_dir="/home/user/project")
+        cog.repo.get = AsyncMock(return_value=record)
+        interaction = _make_thread_interaction(thread_id=record.thread_id)
+        interaction.channel.parent = MagicMock(spec=discord.TextChannel)
+        new_thread = MagicMock(spec=discord.Thread)
+        new_thread.mention = "<#99999>"
+
+        with patch.object(
+            cog, "spawn_session", new=AsyncMock(return_value=new_thread)
+        ) as mock_spawn:
+            await cog.fork_session.callback(cog, interaction)
+
+        assert mock_spawn.await_args.kwargs["working_dir"] == "/home/user/project"
+
+    @pytest.mark.asyncio
     async def test_fork_sends_link_to_new_thread(self) -> None:
         """/fork replies with a link to the newly created thread."""
         cog = _make_cog()

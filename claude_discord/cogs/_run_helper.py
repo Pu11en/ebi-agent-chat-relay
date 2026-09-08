@@ -418,6 +418,13 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
         await sem.acquire()
 
     try:
+        working_dir = getattr(runner, "working_dir", None)
+        if config.repo is not None and isinstance(working_dir, str) and working_dir:
+            await config.repo.bind_working_dir(
+                thread_id=config.surface.thread_key,
+                working_dir=working_dir,
+                origin=config.session_origin,
+            )
         async for event in runner.run(config.prompt, session_id=config.session_id):
             if processor.should_drain and not event.is_complete:
                 continue

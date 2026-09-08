@@ -429,5 +429,6 @@ class TestSchedulerCogFollowUp:
 
         run_config = mock_run.call_args[0][0]
         assert run_config.session_id == "existing-session-id-abc"
+        assert run_config.runner.working_dir == "/home/ebi"
 
         os.unlink(session_db_path)
