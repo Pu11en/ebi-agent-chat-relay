@@ -12,7 +12,7 @@ jobs:
     if: >-
       !contains(github.event.head_commit.message, '[docs-sync]') &&
       !contains(github.event.head_commit.message, 'docs-sync/')
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - name: Check for recent docs-sync activity
         id: check
@@ -51,6 +51,10 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.DOCS_SYNC_WEBHOOK_URL }}
         run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DOCS_SYNC_WEBHOOK_URL is not configured; skipping."
+            exit 0
+          fi
           # English-only doc sync on every push
           curl -s -o /dev/null -w "%{http_code}" \
             -H "Content-Type: application/json" \

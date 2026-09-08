@@ -130,6 +130,15 @@ def test_script_is_executable_bash() -> None:
     assert first_line == "#!/bin/bash"
 
 
+def test_pr_lookup_uses_the_current_checkout_repository() -> None:
+    """A standalone clone must not query the repository it was originally copied from."""
+    source = SCRIPT.read_text()
+
+    assert "ebibibi/ebi-agent-chat-relay" not in source
+    assert "gh pr list \\\n" in source
+    assert '--head "$current_branch"' in source
+
+
 @pytest.mark.parametrize("kind", ["dirty", "untracked", "ignored", "closed", "unmerged", "clean"])
 def test_live_cleanup_preserves_work_and_unmerged_branches(tmp_path: Path, kind: str) -> None:
     repo, worktree = _init_repo_with_worktree(tmp_path)
