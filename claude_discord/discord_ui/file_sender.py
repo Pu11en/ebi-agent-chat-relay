@@ -179,13 +179,16 @@ async def _send_as_components_v2(
     files: list[discord.File],
     header: str,
     body: str,
+    *,
+    require_delivery: bool = False,
 ) -> None:
     """Send *files* wrapped in a Container v2 layout with inline previews.
 
     Renderable files (HTML/SVG/Markdown) are auto-screenshotted so they appear
-    inline; the originals remain attached for download. Falls back to a plain
-    ``thread.send(files=...)`` if the components-v2 send fails, so a broken
-    layout never eats the user's files.
+    inline; the originals remain attached for download. When *require_delivery*
+    is False, a components-v2 failure falls back to a plain
+    ``thread.send(files=...)`` so a broken layout never eats the user's files;
+    when True, both errors propagate so durable callers can retain the request.
     """
     rendered = await _render_previews_for_files(files)
     for i in range(0, len(rendered), _MAX_FILES_PER_MESSAGE):
@@ -204,6 +207,8 @@ async def _send_as_components_v2(
                 flags=discord.MessageFlags(components_v2=True),
             )
         except Exception:
+            if require_delivery:
+                raise
             logger.warning(
                 "Components-v2 send failed; falling back to plain attachments",
                 exc_info=True,
@@ -280,10 +285,13 @@ async def send_files(
         return
 
     try:
-        await _send_as_components_v2(thread, files, header="📎 Files attached", body="")
-    except Exception:
-        if require_delivery:
-            raise
+        await _send_as_components_v2(
+            thread,
+            files,
+            header="📎 Files attached",
+            body="",
+            require_delivery=require_delivery,
+        )
     finally:
         for file in files:
             file.close()
