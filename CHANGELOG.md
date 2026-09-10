@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A third harness: `dsh` runs DeepSeek models — and more — on DeepSeek Harness** — Claude Code
+  and Codex are untouched; this adds the harness that grows. `/backend dsh` runs a thread on
+  DeepSeek Harness through its official Python SDK (`uv sync --extra deepseek`), with the same
+  tools, sessions, and Discord surface as any other backend. A provider is chosen by the model
+  name: `deepseek-*` rides the adapter DSH ships, `glm-*` rides a `zai` route served by the
+  pluggable `llm-pi-ai` adapter, and `route/model` names one explicitly. Extra providers are *config
+  rather than code* — `~/.config/ccdb/dsh/providers.patch.yml` is applied over DSH's bundled
+  composition at boot, created on first use, and one block adds a provider pi-ai already ships a
+  catalog for. `/model` lists the union of every configured route's own `/models`. Reusing the
+  Codex backend for this was not available: measured on codex-cli 0.153.4, `wire_api = "chat"` is
+  rejected outright, and DeepSeek and Z.ai both serve Chat Completions only. Two measured
+  consequences are documented rather than papered over: a DSH session continues only while the
+  runtime that owns it is alive, so a restart starts a thread fresh instead of failing (Claude Code
+  and Codex resume), and Stop sends `session/cancel` because the runtime is shared by every thread
+  on that route and model. The runtime inherits the bot's environment, so ccdb scrubs the
+  credentials it strips from every other backend for the moment the runtime starts — provider keys
+  such as `DEEPSEEK_API_KEY` and `ZAI_API_KEY` deliberately survive, because a route's `apiKeyEnv`
+  names them. See [docs/backends.md](docs/backends.md).
+
 - **GPT-6 is selectable, and the Codex model list stops going stale** — `/model`'s Codex suggestions
   were a hardcoded quartet (`gpt-5.6-sol`, `gpt-5.5`, `gpt-5.5-codex`, `o4-mini`), two of which no
   longer exist, and the newest generation was not among them: picking GPT-6 meant knowing the slug
