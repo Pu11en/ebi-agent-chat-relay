@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/wshobson/agents",
+  "commit": "a30778f8c4e6b0a87567941b7cca4f534bf642b6",
+  "path": "plugins/agent-teams/skills/parallel-feature-development",
+  "installed_files": {
+    "LICENSE": "f89abb55d9f073f38f1703e4518f0613c788c6174be7f13b8dfe48a1c076c746",
+    "SKILL.md": "9d39b7d0f3011a8e0f468d000987758f6ac493edc6e6fe73227fa3e75e209458",
+    "references/file-ownership.md": "cf4fb139ad4284c6432527a5ec51b38037d06ca84c5cfba3ab7b88a47301fd24",
+    "references/merge-strategies.md": "39129b4947d1f50d85698000dfa464bd5cc42d73a214333fd36888b9a38d78b8"
+  }
+}
