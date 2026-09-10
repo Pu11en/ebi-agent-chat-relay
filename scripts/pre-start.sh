@@ -76,7 +76,7 @@ fi
 
 # ── Step 2: Sync dependencies ──
 echo "[pre-start] Syncing dependencies..." >&2
-"$UV" sync --extra voice 2>&1
+"$UV" sync --extra voice --extra deepseek 2>&1
 
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 echo "[pre-start] Code at: ${COMMIT}" >&2
