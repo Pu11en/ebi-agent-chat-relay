@@ -52,4 +52,7 @@ def test_pre_start_finds_uv_in_user_local_bin_with_systemd_path(tmp_path: Path) 
     )
 
     assert result.returncode == 0, result.stderr
-    assert (home / "uv-call").read_text().strip() == "sync --extra voice"
+    # Every extra the runtime needs must be named here: uv sync prunes anything
+    # the lockfile does not declare, so an extra missing from this line quietly
+    # removes a backend's SDK on the next restart.
+    assert (home / "uv-call").read_text().strip() == "sync --extra voice --extra deepseek"
