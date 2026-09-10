@@ -145,8 +145,11 @@ class TestSendFiles:
 
         thread.send.assert_called_once()
         kwargs = thread.send.call_args.kwargs
+        # New default: wrapped in Components v2 LayoutView with files= attached
         assert "files" in kwargs
+        assert "view" in kwargs
         assert len(kwargs["files"]) == 1
+        assert kwargs["files"][0].filename == "result.py"
 
     @pytest.mark.asyncio
     async def test_discord_error_does_not_propagate(self, tmp_path: Path) -> None:
@@ -173,12 +176,10 @@ class TestSendFiles:
 
         await send_files(thread, paths, str(tmp_path))
 
-        # 12 files → 2 calls (10 + 2)
+        # 12 files → 2 Components v2 sends (10 + 2)
         assert thread.send.call_count == 2
-        first_batch = thread.send.call_args_list[0].kwargs["files"]
-        second_batch = thread.send.call_args_list[1].kwargs["files"]
-        assert len(first_batch) == 10
-        assert len(second_batch) == 2
+        assert len(thread.send.call_args_list[0].kwargs["files"]) == 10
+        assert len(thread.send.call_args_list[1].kwargs["files"]) == 2
 
     @pytest.mark.asyncio
     async def test_binary_file_is_sent(self, tmp_path: Path) -> None:
@@ -243,6 +244,7 @@ class TestSendFileBlobs:
 
         thread.send.assert_called_once()
         kwargs = thread.send.call_args.kwargs
+        assert "view" in kwargs
         assert len(kwargs["files"]) == 1
 
     @pytest.mark.asyncio
@@ -265,10 +267,16 @@ class TestSendFileBlobs:
         assert len(thread.send.call_args_list[1].kwargs["files"]) == 2
 
     @pytest.mark.asyncio
-    async def test_custom_content_used_on_first_batch(self) -> None:
+    async def test_custom_content_becomes_container_header(self) -> None:
         thread = MagicMock()
         thread.send = AsyncMock()
 
         await send_file_blobs(thread, [("a.txt", b"hi")], content="📎 Forgejo 添付")
 
-        assert thread.send.call_args.kwargs["content"] == "📎 Forgejo 添付"
+        # Header text lives inside the LayoutView container now
+        from discord.ui import Container, TextDisplay
+
+        view = thread.send.call_args.kwargs["view"]
+        container = next(c for c in view.children if isinstance(c, Container))
+        texts = [t.content for t in container.children if isinstance(t, TextDisplay)]
+        assert any("Forgejo 添付" in t for t in texts)
