@@ -17,6 +17,13 @@ from pathlib import Path
 
 import discord
 
+from claude_discord.discord_ui.components_v2 import RenderedFile, build_file_delivery_view
+from claude_discord.discord_ui.render_preview import (
+    is_renderable,
+    preview_name,
+    render_file_to_png,
+)
+
 logger = logging.getLogger(__name__)
 
 # Per-file size limit matching Discord's default upload cap for non-boosted servers.
@@ -138,6 +145,76 @@ def collect_discord_files_from_blobs(
     return result
 
 
+async def _render_previews_for_files(files: list[discord.File]) -> list[RenderedFile]:
+    """Pair each file with a PNG preview when the extension is renderable.
+
+    Reads the file's in-memory bytes without disturbing the file's position, so
+    the original ``discord.File`` remains uploadable afterwards.
+    """
+    import tempfile
+
+    result: list[RenderedFile] = []
+    for f in files:
+        preview: discord.File | None = None
+        if is_renderable(f.filename):
+            with tempfile.NamedTemporaryFile(suffix=Path(f.filename).suffix, delete=False) as tmp:
+                pos = f.fp.tell()
+                f.fp.seek(0)
+                tmp.write(f.fp.read())
+                f.fp.seek(pos)
+                tmp_path = Path(tmp.name)
+            try:
+                png = await render_file_to_png(tmp_path)
+            finally:
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
+            if png is not None:
+                preview = discord.File(io.BytesIO(png), filename=preview_name(f.filename))
+        result.append(RenderedFile(file=f, preview=preview))
+    return result
+
+
+async def _send_as_components_v2(
+    thread: discord.Thread,
+    files: list[discord.File],
+    header: str,
+    body: str,
+) -> None:
+    """Send *files* wrapped in a Container v2 layout with inline previews.
+
+    Renderable files (HTML/SVG/Markdown) are auto-screenshotted so they appear
+    inline; the originals remain attached for download. Falls back to a plain
+    ``thread.send(files=...)`` if the components-v2 send fails, so a broken
+    layout never eats the user's files.
+    """
+    rendered = await _render_previews_for_files(files)
+    for i in range(0, len(rendered), _MAX_FILES_PER_MESSAGE):
+        batch = rendered[i : i + _MAX_FILES_PER_MESSAGE]
+        view = build_file_delivery_view(
+            header=header if i == 0 else f"{header} (continued)",
+            body=body if i == 0 else "",
+            files=batch,
+        )
+        try:
+            # discord.py's send() overloads split view/files/flags across variants;
+            # this combination is valid at runtime but not typeable.
+            await thread.send(  # type: ignore[call-overload]
+                view=view,
+                files=view.attached_files,
+                flags=discord.MessageFlags(components_v2=True),
+            )
+        except Exception:
+            logger.warning(
+                "Components-v2 send failed; falling back to plain attachments",
+                exc_info=True,
+            )
+            with contextlib.suppress(Exception):
+                await thread.send(
+                    content=header if i == 0 else None,
+                    files=[rf.file for rf in batch],
+                )
+
+
 async def send_file_blobs(
     thread: discord.Thread,
     blobs: list[tuple[str, bytes]],
@@ -163,20 +240,8 @@ async def send_file_blobs(
     if not files:
         return
 
-    for i in range(0, len(files), _MAX_FILES_PER_MESSAGE):
-        batch = files[i : i + _MAX_FILES_PER_MESSAGE]
-        try:
-            await thread.send(
-                content=content if i == 0 else None,
-                files=batch,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to send blob attachment batch %d/%d to Discord",
-                i // _MAX_FILES_PER_MESSAGE + 1,
-                -(-len(files) // _MAX_FILES_PER_MESSAGE),
-                exc_info=True,
-            )
+    header = (content or "📎 Files").lstrip("-# ").strip() or "Files"
+    await _send_as_components_v2(thread, files, header=header, body="")
 
 
 async def send_files(
@@ -214,22 +279,11 @@ async def send_files(
     if not files:
         return
 
-    for i in range(0, len(files), _MAX_FILES_PER_MESSAGE):
-        batch = files[i : i + _MAX_FILES_PER_MESSAGE]
-        try:
-            await thread.send(
-                content="-# 📎 Files attached" if i == 0 else None,
-                files=batch,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to send file attachment batch %d/%d to Discord",
-                i // _MAX_FILES_PER_MESSAGE + 1,
-                -(-len(files) // _MAX_FILES_PER_MESSAGE),
-                exc_info=True,
-            )
-            if require_delivery:
-                raise
-        finally:
-            for file in batch:
-                file.close()
+    try:
+        await _send_as_components_v2(thread, files, header="📎 Files attached", body="")
+    except Exception:
+        if require_delivery:
+            raise
+    finally:
+        for file in files:
+            file.close()
