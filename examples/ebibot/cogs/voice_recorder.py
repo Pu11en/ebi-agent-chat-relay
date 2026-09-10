@@ -87,6 +87,34 @@ def _encode_mp3(pcm_bytes: bytes, out_path: Path) -> None:
         logger.error("ffmpeg failed (%d): %s", proc.returncode, stderr)
 
 
+_opus_patched = False
+
+
+def _patch_opus_decoder_error_swallowing() -> None:
+    """discord-ext-voice-recv's PacketRouter treats any exception from
+    ``OpusDecoder.pop_data`` as fatal to the receive thread — so one corrupted
+    opus packet ends the whole recording after only a handful of frames.  Wrap
+    ``pop_data`` to drop the bad packet and continue.
+    """
+    global _opus_patched
+    if _opus_patched:
+        return
+    from discord.ext.voice_recv import opus as _vr_opus  # type: ignore[import-not-found]
+    from discord.opus import OpusError  # type: ignore[import-not-found]
+
+    original = _vr_opus.PacketDecoder.pop_data
+
+    def safe_pop_data(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        try:
+            return original(self, *args, **kwargs)
+        except OpusError as exc:
+            logger.debug("Dropping corrupted opus packet: %s", exc)
+            return None
+
+    _vr_opus.PacketDecoder.pop_data = safe_pop_data  # type: ignore[method-assign]
+    _opus_patched = True
+
+
 class VoiceRecorderCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -111,15 +139,25 @@ class VoiceRecorderCog(commands.Cog):
 
         before_id = before.channel.id if before.channel else None
         after_id = after.channel.id if after.channel else None
+        logger.info(
+            "voice_state_update: user=%s before=%s after=%s watched=%s",
+            member.id,
+            before_id,
+            after_id,
+            WATCHED_CHANNEL_ID,
+        )
         if WATCHED_CHANNEL_ID not in (before_id, after_id):
             return
 
         async with self._lock:
             channel = self.bot.get_channel(WATCHED_CHANNEL_ID)
+            logger.info("resolved channel=%r vc_connected=%s", channel, self._voice_client)
             if not isinstance(channel, discord.VoiceChannel):
+                logger.warning("watched channel %s is not a VoiceChannel", WATCHED_CHANNEL_ID)
                 return
 
             humans = self._human_members(channel)
+            logger.info("humans in channel: %s", [m.id for m in humans])
             if humans and self._voice_client is None:
                 await self._start(channel)
             elif not humans and self._voice_client is not None:
@@ -134,6 +172,8 @@ class VoiceRecorderCog(commands.Cog):
                 "Run: uv pip install discord-ext-voice-recv"
             )
             return
+
+        _patch_opus_decoder_error_swallowing()
 
         try:
             vc = await channel.connect(cls=voice_recv.VoiceRecvClient)

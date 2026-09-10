@@ -339,6 +339,20 @@ class CodexRunner:
         session_id: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Run Codex CLI and yield stream events."""
+        if self.images:
+            # The CLI is driven on stdin text only, so an image has no channel:
+            # a silent drop would answer a question about a picture the model
+            # never saw. Say so instead. Deliberately session-less so the
+            # processor renders it as a visible warning notice.
+            yield StreamEvent(
+                raw={},
+                message_type=MessageType.SYSTEM,
+                text=(
+                    "The codex backend cannot see image attachments yet — "
+                    f"{len(self.images)} image(s) were not sent to the model. "
+                    "Use the claude backend, or text."
+                ),
+            )
         attempt_session_id = session_id
         attempt_prompt = prompt
         retried_without_resume = False

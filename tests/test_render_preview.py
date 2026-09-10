@@ -26,6 +26,8 @@ class TestIsRenderable:
             ("code.py", False),
             ("image.png", False),
             ("data.json", False),
+            ("demo.plan.json", True),
+            ("plan.json", False),
             ("no-extension", False),
         ],
     )
@@ -42,6 +44,9 @@ class TestPreviewName:
 
     def test_markdown_extension(self) -> None:
         assert rp.preview_name("NOTES.md") == "NOTES.preview.png"
+
+    def test_plan_card_name(self) -> None:
+        assert rp.preview_name("demo.plan.json") == "demo.plan.png"
 
 
 class TestRenderFileToPng:
@@ -64,6 +69,22 @@ class TestRenderFileToPng:
         f = tmp_path / "r.html"
         f.write_text("<h1>hi</h1>", encoding="utf-8")
         monkeypatch.setattr(rp, "_HAS_PLAYWRIGHT", False)
+        assert await rp.render_file_to_png(f) is None
+
+    @pytest.mark.asyncio
+    async def test_oversized_plan_preview_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A plan card rides in the same message batch as the original file —
+        an oversized PNG would fail the whole batch, so it is dropped."""
+        from claude_discord.discord_ui import plan_card as pc
+
+        async def fake_render(_source: Path) -> bytes:
+            return b"x" * (rp._PREVIEW_MAX_BYTES + 1)
+
+        monkeypatch.setattr(pc, "render_plan_card_to_png", fake_render)
+        f = tmp_path / "big.plan.json"
+        f.write_text("{}", encoding="utf-8")
         assert await rp.render_file_to_png(f) is None
 
 

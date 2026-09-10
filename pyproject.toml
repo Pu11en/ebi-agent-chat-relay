@@ -24,6 +24,11 @@ dependencies = [
 api = ["aiohttp>=3.14.3"]
 agui = ["aiohttp>=3.14.3"]
 images = ["pillow>=12.3.0"]
+# The DeepSeek backend runs DeepSeek models on DeepSeek's own harness. Its SDK
+# pulls the harness runtime as a separate platform wheel — a large download
+# most deployments do not need — so it is opt-in. The backend names this extra
+# in the error it raises when the import is missing.
+deepseek = ["deepseek-harness-sdk>=0.1.2rc1"]
 # Voice channel receiving for personal Cogs (e.g. examples/ebibot/voice_recorder).
 # Stock discord.py only sends voice; this third-party extension adds receiving.
 voice = ["discord-ext-voice-recv>=0.5.2a179", "pynacl>=1.5.0"]
