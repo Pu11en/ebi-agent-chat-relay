@@ -30,9 +30,20 @@ DEFAULT_MODEL: dict[str, str | None] = {
     "claude": "sonnet",
     "codex": None,
     "local": None,
+    # The DeepSeek Harness runtime is *initialised* with a provider/model
+    # route, so it cannot defer to a config file the way Codex does: omitting
+    # the model is not an option. This is the id the bundled composition ships
+    # as its default, so a fresh install runs without any configuration.
+    "dsh": "deepseek-v4-flash",
     "agui": None,
 }
-DEFAULT_COMMAND = {"claude": "claude", "codex": "codex", "local": "codex", "agui": "ag-ui"}
+DEFAULT_COMMAND = {
+    "claude": "claude",
+    "codex": "codex",
+    "local": "codex",
+    "dsh": "dsh",
+    "agui": "ag-ui",
+}
 
 
 class BackendFactory:
@@ -76,6 +87,10 @@ class BackendFactory:
             # The local backend is the same CLI, pointed at a ccdb-owned
             # CODEX_HOME that pins it to a model on your own hardware.
             return self.codex_command
+        if backend == "dsh":
+            # Nothing is exec'd from here: the DeepSeek backend launches the
+            # harness runtime the SDK bundles. This is the label the UI prints.
+            return DEFAULT_COMMAND["dsh"]
         if backend == "agui":
             return DEFAULT_COMMAND["agui"]
         raise ValueError(f"Unknown backend: {backend!r}")
@@ -120,7 +135,7 @@ class BackendFactory:
         # the operator's standing instructions silently Claude-only, which
         # matters most on `local`: a small model needs a short, blunt directive
         # far more than a frontier one does.
-        if backend in ("claude", "codex", "local") and self.append_system_prompt is not None:
+        if backend in ("claude", "codex", "local", "dsh") and self.append_system_prompt is not None:
             kwargs["append_system_prompt"] = self.append_system_prompt
         # The env-level ``effort`` stays Claude-only. Codex effort is resolved
         # per-backend from BackendSettings at spawn time, and the valid values
