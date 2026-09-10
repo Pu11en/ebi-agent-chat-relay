@@ -99,22 +99,48 @@ _opus_patched = False
 
 
 def _patch_opus_decoder_error_swallowing() -> None:
-    """discord-ext-voice-recv's PacketRouter treats any exception from
-    ``OpusDecoder.pop_data`` as fatal to the receive thread — so one corrupted
-    opus packet ends the whole recording after only a handful of frames.  Wrap
-    ``pop_data`` to drop the bad packet and continue.
+    """Conceal corrupted opus packets instead of dropping them, and keep a
+    last-resort guard so a truly unrecoverable decode error can't kill the
+    receive thread.
+
+    ``Decoder.decode`` raises ``OpusError`` when a packet's opus payload is
+    corrupt. Previously we caught that at the outer ``pop_data`` layer and
+    simply skipped the frame — but skipping a frame mid-speech splices the
+    waveform on either side of the gap directly together, producing an
+    audible click. Every corrupted packet was an audible click, and on a
+    lossy connection that's most of what you'd hear. Opus has a built-in
+    packet-loss-concealment mode (``decode(None)``) that synthesizes a
+    smooth continuation from the decoder's internal state instead of a hard
+    edge — call it as a fallback so corrupted frames are inaudible rather
+    than clicks. ``pop_data`` is still wrapped as a last-resort guard for any
+    other exception, since discord-ext-voice-recv's PacketRouter treats any
+    exception there as fatal to the receive thread.
     """
     global _opus_patched
     if _opus_patched:
         return
     from discord.ext.voice_recv import opus as _vr_opus  # type: ignore[import-not-found]
-    from discord.opus import OpusError  # type: ignore[import-not-found]
+    from discord.opus import Decoder as _OpusDecoder  # type: ignore[import-not-found]
+    from discord.opus import OpusError
 
-    original = _vr_opus.PacketDecoder.pop_data
+    original_decode = _OpusDecoder.decode
+
+    def decode_with_concealment(self, data, *, fec=False):  # type: ignore[no-untyped-def]
+        try:
+            return original_decode(self, data, fec=fec)
+        except OpusError as exc:
+            if data is None:
+                raise
+            logger.debug("Concealing corrupted opus packet: %s", exc)
+            return original_decode(self, None, fec=False)
+
+    _OpusDecoder.decode = decode_with_concealment  # type: ignore[method-assign]
+
+    original_pop_data = _vr_opus.PacketDecoder.pop_data
 
     def safe_pop_data(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         try:
-            return original(self, *args, **kwargs)
+            return original_pop_data(self, *args, **kwargs)
         except OpusError as exc:
             logger.debug("Dropping corrupted opus packet: %s", exc)
             return None
