@@ -23,6 +23,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _RENDERABLE_EXTENSIONS = {".html", ".htm", ".svg", ".md", ".markdown"}
+_PLAN_CARD_SUFFIX = ".plan.json"
 
 try:
     from playwright.async_api import async_playwright  # noqa: F401
@@ -42,15 +43,24 @@ _playwright_ctx: object | None = None
 
 
 def is_renderable(filename: str) -> bool:
-    """True when *filename*'s extension is one this module can turn into a PNG."""
+    """True when *filename* can be turned into an inline PNG preview.
+
+    Covers the HTML/SVG/Markdown documents the browser renders directly, plus
+    ``*.plan.json`` planning cards routed through :mod:`plan_card`.
+    """
+    lower = filename.lower()
+    if lower.endswith(_PLAN_CARD_SUFFIX):
+        return True
     return Path(filename).suffix.lower() in _RENDERABLE_EXTENSIONS
 
 
 def preview_name(filename: str) -> str:
     """Return the preview PNG filename that pairs with *filename*.
 
-    ``docs/dash.svg`` → ``docs/dash.preview.png``.
+    ``docs/dash.svg`` → ``docs/dash.preview.png``; ``x.plan.json`` → ``x.plan.png``.
     """
+    if filename.lower().endswith(_PLAN_CARD_SUFFIX):
+        return filename[: -len(_PLAN_CARD_SUFFIX)] + ".plan.png"
     p = Path(filename)
     return str(p.with_name(f"{p.stem}.preview.png"))
 
@@ -117,6 +127,10 @@ async def render_file_to_png(source: Path) -> bytes | None:
         return None
     if not is_renderable(source.name):
         return None
+    if source.name.lower().endswith(_PLAN_CARD_SUFFIX):
+        from claude_discord.discord_ui.plan_card import render_plan_card_to_png
+
+        return await render_plan_card_to_png(source)
     browser = await _ensure_browser()
     if browser is None:
         return None
