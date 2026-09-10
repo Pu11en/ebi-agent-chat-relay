@@ -197,6 +197,30 @@ def _patch_opus_decoder_error_swallowing() -> None:
         return original_push_packet(self, packet)
 
     _vr_opus.PacketDecoder.push_packet = push_packet_with_dave  # type: ignore[method-assign]
+
+    # Each time a speaker starts talking after a pause (Discord stops sending
+    # during silence), the library decoded the new burst's first frame with
+    # (a) the decoder state left over from the previous burst, and (b) FEC
+    # recovery from a packet that belongs to the other side of the pause. Both
+    # produce a loud one-frame screech; measured with real opus, a stale
+    # decoder peaks at 0.23-0.91 full scale where the true audio is 0.00-0.29.
+    # Start every talk burst on a fresh decoder, and only use FEC when the
+    # next packet really is the frame right after the missing one.
+    original_decode_packet = _vr_opus.PacketDecoder._decode_packet
+    frame = _OpusDecoder.SAMPLES_PER_FRAME
+
+    def decode_packet_per_burst(self, packet):  # type: ignore[no-untyped-def]
+        if packet:
+            last_ts = self._last_ts
+            if last_ts >= 0 and (packet.timestamp - last_ts) % 2**32 != frame:
+                self._decoder = _OpusDecoder()
+            return original_decode_packet(self, packet)
+        next_packet = self._buffer.peek_next()
+        if next_packet is not None and (next_packet.timestamp - packet.timestamp) % 2**32 != frame:
+            return packet, self._decoder.decode(None, fec=False)
+        return original_decode_packet(self, packet)
+
+    _vr_opus.PacketDecoder._decode_packet = decode_packet_per_burst  # type: ignore[method-assign]
     _opus_patched = True
 
 
