@@ -146,7 +146,52 @@ def _patch_opus_decoder_error_swallowing() -> None:
             return None
 
     _vr_opus.PacketDecoder.pop_data = safe_pop_data  # type: ignore[method-assign]
+
+    # Discord voice is end-to-end encrypted (DAVE). discord.py negotiates DAVE
+    # and encrypts what it *sends*, but discord-ext-voice-recv never
+    # DAVE-decrypts what it *receives* — so the opus decoder was fed
+    # ciphertext, which decodes into scratchy noise during every speech burst.
+    # Decrypt each frame as it enters the jitter buffer (so FEC lookahead sees
+    # plaintext too). DAVE frames end with the 0xFAFA magic marker; frames
+    # without it (passthrough / non-E2EE calls) are left untouched.
+    original_push_packet = _vr_opus.PacketDecoder.push_packet
+
+    def push_packet_with_dave(self, packet):  # type: ignore[no-untyped-def]
+        data = getattr(packet, "decrypted_data", None)
+        if data and data[-2:] == _DAVE_MAGIC:
+            packet.decrypted_data = _dave_decrypt(self, data)
+        return original_push_packet(self, packet)
+
+    _vr_opus.PacketDecoder.push_packet = push_packet_with_dave  # type: ignore[method-assign]
     _opus_patched = True
+
+
+_DAVE_MAGIC = b"\xfa\xfa"
+
+
+def _dave_decrypt(decoder, data: bytes) -> bytes:  # type: ignore[no-untyped-def]
+    """DAVE-decrypt one opus frame for the decoder's SSRC.
+
+    Returns ``b""`` when the frame can't be decrypted (unknown speaker, session
+    not ready, bad key) — an empty frame fails opus decode and falls through to
+    packet-loss concealment, which is far quieter than decoding ciphertext.
+    """
+    import davey  # type: ignore[import-not-found]
+
+    vc = decoder.sink.voice_client
+    conn = getattr(vc, "_connection", None)
+    session = getattr(conn, "dave_session", None)
+    if session is None or not session.ready:
+        return b""
+    user_id = decoder._cached_id or vc._get_id_from_ssrc(decoder.ssrc)
+    if not user_id:
+        return b""
+    decoder._cached_id = user_id
+    try:
+        return session.decrypt(user_id, davey.MediaType.audio, data)
+    except Exception as exc:
+        logger.debug("DAVE decrypt failed for ssrc=%s: %s", decoder.ssrc, exc)
+        return b""
 
 
 class VoiceRecorderCog(commands.Cog):
