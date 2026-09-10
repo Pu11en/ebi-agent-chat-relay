@@ -1600,6 +1600,7 @@ class TestGlobalSessionSemaphore:
         runner.working_dir = None
         runner.images = None
         runner.run = slow_gen
+        runner.clone = MagicMock(return_value=runner)
 
         config = RunConfig(thread=thread, runner=runner, prompt="test")
 
@@ -1639,6 +1640,7 @@ class TestGlobalSessionSemaphore:
         runner.working_dir = None
         runner.images = None
         runner.run = slow_gen
+        runner.clone = MagicMock(return_value=runner)
 
         config = RunConfig(thread=thread, runner=runner, prompt="test")
 
@@ -1674,6 +1676,7 @@ class TestGlobalSessionSemaphore:
         runner.working_dir = None
         runner.images = None
         runner.run = failing_gen
+        runner.clone = MagicMock(return_value=runner)
 
         config = RunConfig(thread=thread, runner=runner, prompt="test")
         await run_claude_with_config(config)
@@ -1690,6 +1693,7 @@ class TestGlobalSessionSemaphore:
         runner.working_dir = None
         runner.images = None
         runner.run = self._make_async_gen(self._simple_events())
+        runner.clone = MagicMock(return_value=runner)
 
         config = RunConfig(thread=thread, runner=runner, prompt="test")
         result = await run_claude_with_config(config)
@@ -1969,3 +1973,21 @@ class TestResultSink:
         config = RunConfig(thread=thread, runner=runner, prompt="hi")
         # Must not raise when result_sink is None.
         await run_claude_with_config(config)
+
+
+class TestMergeSystemContext:
+    def test_standing_instruction_is_prepended_to_per_turn_context(self) -> None:
+        merged = _rh_module._merge_system_context("Act, do not ask.", "## File Delivery\nmarker")
+        assert merged == "Act, do not ask.\n\n## File Delivery\nmarker"
+
+    def test_each_side_stands_alone(self) -> None:
+        # With no built context nothing is cloned, so the result is None —
+        # the runner already carries its own standing instruction.
+        assert _rh_module._merge_system_context("base", None) is None
+        assert _rh_module._merge_system_context(None, "built") == "built"
+        assert _rh_module._merge_system_context("", "built") == "built"
+        assert _rh_module._merge_system_context("   ", "built") == "built"
+
+    def test_non_string_base_is_ignored(self) -> None:
+        assert _rh_module._merge_system_context(MagicMock(), "built") == "built"
+        assert _rh_module._merge_system_context(MagicMock(), None) is None

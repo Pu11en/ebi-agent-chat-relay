@@ -130,7 +130,15 @@ async def render_file_to_png(source: Path) -> bytes | None:
     if source.name.lower().endswith(_PLAN_CARD_SUFFIX):
         from claude_discord.discord_ui.plan_card import render_plan_card_to_png
 
-        return await render_plan_card_to_png(source)
+        plan_png = await render_plan_card_to_png(source)
+        if plan_png is not None and len(plan_png) > _PREVIEW_MAX_BYTES:
+            logger.info(
+                "preview for %s exceeds %d bytes; sending the raw file only",
+                source.name,
+                _PREVIEW_MAX_BYTES,
+            )
+            return None
+        return plan_png
     browser = await _ensure_browser()
     if browser is None:
         return None

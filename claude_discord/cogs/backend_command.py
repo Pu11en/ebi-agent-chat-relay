@@ -167,7 +167,7 @@ class BackendCommandCog(commands.Cog):
         ],
     )
     @app_commands.describe(
-        name="claude, codex, local, or agui. Omit to show current setting.",
+        name="claude, codex, local, agui, or dsh. Omit to show current setting.",
         scope=(
             "thread: only this thread; global: server-wide default. "
             "Default: thread when invoked in a thread, otherwise global."

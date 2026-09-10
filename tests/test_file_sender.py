@@ -203,6 +203,34 @@ class TestSendFiles:
         assert [x.filename for x in files] == ["report.preview.png", "report.html"]
 
     @pytest.mark.asyncio
+    async def test_plan_card_files_keep_their_compound_suffix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``x.plan.json`` is round-tripped through a temp file before
+        rendering; the renderer routes on that temp file's name, so the
+        ``.plan.json`` ending must survive the copy."""
+        from claude_discord.discord_ui import file_sender as fs
+
+        seen: dict[str, str] = {}
+
+        async def fake_render(source):  # noqa: ANN001
+            seen["name"] = source.name
+            return b"\x89PNG\r\n\x1a\nfake"
+
+        monkeypatch.setattr(fs, "render_file_to_png", fake_render)
+
+        thread = MagicMock()
+        thread.send = AsyncMock()
+        f = tmp_path / "demo.plan.json"
+        f.write_text('{"goal": "g"}', encoding="utf-8")
+
+        await send_files(thread, [str(f)], str(tmp_path))
+
+        assert seen["name"].endswith(".plan.json")
+        files = thread.send.call_args.kwargs["files"]
+        assert [x.filename for x in files] == ["demo.plan.png", "demo.plan.json"]
+
+    @pytest.mark.asyncio
     async def test_non_renderable_file_has_no_preview(self, tmp_path: Path) -> None:
         thread = MagicMock()
         thread.send = AsyncMock()

@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 
 _MAX_STEPS = 8
 
+#: Fields are clipped so a pathological plan file cannot produce a pathological
+#: PNG — the preview shares the Discord message batch with the original file.
+_MAX_FIELD_CHARS = 4000
+
+
+def _clip(value: object) -> str:
+    text = str(value) if value is not None else ""
+    if len(text) > _MAX_FIELD_CHARS:
+        return text[:_MAX_FIELD_CHARS] + " …(truncated)"
+    return text
+
 
 def _card_html(spec: dict) -> str:
     """Fill the fixed template with *spec*.
@@ -42,9 +53,9 @@ def _card_html(spec: dict) -> str:
     the next turn) can see exactly which slot the plan skipped — silent
     fallbacks would defeat the whole point of the fixed layout.
     """
-    goal = escape(str(spec.get("goal") or "⚠️ goal missing"))
-    exists = escape(str(spec.get("exists") or "⚠️ what exists missing"))
-    done = escape(str(spec.get("done") or "⚠️ done-when missing"))
+    goal = escape(_clip(spec.get("goal")) or "⚠️ goal missing")
+    exists = escape(_clip(spec.get("exists")) or "⚠️ what exists missing")
+    done = escape(_clip(spec.get("done")) or "⚠️ done-when missing")
     notes = spec.get("notes")
 
     raw_steps = spec.get("steps") or []
@@ -52,14 +63,18 @@ def _card_html(spec: dict) -> str:
         raw_steps = [{"do": "⚠️ no steps provided", "outcome": ""}]
     steps_html = ""
     for i, step in enumerate(raw_steps[:_MAX_STEPS], 1):
-        do = escape(str(step.get("do", "")))
-        outcome = escape(str(step.get("outcome", "")))
+        # A model can emit a bare string where a step object belongs; render
+        # it as the action rather than raising into the file pipeline.
+        if not isinstance(step, dict):
+            step = {"do": step}
+        do = escape(_clip(step.get("do", "")))
+        outcome = escape(_clip(step.get("outcome", "")))
         steps_html += f"""
           <div class="step">
             <div class="num">{i}</div>
             <div class="body">
               <div class="do">{do}</div>
-              {f'<div class="outcome">→ {outcome}</div>' if outcome else ''}
+              {f'<div class="outcome">→ {outcome}</div>' if outcome else ""}
             </div>
           </div>"""
     if len(raw_steps) > _MAX_STEPS:
@@ -70,7 +85,7 @@ def _card_html(spec: dict) -> str:
 
     notes_html = ""
     if notes:
-        notes_html = f'<div class="notes">Notes: {escape(str(notes))}</div>'
+        notes_html = f'<div class="notes">Notes: {escape(_clip(notes))}</div>'
 
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
   *{{box-sizing:border-box}}
@@ -124,6 +139,7 @@ async def render_plan_card_to_png(json_path: Path) -> bytes | None:
         logger.info("plan_card: cannot parse %s", json_path, exc_info=True)
         return None
     if not isinstance(spec, dict):
+        logger.info("plan_card: %s is JSON but not an object", json_path)
         return None
 
     from claude_discord.discord_ui.render_preview import _ensure_browser
