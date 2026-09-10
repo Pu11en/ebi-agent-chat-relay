@@ -52,4 +52,4 @@ def test_pre_start_finds_uv_in_user_local_bin_with_systemd_path(tmp_path: Path) 
     )
 
     assert result.returncode == 0, result.stderr
-    assert (home / "uv-call").read_text().strip() == "sync"
+    assert (home / "uv-call").read_text().strip() == "sync --extra voice"
