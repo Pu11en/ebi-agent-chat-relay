@@ -12,6 +12,7 @@ import json
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -118,22 +119,38 @@ async def _collect(runner: DshRunner, prompt: str, session_id: str | None = None
 
 def test_unknown_session_id_is_replaced_with_a_fresh_one():
     runner = DshRunner()
-    session_id, is_new = runner._session_for_turn("session-stored-by-an-earlier-process")
+    session_id, is_new = runner._session_for_turn(
+        "session-stored-by-an-earlier-process", runner._runtime_key()
+    )
     assert is_new is True
     assert session_id != "session-stored-by-an-earlier-process"
 
 
 def test_a_session_this_process_started_is_continued():
     runner = DshRunner()
-    first, _ = runner._session_for_turn(None)
-    again, is_new = runner._session_for_turn(first)
+    first, _ = runner._session_for_turn(None, runner._runtime_key())
+    again, is_new = runner._session_for_turn(first, runner._runtime_key())
     assert again == first
     assert is_new is False
 
 
+def test_a_session_does_not_survive_a_runtime_switch():
+    """`/model` mid-thread changes the runtime key, and a session id minted by
+    one runtime is refused by another (lineage check) — so the switch must
+    start a fresh session instead of erroring on every subsequent turn."""
+    runner = DshRunner(model="deepseek-v4-flash", working_dir="/tmp/w")
+    first, _ = runner._session_for_turn(None, runner._runtime_key())
+
+    other = DshRunner(model="glm-5.2", working_dir="/tmp/w")
+    again, is_new = other._session_for_turn(first, other._runtime_key())
+
+    assert again != first
+    assert is_new is True
+
+
 def test_fresh_session_ids_never_repeat():
     runner = DshRunner()
-    ids = {runner._session_for_turn(None)[0] for _ in range(5)}
+    ids = {runner._session_for_turn(None, runner._runtime_key())[0] for _ in range(5)}
     assert len(ids) == 5
 
 
@@ -279,7 +296,7 @@ async def test_run_streams_mapped_events_and_closes_the_turn(monkeypatch):
     )
     monkeypatch.setattr(runner, "_ensure_runtime", lambda: runtime)
     # The session id is minted by the runner, so the fake must answer with it.
-    session_id, _ = runner._session_for_turn(None)
+    session_id, _ = runner._session_for_turn(None, runner._runtime_key())
     runtime.session.notifications = [_assistant_text(session_id, "hello")]
 
     events = await _collect(runner, "hi", session_id)
@@ -435,7 +452,7 @@ async def test_images_are_warned_about_instead_of_silently_dropped(monkeypatch):
 # ── Standing instruction ────────────────────────────────────
 
 
-def test_standing_instruction_leads_the_first_turn_only():
+def test_standing_instruction_prefixes_the_prompt():
     runner = DshRunner(append_system_prompt="Act, do not ask.")
     assert runner._with_standing_instruction("fix it") == "Act, do not ask.\n\nfix it"
 
@@ -445,7 +462,10 @@ def test_standing_instruction_is_absent_when_not_configured():
     assert runner._with_standing_instruction("fix it") == "fix it"
 
 
-async def test_standing_instruction_is_sent_once_per_session(monkeypatch):
+async def test_standing_instruction_prefixes_every_turn(monkeypatch):
+    """The per-turn system context (lounge, concurrency notice, file marker)
+    is ephemeral and recomputed each message, so it must reach every turn —
+    mirroring the Claude CLI, which re-appends on every run."""
     runner = DshRunner(append_system_prompt="Act, do not ask.")
     session = FakeSession()
     runtime = FakeRuntime(session)
@@ -456,7 +476,10 @@ async def test_standing_instruction_is_sent_once_per_session(monkeypatch):
     assert session is not None
     await _collect(runner, "second", session_id)
 
-    assert session.prompts == ["Act, do not ask.\n\nfirst", "second"]
+    assert session.prompts == [
+        "Act, do not ask.\n\nfirst",
+        "Act, do not ask.\n\nsecond",
+    ]
 
 
 # ── Environment ─────────────────────────────────────────────
@@ -521,6 +544,17 @@ def test_clone_overrides_are_honoured():
     clone = runner.clone(model="deepseek-v4-pro", working_dir="/b")
     assert clone.model == "deepseek-v4-pro"
     assert clone.working_dir == "/b"
+
+
+def test_clone_takes_the_per_turn_system_context():
+    """``_run_helper`` passes ``append_system_prompt`` on essentially every
+    turn; a clone that swallows it starves the model of the concurrency
+    notice the other backends deliver."""
+    runner = DshRunner(append_system_prompt="be brief")
+    clone = runner.clone(append_system_prompt="turn context")
+    assert clone.append_system_prompt == "turn context"
+    # No override keeps the runner's own instruction.
+    assert runner.clone().append_system_prompt == "be brief"
 
 
 def test_describe_api_names_the_harness_route():
@@ -658,6 +692,83 @@ def test_effort_is_forwarded_to_the_runtime(monkeypatch):
     assert starts[0]["reasoning_effort"] == "high"
 
 
+def test_a_changed_effort_starts_a_new_runtime(monkeypatch):
+    """Effort is fixed at runtime creation; a change must not silently keep
+    serving the old runtime's effort."""
+    starts: list[dict[str, object]] = []
+
+    class Probe:
+        def __init__(self, **kwargs: object) -> None:
+            starts.append(kwargs)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        dsh_backend, "_require_sdk", lambda: type("S", (), {"DeepSeekHarness": Probe})
+    )
+
+    runner = DshRunner(model="deepseek-v4-flash", working_dir="/tmp/w", effort="low")
+    low = runner._ensure_runtime()
+    runner.effort = "high"
+    high = runner._ensure_runtime()
+
+    assert low is not high
+    assert [kwargs.get("reasoning_effort") for kwargs in starts] == ["low", "high"]
+
+
+# ── Runtime home ─────────────────────────────────────────────
+
+
+def _probe_sdk(monkeypatch, starts: list[dict[str, object]]) -> None:
+    class Probe:
+        def __init__(self, **kwargs: object) -> None:
+            starts.append(kwargs)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        dsh_backend, "_require_sdk", lambda: type("S", (), {"DeepSeekHarness": Probe})
+    )
+
+
+def test_a_runtime_gets_a_home_with_no_configuration(monkeypatch, tmp_path):
+    """The SDK refuses an implicit ``~/.dsh``, so ccdb must name a state
+    directory itself — an unconfigured deployment would otherwise fail its
+    very first turn."""
+    starts: list[dict[str, object]] = []
+    _probe_sdk(monkeypatch, starts)
+    monkeypatch.delenv("DSH_HOME", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    DshRunner(working_dir="/tmp/w")._ensure_runtime()
+
+    home = Path(str(starts[0]["dsh_home"]))
+    assert home == tmp_path / "state" / "ccdb" / "dsh"
+    assert home.is_dir()
+
+
+def test_env_dsh_home_wins_over_the_default(monkeypatch, tmp_path):
+    starts: list[dict[str, object]] = []
+    _probe_sdk(monkeypatch, starts)
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "from-env"))
+
+    DshRunner(working_dir="/tmp/w")._ensure_runtime()
+
+    assert Path(str(starts[0]["dsh_home"])) == tmp_path / "from-env"
+
+
+def test_explicit_dsh_home_beats_the_environment(monkeypatch, tmp_path):
+    starts: list[dict[str, object]] = []
+    _probe_sdk(monkeypatch, starts)
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "from-env"))
+
+    DshRunner(dsh_home=str(tmp_path / "explicit"), working_dir="/tmp/w")._ensure_runtime()
+
+    assert Path(str(starts[0]["dsh_home"])) == tmp_path / "explicit"
+
+
 # ── Provider routes ─────────────────────────────────────────
 
 
@@ -776,3 +887,13 @@ def test_patch_path_env_override_is_read_when_used(monkeypatch, tmp_path):
     custom = tmp_path / "routes.yml"
     monkeypatch.setenv("CCDB_DSH_PATCH", str(custom))
     assert resolve_patch_path() == custom
+
+
+def test_max_tokens_notice_is_session_less_so_it_renders():
+    """A truncated answer must not close with a clean "Done": the notice is
+    session-less so the processor renders it as a visible warning."""
+    events = DshRunner()._map_turn_end({"reason": {"kind": "max-tokens"}}, "ccdb-whatever")
+    assert len(events) == 1
+    assert events[0].message_type == MessageType.SYSTEM
+    assert events[0].session_id is None
+    assert "truncated" in (events[0].text or "")

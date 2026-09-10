@@ -94,6 +94,7 @@ __all__ = [
     "DEFAULT_PATCH_PATH",
     "SDK_EXTRA_HINT",
     "DshRunner",
+    "default_dsh_home",
     "dsh_sdk_available",
     "ensure_patch_file",
     "reset_runtimes",
@@ -141,6 +142,18 @@ def resolve_patch_path(env: Mapping[str, str] | None = None) -> Path:
     env = os.environ if env is None else env
     override = (env.get("CCDB_DSH_PATCH") or "").strip()
     return Path(override) if override else DEFAULT_PATCH_PATH
+
+
+def default_dsh_home() -> Path:
+    """The DSH state directory ccdb manages when nothing else names one.
+
+    The SDK refuses an implicit ``~/.dsh`` (the interactive harness web UI
+    owns that directory), so an unconfigured deployment would otherwise fail
+    its first turn with the SDK's own ValueError. Resolved when used, like
+    every other ccdb setting.
+    """
+    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return base / "ccdb" / "dsh"
 
 
 #: Written on first use when no patch file exists, so a fresh install can run
@@ -285,15 +298,18 @@ class _RuntimeEntry:
         self.lock = threading.Lock()
 
 
-# Keyed by (model, provider, working dir). One runtime per key: the SDK fixes
-# the provider/model route at handshake, so a runtime cannot serve two models.
-_RUNTIMES: dict[tuple[str, str, str], _RuntimeEntry] = {}
+# Keyed by (model, provider, working dir, effort). One runtime per key: the
+# SDK fixes the provider/model route — and the reasoning effort — at
+# handshake, so a runtime cannot serve two of either.
+_RUNTIMES: dict[tuple[str, str, str, str], _RuntimeEntry] = {}
 _RUNTIMES_LOCK = threading.Lock()
 
-# Session ids this process has established. Anything else — including an id
-# loaded from the database that a previous process wrote — must be replaced,
-# because the runtime refuses to adopt a foreign persisted log.
-_LIVE_SESSIONS: set[str] = set()
+# Session ids this process has established, mapped to the runtime that owns
+# them. The lineage check is per-runtime — a persisted log written by one
+# runtime is refused by another — so continuing a session requires the *same*
+# runtime key, not just the same id. Anything else — including an id loaded
+# from the database that a previous process wrote — must be replaced.
+_LIVE_SESSIONS: dict[str, tuple[str, str, str, str]] = {}
 _LIVE_SESSIONS_LOCK = threading.Lock()
 
 # Guards the momentary environment scrub around runtime startup.
@@ -324,15 +340,23 @@ def _scrubbed_environ() -> Any:
     """Hide the relay's own credentials while a child environment is built.
 
     ``HarnessClient.start()`` copies ``os.environ`` wholesale, so the only lever
-    is the process environment itself. Another thread spawning Claude or Codex
-    during this window loses nothing: those runners strip the same keys anyway.
+    is the process environment itself. The real environ is swapped out rather
+    than mutated: popping keys would raise ``RuntimeError: dictionary changed
+    size during iteration`` in a concurrent Claude/Codex spawn that is
+    iterating it. Those runners filter the same keys anyway, so the only
+    difference they can observe is the scrubbed keys being absent — which is
+    exactly what they would strip themselves.
     """
     with _ENVIRON_LOCK:
-        saved = {key: os.environ.pop(key) for key in STRIPPED_ENV_KEYS if key in os.environ}
+        saved = os.environ
+        scrubbed = {key: value for key, value in saved.items() if key not in STRIPPED_ENV_KEYS}
+        # A swap, restored below: the object is replaced wholesale so the live
+        # mapping is never mutated under a concurrent iteration.
+        setattr(os, "environ", scrubbed)  # noqa: B003, B010
         try:
             yield
         finally:
-            os.environ.update(saved)
+            setattr(os, "environ", saved)  # noqa: B003, B010
 
 
 class DshRunner:
@@ -386,31 +410,37 @@ class DshRunner:
 
     # ── Session identity ────────────────────────────────────
 
-    def _session_for_turn(self, session_id: str | None) -> tuple[str, bool]:
+    def _session_for_turn(
+        self, session_id: str | None, runtime_key: tuple[str, str, str, str]
+    ) -> tuple[str, bool]:
         """The DSH session id for this turn, and whether it is a new session.
 
-        An id this process has already established is continued. Anything else
-        — a stored id from a previous process, a foreign id, or no id at all —
-        becomes a fresh one, which the caller then stores because every event
-        this runner yields carries it.
+        An id this process established is continued only when *runtime_key*
+        still names the runtime that owns it: the SDK's lineage check is
+        per-runtime, so a `/model` switch mid-thread must start a fresh
+        session rather than fail every turn with the old one's log. Anything
+        else — a stored id from a previous process, a foreign id, or no id at
+        all — becomes a fresh one, which the caller then stores because every
+        event this runner yields carries it.
         """
         if session_id:
             with _LIVE_SESSIONS_LOCK:
-                if session_id in _LIVE_SESSIONS:
+                if _LIVE_SESSIONS.get(session_id) == runtime_key:
                     return session_id, False
         fresh = f"ccdb-{uuid.uuid4().hex}"
         with _LIVE_SESSIONS_LOCK:
-            _LIVE_SESSIONS.add(fresh)
+            _LIVE_SESSIONS[fresh] = runtime_key
         return fresh, True
 
     def _with_standing_instruction(self, prompt: str) -> str:
-        """Lead the first turn of a session with the operator's instruction.
+        """Lead the prompt with the operator's instruction.
 
         The harness composition owns its own persona and the SDK exposes no
         ``developer_instructions`` equivalent, so a standing instruction has
-        nowhere else to go. It is applied to the *first* turn only: later turns
-        already carry it in the session's history, and this process starts a
-        fresh session whenever it cannot continue the old one.
+        nowhere else to go. It prefixes *every* turn: the per-turn context the
+        relay injects (AI Lounge awareness, worktree-collision notice, file
+        marker) is ephemeral and recomputed each message, and the Claude CLI's
+        ``--append-system-prompt`` re-appends on every run the same way.
         """
         if not self.append_system_prompt:
             return prompt
@@ -418,11 +448,14 @@ class DshRunner:
 
     # ── Runtime lifecycle ───────────────────────────────────
 
-    def _runtime_key(self) -> tuple[str, str, str]:
-        return (self.route, self.model, self.working_dir or os.getcwd())
+    def _runtime_key(self) -> tuple[str, str, str, str]:
+        # Effort participates because the SDK takes it only at runtime
+        # creation: a changed effort must start a new runtime rather than
+        # silently keep serving the old one.
+        return (self.route, self.model, self.working_dir or os.getcwd(), self.effort or "")
 
     def _ensure_runtime(self) -> Any:
-        """Return the live runtime for this route and model, starting it once."""
+        """Return the live runtime for this route, model, and effort."""
         deepseek_harness = _require_sdk()
         key = self._runtime_key()
         with _RUNTIMES_LOCK:
@@ -444,8 +477,14 @@ class DshRunner:
                 kwargs["patches"] = (str(patch_file),)
             if self.effort:
                 kwargs["reasoning_effort"] = self.effort
-            if self.dsh_home:
-                kwargs["dsh_home"] = self.dsh_home
+            home = (
+                self.dsh_home
+                or (os.environ.get("DSH_HOME") or "").strip()
+                or str(default_dsh_home())
+            )
+            home_path = Path(home).expanduser()
+            home_path.mkdir(parents=True, exist_ok=True)
+            kwargs["dsh_home"] = str(home_path)
             logger.info(
                 "Starting DeepSeek Harness runtime (model=%s, cwd=%s)",
                 self.model,
@@ -484,7 +523,8 @@ class DshRunner:
         session_id: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Run one turn and yield the events Discord renders."""
-        dsh_session, is_new_session = self._session_for_turn(session_id)
+        runtime_key = self._runtime_key()
+        dsh_session, _ = self._session_for_turn(session_id, runtime_key)
         if self.images:
             # The bundled composition mounts no attachment store, so the runtime
             # advertises no image input; a dropped image is a silent answer to a
@@ -503,7 +543,7 @@ class DshRunner:
         if not prompt.strip():
             yield self._error_event(dsh_session, "Empty prompt")
             return
-        turn_prompt = self._with_standing_instruction(prompt) if is_new_session else prompt
+        turn_prompt = self._with_standing_instruction(prompt)
 
         try:
             runtime = await asyncio.to_thread(self._ensure_runtime)
@@ -520,7 +560,14 @@ class DshRunner:
         with self._turn_lock:
             self._active_session = dsh_session
 
+        # Once this turn ends the queue is abandoned, but a stopped dsh turn
+        # leaves the agent running in the shared runtime — its notifications
+        # must stop accumulating into a queue nobody drains.
+        queue_closed = threading.Event()
+
         def push(item: Any) -> None:
+            if queue_closed.is_set():
+                return
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(queue.put_nowait, item)
 
@@ -547,6 +594,7 @@ class DshRunner:
                 if self._cancelled.is_set():
                     break
         finally:
+            queue_closed.set()
             if timed_out:
                 error = f"Timed out after {self.timeout_seconds} seconds"
                 asyncio.ensure_future(self.interrupt())
@@ -577,8 +625,9 @@ class DshRunner:
         method on the wire — so "stop" cannot stop the agent itself. What it
         does stop is the Discord turn: the pending queue is woken immediately,
         streaming ends, and the thread reports "Stopped by the user" while the
-        shared runtime finishes the agent's work in the background. A later
-        turn on the same session waits for that work to quiesce.
+        shared runtime finishes the agent's work in the background. Nothing
+        coordinates a later turn with that leftover work — the runtime may
+        still be busy when the next message arrives.
         """
         self._cancelled.set()
         with self._turn_lock:
@@ -720,12 +769,18 @@ class DshRunner:
                 self._error_event(session_id, str(message or "DeepSeek Harness reported an error"))
             ]
         if kind == "max-tokens":
+            # Deliberately session-less: the processor turns that shape into a
+            # visible warning notice. With a session id it would be swallowed
+            # and the turn would close with a clean "Done" — a truncated
+            # answer presented as success.
             return [
                 StreamEvent(
                     raw=data,
                     message_type=MessageType.SYSTEM,
-                    session_id=session_id,
-                    text="DeepSeek Harness stopped at its output token limit.",
+                    text=(
+                        "DeepSeek Harness stopped at its output token limit — "
+                        "this answer is truncated."
+                    ),
                 )
             ]
         return []
@@ -760,6 +815,7 @@ class DshRunner:
         working_dir: str | None = None,
         thread_id: int | None = None,
         effort: str | None = None,
+        append_system_prompt: str | None = None,
         **_kwargs: object,
     ) -> DshRunner:
         """A fresh runner with the same configuration and no active turn."""
@@ -775,7 +831,11 @@ class DshRunner:
             api_port=self.api_port,
             api_secret=self.api_secret,
             thread_id=thread_id if thread_id is not None else self.thread_id,
-            append_system_prompt=self.append_system_prompt,
+            append_system_prompt=(
+                append_system_prompt
+                if append_system_prompt is not None
+                else self.append_system_prompt
+            ),
             images=self.images,
             effort=effort if effort is not None else self.effort,
             dsh_home=self.dsh_home,

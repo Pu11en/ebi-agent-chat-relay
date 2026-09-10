@@ -133,16 +133,17 @@ Two consequences of the runtime's design are worth knowing before you rely on th
   it is asked to continue one this process has never run. After a restart a thread begins with a
   clean context instead of failing — a different trade from Claude Code and Codex, which resume.
 - **Each runtime is a process of its own, and they do not exit.** Measured at 382 MB RSS per
-  runtime, and a runtime is keyed by (route, model, working directory) — so a thread with its
-  own git worktree gets its own process, and so does every model you switch to. Ten concurrent
+  runtime, and a runtime is keyed by (route, model, working directory, effort) — so a thread with
+  its own git worktree gets its own process, and so does every model you switch to. Ten concurrent
   dsh threads in ten worktrees is therefore ~3.8 GB resident. The trade is deliberate: a
   runtime is what keeps a thread's context alive. Evicting idle runtimes would cap the
   footprint at the cost of exactly what a bot restart already costs — a fresh session.
 - **Stop ends the Discord turn, not the agent's work.** The bundled SDK runtime implements only
   `initialize`, `session/prompt`, and `shutdown` — there is no cancel method on the wire. The
   Stop button therefore closes the turn immediately (the thread reports "Stopped by the user")
-  while the shared runtime finishes the agent's work in the background; a later turn on that
-  session waits for it to quiesce. The same gap means image attachments are not supported: the
+  while the shared runtime finishes the agent's work in the background; nothing coordinates a
+  later turn with that leftover work — the runtime may still be busy when the next message
+  arrives. The same gap means image attachments are not supported: the
   runner warns that the image was not sent rather than silently dropping it.
 
 The runtime is a subprocess, and it inherits the bot's environment. ccdb scrubs the credentials it
