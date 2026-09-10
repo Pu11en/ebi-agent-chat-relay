@@ -145,9 +145,7 @@ class TestSendFiles:
 
         thread.send.assert_called_once()
         kwargs = thread.send.call_args.kwargs
-        # New default: wrapped in Components v2 LayoutView with files= attached
         assert "files" in kwargs
-        assert "view" in kwargs
         assert len(kwargs["files"]) == 1
         assert kwargs["files"][0].filename == "result.py"
 
@@ -180,6 +178,41 @@ class TestSendFiles:
         assert thread.send.call_count == 2
         assert len(thread.send.call_args_list[0].kwargs["files"]) == 10
         assert len(thread.send.call_args_list[1].kwargs["files"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_renderable_file_gets_png_preview_prepended(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """HTML/SVG/MD file → PNG rendered first, original attached second."""
+        from claude_discord.discord_ui import file_sender as fs
+
+        async def fake_render(source):  # noqa: ANN001
+            return b"\x89PNG\r\n\x1a\nfake"
+
+        monkeypatch.setattr(fs, "render_file_to_png", fake_render)
+
+        thread = MagicMock()
+        thread.send = AsyncMock()
+        f = tmp_path / "report.html"
+        f.write_text("<h1>hi</h1>", encoding="utf-8")
+
+        await send_files(thread, [str(f)], str(tmp_path))
+
+        thread.send.assert_called_once()
+        files = thread.send.call_args.kwargs["files"]
+        assert [x.filename for x in files] == ["report.preview.png", "report.html"]
+
+    @pytest.mark.asyncio
+    async def test_non_renderable_file_has_no_preview(self, tmp_path: Path) -> None:
+        thread = MagicMock()
+        thread.send = AsyncMock()
+        f = tmp_path / "code.py"
+        f.write_text("x = 1", encoding="utf-8")
+
+        await send_files(thread, [str(f)], str(tmp_path))
+
+        files = thread.send.call_args.kwargs["files"]
+        assert [x.filename for x in files] == ["code.py"]
 
     @pytest.mark.asyncio
     async def test_binary_file_is_sent(self, tmp_path: Path) -> None:
@@ -244,7 +277,6 @@ class TestSendFileBlobs:
 
         thread.send.assert_called_once()
         kwargs = thread.send.call_args.kwargs
-        assert "view" in kwargs
         assert len(kwargs["files"]) == 1
 
     @pytest.mark.asyncio
@@ -267,16 +299,10 @@ class TestSendFileBlobs:
         assert len(thread.send.call_args_list[1].kwargs["files"]) == 2
 
     @pytest.mark.asyncio
-    async def test_custom_content_becomes_container_header(self) -> None:
+    async def test_custom_content_used_on_first_batch(self) -> None:
         thread = MagicMock()
         thread.send = AsyncMock()
 
         await send_file_blobs(thread, [("a.txt", b"hi")], content="📎 Forgejo 添付")
 
-        # Header text lives inside the LayoutView container now
-        from discord.ui import Container, TextDisplay
-
-        view = thread.send.call_args.kwargs["view"]
-        container = next(c for c in view.children if isinstance(c, Container))
-        texts = [t.content for t in container.children if isinstance(t, TextDisplay)]
-        assert any("Forgejo 添付" in t for t in texts)
+        assert thread.send.call_args.kwargs["content"] == "📎 Forgejo 添付"
