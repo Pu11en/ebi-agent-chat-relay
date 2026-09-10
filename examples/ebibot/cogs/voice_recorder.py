@@ -183,7 +183,11 @@ class VoiceRecorderCog(commands.Cog):
 
         sink = _MixedPCMSink()
         try:
-            vc.listen(voice_recv.BasicSink(sink.write))  # type: ignore[attr-defined]
+            # SilenceGeneratorSink fills gaps from packet loss/jitter with
+            # silence frames before they reach our sink; without it, dropped
+            # or delayed packets splice directly together and produce audible
+            # clicks/scratching in the mixed recording.
+            vc.listen(voice_recv.SilenceGeneratorSink(voice_recv.BasicSink(sink.write)))  # type: ignore[attr-defined]
         except Exception:
             logger.exception("Failed to start listening; disconnecting")
             await vc.disconnect(force=True)
