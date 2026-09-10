@@ -685,7 +685,6 @@ ccdb start --cogs-dir ./my-cogs/
 ```python
 from discord.ext import commands
 
-
 class GreeterCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -694,7 +693,6 @@ class GreeterCog(commands.Cog):
     async def on_member_join(self, member):
         channel = self.bot.get_channel(self.bot.channel_id)
         await channel.send(f"Welcome {member.mention}!")
-
 
 async def setup(bot, runner, components):
     await bot.add_cog(GreeterCog(bot))
@@ -748,7 +746,6 @@ runner = ClaudeRunner(
     working_dir="/path/to/your/project",
 )
 
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
@@ -758,7 +755,6 @@ async def on_ready():
         claude_channel_id=int(os.environ["DISCORD_CHANNEL_ID"]),
         allowed_user_ids={int(os.environ["DISCORD_OWNER_ID"])},
     )
-
 
 asyncio.run(bot.start(os.environ["DISCORD_BOT_TOKEN"]))
 ```
@@ -777,7 +773,7 @@ uv lock --upgrade-package claude-code-discord-bridge && uv sync
 await setup_bridge(
     bot,
     runner,
-    claude_channel_id=YOUR_CHANNEL_ID,  # プライマリ（スレッド作成のフォールバック）
+    claude_channel_id=YOUR_CHANNEL_ID,       # プライマリ（スレッド作成のフォールバック）
     claude_channel_ids={
         YOUR_CHANNEL_ID,
         YOUR_CHANNEL_ID_2,
@@ -798,7 +794,7 @@ await setup_bridge(
 await setup_bridge(
     bot,
     runner,
-    claude_channel_ids={111},  # #111: メンション不要。全メッセージが Claude に渡る
+    claude_channel_ids={111},          # #111: メンション不要。全メッセージが Claude に渡る
     allowed_user_ids={int(os.environ["DISCORD_OWNER_ID"])},
 )
 # ギルド内のそれ以外の場所: 「@YourBot どう思う?」でセッションが始まる。それ以外は無反応。
@@ -1034,14 +1030,12 @@ triggers = {
     ),
 }
 
-await bot.add_cog(
-    WebhookTriggerCog(
-        bot=bot,
-        runner=runner,
-        triggers=triggers,
-        channel_ids={YOUR_CHANNEL_ID},
-    )
-)
+await bot.add_cog(WebhookTriggerCog(
+    bot=bot,
+    runner=runner,
+    triggers=triggers,
+    channel_ids={YOUR_CHANNEL_ID},
+))
 ```
 
 **セキュリティ:** プロンプトはサーバー側で定義。Webhook はどのトリガーを発火するかを選択するだけ — 任意のプロンプトインジェクションはなし。
@@ -1110,7 +1104,7 @@ config = UpgradeConfig(
     trigger_prefix="🔄 bot-upgrade",
     working_dir="/home/user/my-bot",
     restart_command=["sudo", "systemctl", "restart", "my-bot.service"],
-    restart_approval=True,  # スレッドの ✅ リアクション、またはチャンネルのボタンで承認
+    restart_approval=True,       # スレッドの ✅ リアクション、またはチャンネルのボタンで承認
     slash_command_enabled=True,  # /upgrade スラッシュコマンドを有効化（オプトイン、デフォルト False）
 )
 

@@ -558,7 +558,6 @@ ccdb start --cogs-dir ./my-cogs/
 ```python
 from discord.ext import commands
 
-
 class GreeterCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -567,7 +566,6 @@ class GreeterCog(commands.Cog):
     async def on_member_join(self, member):
         channel = self.bot.get_channel(self.bot.channel_id)
         await channel.send(f"Welcome {member.mention}!")
-
 
 async def setup(bot, runner, components):
     await bot.add_cog(GreeterCog(bot))
@@ -619,7 +617,6 @@ runner = ClaudeRunner(
     working_dir="/path/to/your/project",
 )
 
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
@@ -629,7 +626,6 @@ async def on_ready():
         claude_channel_id=int(os.environ["DISCORD_CHANNEL_ID"]),
         allowed_user_ids={int(os.environ["DISCORD_OWNER_ID"])},
     )
-
 
 asyncio.run(bot.start(os.environ["DISCORD_BOT_TOKEN"]))
 ```
@@ -648,7 +644,7 @@ uv lock --upgrade-package claude-code-discord-bridge && uv sync
 await setup_bridge(
     bot,
     runner,
-    claude_channel_id=int(os.environ["DISCORD_CHANNEL_ID"]),  # 主频道（线程创建的回退目标）
+    claude_channel_id=int(os.environ["DISCORD_CHANNEL_ID"]),   # 主频道（线程创建的回退目标）
     claude_channel_ids={
         int(os.environ["DISCORD_CHANNEL_ID"]),
         int(os.environ["DISCORD_CHANNEL_ID_2"]),
@@ -872,14 +868,12 @@ triggers = {
     ),
 }
 
-await bot.add_cog(
-    WebhookTriggerCog(
-        bot=bot,
-        runner=runner,
-        triggers=triggers,
-        channel_ids={YOUR_CHANNEL_ID},
-    )
-)
+await bot.add_cog(WebhookTriggerCog(
+    bot=bot,
+    runner=runner,
+    triggers=triggers,
+    channel_ids={YOUR_CHANNEL_ID},
+))
 ```
 
 **安全性：** 提示在服务器端定义。Webhook 只选择触发哪个触发器——不存在任意提示注入。
@@ -948,7 +942,7 @@ config = UpgradeConfig(
     trigger_prefix="🔄 bot-upgrade",
     working_dir="/home/user/my-bot",
     restart_command=["sudo", "systemctl", "restart", "my-bot.service"],
-    restart_approval=True,  # 在线程中 ✅ 反应，或点击频道中的按钮
+    restart_approval=True,       # 在线程中 ✅ 反应，或点击频道中的按钮
     slash_command_enabled=True,  # 启用 /upgrade 斜杠命令（选择启用，默认 False）
 )
 
