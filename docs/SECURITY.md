@@ -116,12 +116,14 @@ Extraction never destroys the upload it came from. The original is deleted only 
 ### Stripped Environment Variables (runner.py)
 
 ```python
-_STRIPPED_ENV_KEYS = frozenset({
-    "CLAUDECODE",           # Nesting detection
-    "DISCORD_BOT_TOKEN",    # Bot authentication
-    "DISCORD_TOKEN",        # Alternative token var
-    "API_SECRET_KEY",       # API authentication
-})
+_STRIPPED_ENV_KEYS = frozenset(
+    {
+        "CLAUDECODE",  # Nesting detection
+        "DISCORD_BOT_TOKEN",  # Bot authentication
+        "DISCORD_TOKEN",  # Alternative token var
+        "API_SECRET_KEY",  # API authentication
+    }
+)
 ```
 
 These variables are removed from the subprocess environment before spawning Claude Code:

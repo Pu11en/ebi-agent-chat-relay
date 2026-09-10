@@ -48,6 +48,13 @@ Three measured properties of the SDK shape everything below.
   credentials (``DEEPSEEK_API_KEY``, ``ZAI_API_KEY``) deliberately survive: a
   route's ``apiKeyEnv`` names them, and the runtime resolves that reference
   itself.
+
+* **There is no wire-level cancel.** The bundled SDK runtime implements only
+  ``initialize``, ``session/prompt``, and ``shutdown``, so the Stop button ends
+  the Discord turn (the queue is woken and the thread reports "Stopped by the
+  user") while the shared runtime finishes the agent's work. The same gap makes
+  image attachments unsupported: the composition mounts no attachment store, so
+  the runner refuses to pretend — it warns that the image was not sent instead.
 """
 
 from __future__ import annotations
@@ -356,6 +363,8 @@ class DshRunner:
         self.dsh_home = dsh_home
         self._patch_path = patch_path
         self._active_session: str | None = None
+        self._queue: asyncio.Queue[Any] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._cancelled = threading.Event()
         self._turn_lock = threading.Lock()
 
@@ -460,6 +469,21 @@ class DshRunner:
     ) -> AsyncGenerator[StreamEvent, None]:
         """Run one turn and yield the events Discord renders."""
         dsh_session, is_new_session = self._session_for_turn(session_id)
+        if self.images:
+            # The bundled composition mounts no attachment store, so the runtime
+            # advertises no image input; a dropped image is a silent answer to a
+            # question the model never saw, which is worse than saying so.
+            yield StreamEvent(
+                raw={},
+                message_type=MessageType.SYSTEM,
+                # Deliberately session-less: the processor turns this shape into
+                # a visible warning notice instead of session bookkeeping.
+                text=(
+                    "The dsh backend cannot see image attachments yet — "
+                    f"{len(self.images)} image(s) were not sent to the model. "
+                    "Use the claude backend, or text."
+                ),
+            )
         if not prompt.strip():
             yield self._error_event(dsh_session, "Empty prompt")
             return
@@ -475,6 +499,8 @@ class DshRunner:
         queue: asyncio.Queue[Any] = asyncio.Queue()
         loop = asyncio.get_running_loop()
         self._cancelled.clear()
+        self._queue = queue
+        self._loop = loop
         with self._turn_lock:
             self._active_session = dsh_session
 
@@ -508,40 +534,49 @@ class DshRunner:
             if timed_out:
                 error = f"Timed out after {self.timeout_seconds} seconds"
                 asyncio.ensure_future(self.interrupt())
-            # Give the worker a bounded chance to unwind; a shared runtime means
-            # there is no process to kill, and abandoning the thread is not a
-            # licence to block the event loop waiting for it.
-            await asyncio.wait({worker}, timeout=5.0)
-            if not worker.done():
+            # A stopped turn must not wait out the worker: the user already
+            # asked for it to end. A normal turn gets a bounded chance to
+            # unwind; abandoning the thread is never a licence to block the
+            # event loop waiting for it.
+            if self._cancelled.is_set():
                 worker.cancel()
+            else:
+                await asyncio.wait({worker}, timeout=5.0)
+                if not worker.done():
+                    worker.cancel()
             with self._turn_lock:
                 self._active_session = None
+                self._queue = None
+                self._loop = None
 
         if self._cancelled.is_set() and error is None:
             error = "Stopped by the user"
         yield self._final_event(dsh_session, error=error)
 
     async def interrupt(self) -> None:
-        """Ask the runtime to cancel the in-flight turn."""
+        """End the Discord-side turn now.
+
+        The bundled SDK runtime implements only ``initialize``, ``session/prompt``
+        and ``shutdown`` — measured in the runtime source, there is no cancel
+        method on the wire — so "stop" cannot stop the agent itself. What it
+        does stop is the Discord turn: the pending queue is woken immediately,
+        streaming ends, and the thread reports "Stopped by the user" while the
+        shared runtime finishes the agent's work in the background. A later
+        turn on the same session waits for that work to quiesce.
+        """
         self._cancelled.set()
-        session_id = self._active_session
-        if not session_id:
+        with self._turn_lock:
+            queue = self._queue
+            loop = self._loop
+        if queue is None or loop is None:
             return
         try:
-            runtime = await asyncio.to_thread(self._ensure_runtime)
-        except Exception:  # noqa: BLE001 - nothing running to cancel
+            loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+        except RuntimeError:  # the loop is already closing
             return
-        try:
-            await asyncio.to_thread(
-                runtime.client.request,
-                "session/cancel",
-                {"sessionId": session_id},
-            )
-        except Exception as exc:  # noqa: BLE001 - the turn still ends by itself
-            logger.debug("DeepSeek cancel request failed: %s", exc)
 
     async def kill(self) -> None:
-        """Stop the turn. The runtime is shared, so it is cancelled, not killed."""
+        """Stop the turn. The shared runtime cannot be killed, only let run."""
         await self.interrupt()
 
     async def inject_tool_result(self, request_id: str, data: dict) -> None:

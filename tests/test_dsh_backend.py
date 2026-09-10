@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,7 +18,7 @@ import pytest
 
 from claude_code_core import dsh_backend
 from claude_code_core.dsh_backend import DshRunner
-from claude_code_core.types import MessageType, ToolCategory
+from claude_code_core.types import ImageData, MessageType, ToolCategory
 
 
 @dataclass
@@ -371,21 +372,41 @@ async def test_timeout_interrupts_and_reports(monkeypatch):
     events = await _collect(runner, "hi")
 
     assert "Timed out" in (events[-1].error or "")
-    # The cancel is issued from a task started as the turn unwinds.
+    # The SDK runtime has no cancel method; the timeout path only wakes the
+    # queue and closes the turn, it never sends a wire request.
     for _ in range(5):
         await asyncio.sleep(0)
-    assert [method for method, _ in runtime.client.requests] == ["session/cancel"]
+    assert runtime.client.requests == []
 
 
-async def test_interrupt_sends_a_cancel_for_the_active_session(monkeypatch):
-    runner = DshRunner()
-    runtime = FakeRuntime(FakeSession())
+async def test_interrupt_ends_a_pending_turn_promptly(monkeypatch):
+    """The SDK has no cancel method, so Stop must at least wake the turn."""
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingSession(FakeSession):
+        def run(self, prompt, *, on_notification=None):
+            started.set()
+            release.wait(timeout=10)
+            return FakeResult(session_id="x")
+
+    runner = DshRunner(timeout_seconds=30)
+    runtime = FakeRuntime(BlockingSession())
     monkeypatch.setattr(runner, "_ensure_runtime", lambda: runtime)
-    runner._active_session = "session-live"
+
+    task = asyncio.create_task(_collect(runner, "hi"))
+    for _ in range(200):  # the loop must be free for the turn to start
+        if started.is_set():
+            break
+        await asyncio.sleep(0.05)
+    assert started.is_set(), "the worker never started"
 
     await runner.interrupt()
+    events = await asyncio.wait_for(task, timeout=5)
+    release.set()
 
-    assert runtime.client.requests == [("session/cancel", {"sessionId": "session-live"})]
+    assert "Stopped by the user" in (events[-1].error or "")
+    assert runtime.client.requests == []  # measured: no cancel exists on the wire
 
 
 async def test_interrupt_without_an_active_turn_is_a_noop(monkeypatch):
@@ -396,6 +417,19 @@ async def test_interrupt_without_an_active_turn_is_a_noop(monkeypatch):
     await runner.interrupt()
 
     assert runtime.client.requests == []
+
+
+async def test_images_are_warned_about_instead_of_silently_dropped(monkeypatch):
+    """The bundled composition has no attachment store; dropping is a lie."""
+    runner = DshRunner(images=[ImageData(data="iVBORw0KGgo=", media_type="image/png")])
+    runtime = FakeRuntime(FakeSession())
+    monkeypatch.setattr(runner, "_ensure_runtime", lambda: runtime)
+
+    events = await _collect(runner, "look at this")
+
+    warning = next(e for e in events if e.text and "image" in e.text.lower())
+    assert warning.session_id is None  # the processor shows this as a notice
+    assert "not sent to the model" in warning.text
 
 
 # ── Standing instruction ────────────────────────────────────

@@ -76,6 +76,9 @@ fi
 
 # ── Step 2: Sync dependencies ──
 echo "[pre-start] Syncing dependencies..." >&2
+# The `deepseek` extra carries the DeepSeek Harness SDK the `dsh` backend
+# launches. Without it here, the next uv sync would prune the SDK and every
+# dsh thread would fail with "install it with uv sync --extra deepseek".
 "$UV" sync --extra voice --extra deepseek 2>&1
 
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
