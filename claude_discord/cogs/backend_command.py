@@ -11,6 +11,7 @@ from discord.app_commands import Choice
 from discord.ext import commands
 
 from claude_code_core.codex_runner import VALID_CODEX_EFFORTS
+from claude_code_core.dsh_backend import VALID_EFFORTS as VALID_DSH_EFFORTS
 from claude_code_core.local_backend import pull_ollama_model, validate_ollama_model_name
 
 from ..backend_settings import (
@@ -19,7 +20,7 @@ from ..backend_settings import (
     CODEX_STATUS_MODES,
     BackendSettings,
 )
-from ..model_catalog import claude_model_choices, codex_model_choices
+from ..model_catalog import claude_model_choices, codex_model_choices, dsh_model_choices
 
 if TYPE_CHECKING:
     from ..backend_factory import BackendFactory
@@ -34,12 +35,15 @@ VALID_EFFORTS: dict[str, frozenset[str]] = {
     "claude": frozenset({"low", "medium", "high", "max"}),
     "codex": VALID_CODEX_EFFORTS,
     "local": VALID_CODEX_EFFORTS,
+    # DeepSeek's adapter accepts a narrower ladder than Codex's.
+    "dsh": VALID_DSH_EFFORTS,
 }
 
 EFFORT_ORDER: dict[str, list[str]] = {
     "claude": ["low", "medium", "high", "max"],
     "codex": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     "local": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+    "dsh": ["low", "medium", "high"],
 }
 
 # Suggestions only: the model fields remain free text.
@@ -61,6 +65,16 @@ SUGGESTED_MODELS: dict[str, list[tuple[str, str]]] = {
     "local": [
         ("gpt-oss:120b", "gpt-oss 120B (tool use, needs real VRAM)"),
         ("qwen3.5:35b", "Qwen3.5 35B"),
+    ],
+    # Fallback only — the live list is the union of every configured route's
+    # own /models endpoint (dsh_model_choices). These are the ids the bundled
+    # harness composition ships, so they stay correct with no network access.
+    "dsh": [
+        ("deepseek-v4-flash", "DeepSeek-V4-Flash — fast, the harness default"),
+        ("deepseek-v4-pro", "DeepSeek-V4-Pro — most capable"),
+        ("deepseek-v4-flash-vision-exp", "DeepSeek-V4-Flash vision (images)"),
+        ("glm-5.2", "GLM-5.2 on the zai route (needs ZAI_API_KEY)"),
+        ("glm-5-turbo", "GLM-5-Turbo — fast GLM"),
     ],
 }
 
@@ -153,7 +167,7 @@ class BackendCommandCog(commands.Cog):
         ],
     )
     @app_commands.describe(
-        name="claude, codex, local, or agui. Omit to show current setting.",
+        name="claude, codex, local, agui, or dsh. Omit to show current setting.",
         scope=(
             "thread: only this thread; global: server-wide default. "
             "Default: thread when invoked in a thread, otherwise global."
@@ -216,7 +230,7 @@ class BackendCommandCog(commands.Cog):
             if resolved_scope == SCOPE_THREAD and target_thread_id is not None
             else "**globally**"
         )
-        emoji = {"codex": "🌀", "local": "🏠", "agui": "🔌"}.get(name, "🤖")
+        emoji = {"codex": "🌀", "local": "🏠", "agui": "🔌", "dsh": "🐳"}.get(name, "🤖")
         await interaction.response.send_message(
             f"{emoji} Backend set to `{name}` {scope_label}. Next session will use it.",
             ephemeral=False,
@@ -240,6 +254,8 @@ class BackendCommandCog(commands.Cog):
             suggestions = await claude_model_choices(fallback=SUGGESTED_MODELS["claude"])
         elif backend == "codex":
             suggestions = codex_model_choices(fallback=SUGGESTED_MODELS["codex"])
+        elif backend == "dsh":
+            suggestions = await dsh_model_choices(fallback=SUGGESTED_MODELS["dsh"])
         else:
             suggestions = SUGGESTED_MODELS.get(backend, [])
         current_lower = current.lower()

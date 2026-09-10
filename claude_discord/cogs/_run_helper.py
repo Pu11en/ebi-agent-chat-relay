@@ -203,6 +203,21 @@ async def _build_system_context(config: RunConfig) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
+def _merge_system_context(base: str | None, built: str | None) -> str | None:
+    """Prepend the runner's standing instruction to the per-turn context.
+
+    ``clone(append_system_prompt=...)`` replaces rather than merges, and the
+    per-turn context is never None on a real chat turn (the file-delivery
+    marker is unconditional), so an operator's ``APPEND_SYSTEM_PROMPT`` would
+    otherwise never reach the model. When there is no built context the result
+    is None — nothing is cloned, and the runner already carries its own
+    standing instruction.
+    """
+    if not built or not isinstance(base, str) or not base.strip():
+        return built
+    return f"{base.strip()}\n\n{built}"
+
+
 async def _cleanup_session_worktree(config: RunConfig) -> None:
     """Remove the session worktree for this thread if it is clean.
 
@@ -391,13 +406,18 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
         if record.working_dir:
             config.runner.working_dir = record.working_dir
 
-    system_context = await _build_system_context(config)
+    system_context = _merge_system_context(
+        getattr(config.runner, "append_system_prompt", None),
+        await _build_system_context(config),
+    )
     runner = (
         config.runner.clone(append_system_prompt=system_context)
         if system_context
         else config.runner
     )
-    # Inject per-invocation images (not inherited by runner.clone()).
+    # Set the per-invocation images directly: they are resolved after the
+    # runner was built, so clone() (which carries the old runner's images)
+    # cannot be the channel for them.
     if config.images:
         runner.images = config.images
 

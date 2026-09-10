@@ -156,7 +156,10 @@ async def _prepend_previews(files: list[discord.File]) -> list[discord.File]:
     result: list[discord.File] = []
     for f in files:
         if is_renderable(f.filename):
-            with tempfile.NamedTemporaryFile(suffix=Path(f.filename).suffix, delete=False) as tmp:
+            # Keep every suffix: the renderer routes on the temp file's name,
+            # so `x.plan.json` must still end in `.plan.json` after the copy.
+            suffix = "".join(Path(f.filename).suffixes)
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 pos = f.fp.tell()
                 f.fp.seek(0)
                 tmp.write(f.fp.read())

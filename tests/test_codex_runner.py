@@ -967,3 +967,25 @@ class TestCodexRunnerStdin:
         assert call_kwargs["stdin"] == _asyncio.subprocess.PIPE
         assert written == [large_prompt.encode()]
         mock_stdin.close.assert_called_once()
+
+
+class TestImageHandling:
+    """Codex is driven on stdin text only — an image must not vanish silently."""
+
+    @pytest.mark.asyncio
+    async def test_images_yield_a_visible_warning_not_a_silent_drop(self) -> None:
+        from claude_code_core.types import ImageData
+
+        runner = CodexRunner(
+            command="codex", images=[ImageData(data="aW1hZ2U=", media_type="image/png")]
+        )
+        gen = runner.run("describe this picture")
+
+        event = await anext(gen)
+        assert event.message_type == MessageType.SYSTEM
+        assert event.session_id is None
+        assert "image" in (event.text or "").lower()
+
+        # The warning is yielded before any subprocess spawn; closing here
+        # proves the generator never reached spawn.
+        await gen.aclose()

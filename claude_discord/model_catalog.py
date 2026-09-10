@@ -311,3 +311,115 @@ def codex_model_choices(
         logger.warning("Codex model discovery failed, using static suggestions: %s", exc)
         return fallback
     return choices or fallback
+
+
+# ── DSH routes (DeepSeek and Z.ai) ─────────────────────────────────────
+#
+# The `dsh` backend hosts more than one provider, so its autocomplete is the
+# union of what each route's vendor can serve. Both endpoints answer an
+# OpenAI-shaped `GET /models`, so one parser serves both; what differs is the
+# base URL and which credential the route resolves.
+#
+# Like every other discovery path here, this is a convenience with a fallback:
+# a missing key, no network, or a disabled lookup all leave the static
+# suggestions in charge.
+
+#: Both routes answer an OpenAI-shaped model list here.
+DSH_MODELS_PATH = "/models"
+
+#: ``(route, default base URL, credential env var, base-URL override env var)``
+DSH_ROUTES: tuple[tuple[str, str, str, str], ...] = (
+    ("deepseek-official", "https://api.deepseek.com", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"),
+    ("zai", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY", "ZAI_BASE_URL"),
+)
+
+_dsh_cache: tuple[list[tuple[str, str]] | None, float] | None = None
+_dsh_cache_lock: asyncio.Lock | None = None
+
+
+def reset_dsh_cache() -> None:
+    """Drop the memoised DSH-route lookup (tests)."""
+    global _dsh_cache
+    _dsh_cache = None
+
+
+def _dsh_lock() -> asyncio.Lock:
+    """Lazily create the lock so importing this module needs no event loop."""
+    global _dsh_cache_lock
+    if _dsh_cache_lock is None:
+        _dsh_cache_lock = asyncio.Lock()
+    return _dsh_cache_lock
+
+
+def parse_dsh_models(payload: Mapping[str, Any], route: str) -> list[tuple[str, str]]:
+    """Turn an OpenAI-shaped ``/models`` payload into ``(id, description)``."""
+    choices: list[tuple[str, str]] = []
+    for entry in payload.get("data", []):
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        choices.append((model_id, f"{route} ({entry.get('owned_by') or route})"))
+    return choices
+
+
+def _fetch_dsh_choices(env: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Blocking lookup across every configured route. Raises if none answer."""
+    choices: list[tuple[str, str]] = []
+    errors: list[str] = []
+    for route, default_base, key_var, base_var in DSH_ROUTES:
+        api_key = env.get(key_var)
+        if not api_key:
+            errors.append(f"{route}: no {key_var}")
+            continue
+        base_url = (env.get(base_var) or default_base).rstrip("/")
+        try:
+            payload = _get_json(
+                base_url + DSH_MODELS_PATH,
+                {"Authorization": f"Bearer {api_key}", "accept": "application/json"},
+                REQUEST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # network, auth, malformed payload
+            errors.append(f"{route}: {exc}")
+            continue
+        choices.extend(parse_dsh_models(payload, route))
+    if not choices:
+        raise LookupError("; ".join(errors) or "no DSH route credentials available")
+    return choices
+
+
+async def dsh_model_choices(
+    *,
+    fallback: list[tuple[str, str]],
+    env: Mapping[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    """Suggestions for the ``dsh`` autocomplete: every route's models, cached.
+
+    A route with no credential is skipped rather than failing the lookup, so a
+    DeepSeek-only install still gets a dropdown that works.
+    """
+    global _dsh_cache
+    env = os.environ if env is None else env
+    if env.get("CCDB_MODEL_DISCOVERY", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return fallback
+
+    async with _dsh_lock():
+        now = time.monotonic()
+        if _dsh_cache is not None and now < _dsh_cache[1]:
+            cached = _dsh_cache[0]
+            return cached if cached is not None else fallback
+
+        try:
+            choices = await asyncio.to_thread(_fetch_dsh_choices, env)
+        except Exception as exc:
+            logger.warning("DSH model discovery failed, using static suggestions: %s", exc)
+            _dsh_cache = (None, now + FAILURE_TTL_SECONDS)
+            return fallback
+
+        if not choices:
+            _dsh_cache = (None, now + FAILURE_TTL_SECONDS)
+            return fallback
+
+        _dsh_cache = (choices, now + CACHE_TTL_SECONDS)
+        return choices
