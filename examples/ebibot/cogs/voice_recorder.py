@@ -17,10 +17,11 @@ Requires:
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import subprocess
+import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -38,58 +39,87 @@ _CHANNELS = 2
 _SAMPLE_WIDTH = 2
 
 
+_FRAME_BYTES = _CHANNELS * _SAMPLE_WIDTH  # bytes per stereo sample
+# If a stream's RTP clock drifts this far from wall-clock placement (speaker
+# rejoined, SSRC reused, timestamp reset), re-anchor it to wall clock.
+_REANCHOR_SAMPLES = 2 * _SAMPLE_RATE
+
+
 class _MixedPCMSink:
-    """A voice-recv AudioSink that appends every packet's PCM to one buffer.
+    """A voice-recv AudioSink that places each frame on a timeline by RTP timestamp.
 
-    voice_recv delivers per-user packets; we don't try to align them — for a
-    single-channel "record everything" use case, concatenating packets in
-    arrival order produces intelligible audio for content-mining purposes.
+    Previously frames were appended in arrival order, with SilenceGeneratorSink
+    inserting 20ms of digital silence whenever a packet was merely *late*. The
+    late packet was then appended after that silence, so every bit of network
+    jitter cut a hard gap into the middle of speech (audible as clicks and
+    screeches) and pushed everything after it out of place.
 
-    ``write`` is called from the library's PacketRouter thread for real audio
-    and, separately, from SilenceGeneratorSink's own background thread for
-    synthetic silence frames — both can land concurrently, so writes to the
-    shared buffer must be serialized with a real thread lock (an asyncio.Lock
-    is a no-op guard here since neither caller runs inside an event loop).
+    Now each SSRC gets its own track. A stream's first frame is anchored at
+    its wall-clock arrival time; every later frame is written at
+    ``anchor + (rtp_ts - first_ts)``, so late frames land where they belong
+    and real pauses become zeros. Tracks are summed into one mix at the end.
+
+    ``write`` runs on the library's PacketRouter thread, so the lock is a real
+    thread lock (an asyncio.Lock would guard nothing here).
     """
 
     def __init__(self) -> None:
-        self.buffer = io.BytesIO()
         self._lock = threading.Lock()
+        self._t0 = time.monotonic()
+        self._tracks: dict[int, bytearray] = {}
+        self._anchors: dict[int, tuple[int, int]] = {}  # ssrc -> (offset, first_ts)
 
     def wants_opus(self) -> bool:
         return False
 
     def write(self, user: discord.User | None, data) -> None:  # type: ignore[no-untyped-def]
         pcm = getattr(data, "pcm", None)
-        if pcm:
-            with self._lock:
-                self.buffer.write(pcm)
+        packet = getattr(data, "packet", None)
+        if not pcm or packet is None:
+            return
+        ssrc, ts = packet.ssrc, packet.timestamp
+        wall = int((time.monotonic() - self._t0) * _SAMPLE_RATE)
+        with self._lock:
+            anchor = self._anchors.get(ssrc)
+            if anchor is not None:
+                offset = anchor[0] + ((ts - anchor[1]) % 2**32)
+            if anchor is None or abs(offset - wall) > _REANCHOR_SAMPLES:
+                self._anchors[ssrc] = (wall, ts)
+                offset = wall
+            track = self._tracks.setdefault(ssrc, bytearray())
+            start = offset * _FRAME_BYTES
+            end = start + len(pcm)
+            if len(track) < end:
+                track.extend(bytes(end - len(track)))
+            track[start:end] = pcm
+
+    @property
+    def has_audio(self) -> bool:
+        return any(self._tracks.values())
+
+    def tracks(self) -> list[bytes]:
+        """One int16 stereo PCM stream per speaker, all aligned at t=0."""
+        with self._lock:
+            return [bytes(t) for t in self._tracks.values() if t]
 
     def cleanup(self) -> None:
         pass
 
 
-def _encode_mp3(pcm_bytes: bytes, out_path: Path) -> None:
-    """Pipe raw PCM through ffmpeg to produce an MP3."""
+def _encode_mp3(tracks: list[bytes], out_path: Path) -> None:
+    """Mix per-speaker raw PCM tracks and encode to MP3 with ffmpeg."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "s16le",
-        "-ar",
-        str(_SAMPLE_RATE),
-        "-ac",
-        str(_CHANNELS),
-        "-i",
-        "pipe:0",
-        "-codec:a",
-        "libmp3lame",
-        "-qscale:a",
-        "2",
-        str(out_path),
-    ]
-    proc = subprocess.run(cmd, input=pcm_bytes, capture_output=True, check=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        cmd = ["ffmpeg", "-y"]
+        for i, pcm in enumerate(tracks):
+            raw = Path(tmp) / f"track{i}.pcm"
+            raw.write_bytes(pcm)
+            cmd += ["-f", "s16le", "-ar", str(_SAMPLE_RATE), "-ac", str(_CHANNELS), "-i", str(raw)]
+        if len(tracks) > 1:
+            # normalize=0: plain sum, so one speaker isn't quieter because another joined
+            cmd += ["-filter_complex", f"amix=inputs={len(tracks)}:duration=longest:normalize=0"]
+        cmd += ["-codec:a", "libmp3lame", "-qscale:a", "2", str(out_path)]
+        proc = subprocess.run(cmd, capture_output=True, check=False)
     if proc.returncode != 0:
         stderr = proc.stderr.decode(errors="replace")
         logger.error("ffmpeg failed (%d): %s", proc.returncode, stderr)
@@ -160,6 +190,10 @@ def _patch_opus_decoder_error_swallowing() -> None:
         data = getattr(packet, "decrypted_data", None)
         if data and data[-2:] == _DAVE_MAGIC:
             packet.decrypted_data = _dave_decrypt(self, data)
+            key = "decrypted" if packet.decrypted_data else "undecryptable"
+        else:
+            key = "plain" if data else "empty"
+        _dave_stats[key] = _dave_stats.get(key, 0) + 1
         return original_push_packet(self, packet)
 
     _vr_opus.PacketDecoder.push_packet = push_packet_with_dave  # type: ignore[method-assign]
@@ -167,6 +201,9 @@ def _patch_opus_decoder_error_swallowing() -> None:
 
 
 _DAVE_MAGIC = b"\xfa\xfa"
+# Per-recording counters, logged on stop — tells us whether leftover noise is
+# frames we couldn't decrypt or something downstream.
+_dave_stats: dict[str, int] = {}
 
 
 def _dave_decrypt(decoder, data: bytes) -> bytes:  # type: ignore[no-untyped-def]
@@ -253,6 +290,7 @@ class VoiceRecorderCog(commands.Cog):
             return
 
         _patch_opus_decoder_error_swallowing()
+        _dave_stats.clear()
 
         try:
             vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
@@ -262,11 +300,9 @@ class VoiceRecorderCog(commands.Cog):
 
         sink = _MixedPCMSink()
         try:
-            # SilenceGeneratorSink fills gaps from packet loss/jitter with
-            # silence frames before they reach our sink; without it, dropped
-            # or delayed packets splice directly together and produce audible
-            # clicks/scratching in the mixed recording.
-            vc.listen(voice_recv.SilenceGeneratorSink(voice_recv.BasicSink(sink.write)))  # type: ignore[attr-defined]
+            # No SilenceGeneratorSink: the sink places frames by RTP timestamp,
+            # so gaps are already silence and late packets aren't cut apart.
+            vc.listen(voice_recv.BasicSink(sink.write))  # type: ignore[attr-defined]
         except Exception:
             logger.exception("Failed to start listening; disconnecting")
             await vc.disconnect(force=True)
@@ -297,16 +333,22 @@ class VoiceRecorderCog(commands.Cog):
         except Exception:
             logger.exception("Disconnect from voice failed")
 
-        if sink is None or sink.buffer.tell() == 0:
+        if sink is None or not sink.has_audio:
             logger.info("No audio captured; nothing to save")
             return
 
         stamp = (started or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
         out_path = AUDIO_OUT_DIR / f"{stamp}.mp3"
-        pcm = sink.buffer.getvalue()
+        tracks = sink.tracks()
+        logger.info("DAVE frame stats: %s", _dave_stats)
         try:
-            await asyncio.to_thread(_encode_mp3, pcm, out_path)
-            logger.info("Voice recording saved: %s (%d bytes PCM)", out_path, len(pcm))
+            await asyncio.to_thread(_encode_mp3, tracks, out_path)
+            logger.info(
+                "Voice recording saved: %s (%d tracks, %d bytes PCM)",
+                out_path,
+                len(tracks),
+                sum(len(t) for t in tracks),
+            )
         except Exception:
             logger.exception("Failed to encode/save MP3")
 
