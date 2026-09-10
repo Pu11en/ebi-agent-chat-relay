@@ -764,3 +764,15 @@ def test_unwritable_patch_location_does_not_break_the_backend(tmp_path):
     blocked = tmp_path / "file-not-dir"
     blocked.write_text("x", encoding="utf-8")
     assert ensure_patch_file(blocked / "providers.patch.yml") is None
+
+
+def test_patch_path_env_override_is_read_when_used(monkeypatch, tmp_path):
+    """A live config change must take effect without a restart."""
+    from claude_code_core.dsh_backend import DEFAULT_PATCH_PATH, resolve_patch_path
+
+    monkeypatch.delenv("CCDB_DSH_PATCH", raising=False)
+    assert resolve_patch_path() == DEFAULT_PATCH_PATH
+
+    custom = tmp_path / "routes.yml"
+    monkeypatch.setenv("CCDB_DSH_PATCH", str(custom))
+    assert resolve_patch_path() == custom

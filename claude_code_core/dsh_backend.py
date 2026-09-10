@@ -29,7 +29,10 @@ Three measured properties of the SDK shape everything below.
 * **A runtime outlives one turn.** A DSH session continues across turns only
   while the runtime that owns it is alive, and a runtime is initialised with one
   route, so this module keeps one runtime per (provider, model, working
-  directory) for the bot's lifetime. Reusing a session id whose persisted log
+  directory) for the bot's lifetime. Measured at 382 MB RSS each, and a
+  thread with its own worktree is a different working directory, so the
+  footprint scales with concurrent threads and with the models in use.
+  Reusing a session id whose persisted log
   was written by an *earlier* process is refused ("already has a persisted log
   on disk that does not match this lineage"), so the runner mints a fresh
   session id whenever it is asked to continue one this process has never run. A
@@ -67,7 +70,7 @@ import logging
 import os
 import threading
 import uuid
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -88,12 +91,13 @@ __all__ = [
     "DEFAULT_PROVIDER",
     "DEFAULT_PATCH_CONTENT",
     "MODEL_PROVIDER_PREFIXES",
-    "PATCH_PATH",
+    "DEFAULT_PATCH_PATH",
     "SDK_EXTRA_HINT",
     "DshRunner",
     "dsh_sdk_available",
     "ensure_patch_file",
     "reset_runtimes",
+    "resolve_patch_path",
     "resolve_provider",
     "shutdown_runtimes",
 ]
@@ -118,14 +122,26 @@ MODEL_PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
 #: Reasoning effort levels the DeepSeek adapter accepts.
 VALID_EFFORTS = frozenset({"low", "medium", "high"})
 
-#: Where the extra-route patch layer lives (``CCDB_DSH_PATCH`` overrides it).
-PATCH_PATH = Path(
-    os.environ.get("CCDB_DSH_PATCH")
-    or Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+#: Where the extra-route patch layer lives when nothing overrides it.
+DEFAULT_PATCH_PATH = (
+    Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     / "ccdb"
     / "dsh"
     / "providers.patch.yml"
 )
+
+
+def resolve_patch_path(env: Mapping[str, str] | None = None) -> Path:
+    """The patch layer to apply, with ``CCDB_DSH_PATCH`` read *now*.
+
+    Every other ccdb setting is resolved when it is used rather than when the
+    module is imported (see the CLI env overlay), so pointing a running bot at
+    a different route file does not need a restart to be believed.
+    """
+    env = os.environ if env is None else env
+    override = (env.get("CCDB_DSH_PATCH") or "").strip()
+    return Path(override) if override else DEFAULT_PATCH_PATH
+
 
 #: Written on first use when no patch file exists, so a fresh install can run
 #: GLM without anyone hand-writing YAML. DSH applies this as a patch layer over
@@ -248,7 +264,7 @@ def ensure_patch_file(path: Path | None = None) -> Path | None:
     every future route) available without hand-written YAML, while leaving the
     file editable afterwards.
     """
-    target = PATCH_PATH if path is None else path
+    target = resolve_patch_path() if path is None else path
     try:
         if target.exists():
             return target
