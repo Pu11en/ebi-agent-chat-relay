@@ -24,8 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected outright, and DeepSeek and Z.ai both serve Chat Completions only. Two measured
   consequences are documented rather than papered over: a DSH session continues only while the
   runtime that owns it is alive, so a restart starts a thread fresh instead of failing (Claude Code
-  and Codex resume), and Stop sends `session/cancel` because the runtime is shared by every thread
-  on that route and model. The runtime inherits the bot's environment, so ccdb scrubs the
+  and Codex resume), and the SDK runtime implements no cancel method, so Stop ends the Discord
+  turn while the shared runtime finishes the agent's work (image attachments are likewise refused
+  with a warning rather than silently dropped). The runtime inherits the bot's environment, so ccdb scrubs the
   credentials it strips from every other backend for the moment the runtime starts — provider keys
   such as `DEEPSEEK_API_KEY` and `ZAI_API_KEY` deliberately survive, because a route's `apiKeyEnv`
   names them. See [docs/backends.md](docs/backends.md).

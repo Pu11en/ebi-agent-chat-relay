@@ -132,9 +132,12 @@ Two consequences of the runtime's design are worth knowing before you rely on th
   one runtime alive per (route, model, working directory) and starts a *fresh* DSH session whenever
   it is asked to continue one this process has never run. After a restart a thread begins with a
   clean context instead of failing — a different trade from Claude Code and Codex, which resume.
-- **Stopping a turn is a cancel, not a kill.** The runtime is shared by every thread using that
-  route and model, so the Stop button asks the harness to cancel the turn rather than terminating
-  the process other conversations depend on.
+- **Stop ends the Discord turn, not the agent's work.** The bundled SDK runtime implements only
+  `initialize`, `session/prompt`, and `shutdown` — there is no cancel method on the wire. The
+  Stop button therefore closes the turn immediately (the thread reports "Stopped by the user")
+  while the shared runtime finishes the agent's work in the background; a later turn on that
+  session waits for it to quiesce. The same gap means image attachments are not supported: the
+  runner warns that the image was not sent rather than silently dropping it.
 
 The runtime is a subprocess, and it inherits the bot's environment. ccdb scrubs the credentials it
 strips from every other backend (`DISCORD_BOT_TOKEN` and friends) for the moment the runtime
