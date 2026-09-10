@@ -20,6 +20,7 @@ import asyncio
 import io
 import logging
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -43,11 +44,17 @@ class _MixedPCMSink:
     voice_recv delivers per-user packets; we don't try to align them — for a
     single-channel "record everything" use case, concatenating packets in
     arrival order produces intelligible audio for content-mining purposes.
+
+    ``write`` is called from the library's PacketRouter thread for real audio
+    and, separately, from SilenceGeneratorSink's own background thread for
+    synthetic silence frames — both can land concurrently, so writes to the
+    shared buffer must be serialized with a real thread lock (an asyncio.Lock
+    is a no-op guard here since neither caller runs inside an event loop).
     """
 
     def __init__(self) -> None:
         self.buffer = io.BytesIO()
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     def wants_opus(self) -> bool:
         return False
@@ -55,7 +62,8 @@ class _MixedPCMSink:
     def write(self, user: discord.User | None, data) -> None:  # type: ignore[no-untyped-def]
         pcm = getattr(data, "pcm", None)
         if pcm:
-            self.buffer.write(pcm)
+            with self._lock:
+                self.buffer.write(pcm)
 
     def cleanup(self) -> None:
         pass
