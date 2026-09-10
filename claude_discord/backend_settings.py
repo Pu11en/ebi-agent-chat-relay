@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Valid backend names. Keep in sync with claude_code_core.backend.create_backend().
-ALL_BACKENDS = ("claude", "codex", "local", "agui")
+ALL_BACKENDS = ("claude", "codex", "local", "dsh", "agui")
 
 # Settings keys
 BACKEND_GLOBAL = "backend.global"
@@ -74,6 +74,10 @@ class BackendSettings:
             # /model) is the only place it is chosen, so what /ollama list
             # marks as selected is what a thread actually runs.
             "local": "",
+            # DeepSeek resolves its model the same way ``/model`` does: the
+            # backend's own default (deepseek-v4-flash) unless the operator
+            # stored one, so there is no env default to keep in step.
+            "dsh": "",
             # AG-UI identifies the model on the remote agent, not in ccdb.
             "agui": "",
         }
