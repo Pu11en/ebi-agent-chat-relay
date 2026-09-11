@@ -131,7 +131,10 @@ async def _git(repo_dir: Path, *args: str) -> str | None:
 async def take_snapshot(repo_dir: Path, plan_path: Path) -> Snapshot:
     """Record what "progress" is measured against: HEAD, dirtiness, checkboxes."""
     head = await _git(repo_dir, "rev-parse", "HEAD")
-    status = await _git(repo_dir, "status", "--porcelain")
+    # Untracked files are ignored: build caches or someone's draft folder must
+    # not make every round look unfinished. Uncommitted edits to tracked files
+    # still count — that is the "claimed done without committing" failure.
+    status = await _git(repo_dir, "status", "--porcelain", "--untracked-files=no")
     try:
         text = plan_path.read_text(encoding="utf-8", errors="replace")
     except OSError:

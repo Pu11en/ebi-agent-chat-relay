@@ -81,9 +81,19 @@ class TestSnapshotAndCheck:
     async def test_uncommitted_leftovers_are_caught(self, repo: Path) -> None:
         before = await tl.take_snapshot(repo, repo / "PLAN.md")
         _tick_and_commit(repo)
-        (repo / "stray.txt").write_text("x")
+        (repo / "PLAN.md").write_text((repo / "PLAN.md").read_text() + "edited\n")
         after = await tl.take_snapshot(repo, repo / "PLAN.md")
         assert any("uncommitted" in p for p in tl.check_done(before, after))
+
+    async def test_stray_untracked_files_do_not_block(self, repo: Path) -> None:
+        """Junk the worker didn't create (build caches, someone's draft folder)
+        must not make every round look unfinished."""
+        (repo / "stray-dir").mkdir()
+        (repo / "stray-dir" / "x.txt").write_text("x")
+        before = await tl.take_snapshot(repo, repo / "PLAN.md")
+        _tick_and_commit(repo)
+        after = await tl.take_snapshot(repo, repo / "PLAN.md")
+        assert tl.check_done(before, after) == []
 
 
 class TestWorkerPrompt:
