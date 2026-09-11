@@ -17,7 +17,10 @@ Requires:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -32,6 +35,13 @@ logger = logging.getLogger(__name__)
 
 WATCHED_CHANNEL_ID = 1547437950466400306
 AUDIO_OUT_DIR = Path("/home/drewp/main-projects/audio-content")
+TRANSCRIPT_DIR = AUDIO_OUT_DIR / "transcripts"
+# Per-speaker PCM waiting to be transcribed. On disk (not memory) so a bot
+# restart mid-transcription resumes the job instead of losing the transcript.
+PENDING_DIR = AUDIO_OUT_DIR / ".pending-transcripts"
+WHISPER_PYTHON = "/usr/bin/python3"  # system Python with faster-whisper installed
+WHISPER_MODEL = "small.en"
+_TRANSCRIBER = Path(__file__).with_name("_transcribe_recording.py")
 
 # discord voice PCM: 48kHz, 16-bit signed LE, stereo
 _SAMPLE_RATE = 48000
@@ -68,6 +78,7 @@ class _MixedPCMSink:
         self._t0 = time.monotonic()
         self._tracks: dict[int, bytearray] = {}
         self._anchors: dict[int, tuple[int, int]] = {}  # ssrc -> (offset, first_ts)
+        self._speakers: dict[int, str] = {}  # ssrc -> display name
 
     def wants_opus(self) -> bool:
         return False
@@ -80,6 +91,8 @@ class _MixedPCMSink:
         ssrc, ts = packet.ssrc, packet.timestamp
         wall = int((time.monotonic() - self._t0) * _SAMPLE_RATE)
         with self._lock:
+            if user is not None and ssrc not in self._speakers:
+                self._speakers[ssrc] = getattr(user, "display_name", None) or str(user)
             anchor = self._anchors.get(ssrc)
             if anchor is not None:
                 offset = anchor[0] + ((ts - anchor[1]) % 2**32)
@@ -99,8 +112,15 @@ class _MixedPCMSink:
 
     def tracks(self) -> list[bytes]:
         """One int16 stereo PCM stream per speaker, all aligned at t=0."""
+        return [pcm for _, pcm in self.named_tracks()]
+
+    def named_tracks(self) -> list[tuple[str, bytes]]:
         with self._lock:
-            return [bytes(t) for t in self._tracks.values() if t]
+            return [
+                (self._speakers.get(ssrc, f"speaker-{ssrc}"), bytes(t))
+                for ssrc, t in self._tracks.items()
+                if t
+            ]
 
     def cleanup(self) -> None:
         pass
@@ -262,6 +282,57 @@ class VoiceRecorderCog(commands.Cog):
         self._sink: _MixedPCMSink | None = None
         self._started_at: datetime | None = None
         self._lock = asyncio.Lock()
+        # One transcription at a time: whisper saturates the CPU.
+        self._transcribe_lock = asyncio.Lock()
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    async def cog_load(self) -> None:
+        # Resume any job a previous run didn't finish (bot restarted mid-way).
+        for job in sorted(PENDING_DIR.glob("*/meta.json")) if PENDING_DIR.exists() else []:
+            self._spawn_transcription(job.parent)
+
+    def _spawn_transcription(self, job_dir: Path) -> None:
+        task = asyncio.create_task(self._transcribe(job_dir))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _transcribe(self, job_dir: Path) -> None:
+        async with self._transcribe_lock:
+            out_md = TRANSCRIPT_DIR / f"{job_dir.name}.md"
+            proc = await asyncio.create_subprocess_exec(
+                WHISPER_PYTHON,
+                str(_TRANSCRIBER),
+                str(job_dir),
+                str(out_md),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error(
+                    "Transcription failed for %s (%s): %s",
+                    job_dir.name,
+                    proc.returncode,
+                    stderr.decode(errors="replace")[-2000:],
+                )
+                return  # job dir kept; retried on next cog load
+            shutil.rmtree(job_dir, ignore_errors=True)
+            logger.info("Transcript saved: %s", out_md)
+        await self._post_transcript(out_md)
+
+    async def _post_transcript(self, out_md: Path) -> None:
+        """Drop the transcript into the voice channel's text chat."""
+        channel = self.bot.get_channel(WATCHED_CHANNEL_ID)
+        if not isinstance(channel, discord.VoiceChannel):
+            return
+        text = out_md.read_text()
+        body = "\n".join(ln for ln in text.splitlines() if ln.startswith("**")) or text
+        preview = body if len(body) <= 1800 else body[:1800] + "\n…"
+        with contextlib.suppress(discord.HTTPException):
+            await channel.send(
+                f"📝 Transcript ready\n{preview}",
+                file=discord.File(out_md),
+            )
 
     @staticmethod
     def _human_members(channel: discord.VoiceChannel) -> list[discord.Member]:
@@ -363,7 +434,8 @@ class VoiceRecorderCog(commands.Cog):
 
         stamp = (started or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
         out_path = AUDIO_OUT_DIR / f"{stamp}.mp3"
-        tracks = sink.tracks()
+        named = sink.named_tracks()
+        tracks = [pcm for _, pcm in named]
         logger.info("DAVE frame stats: %s", _dave_stats)
         try:
             await asyncio.to_thread(_encode_mp3, tracks, out_path)
@@ -375,6 +447,45 @@ class VoiceRecorderCog(commands.Cog):
             )
         except Exception:
             logger.exception("Failed to encode/save MP3")
+
+        try:
+            job_dir = await asyncio.to_thread(
+                _write_transcript_job,
+                stamp,
+                started or datetime.now(),
+                out_path.name,
+                named,
+                getattr(self.bot.get_channel(WATCHED_CHANNEL_ID), "name", str(WATCHED_CHANNEL_ID)),
+            )
+        except Exception:
+            logger.exception("Failed to queue transcription")
+            return
+        self._spawn_transcription(job_dir)
+
+
+def _write_transcript_job(
+    stamp: str,
+    started: datetime,
+    recording: str,
+    named: list[tuple[str, bytes]],
+    channel_name: str = "",
+) -> Path:
+    job_dir = PENDING_DIR / stamp
+    job_dir.mkdir(parents=True, exist_ok=True)
+    tracks = []
+    for i, (speaker, pcm) in enumerate(named):
+        (job_dir / f"track{i}.pcm").write_bytes(pcm)
+        tracks.append({"file": f"track{i}.pcm", "speaker": speaker})
+    meta = {
+        "started_at": started.isoformat(),
+        "recording": recording,
+        "channel": channel_name,
+        "model": WHISPER_MODEL,
+        "tracks": tracks,
+    }
+    # meta.json last: its presence marks the job complete and resumable.
+    (job_dir / "meta.json").write_text(json.dumps(meta))
+    return job_dir
 
 
 async def setup(bot: commands.Bot, runner: object, components: object) -> None:
