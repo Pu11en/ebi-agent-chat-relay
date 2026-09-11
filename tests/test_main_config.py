@@ -230,6 +230,65 @@ class TestAllowedToolsParsing:
         assert result == ["Bash", "Read"]
 
 
+class TestAllowedUserIdParsing:
+    """Tests for CCDB_ALLOWED_USER_IDS parsing and the owner union."""
+
+    def test_parse_comma_separated(self) -> None:
+        from claude_discord.main import parse_user_ids
+
+        assert parse_user_ids("111,222") == {111, 222}
+
+    def test_parse_ignores_blanks_and_non_numeric(self) -> None:
+        from claude_discord.main import parse_user_ids
+
+        assert parse_user_ids(" 111 , ,abc,222,") == {111, 222}
+
+    def test_parse_empty_is_empty(self) -> None:
+        from claude_discord.main import parse_user_ids
+
+        assert parse_user_ids("") == set()
+
+    def test_build_unions_owner_and_extras(self) -> None:
+        from claude_discord.main import build_allowed_user_ids
+
+        assert build_allowed_user_ids(1, "2,3") == {1, 2, 3}
+
+    def test_build_owner_only(self) -> None:
+        from claude_discord.main import build_allowed_user_ids
+
+        assert build_allowed_user_ids(1, "") == {1}
+
+    def test_build_extras_without_owner(self) -> None:
+        from claude_discord.main import build_allowed_user_ids
+
+        assert build_allowed_user_ids(None, "2") == {2}
+
+    def test_build_nothing_configured_is_none(self) -> None:
+        from claude_discord.main import build_allowed_user_ids
+
+        assert build_allowed_user_ids(None, "") is None
+
+    def test_load_config_reads_allowed_user_ids(self) -> None:
+        from claude_discord.main import load_config
+
+        with (
+            patch("claude_discord.main.load_dotenv"),
+            patch.dict(
+                "os.environ",
+                {
+                    "DISCORD_BOT_TOKEN": "tok",
+                    "DISCORD_CHANNEL_ID": "111",
+                    "DISCORD_OWNER_ID": "999",
+                    "CCDB_ALLOWED_USER_IDS": "222,333",
+                },
+                clear=True,
+            ),
+        ):
+            config = load_config()
+
+        assert config["allowed_user_ids"] == "222,333"
+
+
 class TestExampleCogImports:
     """Verify that example cog files can be imported and have setup()."""
 
