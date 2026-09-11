@@ -192,3 +192,19 @@ class TestHarnessAndModel:
 
         settings.set_backend.assert_awaited_once_with("dsh", thread_id=thread.id)
         settings.set_model.assert_awaited_once_with("dsh", "deepseek-pro", thread_id=thread.id)
+
+
+class TestPlanPicker:
+    def test_one_button_per_open_plan_with_tasks_left(self, tmp_path: Path) -> None:
+        from claude_discord.cogs.task_loop import plan_prompt
+
+        a = tmp_path / "PLAN-v1.md"
+        a.write_text("- [x] one\n- [ ] two\n- [ ] three\n")
+        (tmp_path / "docs").mkdir()
+        b = tmp_path / "docs" / "fix-plan.md"
+        b.write_text("- [ ] x\n")
+        prompt = plan_prompt(tmp_path, [a, b])
+        labels = [c.label for c in prompt.choices]
+        assert labels[0].startswith("PLAN-v1.md") and "2 of 3 left" in labels[0]
+        assert labels[1].startswith("docs/fix-plan.md")
+        assert [c.value for c in prompt.choices] == ["0", "1"]

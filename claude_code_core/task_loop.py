@@ -91,24 +91,35 @@ def first_unchecked(plan_text: str) -> str | None:
     return None
 
 
-def find_plan(directory: Path) -> Path | None:
-    """The plan to run when none was named: a ``*plan*.md`` with open tasks.
+#: Where plans live, relative to the project: the root, docs/plans/, and
+#: planning-with-files' .planning/<id>/.
+_PLAN_GLOBS = ("*.md", "docs/plans/*.md", ".planning/*/*.md")
 
-    Only files whose name contains "plan" are considered, so a README with a
-    stray checkbox is never mistaken for one. The newest wins when several
-    still have unticked tasks.
+
+def list_plans(directory: Path) -> list[Path]:
+    """Every plan in the project that still has unticked tasks, newest first.
+
+    Only files whose name contains "plan" count, so a README with a stray
+    checkbox is never mistaken for one.
     """
-    candidates: list[Path] = []
-    for path in directory.glob("*.md"):
-        if "plan" not in path.name.lower() or not path.is_file():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if count_tasks(text)[1]:
-            candidates.append(path)
-    return max(candidates, key=lambda p: p.stat().st_mtime, default=None)
+    found: list[Path] = []
+    for pattern in _PLAN_GLOBS:
+        for path in directory.glob(pattern):
+            if "plan" not in path.name.lower() or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if count_tasks(text)[1]:
+                found.append(path)
+    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def find_plan(directory: Path) -> Path | None:
+    """The newest plan with open tasks, or None."""
+    plans = list_plans(directory)
+    return plans[0] if plans else None
 
 
 def plan_check_command(plan_text: str) -> list[str] | None:

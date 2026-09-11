@@ -23,7 +23,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from claude_code_core.frontend import Choice, ChoicePrompt, FormField, FormPrompt
-from claude_code_core.task_loop import LoopOutcome, TaskLoop, find_plan, take_snapshot
+from claude_code_core.task_loop import (
+    LoopOutcome,
+    TaskLoop,
+    count_tasks,
+    list_plans,
+    take_snapshot,
+)
 from claude_code_core.work_copy import WorkCopy, WorkCopyError, create_work_copy
 
 from ..backend_settings import ALL_BACKENDS
@@ -145,6 +151,32 @@ async def pick_harness_and_model(
     )
     typed = ((form or {}).get("model") or "").strip()
     return (backend, typed) if typed else None
+
+
+#: A picker shows at most this many plans (newest first).
+MAX_PLAN_CHOICES = 5
+
+
+def plan_prompt(project: Path, plans: list[Path]) -> ChoicePrompt:
+    """Buttons for the project's unfinished plans, newest first."""
+    choices = []
+    for i, plan in enumerate(plans[:MAX_PLAN_CHOICES]):
+        try:
+            checked, unchecked = count_tasks(plan.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            checked, unchecked = 0, 0
+        try:
+            name = str(plan.relative_to(project))
+        except ValueError:
+            name = plan.name
+        label = f"{name} · {unchecked} of {checked + unchecked} left"
+        choices.append(Choice(value=str(i), label=label[:80]))
+    return ChoicePrompt(
+        question="Which plan should I work through?",
+        header="🔁 Pick a plan",
+        choices=tuple(choices),
+        timeout_seconds=PICK_TIMEOUT_SECONDS,
+    )
 
 
 async def resolve_repo(plan_path: Path) -> Path:
@@ -328,8 +360,8 @@ class TaskLoopCog(commands.Cog):
     def _authorized(self, user_id: int) -> bool:
         return self._allowed_user_ids is None or user_id in self._allowed_user_ids
 
-    async def _default_plan(self, channel: Any) -> str | None:
-        """Find a plan in the project this thread is bound to."""
+    async def _pick_plan(self, channel: Any) -> str | None:
+        """The project's unfinished plans: one is used directly, several get buttons."""
         record = None
         with contextlib.suppress(Exception):
             record = await self._chat().repo.get(channel.id)
@@ -338,8 +370,14 @@ class TaskLoopCog(commands.Cog):
         )
         if not isinstance(workdir, str) or not workdir:
             return None
-        found = find_plan(Path(workdir))
-        return str(found) if found else None
+        project = Path(workdir)
+        plans = list_plans(project)
+        if len(plans) <= 1:
+            return str(plans[0]) if plans else None
+        picked = await DiscordSurface(channel).prompt_choice(plan_prompt(project, plans))
+        if not picked:
+            return None
+        return str(plans[int(picked[0])])
 
     @app_commands.command(name="gowork", description="Work through the plan, one task at a time")
     @app_commands.describe(plan="Plan .md file (optional — found automatically in this project)")
@@ -355,7 +393,7 @@ class TaskLoopCog(commands.Cog):
             )
             return
         await interaction.response.defer(thinking=True)
-        plan = plan or await self._default_plan(channel)
+        plan = plan or await self._pick_plan(channel)
         if not plan:
             await interaction.followup.send(
                 "I couldn't find a plan with `- [ ]` tasks in this project. "

@@ -296,3 +296,21 @@ class TestLoopRunsTheCheck:
         fake = _Fake(repo, [_done, _done])
         outcome = await fake.loop().run()
         assert outcome.status == tl.Status.COMPLETE
+
+
+class TestListPlans:
+    def test_lists_open_plans_newest_first_across_the_usual_places(self, tmp_path: Path) -> None:
+        import os
+
+        (tmp_path / "docs" / "plans").mkdir(parents=True)
+        (tmp_path / ".planning" / "x").mkdir(parents=True)
+        a = tmp_path / "PLAN-v1.md"
+        b = tmp_path / "docs" / "plans" / "cleanup-plan.md"
+        c = tmp_path / ".planning" / "x" / "task_plan.md"
+        done = tmp_path / "old-plan.md"
+        for f, body in ((a, "- [ ] a"), (b, "- [ ] b"), (c, "- [ ] c"), (done, "- [x] d")):
+            f.write_text(body + "\n")
+        os.utime(a, (1, 1))
+        os.utime(b, (2, 2))
+        assert tl.list_plans(tmp_path) == [c, b, a]
+        assert tl.find_plan(tmp_path) == c
