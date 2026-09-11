@@ -194,9 +194,10 @@ class ClaudeChatCog(commands.Cog):
             thread_member_exclude_category_ids or ()
         )
         self._thread_members_backfilled = False
-        # Threads already joined this process — keeps the per-message path free
-        # of redundant add_user calls.
-        self._thread_members_joined: set[int] = set()
+        # (thread_id, user_id) pairs already joined this process — keeps the
+        # per-message path free of redundant add_user calls.  Only successful
+        # adds are recorded, so a transient failure is retried next time.
+        self._thread_members_joined: set[tuple[int, int]] = set()
 
     @property
     def active_session_count(self) -> int:
@@ -227,47 +228,85 @@ class ClaudeChatCog(commands.Cog):
 
         Returns the number of successful ``add_user`` calls.  Failures are
         suppressed: this is visibility, never a reason to abort a run, and a
-        missing permission on one category must not stop the others.
+        missing permission on one category must not stop the others.  Only
+        successful adds are cached, so a member the API refused is retried on
+        the next activity in the thread instead of being silently left out.
         """
         if not self._thread_member_ids or self._thread_join_excluded(thread):
             return 0
-        # add_user is idempotent but still an API round-trip per user; a busy
-        # thread must not re-issue it on every message.
-        if thread.id in self._thread_members_joined:
-            return 0
-        self._thread_members_joined.add(thread.id)
+        pending = [
+            user_id
+            for user_id in sorted(self._thread_member_ids)
+            if (thread.id, user_id) not in self._thread_members_joined
+        ]
         added = 0
-        for user_id in sorted(self._thread_member_ids):
+        for user_id in pending:
             try:
                 await thread.add_user(discord.Object(id=user_id))
             except Exception:
-                logger.debug(
-                    "Could not add user %d to thread %s", user_id, thread.id, exc_info=True
+                logger.warning(
+                    "Could not add user %d to thread %s — will retry on next activity",
+                    user_id,
+                    thread.id,
+                    exc_info=True,
                 )
             else:
+                self._thread_members_joined.add((thread.id, user_id))
                 added += 1
         return added
 
     async def _backfill_thread_members(self) -> None:
-        """Join configured members to every active thread ccdb can see.
+        """Join configured members to every thread ccdb can already see.
 
         Runs once after startup (see ``on_ready``) so enabling the feature
-        reaches existing conversations instead of only new ones.
+        reaches existing conversations instead of only new ones.  Active
+        threads go first because that is the visibility the dashboard and the
+        "reply needed" ping depend on; archived threads follow so a member is
+        already present when one is unarchived (adding a member does not
+        unarchive it).  A channel the bot cannot read is skipped, never fatal.
         """
-        threads: dict[int, discord.Thread] = {}
+        active: dict[int, discord.Thread] = {}
         for guild in getattr(self.bot, "guilds", []) or []:
             for thread in getattr(guild, "threads", []) or []:
-                threads[thread.id] = thread
+                active[thread.id] = thread
             for channel in getattr(guild, "text_channels", []) or []:
                 for thread in getattr(channel, "threads", []) or []:
-                    threads[thread.id] = thread
-        for thread in threads.values():
-            await self._ensure_thread_members(thread)
-        if threads:
+                    active[thread.id] = thread
+
+        added = 0
+        for thread in active.values():
+            added += await self._ensure_thread_members(thread)
+
+        seen = set(active)
+        archived = 0
+        for guild in getattr(self.bot, "guilds", []) or []:
+            channels = [
+                *(getattr(guild, "text_channels", []) or []),
+                *(getattr(guild, "forums", []) or []),
+            ]
+            for channel in channels:
+                try:
+                    async for thread in channel.archived_threads(limit=None):
+                        if thread.id in seen:
+                            continue
+                        seen.add(thread.id)
+                        archived += 1
+                        added += await self._ensure_thread_members(thread)
+                except Exception:
+                    logger.debug(
+                        "Could not enumerate archived threads in channel %s",
+                        getattr(channel, "id", "?"),
+                        exc_info=True,
+                    )
+
+        if active or archived:
             logger.info(
-                "Backfilled %d configured thread member(s) into %d active thread(s)",
+                "Thread-member backfill: %d add(s) across %d active and %d archived "
+                "thread(s) for %d configured member(s)",
+                added,
+                len(active),
+                archived,
                 len(self._thread_member_ids),
-                len(threads),
             )
 
     async def _get_current_model(self) -> str | None:

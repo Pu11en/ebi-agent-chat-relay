@@ -70,6 +70,22 @@ def _make_thread(thread_id: int = 10, category_id: int | None = None) -> MagicMo
     return thread
 
 
+class _AsyncIter:
+    """Minimal async iterator so archived_threads() can be mocked."""
+
+    def __init__(self, items: list[MagicMock]) -> None:
+        self._items = iter(items)
+
+    def __aiter__(self) -> _AsyncIter:
+        return self
+
+    async def __anext__(self) -> MagicMock:
+        try:
+            return next(self._items)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+
 def _make_cog(
     *,
     member_ids: set[int] | None = None,
@@ -139,6 +155,51 @@ class TestEnsureThreadMembers:
         # Best-effort visibility: a failed add must never break the run.
         await cog._ensure_thread_members(thread)
 
+    @pytest.mark.asyncio
+    async def test_successful_add_is_not_repeated(self) -> None:
+        cog = _make_cog(member_ids={7})
+        thread = _make_thread()
+
+        assert await cog._ensure_thread_members(thread) == 1
+        assert await cog._ensure_thread_members(thread) == 0
+
+        assert thread.add_user.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_add_is_retried_on_next_call(self) -> None:
+        # A transient failure must not be cached: otherwise the member stays
+        # out of the thread for the rest of the process, silently.
+        cog = _make_cog(member_ids={7})
+        thread = _make_thread()
+        thread.add_user.side_effect = [
+            discord.HTTPException(MagicMock(), "nope"),
+            None,
+        ]
+
+        assert await cog._ensure_thread_members(thread) == 0
+        assert await cog._ensure_thread_members(thread) == 1
+
+        assert thread.add_user.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_retries_only_the_missing_member(self) -> None:
+        cog = _make_cog(member_ids={7, 8})
+        thread = _make_thread()
+        attempts: list[int] = []
+
+        async def add_user(obj: discord.Object) -> None:
+            attempts.append(obj.id)
+            if obj.id == 8 and attempts.count(8) == 1:
+                raise discord.HTTPException(MagicMock(), "nope")
+
+        thread.add_user.side_effect = add_user
+
+        assert await cog._ensure_thread_members(thread) == 1
+        assert await cog._ensure_thread_members(thread) == 1
+
+        # 7 succeeded once and was never retried; 8 failed then succeeded.
+        assert attempts == [7, 8, 8]
+
 
 class TestSpawnSessionMembers:
     @pytest.mark.asyncio
@@ -165,13 +226,53 @@ class TestThreadMemberBackfill:
         guild.threads = [guild_thread]
         channel = MagicMock()
         channel.threads = [channel_thread]
+        channel.archived_threads = MagicMock(return_value=_AsyncIter([]))
         guild.text_channels = [channel]
+        guild.forums = []
         cog.bot.guilds = [guild]
 
         await cog._backfill_thread_members()
 
         guild_thread.add_user.assert_awaited_once()
         channel_thread.add_user.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_backfill_reaches_archived_threads(self) -> None:
+        # Archived threads are hidden from ``Guild.threads``; without this the
+        # member is missing the moment somebody unarchives one.
+        cog = _make_cog(member_ids={7})
+        archived = _make_thread(3)
+        guild = MagicMock()
+        guild.threads = []
+        channel = MagicMock()
+        channel.threads = []
+        channel.archived_threads = MagicMock(return_value=_AsyncIter([archived]))
+        guild.text_channels = [channel]
+        guild.forums = []
+        cog.bot.guilds = [guild]
+
+        await cog._backfill_thread_members()
+
+        archived.add_user.assert_awaited_once_with(discord.Object(id=7))
+
+    @pytest.mark.asyncio
+    async def test_backfill_survives_unreadable_archived_threads(self) -> None:
+        cog = _make_cog(member_ids={7})
+        guild = MagicMock()
+        guild.threads = []
+        channel = MagicMock()
+        channel.threads = []
+
+        def forbidden(**_: object) -> None:
+            raise discord.Forbidden(MagicMock(), "no access")
+
+        channel.archived_threads = forbidden
+        guild.text_channels = [channel]
+        guild.forums = []
+        cog.bot.guilds = [guild]
+
+        # A channel the bot cannot read must not abort the whole backfill.
+        await cog._backfill_thread_members()
 
     @pytest.mark.asyncio
     async def test_on_ready_backfills_only_once(self) -> None:
