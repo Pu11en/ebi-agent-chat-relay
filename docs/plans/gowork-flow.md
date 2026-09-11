@@ -23,19 +23,21 @@ flowchart TD
     R[Bot restarts mid-build] -.->|resumes by itself ✅| F
 ```
 
-## ❓ The ending, when you come back
+## ❓ The ending, as your journey after the build
 
-You're away while it works. When you open Discord, you should be able to understand what happened in
-10 seconds and deal with anything left in one tap. One option is a single **"Welcome back" card**
-pinned at the top of the planner thread:
+What you need at the end is to **see it working and test it without reading much**. A "merge?" question
+doesn't give you that. The idea is a **Try-it card** at the top of the planner thread:
 
-> **🏁 realpage QA — 12 of 12 done** (took 2 h 10 m, model: DeepSeek Pro)
-> ✅ **Done:** fixed 9 layout bugs on phone, fixed 2 dead links, re-ran the QA sweep (clean).
-> ⚠️ **Needs you:** nothing. *(Or: "1 question waiting: deploy to Railway?" with buttons right here)*
-> 📦 **Your work:** already combined into the project and saved. *(No "merge?" question.)*
-> [ See every task ] [ Undo the whole build ]
+> **🧪 realpage QA fixes are ready to try** (12 of 12 tasks done)
+> **Open it:** http://localhost:8765 ← a local copy is already running with the new work
+> **Check these 3 things (30 seconds):**
+> 1. Shrink the window to phone size: the table fits, with no sideways scrolling.
+> 2. Click "Junction 15": the website link opens.
+> 3. Ask the chatbot "which buildings use Yardi?": you get an answer with sources.
+>
+> [ ✅ Looks good, keep it ] [ ❌ Something's off ] [ 📋 What changed (short) ]
 
-What that means:
-- **No "merge?" question at the end.** When every check passed, the work is combined into the project automatically.
-- **Nothing is final:** the undo button reverses the whole build in one tap.
-- **Questions don't pile up in threads you'd have to hunt through:** they're collected on the card, right where you look first.
+- **✅ Looks good:** the work is combined into the project. Going live (a push or deploy) is still its own yes/no.
+- **❌ Something's off:** you type or say what's wrong in one line. That becomes a new small task, and the worker fixes it and gives you a fresh card.
+- **Where the check list comes from:** the planner writes a "How to try it" section into every plan (the command that starts the local copy, the address, and the 3 things to check), so the card is written before the work even starts.
+- **Projects with no website to open** (for example this bot): "Open it" becomes "try `/gowork` in #test-channel", with the same 3-check format.
