@@ -21,32 +21,10 @@ from .cog_loader import load_custom_cogs
 from .deployment import DataLayout
 from .setup import setup_bridge
 from .teams_integration import FrontendRouter, build_teams_runtime, parse_frontends
+from .utils.ids import build_allowed_user_ids, build_thread_member_ids, parse_user_ids
 from .utils.logger import setup_logging
 
 logger = logging.getLogger(__name__)
-
-
-def parse_user_ids(value: str) -> set[int]:
-    """Parse a comma-separated list of Discord user IDs.
-
-    Blank entries and non-numeric junk are ignored so a trailing comma in
-    ``CCDB_ALLOWED_USER_IDS`` cannot crash startup or silently widen access.
-    """
-    return {int(part) for part in (p.strip() for p in value.split(",")) if part.isdigit()}
-
-
-def build_allowed_user_ids(owner_id: int | None, extra: str) -> set[int] | None:
-    """Union the single owner with any additionally allowed Discord users.
-
-    ``DISCORD_OWNER_ID`` stays singular because it is also the account the bot
-    @mentions and invites into threads; this set is the *authorization*
-    allowlist.  Returns ``None`` when nothing is configured, preserving the
-    channel-permissions-only behaviour for trusted private servers.
-    """
-    allowed = parse_user_ids(extra)
-    if owner_id is not None:
-        allowed.add(owner_id)
-    return allowed or None
 
 
 def load_config() -> dict[str, str]:
@@ -99,6 +77,18 @@ def load_config() -> dict[str, str]:
         "timeout": os.getenv("SESSION_TIMEOUT_SECONDS", "300"),
         "owner_id": os.getenv("DISCORD_OWNER_ID", ""),
         "allowed_user_ids": os.getenv("CCDB_ALLOWED_USER_IDS", ""),
+        # Optional narrower set of users auto-joined to every ccdb thread.
+        # Defaults to the allowed set above; an explicit list restricts who
+        # lands in threads without touching who may run Claude.
+        "thread_member_ids": os.getenv("CCDB_THREAD_MEMBER_IDS", ""),
+        # Categories whose threads are never auto-joined (comma-separated
+        # category IDs) — the per-category off switch.
+        "thread_member_exclude_category_ids": os.getenv(
+            "CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS", ""
+        ),
+        # Members who keep thread access but are never pinged when a thread
+        # needs a reply (comma-separated user IDs).  The per-user mute switch.
+        "thread_mute_user_ids": os.getenv("CCDB_THREAD_MUTE_USER_IDS", ""),
         "channel_ids": _env("CCDB_CHANNEL_IDS", "CLAUDE_CHANNEL_IDS", ""),
         "monitor_all_channels": _env(
             "CCDB_MONITOR_ALL_CHANNELS", "CLAUDE_MONITOR_ALL_CHANNELS", "false"
@@ -199,12 +189,21 @@ async def main() -> None:
     async with bot:
         # Full Cog auto-setup via setup_bridge
         allowed_user_ids = build_allowed_user_ids(owner_id, config["allowed_user_ids"])
+        thread_member_ids = build_thread_member_ids(
+            owner_id, allowed_user_ids, config["thread_member_ids"]
+        )
         components = await setup_bridge(
             bot,
             runner,
             api_server=api_server,
             backend_factory=factory,
             allowed_user_ids=allowed_user_ids,
+            thread_member_ids=thread_member_ids,
+            thread_member_exclude_category_ids=parse_user_ids(
+                config["thread_member_exclude_category_ids"]
+            )
+            or None,
+            thread_mute_user_ids=parse_user_ids(config["thread_mute_user_ids"]) or None,
             claude_channel_id=channel_id,
             claude_channel_ids=claude_channel_ids,
             data_root=os.getenv("CCDB_DATA_ROOT") or None,

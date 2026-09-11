@@ -2,8 +2,8 @@
 
 Posts and maintains a pinned embed in the main channel that shows which
 threads are processing automatically vs. waiting for user input.
-When a thread transitions to WAITING_INPUT, the bot mentions the owner
-so Discord's notification system surfaces the request immediately.
+When a thread transitions to WAITING_INPUT, the bot mentions the configured
+operators so Discord's notification system surfaces the request immediately.
 
 When THREAD_INBOX_ENABLED is set, the dashboard also shows a persistent
 inbox section (📬) that survives bot restarts and surfaces threads where
@@ -86,9 +86,21 @@ class ThreadStatusDashboard:
         self,
         channel: discord.TextChannel,
         owner_id: int | None = None,
+        mention_user_ids: set[int] | None = None,
+        muted_user_ids: set[int] | None = None,
     ) -> None:
         self._channel = channel
         self._owner_id = owner_id
+        # Everyone pinged when a thread needs a reply.  The owner is always in
+        # the set; additional authorized users join them so a shared thread
+        # notifies every operator, not just the account named in the config.
+        self._mention_user_ids: set[int] = set(mention_user_ids or ())
+        if owner_id is not None:
+            self._mention_user_ids.add(owner_id)
+        # Muted users stay in the thread (they are still auto-joined) but are
+        # never pinged.  Subtracting after the owner is added is deliberate:
+        # an explicit mute is the one thing that silences even the owner.
+        self._mention_user_ids -= set(muted_user_ids or ())
         self._threads: dict[int, _ThreadInfo] = {}
         self._dashboard_message: discord.Message | None = None
         self._lock = asyncio.Lock()
@@ -145,11 +157,11 @@ class ThreadStatusDashboard:
                 if description:
                     info.description = description
 
-            # Mention owner on first WAITING_INPUT transition
+            # Mention everyone who should see this on first WAITING_INPUT
             should_mention = (
                 state == ThreadState.WAITING_INPUT
                 and prev_state != ThreadState.WAITING_INPUT
-                and self._owner_id is not None
+                and bool(self._mention_user_ids)
                 and thread is not None
             )
 
@@ -157,9 +169,10 @@ class ThreadStatusDashboard:
 
         # Send mention outside the lock to avoid holding it during an HTTP call
         if should_mention and thread is not None:
+            mentions = " ".join(f"<@{uid}>" for uid in sorted(self._mention_user_ids))
             try:
                 await thread.send(
-                    f"🟡 <@{self._owner_id}> The agent has finished — your reply is needed here."
+                    f"🟡 {mentions} The agent has finished — your reply is needed here."
                 )
             except (discord.HTTPException, RuntimeError):
                 logger.debug("Failed to send owner mention in thread %d", thread_id, exc_info=True)

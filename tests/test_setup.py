@@ -635,3 +635,33 @@ async def test_setup_bridge_accepts_codex_runner(tmp_path: object) -> None:
     cog_names = [call.args[0].__class__.__name__ for call in bot.add_cog.call_args_list]
     assert "ClaudeChatCog" in cog_names
     assert isinstance(result, BridgeComponents)
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_reads_thread_mute_env(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CCDB_THREAD_MUTE_USER_IDS silences the ping without removing membership."""
+    from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+    monkeypatch.setenv("CCDB_THREAD_MUTE_USER_IDS", "43,44")
+    bot = _make_bot()
+    runner = _make_runner()
+
+    await setup_bridge(
+        bot,
+        runner,
+        session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+        claude_channel_id=12345,
+        thread_member_ids={42, 43, 44},
+        enable_scheduler=False,
+    )
+
+    assert bot.thread_muted_user_ids == {43, 44}
+    chat_cog = next(
+        call.args[0]
+        for call in bot.add_cog.call_args_list
+        if isinstance(call.args[0], ClaudeChatCog)
+    )
+    # A muted user keeps their thread membership; only the ping is dropped.
+    assert chat_cog._thread_member_ids == {42, 43, 44}

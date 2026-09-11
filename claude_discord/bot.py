@@ -46,6 +46,14 @@ class ClaudeDiscordBot(commands.Bot):
         )
         self.channel_id = channel_id
         self.owner_id = owner_id
+        # Users auto-joined to every ccdb thread and pinged alongside the owner.
+        # setup_bridge() populates these from config; None/empty keeps the
+        # historical owner-only behaviour.
+        self.thread_member_ids: set[int] | None = None
+        # Subset of the above that is never pinged when a thread needs a reply.
+        # They keep thread access; only the notification is silenced.
+        self.thread_muted_user_ids: set[int] = set()
+        self.thread_member_exclude_category_ids: set[int] = set()
         self.session_registry = SessionRegistry()
         # Which files each live session writes — CollisionWatchCog compares
         # these to spot two sessions editing the same file.
@@ -79,6 +87,8 @@ class ClaudeDiscordBot(commands.Bot):
             self.thread_dashboard = ThreadStatusDashboard(
                 channel=channel,
                 owner_id=self.owner_id,
+                mention_user_ids=self.thread_member_ids,
+                muted_user_ids=self.thread_muted_user_ids,
             )
             await self.thread_dashboard.initialize()
             logger.info("Thread status dashboard initialised in channel %d", self.channel_id)

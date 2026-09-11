@@ -2213,20 +2213,26 @@ class ApiServer:
         return web.json_response(response, status=201)
 
     async def _ingest_add_owner(self, thread: discord.Thread) -> None:
-        """Add the configured bot owner to an ingest thread (no-op if unset).
+        """Add the configured thread members to an ingest thread (best-effort).
 
         An ingested session runs unattended and may take many minutes; adding
-        the owner as a thread member makes the thread show up in their joined
-        list instead of having to be searched for. Errors are suppressed — this
-        is best-effort visibility, never a hard failure.
+        every configured operator as a thread member makes the thread show up
+        in their joined list instead of having to be searched for.  Falls back
+        to the single owner when no member set is configured.  Errors are
+        suppressed — this is best-effort visibility, never a hard failure.
         """
-        owner_id = getattr(self.bot, "owner_id", None)
-        if not owner_id:
-            return
+        member_ids = getattr(self.bot, "thread_member_ids", None)
+        if not isinstance(member_ids, (set, frozenset)) or not member_ids:
+            owner_id = getattr(self.bot, "owner_id", None)
+            if not owner_id:
+                return
+            member_ids = {int(owner_id)}
         with contextlib.suppress(Exception):
             import discord as _discord
 
-            await thread.add_user(_discord.Object(id=int(owner_id)))
+            for user_id in sorted(member_ids):
+                with contextlib.suppress(Exception):
+                    await thread.add_user(_discord.Object(id=int(user_id)))
 
     async def _ingest_notify_owner(self, thread: discord.Thread, body: str) -> None:
         """Post a message in *thread* that @mentions the bot owner (no-op if unset).
