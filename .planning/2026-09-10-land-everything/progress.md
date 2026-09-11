@@ -6,3 +6,4 @@
 - Four read-only search agents mapped what each session left behind → findings.md.
 - Saved the start-fresh nudge on `feat/task-loop` as 2f818dc. Full suite: 3,090 passed, pyright clean.
 - Wrote task_plan.md: 10 tasks, to be run with `/gowork` after Drew approves and restarts the bot.
+- Drew: tasks must be small, and big work must never run as one session. Added a "Big tasks get chunked" rule to /home/drewp/AGENTS.md (backup: /home/drewp/.retired-harness/AGENTS.md.before-big-tasks-20260910). Split this plan from 10 tasks into 17.
