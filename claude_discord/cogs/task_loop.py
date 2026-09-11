@@ -1,7 +1,7 @@
 """TaskLoopCog — run a plan one task at a time, a fresh session per task.
 
 The Discord side of :mod:`claude_code_core.task_loop`. A planner (a person with
-``/taskloop start``, or a planner session via ``POST /api/loops`` after the
+``/gowork``, or a planner session via ``POST /api/loops`` after the
 person said yes) points it at a plan file. The cog opens one worker thread next
 to the planner and runs rounds there: each round is a new session on whatever
 harness the thread uses, so the loop works the same on Claude Code, Codex and
@@ -23,7 +23,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from claude_code_core.frontend import Choice, ChoicePrompt
-from claude_code_core.task_loop import LoopOutcome, TaskLoop, take_snapshot
+from claude_code_core.task_loop import LoopOutcome, TaskLoop, find_plan, take_snapshot
 
 from ..surface import DiscordSurface
 
@@ -70,9 +70,7 @@ async def resolve_repo(plan_path: Path) -> Path:
 
 
 class TaskLoopCog(commands.Cog):
-    """``/taskloop start|stop`` and the engine behind ``POST /api/loops``."""
-
-    taskloop = app_commands.Group(name="taskloop", description="Run a plan one task at a time")
+    """``/gowork`` / ``/stopwork`` and the engine behind ``POST /api/loops``."""
 
     def __init__(self, bot: commands.Bot, *, allowed_user_ids: set[int] | None = None) -> None:
         self.bot = bot
@@ -188,9 +186,22 @@ class TaskLoopCog(commands.Cog):
     def _authorized(self, user_id: int) -> bool:
         return self._allowed_user_ids is None or user_id in self._allowed_user_ids
 
-    @taskloop.command(name="start", description="Work through a plan's - [ ] tasks, one at a time")
-    @app_commands.describe(plan="Absolute path to the plan .md file (tasks as - [ ] checkboxes)")
-    async def start_cmd(self, interaction: discord.Interaction, plan: str) -> None:
+    async def _default_plan(self, channel: Any) -> str | None:
+        """Find a plan in the project this thread is bound to."""
+        record = None
+        with contextlib.suppress(Exception):
+            record = await self._chat().repo.get(channel.id)
+        workdir = (record.working_dir if record else None) or getattr(
+            self._chat().runner, "working_dir", None
+        )
+        if not isinstance(workdir, str) or not workdir:
+            return None
+        found = find_plan(Path(workdir))
+        return str(found) if found else None
+
+    @app_commands.command(name="gowork", description="Work through the plan, one task at a time")
+    @app_commands.describe(plan="Plan .md file (optional — found automatically in this project)")
+    async def gowork(self, interaction: discord.Interaction, plan: str | None = None) -> None:
         if not self._authorized(interaction.user.id):
             await interaction.response.send_message("Not authorized.", ephemeral=True)
             return
@@ -202,21 +213,28 @@ class TaskLoopCog(commands.Cog):
             )
             return
         await interaction.response.defer(thinking=True)
+        plan = plan or await self._default_plan(channel)
+        if not plan:
+            await interaction.followup.send(
+                "I couldn't find a plan with `- [ ]` tasks in this project. "
+                "Ask the planner to write one, or give me the file."
+            )
+            return
         report_to: Any = channel
         try:
             thread = await self.start_loop(parent, plan, report_to=report_to)
         except (ValueError, RuntimeError) as exc:
             await interaction.followup.send(f"Could not start: {exc}")
             return
-        await interaction.followup.send(f"Started. Worker thread: {thread.mention}")
+        await interaction.followup.send(f"Working on `{plan}`. Worker thread: {thread.mention}")
 
-    @taskloop.command(name="stop", description="Stop the task loop after the current task")
-    async def stop_cmd(self, interaction: discord.Interaction) -> None:
+    @app_commands.command(name="stopwork", description="Stop /gowork after the current task")
+    async def stopwork(self, interaction: discord.Interaction) -> None:
         if not self._authorized(interaction.user.id):
             await interaction.response.send_message("Not authorized.", ephemeral=True)
             return
         running = self.stop_for(interaction.channel_id or 0)
         if running is None:
-            await interaction.response.send_message("No task loop here.", ephemeral=True)
+            await interaction.response.send_message("Nothing is working here.", ephemeral=True)
             return
         await interaction.response.send_message("Stopping after the current task finishes.")

@@ -83,7 +83,8 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "resume-info": "📌 Session",
     "sync-sessions": "📌 Session",
     "sync-settings": "📌 Session",
-    "taskloop": "📌 Session",  # run a plan one task at a time, fresh session each
+    "gowork": "📌 Session",  # run the plan one task at a time, fresh session each
+    "stopwork": "📌 Session",
     "model": "🤖 Model",
     "backend": "🤖 Model",
     "engine-status": "🤖 Model",

@@ -86,6 +86,26 @@ def first_unchecked(plan_text: str) -> str | None:
     return None
 
 
+def find_plan(directory: Path) -> Path | None:
+    """The plan to run when none was named: a ``*plan*.md`` with open tasks.
+
+    Only files whose name contains "plan" are considered, so a README with a
+    stray checkbox is never mistaken for one. The newest wins when several
+    still have unticked tasks.
+    """
+    candidates: list[Path] = []
+    for path in directory.glob("*.md"):
+        if "plan" not in path.name.lower() or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if count_tasks(text)[1]:
+            candidates.append(path)
+    return max(candidates, key=lambda p: p.stat().st_mtime, default=None)
+
+
 @dataclass(frozen=True)
 class Snapshot:
     head: str | None

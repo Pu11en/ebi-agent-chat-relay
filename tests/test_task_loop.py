@@ -221,3 +221,24 @@ class TestTaskLoop:
         outcome = await fake.loop(max_rounds=2).run()
         assert outcome.status == tl.Status.STUCK
         assert len(fake.prompts) == 2
+
+
+class TestFindPlan:
+    def test_picks_the_plan_with_open_tasks(self, tmp_path: Path) -> None:
+        (tmp_path / "PLAN-old.md").write_text("- [x] done\n")
+        (tmp_path / "PLAN-v1.md").write_text("- [ ] Task 10: ship\n")
+        (tmp_path / "README.md").write_text("- [ ] not a plan\n")
+        assert tl.find_plan(tmp_path) == tmp_path / "PLAN-v1.md"
+
+    def test_newest_wins_when_several_are_open(self, tmp_path: Path) -> None:
+        import os
+
+        a, b = tmp_path / "plan.md", tmp_path / "PLAN-v2.md"
+        a.write_text("- [ ] a\n")
+        b.write_text("- [ ] b\n")
+        os.utime(a, (1, 1))
+        assert tl.find_plan(tmp_path) == b
+
+    def test_none_when_nothing_open(self, tmp_path: Path) -> None:
+        (tmp_path / "PLAN.md").write_text("no boxes\n")
+        assert tl.find_plan(tmp_path) is None
