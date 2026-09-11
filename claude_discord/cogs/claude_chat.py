@@ -83,6 +83,7 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "resume-info": "📌 Session",
     "sync-sessions": "📌 Session",
     "sync-settings": "📌 Session",
+    "taskloop": "📌 Session",  # run a plan one task at a time, fresh session each
     "model": "🤖 Model",
     "backend": "🤖 Model",
     "engine-status": "🤖 Model",
@@ -906,6 +907,30 @@ class ClaudeChatCog(commands.Cog):
                 )
             )
         return thread
+
+    async def run_fresh_turn(
+        self,
+        seed_message: discord.Message,
+        thread: discord.Thread,
+        prompt: str,
+        *,
+        working_dir: str | None,
+        result_sink: Callable[[str | None, str | None], Awaitable[None]],
+    ) -> None:
+        """Run one turn in *thread* in a brand-new session and wait for it.
+
+        Unlike a reply, nothing is resumed: the task loop wants every round to
+        start with an empty context, and the thread's backend setting still
+        decides which harness runs it.
+        """
+        await self._run_claude(
+            seed_message,
+            thread,
+            prompt,
+            session_id=None,
+            working_dir_override=working_dir,
+            result_sink=result_sink,
+        )
 
     async def deliver_relayed_message(
         self,

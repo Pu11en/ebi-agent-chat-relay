@@ -1,0 +1,132 @@
+"""Tests for cogs.task_loop — Discord wiring of the sequential task loop."""
+
+from __future__ import annotations
+
+import asyncio
+import subprocess
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+import pytest
+
+from claude_discord.cogs.task_loop import TaskLoopCog, resolve_repo
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "PLAN.md").write_text("- [ ] Task 1: a\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "init")
+    return tmp_path
+
+
+class TestResolveRepo:
+    async def test_relative_path_rejected(self) -> None:
+        with pytest.raises(ValueError, match="absolute"):
+            await resolve_repo(Path("PLAN.md"))
+
+    async def test_missing_or_non_markdown_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="not found"):
+            await resolve_repo(tmp_path / "nope.md")
+        (tmp_path / "plan.txt").write_text("x")
+        with pytest.raises(ValueError, match="not found"):
+            await resolve_repo(tmp_path / "plan.txt")
+
+    async def test_outside_git_rejected(self, tmp_path: Path) -> None:
+        (tmp_path / "PLAN.md").write_text("- [ ] a")
+        with pytest.raises(ValueError, match="git"):
+            await resolve_repo(tmp_path / "PLAN.md")
+
+    async def test_returns_repo_root(self, repo: Path) -> None:
+        assert (await resolve_repo(repo / "PLAN.md")).resolve() == repo.resolve()
+
+
+def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
+    bot = MagicMock()
+    chat = MagicMock()
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 555
+    thread.mention = "<#555>"
+    thread.send = AsyncMock(return_value=MagicMock())
+    chat.spawn_session = AsyncMock(return_value=thread)
+
+    async def fresh_turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        # The worker ticks its task and commits, like a real round would.
+        plan = Path(working_dir) / "PLAN.md"
+        plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+        _git(Path(working_dir), "commit", "-qam", "tick")
+        await result_sink("recap\nDONE", None)
+
+    chat.run_fresh_turn = AsyncMock(side_effect=fresh_turn)
+    bot.cogs = {"ClaudeChatCog": chat}
+    return TaskLoopCog(bot), chat, thread
+
+
+class TestStartLoop:
+    async def test_runs_the_plan_in_a_new_thread_with_fresh_sessions(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+
+        got = await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert got is thread
+        assert chat.spawn_session.await_args.kwargs["auto_start"] is False
+        assert chat.run_fresh_turn.await_count == 1
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
+        assert "Task 1 of 1 done" in posted
+        assert "All 1 tasks are done" in posted
+        assert cog.running == []
+
+    async def test_second_loop_in_same_repo_refused(self, repo: Path) -> None:
+        cog, chat, _ = _cog_with_chat()
+        blocker = asyncio.Event()
+
+        async def slow_turn(*_a, result_sink, **_k):  # noqa: ANN001, ANN002, ANN003
+            await blocker.wait()
+            await result_sink("x\nSTUCK: test", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=slow_turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        with pytest.raises(ValueError, match="already running"):
+            await cog.start_loop(channel, str(repo / "PLAN.md"))
+        blocker.set()
+        await asyncio.wait_for(cog.running[0].task, 10)
+
+    async def test_plan_without_checkboxes_refused(self, repo: Path) -> None:
+        (repo / "PLAN.md").write_text("# no tasks\n")
+        cog, _, _ = _cog_with_chat()
+        channel = MagicMock(spec=discord.TextChannel)
+        with pytest.raises(ValueError, match="no `- \\[ \\]` tasks"):
+            await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+    async def test_stop_for_matches_worker_or_report_channel(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        blocker = asyncio.Event()
+
+        async def slow_turn(*_a, result_sink, **_k):  # noqa: ANN001, ANN002, ANN003
+            await blocker.wait()
+            await result_sink("x\nSTUCK: test", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=slow_turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        assert cog.stop_for(999) is None
+        assert cog.stop_for(thread.id) is not None
+        blocker.set()
+        await asyncio.wait_for(cog.running[0].task, 10)

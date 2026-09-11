@@ -342,6 +342,8 @@ class ApiServer:
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
         # Session spawn route
         self.app.router.add_post("/api/spawn", self.spawn)
+        # Sequential task loop (fresh session per plan task)
+        self.app.router.add_post("/api/loops", self.start_task_loop)
         # Authenticated external ingest route (browser extension / webhooks)
         self.app.router.add_post("/api/ingest", self.ingest)
         # Running per-thread summaries. GET (external, token) reads the stored
@@ -1571,6 +1573,60 @@ class ApiServer:
                 "thread_name": thread.name,
             },
             status=201,
+        )
+
+    async def start_task_loop(self, request: web.Request) -> web.Response:
+        """POST /api/loops — work through a plan's ``- [ ]`` tasks, one per fresh session.
+
+        Meant for a planner session *after* the human said yes. The loop opens
+        one worker thread and posts progress to ``report_thread_id``.
+
+        Body (JSON):
+            plan_path: Absolute path to the plan ``.md`` inside a git repo (required).
+            report_thread_id: Channel or thread that gets progress lines and
+                whose parent channel hosts the worker thread (optional; defaults
+                to ``default_channel_id``).
+
+        Returns (201): ``{"status": "started", "worker_thread_id": "..."}``
+        """
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        plan_path = data.get("plan_path")
+        if not isinstance(plan_path, str) or not plan_path.strip():
+            return web.json_response({"error": "plan_path is required"}, status=400)
+
+        cog: Any = self.bot.cogs.get("TaskLoopCog")
+        if cog is None:
+            return web.json_response({"error": "TaskLoopCog is not loaded"}, status=503)
+
+        raw_report: Any = data.get("report_thread_id") or self.default_channel_id
+        try:
+            report_id = int(raw_report)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "report_thread_id must be an integer"}, status=400)
+
+        import discord as _discord
+
+        report = self.bot.get_channel(report_id)
+        if report is None:
+            try:
+                report = await self.bot.fetch_channel(report_id)
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=404)
+        parent = report.parent if isinstance(report, _discord.Thread) else report
+        if not isinstance(parent, _discord.TextChannel):
+            return web.json_response(
+                {"error": "report_thread_id must be a text channel or one of its threads"},
+                status=400,
+            )
+        try:
+            thread = await cog.start_loop(parent, plan_path.strip(), report_to=report)
+        except (ValueError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(
+            {"status": "started", "worker_thread_id": str(thread.id)}, status=201
         )
 
     # ------------------------------------------------------------------

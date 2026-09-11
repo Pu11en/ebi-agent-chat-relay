@@ -413,6 +413,12 @@ async def setup_bridge(
     await bot.add_cog(chat_cog)
     logger.info("Registered ClaudeChatCog")
 
+    # --- TaskLoopCog (auto-enabled; idle until /taskloop or POST /api/loops) ---
+    from .cogs.task_loop import TaskLoopCog
+
+    await bot.add_cog(TaskLoopCog(bot, allowed_user_ids=allowed_user_ids))
+    logger.info("Registered TaskLoopCog")
+
     # --- CollisionWatchCog (auto-enabled; no-op until two sessions overlap) ---
     await bot.add_cog(
         CollisionWatchCog(
