@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 #: How long a yes/no question waits before the loop pauses instead.
 ASK_TIMEOUT_SECONDS = 12 * 60 * 60
 
+#: Report lines that need the person: a question, a stop, the end. Progress
+#: ("✅ Task 3 of 9 done") posts quietly — Drew chose pings only when needed.
+_PING_PREFIXES = ("❓", "🛑", "🏁", "⏸️", "💥")
+
 _YES = "yes"
 _NO = "no"
 
@@ -93,6 +97,7 @@ class TaskLoopCog(commands.Cog):
         plan_path: str,
         *,
         report_to: discord.abc.Messageable | None = None,
+        notify_user_id: int | None = None,
     ) -> discord.Thread:
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
@@ -118,12 +123,22 @@ class TaskLoopCog(commands.Cog):
         nudger = getattr(chat, "context_nudger", None)
         if nudger is not None:
             nudger.skip_thread_ids.add(thread.id)
+        dashboard = None
+        with contextlib.suppress(Exception):
+            dashboard = chat._get_dashboard()
+        if dashboard is not None:
+            dashboard.quiet_thread_ids.add(thread.id)
         report_target: discord.abc.Messageable = report_to or channel
         report_id = getattr(report_target, "id", channel.id)
 
         async def report(text: str) -> None:
+            ping = (
+                f" <@{notify_user_id}>"
+                if notify_user_id and text.startswith(_PING_PREFIXES)
+                else ""
+            )
             with contextlib.suppress(discord.HTTPException):
-                await report_target.send(f"{text} · {thread.mention}")
+                await report_target.send(f"{text} · {thread.mention}{ping}")
 
         rounds = 0
 
@@ -227,7 +242,9 @@ class TaskLoopCog(commands.Cog):
             return
         report_to: Any = channel
         try:
-            thread = await self.start_loop(parent, plan, report_to=report_to)
+            thread = await self.start_loop(
+                parent, plan, report_to=report_to, notify_user_id=interaction.user.id
+            )
         except (ValueError, RuntimeError) as exc:
             await interaction.followup.send(f"Could not start: {exc}")
             return

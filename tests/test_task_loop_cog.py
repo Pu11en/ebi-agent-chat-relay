@@ -130,3 +130,23 @@ class TestStartLoop:
         assert cog.stop_for(thread.id) is not None
         blocker.set()
         await asyncio.wait_for(cog.running[0].task, 10)
+
+
+class TestPings:
+    async def test_worker_thread_is_quiet_and_only_the_end_pings(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        chat._get_dashboard = MagicMock(return_value=MagicMock(quiet_thread_ids=set()))
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+
+        await cog.start_loop(channel, str(repo / "PLAN.md"), notify_user_id=42)
+        if cog.running:
+            await asyncio.wait_for(cog.running[0].task, 10)
+
+        assert thread.id in chat._get_dashboard.return_value.quiet_thread_ids
+        texts = [str(c.args[0]) for c in channel.send.call_args_list]
+        done_line = next(t for t in texts if "Task 1 of 1 done" in t)
+        end_line = next(t for t in texts if "All 1 tasks are done" in t)
+        assert "<@42>" not in done_line  # progress is quiet
+        assert "<@42>" in end_line  # the end pings

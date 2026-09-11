@@ -101,6 +101,9 @@ class ThreadStatusDashboard:
         # never pinged.  Subtracting after the owner is added is deliberate:
         # an explicit mute is the one thing that silences even the owner.
         self._mention_user_ids -= set(muted_user_ids or ())
+        #: Threads that never get the "your reply is needed" ping — task-loop
+        #: workers finish a turn every task, and a ping per task is noise.
+        self.quiet_thread_ids: set[int] = set()
         self._threads: dict[int, _ThreadInfo] = {}
         self._dashboard_message: discord.Message | None = None
         self._lock = asyncio.Lock()
@@ -163,6 +166,7 @@ class ThreadStatusDashboard:
                 and prev_state != ThreadState.WAITING_INPUT
                 and bool(self._mention_user_ids)
                 and thread is not None
+                and thread_id not in self.quiet_thread_ids
             )
 
             await self._refresh_dashboard()

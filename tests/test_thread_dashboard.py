@@ -144,6 +144,19 @@ class TestOwnerMention:
         assert sent_text == "🟡 <@42> The agent has finished — your reply is needed here."
 
     @pytest.mark.asyncio
+    async def test_quiet_threads_never_get_the_reply_needed_ping(self) -> None:
+        """Task-loop workers finish a turn every task; pinging each time is noise."""
+        dashboard, channel = _make_dashboard(owner_id=42)
+        await dashboard.initialize()
+        thread = _make_thread(10)
+        dashboard.quiet_thread_ids.add(10)
+
+        await dashboard.set_state(10, ThreadState.PROCESSING, "working", thread=thread)
+        await dashboard.set_state(10, ThreadState.WAITING_INPUT, "working", thread=thread)
+
+        thread.send.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_mention_not_sent_if_already_waiting(self) -> None:
         """Repeated WAITING_INPUT transitions should NOT spam mentions."""
         dashboard, _ = _make_dashboard(owner_id=42)
