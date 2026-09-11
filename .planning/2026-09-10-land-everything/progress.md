@@ -16,3 +16,4 @@
 - Added a 'GitHub is always last' rule to /home/drewp/AGENTS.md. Inserted a Drew-tries-it-locally task before the push in this plan (17 tasks now).
 - Finished the /gowork design questions (Q1–5 re-confirmed, holes 1–6 answered). Next: turn them into a small-task build plan.
 - Building /gowork v2 in /home/drewp/main-projects/wt-task-loop. Step 1 (quiet worker threads; ping only for questions, stops and the end) is e1042b9. Step 2 (the bot runs the plan's Check: line) is 47f7cc1. Added the Check: line to the plan-writing rule in /home/drewp/AGENTS.md.
+- Steps 3 (own copy, 7da4589), 4 (harness and model buttons, b267c1e) and 5 (plan picker, 04049c1) are done. 3,145 tests pass. Made a practice project at /home/drewp/main-projects/gowork-practice (a 2-task PLAN.md with a Check line) for the demo.
