@@ -7,3 +7,4 @@
 - Saved the start-fresh nudge on `feat/task-loop` as 2f818dc. Full suite: 3,090 passed, pyright clean.
 - Wrote task_plan.md: 10 tasks, to be run with `/gowork` after Drew approves and restarts the bot.
 - Drew: tasks must be small, and big work must never run as one session. Added a "Big tasks get chunked" rule to /home/drewp/AGENTS.md (backup: /home/drewp/.retired-harness/AGENTS.md.before-big-tasks-20260910). Split this plan from 10 tasks into 17.
+- Fixed /gowork's check to ignore untracked files (9822974 on feat/task-loop). Merged plan tasks 1+2 so the first round leaves no modified tracked files; the plan now has 16 tasks.

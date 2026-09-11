@@ -14,23 +14,22 @@ Claude Code, Codex and DSH.
 ## Tasks
 Each task is one small outcome, about 15–30 minutes in one fresh session.
 
-- [ ] Task 1: Discard the duplicate voice-recorder edits. `examples/ebibot/cogs/voice_recorder.py` and `_transcribe_recording.py` are byte-identical to `origin/main` 9d9c336 (`git checkout -- voice_recorder.py`, delete the untracked `_transcribe_recording.py`).
-- [ ] Task 2: Remove the disarmed restart hook. Restore `scripts/health-check.sh` from `data/restart-health-check.sh.bak`, then delete `data/restart-*` and `.restart-after-turn.log`.
-- [ ] Task 3: Decide on the unfinished project picker. `ASK:` delete the untested `examples/ebibot/cogs/workdir_command.py` + `extensions/project_picker/` (they break 3 tests)? Yes deletes them; no moves them to branch `wip/project-picker`.
-- [ ] Task 4: Bring `main` level with GitHub: `git pull --rebase origin main` (1 new commit). Record the pytest result.
-- [ ] Task 5: Merge branch `feat/task-loop` into `main` and resolve any conflicts. Record the pytest result.
-- [ ] Task 6: Run lint and types on the merged code: `ruff check`, `ruff format --check`, `pyright claude_discord/`. Fix what they report.
-- [ ] Task 7: Fix `tests/test_deploy_recovery.py::test_runtime_hook_loads_fallback_then_returns_to_main` (it was failing before today).
-- [ ] Task 8: Fix `tests/test_thread_policy.py::…every_call_site_passes_the_constant` (it was failing before today).
-- [ ] Task 9: Make the start-fresh nudge work on Codex. Read `model_context_window` from Codex's `token_count` event into the `turn.completed` StreamEvent (`claude_code_core/codex_runner.py`). Write the failing test first.
-- [ ] Task 10: Make the start-fresh nudge work on DSH with an estimate: prompt + reply characters ÷ 4 per session, against the model's window, labelled "estimate". Write the failing test first.
-- [ ] Task 11: Security check of everything unpushed (`git log origin/main..main`), following `.agents/skills/security-audit/SKILL.md`. Fix what it finds.
-- [ ] Task 12: Add a CHANGELOG entry, in plain words, for today's features.
-- [ ] Task 13: Push the unpushed commits to branch `land/2026-09-10` and open a PR with a plain-English summary. `ASK:` before pushing.
-- [ ] Task 14: `ASK:` merge the PR (squash)? After the merge: `git fetch && git reset --keep origin/main`.
-- [ ] Task 15: List worktrees and local branches with "merged into main?". `ASK:` remove the merged ones? Keep `wt-task-loop`.
-- [ ] Task 16: `ASK:` stop the leftover Hermes gateway (PID 537)? Show the exact command and how to undo it.
-- [ ] Task 17: `ASK:` remove crontab line 1 (a missing `~/.hermes` script) and fix line 2's path to `/home/drewp/main-projects/discord-control/idle-nudge.sh`? Show the exact command and how to undo it.
+- [ ] Task 1: Remove the stopped agents' leftovers in one go. (1) Discard the duplicate voice-recorder edits: `examples/ebibot/cogs/voice_recorder.py` and `_transcribe_recording.py` are byte-identical to `origin/main` 9d9c336, so run `git checkout -- examples/ebibot/cogs/voice_recorder.py` and delete the untracked copy. (2) Restore `scripts/health-check.sh` from `data/restart-health-check.sh.bak`, then delete `data/restart-*` and `.restart-after-turn.log`. Nothing gets committed here except the plan tick, and `git status` must show no modified tracked files.
+- [ ] Task 2: Decide on the unfinished project picker. `ASK:` delete the untested `examples/ebibot/cogs/workdir_command.py` + `extensions/project_picker/` (they break 3 tests)? Yes deletes them; no moves them to branch `wip/project-picker`.
+- [ ] Task 3: Bring `main` level with GitHub: `git pull --rebase origin main` (1 new commit). Record the pytest result.
+- [ ] Task 4: Merge branch `feat/task-loop` into `main` and resolve any conflicts. Record the pytest result.
+- [ ] Task 5: Run lint and types on the merged code: `ruff check`, `ruff format --check`, `pyright claude_discord/`. Fix what they report.
+- [ ] Task 6: Fix `tests/test_deploy_recovery.py::test_runtime_hook_loads_fallback_then_returns_to_main` (it was failing before today).
+- [ ] Task 7: Fix `tests/test_thread_policy.py::…every_call_site_passes_the_constant` (it was failing before today).
+- [ ] Task 8: Make the start-fresh nudge work on Codex. Read `model_context_window` from Codex's `token_count` event into the `turn.completed` StreamEvent (`claude_code_core/codex_runner.py`). Write the failing test first.
+- [ ] Task 9: Make the start-fresh nudge work on DSH with an estimate: prompt + reply characters ÷ 4 per session, against the model's window, labelled "estimate". Write the failing test first.
+- [ ] Task 10: Security check of everything unpushed (`git log origin/main..main`), following `.agents/skills/security-audit/SKILL.md`. Fix what it finds.
+- [ ] Task 11: Add a CHANGELOG entry, in plain words, for today's features.
+- [ ] Task 12: Push the unpushed commits to branch `land/2026-09-10` and open a PR with a plain-English summary. `ASK:` before pushing.
+- [ ] Task 13: `ASK:` merge the PR (squash)? After the merge: `git fetch && git reset --keep origin/main`.
+- [ ] Task 14: List worktrees and local branches with "merged into main?". `ASK:` remove the merged ones? Keep `wt-task-loop`.
+- [ ] Task 15: `ASK:` stop the leftover Hermes gateway (PID 537)? Show the exact command and how to undo it.
+- [ ] Task 16: `ASK:` remove crontab line 1 (a missing `~/.hermes` script) and fix line 2's path to `/home/drewp/main-projects/discord-control/idle-nudge.sh`? Show the exact command and how to undo it.
 
 ## Done when
 - Every box above is ticked.
