@@ -25,8 +25,10 @@ fresh session, return its final text), ``ask`` (a yes/no question) and
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
+import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -36,8 +38,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ROUNDS = 40
 DEFAULT_MAX_RETRIES = 1
+#: A plan's own check (tests, a build, "the page loads") gets this long per run.
+CHECK_TIMEOUT_SECONDS = 600
 
 _TASK_RE = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s+(.*\S)")
+_CHECK_RE = re.compile(r"^\s*\**Check:\**\s*`?(.+?)`?\s*$", re.IGNORECASE)
 _STATUS_RE = re.compile(r"^(DONE|COMPLETE|ASK:|STUCK:)\s*(.*)$")
 
 
@@ -104,6 +109,45 @@ def find_plan(directory: Path) -> Path | None:
         if count_tasks(text)[1]:
             candidates.append(path)
     return max(candidates, key=lambda p: p.stat().st_mtime, default=None)
+
+
+def plan_check_command(plan_text: str) -> list[str] | None:
+    """The plan's ``Check:`` line as an argv, or None when the plan has none.
+
+    Split with shlex and run without a shell, so the check is one program with
+    arguments — the same thing the worker could run, and nothing more.
+    """
+    for line in plan_text.splitlines():
+        m = _CHECK_RE.match(line)
+        if m:
+            with contextlib.suppress(ValueError):
+                argv = shlex.split(m.group(1))
+                return argv or None
+            return None
+    return None
+
+
+async def run_check(
+    repo_dir: Path, argv: list[str], timeout: float = CHECK_TIMEOUT_SECONDS
+) -> tuple[bool, str]:
+    """Run the plan's check in *repo_dir*. Returns (passed, last lines of output)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(repo_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except OSError as exc:
+        return False, f"could not start the check: {exc}"
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        return False, f"the check took longer than {int(timeout)}s"
+    tail = "\n".join(out.decode(errors="replace").strip().splitlines()[-15:])
+    return proc.returncode == 0, tail
 
 
 @dataclass(frozen=True)
@@ -176,7 +220,9 @@ def worker_prompt(
         f"1. Read the plan: {plan_path}",
         f"2. Read the progress log if it exists: {progress_path}",
         "3. Do the first unchecked task (`- [ ]`) ONLY. Do not start the next one.",
-        "4. Check your work actually works (run it, run tests if the project has them).",
+        "4. Check your work actually works: run the plan's `Check:` command if it has one "
+        "(the bot runs it too, and a failure means the task is not done), and run the "
+        "project's tests.",
         "5. Commit the work with git. Tick that task's box (`- [x]`) in the plan and "
         "append a short entry to the progress log (what you did, the commit, how you "
         "checked it, anything left open) — commit those too. Leave no uncommitted changes.",
@@ -249,6 +295,18 @@ class TaskLoop:
         self.max_retries = max_retries
         self._stop = False
 
+    async def _run_plan_check(self) -> list[str]:
+        """The bot's own check after a claimed DONE — trust proof, not words."""
+        try:
+            text = self.plan_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        argv = plan_check_command(text)
+        if argv is None:
+            return []
+        ok, tail = await run_check(self.repo_dir, argv)
+        return [] if ok else [f"the plan's check failed ({' '.join(argv)}): {tail}"]
+
     def request_stop(self) -> None:
         """Stop after the round in flight — never mid-task."""
         self._stop = True
@@ -298,6 +356,8 @@ class TaskLoop:
                 if status == Status.DONE
                 else [error or "the worker ended without a status line"]
             )
+            if not problems:
+                problems = await self._run_plan_check()
             if not problems:
                 retries = 0
                 await self._report(f"✅ Task {after.checked} of {total} done: {before.next_task}")

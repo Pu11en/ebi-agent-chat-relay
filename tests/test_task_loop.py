@@ -252,3 +252,47 @@ class TestFindPlan:
     def test_none_when_nothing_open(self, tmp_path: Path) -> None:
         (tmp_path / "PLAN.md").write_text("no boxes\n")
         assert tl.find_plan(tmp_path) is None
+
+
+class TestPlanCheck:
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("Check: `uv run pytest -q`\n- [ ] a", ["uv", "run", "pytest", "-q"]),
+            ("**Check:** python3 build.py\n", ["python3", "build.py"]),
+            ("no check line\n- [ ] a", None),
+        ],
+    )
+    def test_reads_the_check_line(self, text: str, expected: list[str] | None) -> None:
+        assert tl.plan_check_command(text) == expected
+
+    async def test_run_check_reports_pass_and_fail(self, tmp_path: Path) -> None:
+        ok, _ = await tl.run_check(tmp_path, ["python3", "-c", "print('fine')"])
+        assert ok
+        ok, tail = await tl.run_check(
+            tmp_path, ["python3", "-c", "import sys; print('boom'); sys.exit(1)"]
+        )
+        assert not ok and "boom" in tail
+
+    async def test_missing_program_fails_cleanly(self, tmp_path: Path) -> None:
+        ok, tail = await tl.run_check(tmp_path, ["definitely-not-a-program-xyz"])
+        assert not ok and tail
+
+
+class TestLoopRunsTheCheck:
+    async def test_failed_check_means_not_done(self, repo: Path) -> None:
+        plan = repo / "PLAN.md"
+        plan.write_text("Check: python3 -c 'import sys; sys.exit(1)'\n" + plan.read_text())
+        _git(repo, "commit", "-qam", "add check")
+        fake = _Fake(repo, [_done, _done])
+        outcome = await fake.loop().run()
+        assert outcome.status == tl.Status.STUCK
+        assert "check" in outcome.detail
+
+    async def test_passing_check_lets_it_continue(self, repo: Path) -> None:
+        plan = repo / "PLAN.md"
+        plan.write_text("Check: python3 -c 'print(1)'\n" + plan.read_text())
+        _git(repo, "commit", "-qam", "add check")
+        fake = _Fake(repo, [_done, _done])
+        outcome = await fake.loop().run()
+        assert outcome.status == tl.Status.COMPLETE
