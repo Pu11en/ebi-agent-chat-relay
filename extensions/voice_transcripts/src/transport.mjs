@@ -38,6 +38,9 @@ export function createVoiceTransport({
       maxBytes: config.maxUtteranceSeconds * BYTES_PER_SECOND,
       minBytes: Math.ceil((config.minUtteranceMs * BYTES_PER_SECOND) / 1000),
       onChunk: (pcm) => {
+        logger.info(
+          "[voice] captured " + displayName + " " + pcmDurationMs(pcm.length) + "ms",
+        );
         service.enqueueUtterance(
           {
             sessionId: session.id,
@@ -56,6 +59,8 @@ export function createVoiceTransport({
       finished = true;
       captures.delete(userId);
       opus.unpipe(decoder);
+      if (receivedBytes > 0 || error)
+        logger.info("[voice] stream ended " + displayName + " pcm=" + receivedBytes + "B");
       try {
         buffer.flush();
       } catch (captureError) {
@@ -66,7 +71,9 @@ export function createVoiceTransport({
       if (error) logger.warn("[voice] speaker stream failed:", error.message);
     }
     captures.set(userId, finish);
+    let receivedBytes = 0;
     decoder.on("data", (chunk) => {
+      receivedBytes += chunk.length;
       if (!mayCapture()) {
         finish();
         return;
@@ -105,6 +112,14 @@ export function createVoiceTransport({
         adapterCreator: guild.voiceAdapterCreator,
         selfDeaf: false,
         selfMute: true,
+        debug: true,
+      });
+      // @discordjs/voice drops packets it can't E2EE-decrypt and only says so
+      // on its debug channel — surface DAVE/decrypt events so lost speech is
+      // visible in the journal instead of silently missing from transcripts.
+      connection.on("debug", (message) => {
+        if (/decrypt|dave|transition|epoch|mls|session (re|in|down|up)/i.test(message))
+          logger.warn("[voice] debug:", message);
       });
       connection.on("error", (error) =>
         logger.warn("[voice] connection:", error.message),
