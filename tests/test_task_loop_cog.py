@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -67,7 +68,8 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
 
     chat.run_fresh_turn = AsyncMock(side_effect=fresh_turn)
     bot.cogs = {"ClaudeChatCog": chat}
-    return TaskLoopCog(bot), chat, thread
+    cog = TaskLoopCog(bot, work_root=Path(tempfile.mkdtemp(prefix="gowork-test-")))
+    return cog, chat, thread
 
 
 class TestStartLoop:
@@ -82,6 +84,11 @@ class TestStartLoop:
 
         assert got is thread
         assert chat.spawn_session.await_args.kwargs["auto_start"] is False
+        # The work happened in the build's own copy, not in the real project.
+        work_dir = Path(chat.spawn_session.await_args.kwargs["working_dir"])
+        assert work_dir != repo
+        assert "- [ ]" in (repo / "PLAN.md").read_text()
+        assert "- [x]" in (work_dir / "PLAN.md").read_text()
         assert chat.run_fresh_turn.await_count == 1
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
         assert "Task 1 of 1 done" in posted

@@ -24,6 +24,7 @@ from discord.ext import commands
 
 from claude_code_core.frontend import Choice, ChoicePrompt
 from claude_code_core.task_loop import LoopOutcome, TaskLoop, find_plan, take_snapshot
+from claude_code_core.work_copy import WorkCopy, WorkCopyError, create_work_copy
 
 from ..surface import DiscordSurface
 
@@ -49,6 +50,7 @@ class _Running:
     repo_dir: Path
     worker_thread_id: int
     report_channel_id: int
+    copy: WorkCopy | None = None
     task: asyncio.Task[LoopOutcome] | None = None
 
 
@@ -76,9 +78,17 @@ async def resolve_repo(plan_path: Path) -> Path:
 class TaskLoopCog(commands.Cog):
     """``/gowork`` / ``/stopwork`` and the engine behind ``POST /api/loops``."""
 
-    def __init__(self, bot: commands.Bot, *, allowed_user_ids: set[int] | None = None) -> None:
+    def __init__(
+        self,
+        bot: commands.Bot,
+        *,
+        allowed_user_ids: set[int] | None = None,
+        work_root: Path | None = None,
+    ) -> None:
         self.bot = bot
         self._allowed_user_ids = allowed_user_ids
+        #: Where each build's own copy of the project is made (None = default).
+        self._work_root = work_root
         self._running: dict[Path, _Running] = {}
 
     def _chat(self) -> ClaudeChatCog:
@@ -109,14 +119,24 @@ class TaskLoopCog(commands.Cog):
         if snap.checked + snap.unchecked == 0:
             raise ValueError("the plan has no `- [ ]` tasks to work through")
 
+        # The build works in its own copy: the real project is untouched until
+        # Drew has tried the result, and other sessions in the same folder
+        # can't collide with it.
+        try:
+            copy = await create_work_copy(repo_dir, plan, root=self._work_root)
+        except WorkCopyError as exc:
+            raise ValueError(f"couldn't make a separate copy of the project: {exc}") from exc
+        work_dir, work_plan = copy.path, copy.plan_path
+
         thread = await chat.spawn_session(
             channel,
             f"🔁 **Task loop** for `{plan}`\n"
             f"{snap.unchecked} of {snap.checked + snap.unchecked} tasks left. "
-            "Each task runs in a fresh session; I'll ask here if a yes/no is needed.",
+            "Each task runs in a fresh session on a separate copy of the project; "
+            "I'll ask here if a yes/no is needed.",
             thread_name=f"🔁 Task loop · {repo_dir.name}",
             auto_start=False,
-            working_dir=str(repo_dir),
+            working_dir=str(work_dir),
         )
         # Workers start a fresh session every round; a "start fresh?" nudge
         # there would only interrupt the loop.
@@ -145,7 +165,7 @@ class TaskLoopCog(commands.Cog):
         async def run_round(prompt: str) -> tuple[str | None, str | None]:
             nonlocal rounds
             rounds += 1
-            now = await take_snapshot(repo_dir, plan)
+            now = await take_snapshot(work_dir, work_plan)
             seed = await thread.send(f"-# 🔁 Round {rounds} · next task: {now.next_task}")
             result: dict[str, str | None] = {}
 
@@ -153,7 +173,7 @@ class TaskLoopCog(commands.Cog):
                 result["text"], result["error"] = text, error
 
             await chat.run_fresh_turn(
-                seed, thread, prompt, working_dir=str(repo_dir), result_sink=sink
+                seed, thread, prompt, working_dir=str(work_dir), result_sink=sink
             )
             if not result:
                 return None, "the session ended without a result"
@@ -177,9 +197,9 @@ class TaskLoopCog(commands.Cog):
             return _YES in answer
 
         loop = TaskLoop(
-            plan_path=plan, repo_dir=repo_dir, run_round=run_round, ask=ask, report=report
+            plan_path=work_plan, repo_dir=work_dir, run_round=run_round, ask=ask, report=report
         )
-        running = _Running(loop, repo_dir, thread.id, report_id)
+        running = _Running(loop, repo_dir, thread.id, report_id, copy=copy)
         self._running[repo_dir] = running
         running.task = asyncio.create_task(self._drive(running, report))
         await report(f"▶️ Task loop started: {snap.unchecked} tasks to go")
