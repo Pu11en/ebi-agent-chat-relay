@@ -14,3 +14,4 @@
 - Drew reframed the ending as his journey: see it and test it with little reading, on a localhost preview before going live. Proposed a Try-it card (local link, 3 checks, looks-good / something's-off buttons). The plan gets a 'How to try it' section.
 - Drew had been answering as if this were another session. Re-oriented him, then got fresh answers: one worker thread with a fresh session per task, the bot runs tests, and the worker thread is deleted at the end with the output posted to the planner thread.
 - Added a 'GitHub is always last' rule to /home/drewp/AGENTS.md. Inserted a Drew-tries-it-locally task before the push in this plan (17 tasks now).
+- Finished the /gowork design questions (Q1–5 re-confirmed, holes 1–6 answered). Next: turn them into a small-task build plan.
