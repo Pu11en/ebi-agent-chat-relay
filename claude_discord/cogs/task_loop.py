@@ -22,11 +22,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from claude_code_core.frontend import Choice, ChoicePrompt
+from claude_code_core.frontend import Choice, ChoicePrompt, FormField, FormPrompt
 from claude_code_core.task_loop import LoopOutcome, TaskLoop, find_plan, take_snapshot
 from claude_code_core.work_copy import WorkCopy, WorkCopyError, create_work_copy
 
+from ..backend_settings import ALL_BACKENDS
+from ..model_catalog import claude_model_choices, codex_model_choices, dsh_model_choices
 from ..surface import DiscordSurface
+from .backend_command import SUGGESTED_MODELS
 
 if TYPE_CHECKING:
     from .claude_chat import ClaudeChatCog
@@ -40,6 +43,18 @@ ASK_TIMEOUT_SECONDS = 12 * 60 * 60
 #: ("✅ Task 3 of 9 done") posts quietly — Drew chose pings only when needed.
 _PING_PREFIXES = ("❓", "🛑", "🏁", "⏸️", "💥")
 
+#: Choice value for "none of these — let me type the model name".
+TYPE_OWN = "__type_own__"
+#: How long the harness/model pickers wait for a tap.
+PICK_TIMEOUT_SECONDS = 10 * 60
+_HARNESS_LABELS = {
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "dsh": "DeepSeek Harness (DSH)",
+    "local": "Local model",
+    "agui": "AG-UI",
+}
+
 _YES = "yes"
 _NO = "no"
 
@@ -52,6 +67,84 @@ class _Running:
     report_channel_id: int
     copy: WorkCopy | None = None
     task: asyncio.Task[LoopOutcome] | None = None
+
+
+def harness_prompt(current: str | None) -> ChoicePrompt:
+    """Step one of starting a build: which harness does the work."""
+    choices = tuple(
+        Choice(
+            value=b,
+            label=f"{_HARNESS_LABELS.get(b, b)}{' (current)' if b == current else ''}",
+            style="positive" if b == current else "default",
+        )
+        for b in ALL_BACKENDS
+    )
+    return ChoicePrompt(
+        question="Which harness should do the work?",
+        header="🔁 Start the build: 1 of 2",
+        choices=choices,
+        timeout_seconds=PICK_TIMEOUT_SECONDS,
+    )
+
+
+def model_prompt(backend: str, options: list[tuple[str, str]]) -> ChoicePrompt:
+    """Step two: which model, from that harness's list, or typed by hand."""
+    choices = [
+        Choice(value=value, label=value[:80], description=(desc or None) and desc[:100])
+        for value, desc in options[:23]
+    ]
+    choices.append(Choice(value=TYPE_OWN, label="✏️ Type another model"))
+    return ChoicePrompt(
+        question=f"Which model should {_HARNESS_LABELS.get(backend, backend)} use?",
+        header="🔁 Start the build: 2 of 2",
+        choices=tuple(choices),
+        timeout_seconds=PICK_TIMEOUT_SECONDS,
+    )
+
+
+async def model_options(backend: str) -> list[tuple[str, str]]:
+    """The same model list `/model` suggests for *backend*."""
+    fallback = list(SUGGESTED_MODELS.get(backend, []))
+    if backend == "claude":
+        return await claude_model_choices(fallback=fallback)
+    if backend == "codex":
+        return codex_model_choices(fallback=fallback)
+    if backend == "dsh":
+        return await dsh_model_choices(fallback=fallback)
+    return fallback
+
+
+async def pick_harness_and_model(
+    surface: DiscordSurface, current: str | None
+) -> tuple[str, str | None] | None:
+    """Ask with buttons. Returns (harness, model or None for its default), or None."""
+    picked = await surface.prompt_choice(harness_prompt(current))
+    if not picked:
+        return None
+    backend = picked[0]
+    options = await model_options(backend)
+    picked_model = await surface.prompt_choice(model_prompt(backend, options))
+    if not picked_model:
+        return None
+    if picked_model[0] != TYPE_OWN:
+        return backend, picked_model[0]
+    form = await surface.prompt_form(
+        FormPrompt(
+            title="Which model?",
+            fields=(
+                FormField(
+                    key="model",
+                    label="Model name",
+                    kind="text",
+                    required=True,
+                    placeholder="e.g. glm-5.3-flash",
+                ),
+            ),
+            timeout_seconds=PICK_TIMEOUT_SECONDS,
+        )
+    )
+    typed = ((form or {}).get("model") or "").strip()
+    return (backend, typed) if typed else None
 
 
 async def resolve_repo(plan_path: Path) -> Path:
@@ -108,6 +201,8 @@ class TaskLoopCog(commands.Cog):
         *,
         report_to: discord.abc.Messageable | None = None,
         notify_user_id: int | None = None,
+        harness: str | None = None,
+        model: str | None = None,
     ) -> discord.Thread:
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
@@ -138,6 +233,13 @@ class TaskLoopCog(commands.Cog):
             auto_start=False,
             working_dir=str(work_dir),
         )
+        # The harness and model picked at start stick to the worker thread for
+        # every round (per-thread settings, so other threads are unaffected).
+        settings = getattr(chat, "_backend_settings", None)
+        if settings is not None and harness:
+            await settings.set_backend(harness, thread_id=thread.id)
+            if model:
+                await settings.set_model(harness, model, thread_id=thread.id)
         # Workers start a fresh session every round; a "start fresh?" nudge
         # there would only interrupt the loop.
         nudger = getattr(chat, "context_nudger", None)
@@ -261,14 +363,30 @@ class TaskLoopCog(commands.Cog):
             )
             return
         report_to: Any = channel
+        await interaction.followup.send(f"📋 Plan: `{plan}`")
+        settings = getattr(self._chat(), "_backend_settings", None)
+        current = await settings.current_backend(parent.id) if settings else None
+        picked = await pick_harness_and_model(DiscordSurface(report_to), current)
+        if picked is None:
+            await interaction.followup.send("Not started: no harness/model was picked.")
+            return
+        harness, model = picked
         try:
             thread = await self.start_loop(
-                parent, plan, report_to=report_to, notify_user_id=interaction.user.id
+                parent,
+                plan,
+                report_to=report_to,
+                notify_user_id=interaction.user.id,
+                harness=harness,
+                model=model,
             )
         except (ValueError, RuntimeError) as exc:
             await interaction.followup.send(f"Could not start: {exc}")
             return
-        await interaction.followup.send(f"Working on `{plan}`. Worker thread: {thread.mention}")
+        await interaction.followup.send(
+            f"Working on `{plan}` with {harness}{f' · {model}' if model else ''}. "
+            f"Worker thread: {thread.mention}"
+        )
 
     @app_commands.command(name="stopwork", description="Stop /gowork after the current task")
     async def stopwork(self, interaction: discord.Interaction) -> None:

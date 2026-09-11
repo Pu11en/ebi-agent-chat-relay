@@ -157,3 +157,38 @@ class TestPings:
         end_line = next(t for t in texts if "All 1 tasks are done" in t)
         assert "<@42>" not in done_line  # progress is quiet
         assert "<@42>" in end_line  # the end pings
+
+
+class TestHarnessAndModel:
+    def test_harness_prompt_lists_every_harness_and_marks_current(self) -> None:
+        from claude_discord.cogs.task_loop import harness_prompt
+
+        prompt = harness_prompt(current="dsh")
+        values = [c.value for c in prompt.choices]
+        assert {"claude", "codex", "dsh"} <= set(values)
+        assert any("current" in c.label for c in prompt.choices if c.value == "dsh")
+
+    def test_model_prompt_offers_list_plus_typing_your_own(self) -> None:
+        from claude_discord.cogs.task_loop import TYPE_OWN, model_prompt
+
+        prompt = model_prompt("claude", [("sonnet", "fast"), ("opus", "strong")])
+        values = [c.value for c in prompt.choices]
+        assert values[:2] == ["sonnet", "opus"]
+        assert values[-1] == TYPE_OWN  # opens a text box: GLM, DeepSeek Pro, anything
+
+    async def test_chosen_harness_and_model_stick_to_the_worker_thread(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        chat._backend_settings = settings
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+
+        await cog.start_loop(channel, str(repo / "PLAN.md"), harness="dsh", model="deepseek-pro")
+        if cog.running:
+            await asyncio.wait_for(cog.running[0].task, 10)
+
+        settings.set_backend.assert_awaited_once_with("dsh", thread_id=thread.id)
+        settings.set_model.assert_awaited_once_with("dsh", "deepseek-pro", thread_id=thread.id)
