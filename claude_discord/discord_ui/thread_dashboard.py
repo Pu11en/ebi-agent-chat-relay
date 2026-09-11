@@ -87,6 +87,7 @@ class ThreadStatusDashboard:
         channel: discord.TextChannel,
         owner_id: int | None = None,
         mention_user_ids: set[int] | None = None,
+        muted_user_ids: set[int] | None = None,
     ) -> None:
         self._channel = channel
         self._owner_id = owner_id
@@ -96,6 +97,10 @@ class ThreadStatusDashboard:
         self._mention_user_ids: set[int] = set(mention_user_ids or ())
         if owner_id is not None:
             self._mention_user_ids.add(owner_id)
+        # Muted users stay in the thread (they are still auto-joined) but are
+        # never pinged.  Subtracting after the owner is added is deliberate:
+        # an explicit mute is the one thing that silences even the owner.
+        self._mention_user_ids -= set(muted_user_ids or ())
         self._threads: dict[int, _ThreadInfo] = {}
         self._dashboard_message: discord.Message | None = None
         self._lock = asyncio.Lock()

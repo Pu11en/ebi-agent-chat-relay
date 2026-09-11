@@ -86,6 +86,9 @@ def load_config() -> dict[str, str]:
         "thread_member_exclude_category_ids": os.getenv(
             "CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS", ""
         ),
+        # Members who keep thread access but are never pinged when a thread
+        # needs a reply (comma-separated user IDs).  The per-user mute switch.
+        "thread_mute_user_ids": os.getenv("CCDB_THREAD_MUTE_USER_IDS", ""),
         "channel_ids": _env("CCDB_CHANNEL_IDS", "CLAUDE_CHANNEL_IDS", ""),
         "monitor_all_channels": _env(
             "CCDB_MONITOR_ALL_CHANNELS", "CLAUDE_MONITOR_ALL_CHANNELS", "false"
@@ -200,6 +203,7 @@ async def main() -> None:
                 config["thread_member_exclude_category_ids"]
             )
             or None,
+            thread_mute_user_ids=parse_user_ids(config["thread_mute_user_ids"]) or None,
             claude_channel_id=channel_id,
             claude_channel_ids=claude_channel_ids,
             data_root=os.getenv("CCDB_DATA_ROOT") or None,

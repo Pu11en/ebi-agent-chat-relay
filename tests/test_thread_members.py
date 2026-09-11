@@ -333,3 +333,74 @@ class TestDashboardMultiUserMention:
             thread.send.call_args.args[0]
             == "🟡 <@42> The agent has finished — your reply is needed here."
         )
+
+    @pytest.mark.asyncio
+    async def test_muted_user_is_not_mentioned(self) -> None:
+        """A muted member keeps thread access but is skipped by the ping."""
+        channel = MagicMock(spec=discord.TextChannel)
+        msg = MagicMock(spec=discord.Message)
+        msg.edit = AsyncMock()
+        channel.send = AsyncMock(return_value=msg)
+        dashboard = ThreadStatusDashboard(
+            channel=channel,
+            owner_id=42,
+            mention_user_ids={42, 43},
+            muted_user_ids={43},
+        )
+        await dashboard.initialize()
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 10
+        thread.send = AsyncMock()
+
+        await dashboard.set_state(10, ThreadState.PROCESSING, "working", thread=thread)
+        await dashboard.set_state(10, ThreadState.WAITING_INPUT, "working", thread=thread)
+
+        text = thread.send.call_args.args[0]
+        assert "<@42>" in text
+        assert "<@43>" not in text
+
+    @pytest.mark.asyncio
+    async def test_muted_owner_is_not_mentioned(self) -> None:
+        """An explicit mute beats the "owner is always pinged" default."""
+        channel = MagicMock(spec=discord.TextChannel)
+        msg = MagicMock(spec=discord.Message)
+        msg.edit = AsyncMock()
+        channel.send = AsyncMock(return_value=msg)
+        dashboard = ThreadStatusDashboard(
+            channel=channel,
+            owner_id=42,
+            mention_user_ids={42, 43},
+            muted_user_ids={42},
+        )
+        await dashboard.initialize()
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 10
+        thread.send = AsyncMock()
+
+        await dashboard.set_state(10, ThreadState.WAITING_INPUT, "working", thread=thread)
+
+        text = thread.send.call_args.args[0]
+        assert "<@42>" not in text
+        assert "<@43>" in text
+
+    @pytest.mark.asyncio
+    async def test_no_ping_when_everyone_is_muted(self) -> None:
+        """With nobody left to notify, no message is posted at all."""
+        channel = MagicMock(spec=discord.TextChannel)
+        msg = MagicMock(spec=discord.Message)
+        msg.edit = AsyncMock()
+        channel.send = AsyncMock(return_value=msg)
+        dashboard = ThreadStatusDashboard(
+            channel=channel,
+            owner_id=42,
+            mention_user_ids={42, 43},
+            muted_user_ids={42, 43},
+        )
+        await dashboard.initialize()
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 10
+        thread.send = AsyncMock()
+
+        await dashboard.set_state(10, ThreadState.WAITING_INPUT, "working", thread=thread)
+
+        thread.send.assert_not_called()

@@ -288,6 +288,26 @@ class TestAllowedUserIdParsing:
 
         assert config["allowed_user_ids"] == "222,333"
 
+    def test_load_config_reads_thread_mute_user_ids(self) -> None:
+        from claude_discord.main import load_config
+
+        with (
+            patch("claude_discord.main.load_dotenv"),
+            patch.dict(
+                "os.environ",
+                {
+                    "DISCORD_BOT_TOKEN": "tok",
+                    "DISCORD_CHANNEL_ID": "111",
+                    "DISCORD_OWNER_ID": "999",
+                    "CCDB_THREAD_MUTE_USER_IDS": "444,555",
+                },
+                clear=True,
+            ),
+        ):
+            config = load_config()
+
+        assert config["thread_mute_user_ids"] == "444,555"
+
 
 class TestExampleCogImports:
     """Verify that example cog files can be imported and have setup()."""

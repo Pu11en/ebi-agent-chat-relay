@@ -108,6 +108,7 @@ async def setup_bridge(
     allowed_user_ids: set[int] | None = None,
     thread_member_ids: set[int] | None = None,
     thread_member_exclude_category_ids: set[int] | None = None,
+    thread_mute_user_ids: set[int] | None = None,
     claude_channel_id: int | None = None,
     claude_channel_ids: set[int] | None = None,
     mention_only_channel_ids: set[int] | None = None,
@@ -161,6 +162,11 @@ async def setup_bridge(
         thread_member_exclude_category_ids: Discord category IDs whose threads
             are never auto-joined.  Defaults to the
             ``CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS`` env var (comma-separated).
+        thread_mute_user_ids: Subset of *thread_member_ids* that keeps thread
+            access but is never pinged when a thread needs a reply.  Use it to
+            stop a second operator being notified for every shared thread while
+            leaving them able to read and answer.  Defaults to the
+            ``CCDB_THREAD_MUTE_USER_IDS`` env var (comma-separated).
         claude_channel_id: Primary channel ID for Claude chat.  Kept for
                            backward compatibility.  Also used as the fallback
                            thread-creation target in SkillCommandCog.
@@ -247,17 +253,25 @@ async def setup_bridge(
         thread_member_exclude_category_ids = parse_user_ids(
             os.getenv("CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS", "")
         )
+    # Muted members keep their thread membership and their authorization; they
+    # are only dropped from the reply-needed ping.  This is what lets an
+    # operator share every thread with a colleague without that colleague
+    # being notified for all of them.
+    if thread_mute_user_ids is None:
+        thread_mute_user_ids = parse_user_ids(os.getenv("CCDB_THREAD_MUTE_USER_IDS", ""))
     bot.thread_member_ids = thread_member_ids  # type: ignore[attr-defined]
     bot.thread_member_exclude_category_ids = thread_member_exclude_category_ids  # type: ignore[attr-defined]
+    bot.thread_muted_user_ids = thread_mute_user_ids  # type: ignore[attr-defined]
     if thread_member_ids:
         logger.info(
-            "Thread auto-join enabled for %d user(s)%s",
+            "Thread auto-join enabled for %d user(s)%s%s",
             len(thread_member_ids),
             (
                 f", excluding {len(thread_member_exclude_category_ids)} category(ies)"
                 if thread_member_exclude_category_ids
                 else ""
             ),
+            (f", {len(thread_mute_user_ids)} muted" if thread_mute_user_ids else ""),
         )
 
     # Mention-only channels — fall back to MENTION_ONLY_CHANNEL_IDS env var
