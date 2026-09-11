@@ -15,3 +15,4 @@
 - Drew had been answering as if this were another session. Re-oriented him, then got fresh answers: one worker thread with a fresh session per task, the bot runs tests, and the worker thread is deleted at the end with the output posted to the planner thread.
 - Added a 'GitHub is always last' rule to /home/drewp/AGENTS.md. Inserted a Drew-tries-it-locally task before the push in this plan (17 tasks now).
 - Finished the /gowork design questions (Q1–5 re-confirmed, holes 1–6 answered). Next: turn them into a small-task build plan.
+- Building /gowork v2 in /home/drewp/main-projects/wt-task-loop. Step 1 (quiet worker threads; ping only for questions, stops and the end) is e1042b9. Step 2 (the bot runs the plan's Check: line) is 47f7cc1. Added the Check: line to the plan-writing rule in /home/drewp/AGENTS.md.
