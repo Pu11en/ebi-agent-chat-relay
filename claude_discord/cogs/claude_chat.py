@@ -45,6 +45,7 @@ from ..discord_ui.thread_renamer import suggest_title
 from ..discord_ui.views import RewindSelectView, StopView
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ._run_helper import run_claude_with_config
+from .context_nudge import ContextNudger
 from .prompt_builder import build_prompt_and_images, wants_file_attachment
 from .run_config import RunConfig
 
@@ -168,6 +169,8 @@ class ClaudeChatCog(commands.Cog):
         self._chat_only_channel_ids: set[int] = chat_only_channel_ids or set()
         self._registry = registry or getattr(bot, "session_registry", None)
         self._active_runners: dict[int, SessionBackend] = {}
+        # Suggests a fresh session (with a handoff) when a thread gets long.
+        self.context_nudger = ContextNudger(self)
         # Tracks the asyncio.Task running _run_claude for each thread.
         # Used by _handle_thread_reply to wait for an interrupted session
         # to fully clean up before starting the replacement session.
@@ -933,6 +936,22 @@ class ClaudeChatCog(commands.Cog):
             result_sink=result_sink,
         )
 
+    async def run_resumed_turn(
+        self, seed_message: discord.Message, thread: discord.Thread, prompt: str
+    ) -> None:
+        """Run one turn that continues *thread*'s current session, and wait for it."""
+        record = await self.repo.get(thread.id)
+        session_id = record.session_id if record else None
+        if record is not None and session_id:
+            session_id = await self._session_id_for_current_backend(thread, record)
+        await self._run_claude(
+            seed_message,
+            thread,
+            prompt,
+            session_id=session_id,
+            working_dir_override=record.working_dir if record else None,
+        )
+
     async def deliver_relayed_message(
         self,
         thread: discord.Thread,
@@ -1513,3 +1532,4 @@ class ClaudeChatCog(commands.Cog):
                     description,
                     thread=thread,
                 )
+            self.context_nudger.after_turn(thread)

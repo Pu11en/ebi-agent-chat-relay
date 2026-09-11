@@ -113,6 +113,11 @@ class TaskLoopCog(commands.Cog):
             auto_start=False,
             working_dir=str(repo_dir),
         )
+        # Workers start a fresh session every round; a "start fresh?" nudge
+        # there would only interrupt the loop.
+        nudger = getattr(chat, "context_nudger", None)
+        if nudger is not None:
+            nudger.skip_thread_ids.add(thread.id)
         report_target: discord.abc.Messageable = report_to or channel
         report_id = getattr(report_target, "id", channel.id)
 
