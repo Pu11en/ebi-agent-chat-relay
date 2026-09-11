@@ -12,3 +12,5 @@
 - Drew asked to plan /gowork fully before building more. Decisions are recorded in findings.md. Q1: the harness and model are chosen with buttons at start.
 - Q6 answer: Drew rejected a final 'merge?' question ('not effective'). Drew wants the full flow shown and an ending that is easy to deal with on return. Wrote docs/plans/gowork-flow.md (flowchart plus the Welcome back card idea). The ending is still open.
 - Drew reframed the ending as his journey: see it and test it with little reading, on a localhost preview before going live. Proposed a Try-it card (local link, 3 checks, looks-good / something's-off buttons). The plan gets a 'How to try it' section.
+- Drew had been answering as if this were another session. Re-oriented him, then got fresh answers: one worker thread with a fresh session per task, the bot runs tests, and the worker thread is deleted at the end with the output posted to the planner thread.
+- Added a 'GitHub is always last' rule to /home/drewp/AGENTS.md. Inserted a Drew-tries-it-locally task before the push in this plan (17 tasks now).
