@@ -432,6 +432,27 @@ class DshRunner:
             _LIVE_SESSIONS[fresh] = runtime_key
         return fresh, True
 
+    def _bind_coordination_values(self, text: str) -> str:
+        """Bind the relay's shell variables to this session's literal values.
+
+        The other backends spawn a fresh subprocess per turn, so their runner
+        can put a per-thread ``DISCORD_THREAD_ID`` in the child environment. A
+        DSH runtime is one long-lived process shared by every thread with the
+        same route, model, and directory, so its environment cannot carry a
+        per-thread value: the prompt is the only per-turn channel. Both
+        spellings the relay emits are covered — the bare ``$VAR`` and the
+        ``'$VAR'`` idiom used inside a single-quoted JSON payload, where the
+        single quotes are shell quoting rather than JSON quoting and so must
+        not survive the substitution.
+        """
+        if self.thread_id is not None:
+            thread_id = str(self.thread_id)
+            text = text.replace("'$DISCORD_THREAD_ID'", thread_id)
+            text = text.replace("$DISCORD_THREAD_ID", thread_id)
+        if self.api_port is not None:
+            text = text.replace("$CCDB_API_URL", f"http://127.0.0.1:{self.api_port}")
+        return text
+
     def _with_standing_instruction(self, prompt: str) -> str:
         """Lead the prompt with the operator's instruction.
 
@@ -444,7 +465,8 @@ class DshRunner:
         """
         if not self.append_system_prompt:
             return prompt
-        return f"{self.append_system_prompt.strip()}\n\n{prompt}"
+        instruction = self._bind_coordination_values(self.append_system_prompt)
+        return f"{instruction.strip()}\n\n{prompt}"
 
     # ── Runtime lifecycle ───────────────────────────────────
 
@@ -485,6 +507,9 @@ class DshRunner:
             home_path = Path(home).expanduser()
             home_path.mkdir(parents=True, exist_ok=True)
             kwargs["dsh_home"] = str(home_path)
+            # Injected explicitly after the ``child_env`` filter: the SDK merges
+            # this over ``os.environ`` for the child (see ``_runtime_env``).
+            kwargs["env"] = self._runtime_env()
             logger.info(
                 "Starting DeepSeek Harness runtime (model=%s, cwd=%s)",
                 self.model,
@@ -842,6 +867,24 @@ class DshRunner:
             patch_path=self._patch_path,
         )
 
+    def _runtime_env(self) -> dict[str, str]:
+        """The coordination overlay the runtime process inherits.
+
+        ``child_env`` strips the control-plane credential from the inherited
+        environment and documents that each runner injects it back *after* that
+        filter; the SDK merges this mapping over ``os.environ`` when it starts
+        the child. Deliberately excludes ``DISCORD_THREAD_ID``: one runtime is
+        shared by every thread on its route and directory, so a per-thread value
+        here would be whichever thread happened to start it. That value reaches
+        the model through ``_bind_coordination_values`` instead.
+        """
+        env: dict[str, str] = {}
+        if self.api_port is not None:
+            env["CCDB_API_URL"] = f"http://127.0.0.1:{self.api_port}"
+        if self.api_secret:
+            env["CCDB_API_SECRET"] = self.api_secret
+        return env
+
     def _build_env(self) -> dict[str, str]:
         """The environment the runtime inherits.
 
@@ -849,7 +892,9 @@ class DshRunner:
         policy rather than enforcing it — ``_scrubbed_environ`` enforces it
         around startup.
         """
-        return {k: v for k, v in os.environ.items() if k not in STRIPPED_ENV_KEYS}
+        env = {k: v for k, v in os.environ.items() if k not in STRIPPED_ENV_KEYS}
+        env.update(self._runtime_env())
+        return env
 
     def describe_api(self) -> str:
         """One line naming this backend for the status surfaces."""
