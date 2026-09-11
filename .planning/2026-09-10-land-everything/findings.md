@@ -40,3 +40,10 @@ All three Discord sessions were stopped by Drew's request. Sources: four read-on
 - **Hermes gateway:** PID 537 is still running.
 - **crontab line 1:** runs `~/.hermes/profiles/asset/cron/audio-cache-cleaner.sh`, which is missing.
 - **crontab line 2:** runs `/home/drewp/discord-control/idle-nudge.sh`, which is the wrong path.
+
+## /gowork design decisions (Drew, one at a time)
+- **Q1, who picks the worker's harness and model:** buttons when `/gowork` is typed. Pick the harness first, then the model from that harness's list. The worker thread keeps that choice for every round.
+- **Q2, pings:** ping only for a yes/no question, when the loop is stuck, and once at the end. Finished tasks post quietly, and the bot's 'reply needed' ping is silenced in worker threads.
+- **Q3, how a build starts:** once a plan is ready, the planner asks 'Start the build?' with a Yes button. Yes brings up the harness and model buttons, then the loop starts. Typing `/gowork` also still works.
+- **Q4, which plan runs:** the planner's 'Start the build?' button runs the plan it just wrote. A typed `/gowork` shows buttons for every plan in the project that still has unticked tasks.
+- **Q5, bot restart mid-build:** it resumes by itself. Each running loop (plan, worker thread, report channel, harness, model) is saved in the bot's database. On startup it posts '🔁 Resuming: Task N of M' and continues. A question left unanswered when the restart happened is asked again.

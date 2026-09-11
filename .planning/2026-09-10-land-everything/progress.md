@@ -8,3 +8,6 @@
 - Wrote task_plan.md: 10 tasks, to be run with `/gowork` after Drew approves and restarts the bot.
 - Drew: tasks must be small, and big work must never run as one session. Added a "Big tasks get chunked" rule to /home/drewp/AGENTS.md (backup: /home/drewp/.retired-harness/AGENTS.md.before-big-tasks-20260910). Split this plan from 10 tasks into 17.
 - Fixed /gowork's check to ignore untracked files (9822974 on feat/task-loop). Merged plan tasks 1+2 so the first round leaves no modified tracked files; the plan now has 16 tasks.
+- Restarted the bot onto wt-task-loop (merged main + origin/main; 3,126 tests pass) at 20:50.
+- Drew asked to plan /gowork fully before building more. Decisions are recorded in findings.md. Q1: the harness and model are chosen with buttons at start.
+- Q6 answer: Drew rejected a final 'merge?' question ('not effective'). Drew wants the full flow shown and an ending that is easy to deal with on return. Wrote docs/plans/gowork-flow.md (flowchart plus the Welcome back card idea). The ending is still open.
