@@ -18,3 +18,4 @@
 - Building /gowork v2 in /home/drewp/main-projects/wt-task-loop. Step 1 (quiet worker threads; ping only for questions, stops and the end) is e1042b9. Step 2 (the bot runs the plan's Check: line) is 47f7cc1. Added the Check: line to the plan-writing rule in /home/drewp/AGENTS.md.
 - Steps 3 (own copy, 7da4589), 4 (harness and model buttons, b267c1e) and 5 (plan picker, 04049c1) are done. 3,145 tests pass. Made a practice project at /home/drewp/main-projects/gowork-practice (a 2-task PLAN.md with a Check line) for the demo.
 - The practice run found that typed answers were ignored (the loop waited for a button). Drew: no buttons ever. Rewrote /gowork so every question takes a typed reply and mid-task typing becomes a note (commit on feat/task-loop). 3,157 tests pass.
+- Auto-resume (a641511). After the restart the practice build resumed in its own thread and finished all 6 tasks (calculator tests pass), and the bot forgot the finished build. /gowork works end to end.
