@@ -192,7 +192,20 @@ async def _build_system_context(config: RunConfig) -> str | None:
         "When local instructions require Discord attachment for a substantial "
         "written deliverable, save the final text as a Markdown file and append "
         "that file path here. Otherwise, only include files the user explicitly "
-        "asked to receive."
+        "asked to receive.\n\n"
+        "## Show documents as cards (the user never opens files)\n"
+        "The user only reads Discord messages. Never mention a file, path or "
+        "plan name as if they had read it. Whenever they need a document's "
+        "content (a plan, summary, review, status, research), write a "
+        "plain-English Markdown version for them and append its path to the "
+        "file above: every `.md` listed there is shown inline in the thread as "
+        "colored cards, one card per `## ` section.\n"
+        "Card rules: keep every point and detail of the source; no jargon and "
+        "no assumed context; start with `# Title`; use `## ` sections (about 3 "
+        "to 6), `### ` sub-headings, short bullets, bold for key facts and "
+        "emoji markers (✅ done, ⏳ now, ⬜ next, ⚠️ warning); no tables. Your "
+        "chat reply (the cards appear right after it) gives a short summary "
+        "and asks the next question."
     )
 
     # Post-compact guardrail: prevent auto-execution of "pending tasks" from summary.

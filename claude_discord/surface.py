@@ -323,6 +323,15 @@ class DiscordSurface:
         if blobs:
             await send_file_blobs(self._thread, blobs)  # type: ignore[arg-type]
 
+    async def send_markdown_cards(self, text: str) -> None:
+        """Show a Markdown document inline as Components V2 cards."""
+        if self._thread_missing:
+            return
+        from .discord_ui.md_cards import build_views
+
+        for view in build_views(text):
+            await self._thread.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+
     def open_stream(self) -> DiscordStream:
         return DiscordStream(StreamingMessageManager(self._thread))
 
