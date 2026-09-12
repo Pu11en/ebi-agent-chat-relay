@@ -59,3 +59,4 @@ All three Discord sessions were stopped by Drew's request. Sources: four read-on
 - **Hole 4, a stuck build:** the thread and the copy stay. The main thread shows '🛑 Stuck on Task N: <reason>' with three buttons: Try again, Skip this task, Throw it all away. Only a finished build cleans up by itself.
 - **Hole 5, the preview's lifetime:** it keeps running through 'Something's off' (the fix updates it and a fresh try-it card is posted). It shuts down after 'Looks good', or after 24 hours with no tap.
 - **Hole 6, the cost cap:** 40 tries per build. At the limit it stops with '🛑 Used 40 tries, X of Y tasks done' and a 'Keep going' button. All /gowork design questions are now answered.
+- **No shared planning skill:** Drew declined it. Planning stays with the /home/drewp/AGENTS.md rule (checkbox tasks plus a Check: line), and /gowork finds the plan from the thread's project.
