@@ -41,6 +41,7 @@ from claude_code_core.task_loop import (
     list_plans_across,
     needs_you,
     open_tasks,
+    parked_choice,
     parse_check_results,
     plan_check_command,
     plan_try_checks,
@@ -48,6 +49,7 @@ from claude_code_core.task_loop import (
     project_of,
     run_check,
     short_label,
+    skip_task,
     take_snapshot,
 )
 from claude_code_core.work_copy import (
@@ -56,6 +58,7 @@ from claude_code_core.work_copy import (
     commit_all,
     create_work_copy,
     keep_work,
+    remove_work_copy,
 )
 
 from ..backend_settings import ALL_BACKENDS
@@ -566,9 +569,13 @@ class TaskLoopCog(commands.Cog):
         try:
             while True:
                 outcome = await running.loop.run()
-                if outcome.status != Status.COMPLETE:
+                if outcome.status == Status.COMPLETE:
+                    if await self._wrap_up(running) == "fix":
+                        continue
                     break
-                if await self._wrap_up(running) != "fix":
+                # Stuck, paused or stopped: the build waits instead of being
+                # forgotten, so "keep going" picks up where it left off.
+                if await self._park(running, outcome) == "gone":
                     break
             self._store.remove(str(running.repo_dir))
             return outcome
@@ -642,6 +649,59 @@ class TaskLoopCog(commands.Cog):
                 return "kept"
         finally:
             running.in_review = False
+
+    async def _park(self, running: _Running, outcome: LoopOutcome) -> str:
+        """A build that stopped short waits for the person. Returns "again" or "gone"."""
+        assert running.copy is not None
+        target = running.report_target
+        mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
+        why = {
+            Status.STUCK: f"🛑 **I'm stuck.** {outcome.detail}",
+            Status.ASK: f"⏸️ **Paused, waiting for your answer:** {outcome.detail}",
+        }.get(outcome.status, "⏹️ **Stopped.**")
+        ask = (
+            f"{why}\nNothing is lost: the finished steps are kept.\n"
+            "Type **keep going** to try again (add a hint if you have one), "
+            "**skip** to skip this step, or **throw it away** to delete this build."
+            f"{mention}"
+        )
+        with contextlib.suppress(discord.HTTPException):
+            await target.send(ask[:1900])
+        running.in_review = True
+        try:
+            while True:
+                reply = await self.wait_for_reply(
+                    running.report_channel_id, timeout=VERDICT_REMIND_SECONDS
+                )
+                if reply is not None:
+                    break
+                with contextlib.suppress(discord.HTTPException):
+                    await target.send(f"⏰ Still waiting on {running.repo_dir.name}.\n{ask}"[:1900])
+        finally:
+            running.in_review = False
+        choice = parked_choice(reply)
+        if choice == "throw":
+            await remove_work_copy(running.copy)
+            with contextlib.suppress(discord.HTTPException):
+                await target.send(
+                    "🗑️ Thrown away. Your real project was never touched, "
+                    "and I deleted the worker thread."
+                )
+            with contextlib.suppress(Exception):
+                await running.thread.delete()
+            return "gone"
+        if choice == "skip":
+            skip_task(running.copy.plan_path)
+            await commit_all(running.copy.path, "gowork: step skipped")
+            await running.report("⏭️ Skipped that step, moving on.")
+        else:
+            if outcome.status == Status.ASK:
+                running.loop.add_note(f"Answer to your question ({outcome.detail}): {reply}")
+            elif reply.strip().lower().rstrip(".!") not in {"keep going", "try again", "go"}:
+                running.loop.add_note(reply)
+            await running.report("▶️ Keeping going.")
+        running.loop.resume()
+        return "again"
 
     async def _check_it_myself(self, running: _Running, plan_text: str) -> list[tuple[str, str]]:
         """Run the plan's test, then have a fresh session do the "How to try it" checks."""

@@ -116,6 +116,7 @@ class TestStartLoop:
         with pytest.raises(ValueError, match="already running"):
             await cog.start_loop(channel, str(repo / "PLAN.md"))
         blocker.set()
+        await _type_when_asked(cog, 1, "throw it away")  # a stuck build waits
         await asyncio.wait_for(cog.running[0].task, 10)
 
     async def test_plan_without_checkboxes_refused(self, repo: Path) -> None:
@@ -141,6 +142,7 @@ class TestStartLoop:
         assert cog.stop_for(999) is None
         assert cog.stop_for(thread.id) is not None
         blocker.set()
+        await _type_when_asked(cog, 1, "throw it away")  # a stuck build waits
         await asyncio.wait_for(cog.running[0].task, 10)
 
 
@@ -260,6 +262,7 @@ class TestTypedReplyRouting:
         assert cog.take_message(self._message(thread.id, "make it blue")) is True
         assert cog.running[0].loop._notes == ["make it blue"]
         blocker.set()
+        await _type_when_asked(cog, 1, "throw it away")  # a stuck build waits
         await asyncio.wait_for(cog.running[0].task, 10)
 
 
@@ -346,7 +349,8 @@ class TestResume:
 async def _type_when_asked(cog: TaskLoopCog, channel_id: int, text: str) -> None:
     """Act like Drew: wait for the bot's question in *channel_id*, then type."""
     for _ in range(500):
-        if channel_id in cog._waiters:
+        waiter = cog._waiters.get(channel_id)
+        if waiter is not None and not waiter.done():
             msg = MagicMock()
             msg.channel.id = channel_id
             msg.content = text
@@ -592,3 +596,70 @@ class TestCards:
         assert cog.take_message(msg) is True
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
         thread.delete.assert_awaited()
+
+
+class TestStuckBuildWaits:
+    def _stuck_then_fine(self, chat: MagicMock) -> None:
+        """First round says STUCK; later rounds work normally."""
+        real = chat.run_fresh_turn.side_effect
+        calls = {"n": 0}
+
+        async def turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            calls["n"] += 1
+            if calls["n"] == 1:
+                await result_sink("x\nSTUCK: the tests need a database", None)
+                return
+            await real(seed, thread, prompt, working_dir=working_dir, result_sink=result_sink)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+
+    def _channel(self) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        return channel
+
+    async def test_keep_going_picks_up_where_it_stopped(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        self._stuck_then_fine(chat)
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "keep going, use sqlite")
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert chat.run_fresh_turn.await_count == 2  # no restart from scratch
+        second_prompt = chat.run_fresh_turn.await_args_list[1].args[2]
+        assert "keep going, use sqlite" in second_prompt
+        assert "- [x]" in (repo / "PLAN.md").read_text()
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "keep going" in posted and "skip" in posted and "throw it away" in posted
+
+    async def test_skip_moves_past_the_step(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        self._stuck_then_fine(chat)
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "skip")
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert chat.run_fresh_turn.await_count == 1
+        assert "(skipped)" in (repo / "PLAN.md").read_text()
+
+    async def test_throw_it_away_cleans_up_and_leaves_the_project_alone(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        self._stuck_then_fine(chat)
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        work_dir = Path(chat.spawn_session.await_args.kwargs["working_dir"])
+        await _type_when_asked(cog, 1, "throw it away")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert not work_dir.exists()
+        assert "- [ ]" in (repo / "PLAN.md").read_text()
+        thread.delete.assert_awaited()
+        assert cog._store.all() == []

@@ -339,6 +339,10 @@ class TaskLoop:
         """Stop after the round in flight — never mid-task."""
         self._stop = True
 
+    def resume(self) -> None:
+        """Clear a stop request so the next ``run()`` carries on."""
+        self._stop = False
+
     async def run(self) -> LoopOutcome:
         answer: tuple[str, str] | None = None
         retry_reason: str | None = None
@@ -586,3 +590,35 @@ def parse_check_results(text: str | None) -> list[tuple[str, str]]:
         if m:
             results.append((m.group(1).lower(), m.group(2).strip().strip("*_`").strip()))
     return results
+
+
+# ---------------------------------------------------------------------------
+# A stopped build waits: keep going, skip the step, or throw it away
+# ---------------------------------------------------------------------------
+
+_SKIP_RE = re.compile(r"^\s*skip\b", re.IGNORECASE)
+_THROW_RE = re.compile(
+    r"\b(throw (it |this )?away|scrap( it)?|cancel|give up|delete (it|the build))\b",
+    re.IGNORECASE,
+)
+
+
+def parked_choice(reply: str) -> str:
+    """What the person wants for a stopped build: "skip", "throw", or "keep"."""
+    if _THROW_RE.search(reply or ""):
+        return "throw"
+    if _SKIP_RE.match(reply or ""):
+        return "skip"
+    return "keep"
+
+
+def skip_task(plan_path: Path) -> None:
+    """Tick the first open step, marked as skipped, so the build moves past it."""
+    lines = plan_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        m = _TASK_RE.match(line)
+        if m is not None and m.group(1) == " ":
+            ending = "\n" if line.endswith("\n") else ""
+            lines[i] = line.rstrip("\n").replace("[ ]", "[x]", 1) + " _(skipped)_" + ending
+            break
+    plan_path.write_text("".join(lines), encoding="utf-8")

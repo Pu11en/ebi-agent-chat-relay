@@ -170,3 +170,23 @@ class TestCheckLineWithComment:
             "tooling/qa/sweep.py",
             "http://localhost:8765",
         ]
+
+
+class TestStuckChoices:
+    @pytest.mark.parametrize("reply", ["skip", "Skip it", "skip this one"])
+    def test_skip(self, reply: str) -> None:
+        assert tl.parked_choice(reply) == "skip"
+
+    @pytest.mark.parametrize("reply", ["throw it away", "scrap it", "cancel", "give up"])
+    def test_throw_away(self, reply: str) -> None:
+        assert tl.parked_choice(reply) == "throw"
+
+    @pytest.mark.parametrize("reply", ["keep going", "try again", "use port 9000 instead"])
+    def test_anything_else_keeps_going(self, reply: str) -> None:
+        assert tl.parked_choice(reply) == "keep"
+
+    def test_skip_task_ticks_the_first_open_step_and_says_so(self, tmp_path: Path) -> None:
+        plan = tmp_path / "PLAN.md"
+        plan.write_text("- [x] a\n- [ ] b\n- [ ] c\n")
+        tl.skip_task(plan)
+        assert plan.read_text() == "- [x] a\n- [x] b _(skipped)_\n- [ ] c\n"
