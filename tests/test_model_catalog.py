@@ -296,8 +296,9 @@ class TestCodexModelChoices:
 
         assert [slug for slug, _ in choices] == ["gpt-6-astra"]
 
-    def test_missing_catalog_falls_back(self, tmp_path: Path) -> None:
+    def test_missing_catalog_falls_back(self, tmp_path: Path, monkeypatch) -> None:
         """A host that never ran the Codex CLI still gets suggestions."""
+        monkeypatch.setattr(model_catalog.Path, "home", lambda: tmp_path / "empty-home")
         assert (
             model_catalog.codex_model_choices(
                 fallback=FALLBACK, env={"CODEX_HOME": str(tmp_path / "nope")}
@@ -305,7 +306,8 @@ class TestCodexModelChoices:
             == FALLBACK
         )
 
-    def test_malformed_catalog_falls_back(self, tmp_path: Path) -> None:
+    def test_malformed_catalog_falls_back(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(model_catalog.Path, "home", lambda: tmp_path / "empty-home")
         (tmp_path / model_catalog.CODEX_MODELS_CACHE).write_text("{not json", encoding="utf-8")
 
         assert (
@@ -313,13 +315,30 @@ class TestCodexModelChoices:
             == FALLBACK
         )
 
-    def test_empty_catalog_falls_back(self, tmp_path: Path) -> None:
+    def test_empty_catalog_falls_back(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(model_catalog.Path, "home", lambda: tmp_path / "empty-home")
         _write_codex_cache(tmp_path, [])
 
         assert (
             model_catalog.codex_model_choices(fallback=FALLBACK, env={"CODEX_HOME": str(tmp_path)})
             == FALLBACK
         )
+
+    def test_falls_back_to_the_default_codex_home(self, tmp_path: Path, monkeypatch) -> None:
+        """ccdb runs Codex with its own CODEX_HOME, but the CLI's catalog may be
+        written to the user's default ~/.codex instead."""
+        configured = tmp_path / "ccdb-home"
+        configured.mkdir()
+        default = tmp_path / "user" / ".codex"
+        default.mkdir(parents=True)
+        _write_codex_cache(default, [{"slug": "gpt-5.6-terra", "display_name": "GPT-5.6-Terra"}])
+        monkeypatch.setattr(model_catalog.Path, "home", lambda: tmp_path / "user")
+
+        choices = model_catalog.codex_model_choices(
+            fallback=FALLBACK, env={"CODEX_HOME": str(configured)}
+        )
+
+        assert choices == [("gpt-5.6-terra", "GPT-5.6-Terra")]
 
     def test_discovery_can_be_disabled(self, tmp_path: Path) -> None:
         _write_codex_cache(tmp_path, [{"slug": "gpt-6-astra", "display_name": "GPT-6-Astra"}])
