@@ -35,6 +35,11 @@ class SessionRecord:
     backend: str | None = None
 
 
+#: How long a write waits for another writer before giving up. The default 5 s
+#: once failed a whole reply ("database is locked") during a busy moment.
+DB_BUSY_TIMEOUT_SECONDS = 30.0
+
+
 class SessionRepository:
     """CRUD operations for session records."""
 
@@ -43,7 +48,7 @@ class SessionRepository:
 
     async def get(self, thread_id: int) -> SessionRecord | None:
         """Get session by thread/channel ID."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM sessions WHERE thread_id = ?",
@@ -70,7 +75,7 @@ class SessionRepository:
         not interoperable across backends, so callers must know who owns an ID
         before passing it to ``--resume`` / ``codex exec resume``.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             await db.execute(
                 """INSERT INTO sessions
                      (thread_id, session_id, working_dir, model, origin, summary, backend)
@@ -105,7 +110,7 @@ class SessionRepository:
         that gap.  An existing directory remains canonical so a caller's
         fallback cannot silently move a resumed session to another project.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             await db.execute(
                 """INSERT INTO sessions (thread_id, session_id, working_dir, origin)
                    VALUES (?, '', ?, ?)
@@ -125,7 +130,7 @@ class SessionRepository:
 
     async def get_by_session_id(self, session_id: str) -> SessionRecord | None:
         """Reverse lookup: get session by Claude Code session ID."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM sessions WHERE session_id = ?",
@@ -143,7 +148,7 @@ class SessionRepository:
             limit: Maximum number of records to return.
             origin: Optional filter by origin ('discord', 'cli'). None returns all.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             db.row_factory = aiosqlite.Row
             if origin:
                 cursor = await db.execute(
@@ -203,7 +208,7 @@ class SessionRepository:
         sql = f"SELECT * FROM sessions{where} ORDER BY last_used_at DESC LIMIT ?"  # noqa: S608
         params.append(limit)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(sql, params)
             rows = await cursor.fetchall()
@@ -211,7 +216,7 @@ class SessionRepository:
 
     async def delete(self, thread_id: int) -> bool:
         """Delete a session mapping. Returns True if a row was deleted."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             cursor = await db.execute(
                 "DELETE FROM sessions WHERE thread_id = ?",
                 (thread_id,),
@@ -221,7 +226,7 @@ class SessionRepository:
 
     async def cleanup_old(self, days: int = 30) -> int:
         """Delete sessions older than N days. Returns count deleted."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             query = (
                 "DELETE FROM sessions"
                 " WHERE julianday('now', 'localtime') - julianday(last_used_at) >= ?"
@@ -237,7 +242,7 @@ class SessionRepository:
         context_used: int,
     ) -> None:
         """Persist context window stats for a session."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             await db.execute(
                 "UPDATE sessions SET context_window = ?, context_used = ? WHERE thread_id = ?",
                 (context_window, context_used, thread_id),
@@ -253,7 +258,7 @@ class UsageStatsRepository:
 
     async def upsert(self, info: RateLimitInfo) -> None:
         """Insert or replace the latest rate limit info for the given type."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             await db.execute(
                 """INSERT INTO usage_stats
                      (rate_limit_type, status, utilization, resets_at, is_using_overage)
@@ -278,7 +283,7 @@ class UsageStatsRepository:
         """Return all stored rate limit entries (one per type)."""
         from .types import RateLimitInfo as _RateLimitInfo
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM usage_stats ORDER BY rate_limit_type")
             rows = await cursor.fetchall()
