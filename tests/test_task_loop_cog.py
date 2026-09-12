@@ -834,3 +834,86 @@ class TestSwitchingPlans:
         await _type_when_asked(cog, 1, "throw it away")
         for r in list(cog.running):
             await asyncio.wait_for(r.task, 10)
+
+
+class TestSwitchWhileWaiting:
+    def _channel(self) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        return channel
+
+    async def _v6(self, repo: Path) -> None:
+        (repo / "PLAN-v6.md").write_text("- [ ] Task 1: new\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-qm", "v6")
+
+    async def test_switch_while_the_old_build_waits_on_a_question(self, repo: Path) -> None:
+        await self._v6(repo)
+        cog, chat, thread = _cog_with_chat()
+        chat._backend_settings = None
+        thread.delete = AsyncMock()
+
+        async def asks(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            await result_sink("x\nASK: which colour?", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=asks)
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        for _ in range(500):
+            if thread.id in cog._waiters:
+                break
+            await asyncio.sleep(0.01)
+        got = await asyncio.wait_for(
+            cog.start_asking(channel, str(repo / "PLAN-v6.md"), harness="claude"), 10
+        )
+        assert got is thread
+        assert cog.running[0].copy.plan_path.name == "PLAN-v6.md"
+
+    async def test_switch_during_the_final_review_keeps_the_finished_build(
+        self, repo: Path
+    ) -> None:
+        await self._v6(repo)
+        cog, chat, thread = _cog_with_chat()
+        chat._backend_settings = None
+        thread.delete = AsyncMock()
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        for _ in range(500):
+            if cog.running and cog.running[0].in_review:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.wait_for(
+            cog.start_asking(channel, str(repo / "PLAN-v6.md"), harness="claude"), 10
+        )
+        assert "- [x] Task 1: a" in (repo / "PLAN.md").read_text()  # old work kept
+
+
+class TestWorkerThreadDeleted:
+    async def test_the_build_ends_cleanly_and_keeps_its_work(self, repo: Path) -> None:
+        (repo / "PLAN.md").write_text("- [ ] Task 1: a\n- [ ] Task 2: b\n")
+        _git(repo, "commit", "-qam", "two")
+        cog, chat, thread = _cog_with_chat()
+        real = chat.run_fresh_turn.side_effect
+        calls = {"n": 0}
+
+        async def turn(seed, th, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            calls["n"] += 1
+            await real(seed, th, prompt, working_dir=working_dir, result_sink=result_sink)
+            if calls["n"] == 1:
+                gone = discord.NotFound(MagicMock(status=404), "Unknown Channel")
+                thread.send = AsyncMock(side_effect=gone)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert "- [x] Task 1: a" in (repo / "PLAN.md").read_text()
+        assert cog.running == [] and cog._store.all() == []
+
+    def _channel(self) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        return channel

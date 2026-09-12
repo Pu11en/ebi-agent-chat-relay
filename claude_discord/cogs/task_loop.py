@@ -503,12 +503,17 @@ class TaskLoopCog(commands.Cog):
                 None if result else "the session ended without a result"
             )
 
+        holder: list[_Running] = []
+
         async def ask(question: str) -> str | None:
             mention = f"<@{notify_user_id}> " if notify_user_id else ""
             with contextlib.suppress(discord.HTTPException):
                 await thread.send(f"❓ {mention}{question}\n-# Just type your answer here.")
             await report(f"❓ Needs your answer: {question}")
-            return await self.wait_for_reply(thread.id, timeout=ASK_TIMEOUT_SECONDS)
+            if not holder:
+                return await self.wait_for_reply(thread.id, timeout=ASK_TIMEOUT_SECONDS)
+            reply, _woken = await self._wait_or_wake(holder[0], thread.id, ASK_TIMEOUT_SECONDS)
+            return reply  # None when a new plan closes this build
 
         loop = TaskLoop(
             plan_path=work_plan, repo_dir=work_dir, run_round=run_round, ask=ask, report=report
@@ -530,6 +535,7 @@ class TaskLoopCog(commands.Cog):
             recaps=recaps,
             run_session=run_session,
         )
+        holder.append(running)
         self._running[repo_dir] = running
         self._quiet(thread.id)
         running.task = asyncio.create_task(self._drive(running, report))
@@ -589,6 +595,14 @@ class TaskLoopCog(commands.Cog):
         except asyncio.CancelledError:
             # Bot shutting down: keep the record so startup resumes this build.
             raise
+        except discord.NotFound:
+            # The worker thread was deleted: end here, keeping the finished steps.
+            logger.info("gowork: worker thread gone for %s, wrapping up", running.repo_dir)
+            running.auto_finish = True
+            with contextlib.suppress(Exception):
+                await self._finish_early(running)
+            self._store.remove(str(running.repo_dir))
+            return LoopOutcome(Status.NONE, "worker thread deleted")
         except Exception as exc:
             logger.exception("task loop crashed in %s", running.repo_dir)
             self._store.remove(str(running.repo_dir))
@@ -623,9 +637,11 @@ class TaskLoopCog(commands.Cog):
         running.in_review = True
         try:
             while True:
-                reply = await self.wait_for_reply(
-                    running.report_channel_id, timeout=VERDICT_REMIND_SECONDS
+                reply, woken = await self._wait_or_wake(
+                    running, running.report_channel_id, VERDICT_REMIND_SECONDS
                 )
+                if woken:
+                    reply = "looks good"  # a new plan was started: keep this finished one
                 if reply is None:
                     with contextlib.suppress(discord.HTTPException):
                         await target.send(
@@ -712,6 +728,28 @@ class TaskLoopCog(commands.Cog):
             await running.report("▶️ Keeping going.")
         running.loop.resume()
         return "again"
+
+    async def _wait_or_wake(
+        self, running: _Running, channel_id: int, timeout: float, accept: Any = None
+    ) -> tuple[str | None, bool]:
+        """Wait for a typed reply, or give way when a new plan closes this build.
+
+        Returns (reply, woken). ``woken`` is True when a plan switch interrupted.
+        """
+        if running.wake is None:
+            running.wake = asyncio.Event()
+        if running.auto_finish:
+            return None, True
+        reply_task = asyncio.ensure_future(
+            self.wait_for_reply(channel_id, timeout=timeout, accept=accept)
+        )
+        wake_task = asyncio.ensure_future(running.wake.wait())
+        done, _ = await asyncio.wait({reply_task, wake_task}, return_when=asyncio.FIRST_COMPLETED)
+        wake_task.cancel()
+        if reply_task not in done:
+            reply_task.cancel()
+            return None, True
+        return reply_task.result(), False
 
     async def _wait_parked(self, running: _Running, ask: str) -> str | None:
         """Wait for keep going / skip / wrap up / throw it away.
