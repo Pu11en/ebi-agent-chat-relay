@@ -28,6 +28,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from claude_code_core.loop_store import LoopRecord, LoopStore
 from claude_code_core.task_loop import (
     LoopOutcome,
     TaskLoop,
@@ -136,12 +137,15 @@ class TaskLoopCog(commands.Cog):
         *,
         allowed_user_ids: set[int] | None = None,
         work_root: Path | None = None,
+        store: LoopStore | None = None,
     ) -> None:
         self.bot = bot
         self._allowed_user_ids = allowed_user_ids
         #: Where each build's own copy of the project is made (None = default).
         self._work_root = work_root
         self._running: dict[Path, _Running] = {}
+        #: Running builds on disk, so a bot restart resumes them.
+        self._store = store or LoopStore()
         #: Channels/threads waiting for the person's next typed message.
         self._waiters: dict[int, asyncio.Future[str]] = {}
 
@@ -219,7 +223,7 @@ class TaskLoopCog(commands.Cog):
             copy = await create_work_copy(repo_dir, plan, root=self._work_root)
         except WorkCopyError as exc:
             raise ValueError(f"couldn't make a separate copy of the project: {exc}") from exc
-        work_dir, work_plan = copy.path, copy.plan_path
+        work_dir = copy.path
 
         thread = await chat.spawn_session(
             channel,
@@ -238,18 +242,41 @@ class TaskLoopCog(commands.Cog):
             await settings.set_backend(harness, thread_id=thread.id)
             if model:
                 await settings.set_model(harness, model, thread_id=thread.id)
-        # Workers start a fresh session every round; a "start fresh?" nudge
-        # there would only interrupt the loop.
+        report_target: discord.abc.Messageable = report_to or channel
+        record = LoopRecord(
+            repo_dir=str(repo_dir),
+            plan_path=str(plan),
+            copy_path=str(copy.path),
+            copy_plan=str(copy.plan_path),
+            branch=copy.branch,
+            worker_thread_id=thread.id,
+            report_channel_id=getattr(report_target, "id", channel.id),
+            notify_user_id=notify_user_id,
+            harness=harness,
+            model=model,
+        )
+        self._store.save(record)
+        report = self._launch(record, thread, report_target)
+        await report(f"▶️ Task loop started: {snap.unchecked} tasks to go")
+        return thread
+
+    def _quiet(self, thread_id: int) -> None:
+        """Worker threads get no start-fresh nudge and no reply-needed ping."""
+        chat: Any = self.bot.cogs.get("ClaudeChatCog")
         nudger = getattr(chat, "context_nudger", None)
         if nudger is not None:
-            nudger.skip_thread_ids.add(thread.id)
+            nudger.skip_thread_ids.add(thread_id)
         dashboard = None
         with contextlib.suppress(Exception):
             dashboard = chat._get_dashboard()
         if dashboard is not None:
-            dashboard.quiet_thread_ids.add(thread.id)
-        report_target: discord.abc.Messageable = report_to or channel
-        report_id = getattr(report_target, "id", channel.id)
+            dashboard.quiet_thread_ids.add(thread_id)
+
+    def _launch(self, record: LoopRecord, thread: Any, report_target: Any) -> Any:
+        """Run *record*'s loop in *thread*. Returns the report function."""
+        chat = self._chat()
+        work_dir, work_plan = Path(record.copy_path), Path(record.copy_plan)
+        notify_user_id = record.notify_user_id
 
         async def report(text: str) -> None:
             ping = (
@@ -289,18 +316,66 @@ class TaskLoopCog(commands.Cog):
         loop = TaskLoop(
             plan_path=work_plan, repo_dir=work_dir, run_round=run_round, ask=ask, report=report
         )
-        running = _Running(loop, repo_dir, thread.id, report_id, copy=copy)
+        repo_dir = Path(record.repo_dir)
+        copy = WorkCopy(
+            source_repo=repo_dir, path=work_dir, branch=record.branch, plan_path=work_plan
+        )
+        running = _Running(loop, repo_dir, thread.id, record.report_channel_id, copy=copy)
         self._running[repo_dir] = running
+        self._quiet(thread.id)
         running.task = asyncio.create_task(self._drive(running, report))
-        await report(f"▶️ Task loop started: {snap.unchecked} tasks to go")
-        return thread
+        return report
+
+    async def resume_all(self) -> int:
+        """Pick up every build that was running when the bot stopped."""
+        resumed = 0
+        for record in self._store.all():
+            repo_dir = Path(record.repo_dir)
+            if repo_dir in self._running:
+                continue
+            thread: Any = self.bot.get_channel(record.worker_thread_id)
+            if thread is None:
+                with contextlib.suppress(Exception):
+                    thread = await self.bot.fetch_channel(record.worker_thread_id)
+            if thread is None or not Path(record.copy_plan).is_file():
+                logger.warning("gowork: can't resume %s (thread or copy gone)", repo_dir)
+                self._store.remove(record.repo_dir)
+                continue
+            report_target: Any = (
+                self.bot.get_channel(record.report_channel_id)
+                or getattr(thread, "parent", None)
+                or thread
+            )
+            snap = await take_snapshot(Path(record.copy_path), Path(record.copy_plan))
+            total = snap.checked + snap.unchecked
+            report = self._launch(record, thread, report_target)
+            await report(
+                f"🔁 Resuming after a restart: Task {min(snap.checked + 1, total)} of {total}"
+            )
+            resumed += 1
+        return resumed
+
+    async def cog_load(self) -> None:
+        async def resume_when_ready() -> None:
+            with contextlib.suppress(Exception):
+                await self.bot.wait_until_ready()
+                await self.resume_all()
+
+        self._resume_task = asyncio.create_task(resume_when_ready())
 
     async def _drive(self, running: _Running, report: Any) -> LoopOutcome:
         try:
-            return await running.loop.run()
+            outcome = await running.loop.run()
+            self._store.remove(str(running.repo_dir))
+            return outcome
+        except asyncio.CancelledError:
+            # Bot shutting down: keep the record so startup resumes this build.
+            raise
         except Exception as exc:
             logger.exception("task loop crashed in %s", running.repo_dir)
-            await report(f"💥 Task loop crashed: {exc}")
+            self._store.remove(str(running.repo_dir))
+            with contextlib.suppress(Exception):
+                await report(f"💥 Task loop crashed: {exc}")
             raise
         finally:
             self._running.pop(running.repo_dir, None)

@@ -250,7 +250,9 @@ def worker_prompt(
         "",
         "The very last line must be exactly one of:",
         "DONE — the task is finished, committed and ticked",
-        "ASK: <one simple question, plus a plain example of what each answer changes, e.g. 'Round division to 2 decimals? yes: 10/3 shows 3.33, no: 3.3333'> — you need a decision before continuing",
+        "ASK: <one simple question, plus a plain example of what each answer changes, "
+        "e.g. 'Round division to 2 decimals? yes: 10/3 shows 3.33, no: 3.3333'> "
+        "— you need a decision before continuing",
         "STUCK: <plain reason> — you cannot finish this task",
         "COMPLETE — every task in the plan is already ticked",
     ]

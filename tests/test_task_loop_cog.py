@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
+from claude_code_core.loop_store import LoopStore
+from claude_code_core.work_copy import create_work_copy
 from claude_discord.cogs.task_loop import TaskLoopCog, resolve_repo
 
 
@@ -68,7 +70,8 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
 
     chat.run_fresh_turn = AsyncMock(side_effect=fresh_turn)
     bot.cogs = {"ClaudeChatCog": chat}
-    cog = TaskLoopCog(bot, work_root=Path(tempfile.mkdtemp(prefix="gowork-test-")))
+    tmp = Path(tempfile.mkdtemp(prefix="gowork-test-"))
+    cog = TaskLoopCog(bot, work_root=tmp / "copies", store=LoopStore(tmp / "loops.json"))
     return cog, chat, thread
 
 
@@ -253,3 +256,64 @@ class TestChatCogHandsRepliesToGowork:
         assert ClaudeChatCog._claimed_by_task_loop(chat, msg) is False
         chat.bot.cogs = {}
         assert ClaudeChatCog._claimed_by_task_loop(chat, msg) is False
+
+
+class TestResume:
+    async def test_finished_build_is_forgotten(self, repo: Path) -> None:
+        cog, _, _ = _cog_with_chat()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        if cog.running:
+            await asyncio.wait_for(cog.running[0].task, 10)
+        assert cog._store.all() == []
+
+    async def test_a_saved_build_carries_on_in_its_own_thread(self, repo: Path) -> None:
+        from claude_code_core.loop_store import LoopRecord
+
+        cog, chat, thread = _cog_with_chat()
+        copy = await create_work_copy(repo, repo / "PLAN.md", root=cog._work_root)
+        cog._store.save(
+            LoopRecord(
+                repo_dir=str(repo),
+                plan_path=str(repo / "PLAN.md"),
+                copy_path=str(copy.path),
+                copy_plan=str(copy.plan_path),
+                branch=copy.branch,
+                worker_thread_id=thread.id,
+                report_channel_id=1,
+            )
+        )
+        report_channel = MagicMock()
+        report_channel.send = AsyncMock()
+        cog.bot.get_channel = MagicMock(
+            side_effect=lambda cid: thread if cid == thread.id else report_channel
+        )
+
+        assert await cog.resume_all() == 1
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        chat.spawn_session.assert_not_called()  # same thread, no new one
+        assert chat.run_fresh_turn.await_count == 1
+        posted = " ".join(str(c.args[0]) for c in report_channel.send.call_args_list)
+        assert "Resuming after a restart: Task 1 of 1" in posted
+
+    async def test_gone_copy_is_dropped_not_resumed(self, repo: Path) -> None:
+        from claude_code_core.loop_store import LoopRecord
+
+        cog, chat, thread = _cog_with_chat()
+        cog._store.save(
+            LoopRecord(
+                repo_dir=str(repo),
+                plan_path=str(repo / "PLAN.md"),
+                copy_path=str(repo / "missing"),
+                copy_plan=str(repo / "missing" / "PLAN.md"),
+                branch="gowork/x",
+                worker_thread_id=thread.id,
+                report_channel_id=1,
+            )
+        )
+        cog.bot.get_channel = MagicMock(return_value=thread)
+        assert await cog.resume_all() == 0
+        assert cog._store.all() == []
