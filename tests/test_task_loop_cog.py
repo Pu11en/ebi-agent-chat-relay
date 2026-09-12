@@ -370,7 +370,7 @@ class TestEnding:
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
-        assert "ready to try" in posted
+        assert "is finished" in posted
         assert "- [x]" in (repo / "PLAN.md").read_text()  # the work is in the project now
         thread.delete.assert_awaited()
         assert cog._store.all() == []
@@ -485,3 +485,108 @@ class TestPickPlanFreeText:
         picker = asyncio.create_task(cog._pick_plan(channel))
         await _type_when_asked(cog, 77, "A")
         assert (await asyncio.wait_for(picker, 5)).endswith(".md")
+
+
+PLAN_WITH_CHECKS = """# Plan
+## How to try it
+- Open the page and see the calculator
+- Type 3 + 4 and get 7
+
+## Tasks
+- [ ] Task 1: build it
+- [ ] Task 2: Put it live on Railway
+"""
+
+
+def _checking_chat(chat: MagicMock, verdict: str) -> None:
+    """Make the fake worker also answer the bot's check round."""
+    real = chat.run_fresh_turn.side_effect
+
+    async def turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        if "You are checking finished work" in prompt:
+            await result_sink(verdict, None)
+            return
+        await real(seed, thread, prompt, working_dir=working_dir, result_sink=result_sink)
+
+    chat.run_fresh_turn = AsyncMock(side_effect=turn)
+
+
+def _embeds(channel: MagicMock) -> list[discord.Embed]:
+    return [c.kwargs["embed"] for c in channel.send.call_args_list if "embed" in c.kwargs]
+
+
+class TestCards:
+    @pytest.fixture
+    def checks_repo(self, repo: Path) -> Path:
+        (repo / "PLAN.md").write_text(PLAN_WITH_CHECKS)
+        _git(repo, "commit", "-qam", "plan")
+        return repo
+
+    def _channel(self) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        return channel
+
+    async def test_start_card_says_which_steps_need_you(self, checks_repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        _checking_chat(chat, "PASS: Open the page — ok\nPASS: Type 3 + 4 — 7\nDONE")
+        channel = self._channel()
+        await cog.start_loop(channel, str(checks_repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        start = _embeds(channel)[0].description or ""
+        assert "🟢 **build it**" in start
+        assert "🟡 **Put it live on Railway**" in start
+
+    async def test_finished_card_shows_the_bots_own_checks(self, checks_repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        _checking_chat(chat, "PASS: Open the page — it loads\nFAIL: Type 3 + 4 — shows 8\nDONE")
+        channel = self._channel()
+        await cog.start_loop(channel, str(checks_repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        end = _embeds(channel)[-1].description or ""
+        assert "✅ Open the page — it loads" in end
+        assert "❌ Type 3 + 4 — shows 8" in end
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "is finished" in posted
+        assert "localhost" not in posted
+
+    async def test_typing_fix_turns_the_failed_checks_into_a_fix_step(
+        self, checks_repo: Path
+    ) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        _checking_chat(chat, "FAIL: Type 3 + 4 — shows 8\nDONE")
+        channel = self._channel()
+        await cog.start_loop(channel, str(checks_repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "fix")
+        await asyncio.sleep(0.3)
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert (
+            "Fix: make these checks pass: Type 3 + 4 — shows 8"
+            in (checks_repo / "PLAN.md").read_text()
+        )
+
+    async def test_verdict_typed_in_the_worker_thread_counts(self, checks_repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        _checking_chat(chat, "PASS: Open the page — ok\nDONE")
+        channel = self._channel()
+        await cog.start_loop(channel, str(checks_repo / "PLAN.md"))
+        for _ in range(500):
+            if 1 in cog._waiters and cog.running and cog.running[0].in_review:
+                break
+            await asyncio.sleep(0.01)
+        msg = MagicMock()
+        msg.channel.id = thread.id
+        msg.content = "looks good"
+        assert cog.take_message(msg) is True
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        thread.delete.assert_awaited()

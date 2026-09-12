@@ -345,7 +345,7 @@ class TaskLoop:
             before = await take_snapshot(self.repo_dir, self.plan_path)
             total = before.checked + before.unchecked
             if before.unchecked == 0:
-                await self._report(f"🏁 All {total} tasks are done.")
+                await self._report(f"✔️ All {total} tasks are done. Checking the finished work…")
                 return LoopOutcome(Status.COMPLETE, rounds=rounds)
             if self._stop:
                 await self._report("⏹️ Loop stopped.")
@@ -496,3 +496,90 @@ def list_plans_across(root: Path) -> list[Path]:
             with contextlib.suppress(OSError):
                 found.extend(list_plans(project))
     return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# The cards: which steps need the person, and the bot checking the result itself
+# ---------------------------------------------------------------------------
+
+#: Words that mark a step the worker must stop and ask about (going live,
+#: publishing, spending money, or a step that is the person's own).
+_NEEDS_YOU_WORDS = (
+    "tries it",
+    "try it on",
+    "you try",
+    "deploy",
+    "railway",
+    "go live",
+    "goes live",
+    "put it live",
+    "push",
+    "github",
+    "publish",
+    "💲",
+    "ask:",
+)
+
+
+def needs_you(task: str) -> bool:
+    """True for a step the worker will stop and ask about before doing."""
+    text = task.lower()
+    return any(word in text for word in _NEEDS_YOU_WORDS)
+
+
+def open_tasks(plan_text: str) -> list[str]:
+    """The labels of every unticked task, in order."""
+    labels: list[str] = []
+    for line in plan_text.splitlines():
+        m = _TASK_RE.match(line)
+        if m is not None and m.group(1) == " ":
+            labels.append(m.group(2))
+    return labels
+
+
+_LABEL_PREFIX_RE = re.compile(r"^\s*(?:task\s*\d+\s*[:.]\s*|[A-Z]\d+\s+)", re.IGNORECASE)
+
+
+def short_label(label: str, limit: int = 80) -> str:
+    """ "**A3 Brand it PropertyStack.** Name, logo…" → "Brand it PropertyStack"."""
+    text = re.sub(r"\*\*|__|`", "", label)
+    text = _LABEL_PREFIX_RE.sub("", text).split("_(")[0]
+    text = re.split(r"\.\s|\s\(\d\)", text, maxsplit=1)[0].strip().rstrip(".")
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+def checker_prompt(plan_path: Path, checks: list[str]) -> str:
+    """The prompt for the bot's own check of the finished work."""
+    lines = [
+        "You are checking finished work, not building it. You start with no memory.",
+        f"The plan is {plan_path}. Its `Try:` line says how to start the project on "
+        "this computer; start it if a check needs it.",
+        "Do each check below yourself, like a person would: open the pages (curl, or a "
+        "headless browser such as Playwright), click, type, read the result.",
+        "Do not edit, commit or push anything. Do not spend money. Stop everything "
+        "you started before you finish.",
+        "",
+        "Checks:",
+        *[f"- {c}" for c in checks],
+        "",
+        "For each check write exactly one line, in plain words a non-technical person understands:",
+        "PASS: <the check> — <what you saw>",
+        "FAIL: <the check> — <what went wrong>",
+        "SKIP: <the check> — <why you couldn't check it, e.g. it needs a real Google "
+        "login or would cost money>",
+        "The very last line must be: DONE",
+    ]
+    return "\n".join(lines)
+
+
+_RESULT_RE = re.compile(r"^(PASS|FAIL|SKIP):\s*(.+)$", re.IGNORECASE)
+
+
+def parse_check_results(text: str | None) -> list[tuple[str, str]]:
+    """PASS/FAIL/SKIP lines from the checker → [("pass", "Open the page — ok"), …]."""
+    results: list[tuple[str, str]] = []
+    for line in (text or "").splitlines():
+        m = _RESULT_RE.match(line.strip().strip("*_`").strip())
+        if m:
+            results.append((m.group(1).lower(), m.group(2).strip().strip("*_`").strip()))
+    return results

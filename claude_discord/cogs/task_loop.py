@@ -34,15 +34,20 @@ from claude_code_core.task_loop import (
     Status,
     TaskLoop,
     append_fix_task,
+    checker_prompt,
     count_tasks,
     is_looks_good,
     list_plans,
     list_plans_across,
-    plan_open_url,
+    needs_you,
+    open_tasks,
+    parse_check_results,
+    plan_check_command,
     plan_try_checks,
-    plan_try_command,
     project_for_thread,
     project_of,
+    run_check,
+    short_label,
     take_snapshot,
 )
 from claude_code_core.work_copy import (
@@ -62,8 +67,9 @@ logger = logging.getLogger(__name__)
 
 #: How long a question waits for a typed reply before the loop pauses.
 ASK_TIMEOUT_SECONDS = 12 * 60 * 60
-#: How long a finished build waits for "looks good" or a fix before it pauses.
-VERDICT_TIMEOUT_SECONDS = 24 * 60 * 60
+#: A finished build waits for "looks good" as long as it takes; this is how
+#: often it reminds the person that it is still waiting.
+VERDICT_REMIND_SECONDS = 24 * 60 * 60
 #: How long starting a build waits for the harness/model or plan reply.
 PICK_TIMEOUT_SECONDS = 10 * 60
 
@@ -143,6 +149,58 @@ def _chunks(lines: list[str], limit: int = 1900) -> list[str]:
     return out
 
 
+_BLUE, _GREEN, _AMBER = 0x2D6A86, 0x2F7D4F, 0xE8A317
+_MARK = {"pass": "✅", "fail": "❌", "skip": "⚪"}
+_FIX_WORDS = {"fix", "fix it", "fix them", "fix those", "fix that"}
+
+
+def plan_card(plan_text: str, plan_name: str, harness: str | None, model: str | None) -> Any:
+    """The "here's what I'm going to do" card: every step left, in plain words."""
+    ai = " · ".join(x for x in (harness, model) if x) or "the thread's usual AI"
+    lines = [f"**Plan:** {plan_name}", f"**AI doing the work:** {ai}", ""]
+    for task in open_tasks(plan_text):
+        dot = "🟡" if needs_you(task) else "🟢"
+        tail = " — I'll ask you first" if dot == "🟡" else ""
+        lines.append(f"{dot} **{short_label(task)}**{tail}")
+    lines += ["", "🟢 I do it by myself   🟡 I stop and ask you"]
+    return discord.Embed(
+        title="📋 Here's what I'm going to do",
+        description=_fit("\n".join(lines)),
+        color=_BLUE,
+    )
+
+
+def finished_card(name: str, done: int, recaps: list[str], results: list[tuple[str, str]]) -> Any:
+    """The last card: what got done, what the bot checked itself, what to type."""
+    fails = [r for r in results if r[0] == "fail"]
+    lines = [f"**All {done} steps are done.**"]
+    if recaps:
+        lines += ["", "**What got done**", *[f"• {r}" for r in recaps[-10:]]]
+    if results:
+        lines += ["", "**What I checked myself**"]
+        lines += [f"{_MARK.get(kind, '⚪')} {what}" for kind, what in results]
+    lines.append("")
+    if fails:
+        lines.append(
+            f"**{len(fails)} check{'s' if len(fails) > 1 else ''} failed.** Type **fix** and "
+            "I'll fix it, **looks good** to keep it anyway, or tell me what's wrong."
+        )
+    else:
+        lines.append("Type **looks good** to keep it, or tell me what's wrong.")
+    return discord.Embed(
+        title=f"🏁 {name} is finished",
+        description=_fit("\n".join(lines)),
+        color=_AMBER if fails else _GREEN,
+    )
+
+
+def _fit(text: str, limit: int = 4000) -> str:
+    """Embeds hold 4,096 characters; cut at a line, never mid-word."""
+    if len(text) <= limit:
+        return text
+    return text[: text.rfind("\n", 0, limit - 2)] + "\n…"
+
+
 @dataclass
 class _Running:
     loop: TaskLoop
@@ -157,7 +215,10 @@ class _Running:
     notify_user_id: int | None = None
     #: One plain-English line per finished task, for the summary at the end.
     recaps: list[str] | None = None
-    preview: asyncio.subprocess.Process | None = None
+    #: Runs one fresh session in the worker thread (used for the bot's own check).
+    run_session: Any = None
+    #: True while the finished card waits for "looks good" or a fix.
+    in_review: bool = False
 
 
 def _recap_line(text: str | None) -> str | None:
@@ -172,6 +233,21 @@ def _recap_line(text: str | None) -> str | None:
     if not (title or happened):
         return None
     return (f"{title}: {happened}" if title and happened else title or happened or "")[:200]
+
+
+async def _restore_tracked(path: Path) -> None:
+    """Throw away edits to tracked files in the build's own copy (never the project)."""
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        str(path),
+        "checkout",
+        "--",
+        ".",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
 
 
 async def resolve_repo(plan_path: Path) -> Path:
@@ -269,6 +345,11 @@ class TaskLoopCog(commands.Cog):
             future.set_result(text)
             return True
         for running in self._running.values():
+            if running.worker_thread_id == channel_id and running.in_review:
+                review = self._waiters.get(running.report_channel_id)
+                if review is not None and not review.done():
+                    review.set_result(text)
+                    return True
             if running.worker_thread_id == channel_id:
                 running.loop.add_note(text)
                 with contextlib.suppress(Exception):
@@ -338,8 +419,14 @@ class TaskLoopCog(commands.Cog):
             model=model,
         )
         self._store.save(record)
-        report = self._launch(record, thread, report_target)
-        await report(f"▶️ Task loop started: {snap.unchecked} tasks to go")
+        self._launch(record, thread, report_target)
+        plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        with contextlib.suppress(discord.HTTPException):
+            await report_target.send(
+                f"▶️ Started. The work happens in {thread.mention}; I'll ping you only if "
+                "I need you, and when it's finished.",
+                embed=plan_card(plan_text, plan.name, harness, model),
+            )
         return thread
 
     def _quiet(self, thread_id: int) -> None:
@@ -392,6 +479,20 @@ class TaskLoopCog(commands.Cog):
                 recaps.append(recap)
             return result.get("text"), result.get("error")
 
+        async def run_session(prompt: str, label: str) -> tuple[str | None, str | None]:
+            seed = await thread.send(f"-# {label}")
+            result: dict[str, str | None] = {}
+
+            async def sink(text: str | None, error: str | None) -> None:
+                result["text"], result["error"] = text, error
+
+            await chat.run_fresh_turn(
+                seed, thread, prompt, working_dir=str(work_dir), result_sink=sink
+            )
+            return result.get("text"), result.get("error") or (
+                None if result else "the session ended without a result"
+            )
+
         async def ask(question: str) -> str | None:
             mention = f"<@{notify_user_id}> " if notify_user_id else ""
             with contextlib.suppress(discord.HTTPException):
@@ -417,6 +518,7 @@ class TaskLoopCog(commands.Cog):
             report=report,
             notify_user_id=notify_user_id,
             recaps=recaps,
+            run_session=run_session,
         )
         self._running[repo_dir] = running
         self._quiet(thread.id)
@@ -483,94 +585,91 @@ class TaskLoopCog(commands.Cog):
             self._running.pop(running.repo_dir, None)
 
     async def _wrap_up(self, running: _Running) -> str | None:
-        """The ending: summary, a local copy to try, then keep it or fix it.
+        """The ending: the bot checks the work itself, posts one card, waits for a verdict.
 
-        Returns "kept", "fix", or None when nobody answered in time.
+        Nothing to open: the card says what got done and what passed. "looks good"
+        adds the work to the project on this computer (never GitHub); "fix" turns
+        failed checks into a fix step; anything else becomes a fix step as typed.
+        Returns "kept" or "fix".
         """
         assert running.copy is not None
         target, report = running.report_target, running.report
         plan_text = running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
-        checked, unchecked = count_tasks(plan_text)
+        checked, _ = count_tasks(plan_text)
         mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
 
-        lines = [
-            f"🏁 **{running.repo_dir.name} is ready to try** ({checked} of {checked} tasks done)"
-        ]
-        lines += [f"- {r}" for r in (running.recaps or [])[-10:]]
+        results = await self._check_it_myself(running, plan_text)
+        fails = [what for kind, what in results if kind == "fail"]
         with contextlib.suppress(discord.HTTPException):
-            await target.send("\n".join(lines)[:1900])
-
-        where = await self._start_preview(running, plan_text)
-        checks = plan_try_checks(plan_text)[:3]
-        ask = [f"**Try it:** {where}"]
-        if checks:
-            ask.append("**Check these:**")
-            ask += [f"{i}. {c}" for i, c in enumerate(checks, 1)]
-        ask.append(f"Then just type **looks good** to keep it, or tell me what's off.{mention}")
-        with contextlib.suppress(discord.HTTPException):
-            await target.send("\n".join(ask)[:1900])
-
-        while True:
-            reply = await self.wait_for_reply(
-                running.report_channel_id, timeout=VERDICT_TIMEOUT_SECONDS
+            await target.send(
+                f"🏁 **{running.repo_dir.name} is finished**{mention}",
+                embed=finished_card(running.repo_dir.name, checked, running.recaps or [], results),
             )
-            if reply is None:
-                await self._stop_preview(running)
-                with contextlib.suppress(discord.HTTPException):
-                    await target.send(
-                        "⏸️ Nobody answered, so I stopped the local copy. "
-                        "The build is kept as it is."
-                    )
-                return None
-            if not is_looks_good(reply):
-                await self._stop_preview(running)
-                append_fix_task(running.copy.plan_path, reply)
-                await commit_all(running.copy.path, f"gowork: fix requested: {reply[:60]}")
-                await report(f"🔧 Got it, fixing: “{reply[:200]}”")
-                return "fix"
-            await self._stop_preview(running)
-            ok, message = await keep_work(running.copy)
-            if not ok:
-                with contextlib.suppress(discord.HTTPException):
-                    await target.send(
-                        f"⚠️ I couldn't keep it yet: {message}. Your build is safe. "
-                        "Sort that out and type **looks good** again."
-                    )
-                continue
-            with contextlib.suppress(discord.HTTPException):
-                await target.send(f"✅ Kept: {message}. I cleaned up the worker thread.")
-            with contextlib.suppress(Exception):
-                await running.thread.delete()
-            return "kept"
 
-    async def _start_preview(self, running: _Running, plan_text: str) -> str:
-        """Start the plan's ``Try:`` command in the build's copy; say where to look."""
-        assert running.copy is not None
-        argv = plan_try_command(plan_text)
-        url = plan_open_url(plan_text)
-        if argv is None:
-            return url or f"the finished files are in `{running.copy.path}`"
+        running.in_review = True
         try:
-            running.preview = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(running.copy.path),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except OSError as exc:
-            return f"I couldn't start it ({exc}); the files are in `{running.copy.path}`"
-        await asyncio.sleep(2)
-        if running.preview.returncode is not None:
-            return f"it didn't stay running; the files are in `{running.copy.path}`"
-        return f"{url} (running now)" if url else "it's running now"
+            while True:
+                reply = await self.wait_for_reply(
+                    running.report_channel_id, timeout=VERDICT_REMIND_SECONDS
+                )
+                if reply is None:
+                    with contextlib.suppress(discord.HTTPException):
+                        await target.send(
+                            f"⏰ Still waiting: {running.repo_dir.name} is finished. Type "
+                            f"**looks good** to keep it, or tell me what's wrong.{mention}"
+                        )
+                    continue
+                if not is_looks_good(reply):
+                    what = reply
+                    if reply.strip().lower().rstrip(".!") in _FIX_WORDS and fails:
+                        what = "make these checks pass: " + "; ".join(fails)
+                    append_fix_task(running.copy.plan_path, what)
+                    await commit_all(running.copy.path, f"gowork: fix requested: {what[:60]}")
+                    await report(f"🔧 Got it, fixing: “{what[:200]}”")
+                    return "fix"
+                ok, message = await keep_work(running.copy)
+                if not ok:
+                    with contextlib.suppress(discord.HTTPException):
+                        await target.send(
+                            f"⚠️ I couldn't keep it yet: {message}. Your build is safe. "
+                            "Sort that out and type **looks good** again."
+                        )
+                    continue
+                with contextlib.suppress(discord.HTTPException):
+                    await target.send(f"✅ Kept: {message}. I cleaned up the worker thread.")
+                with contextlib.suppress(Exception):
+                    await running.thread.delete()
+                return "kept"
+        finally:
+            running.in_review = False
 
-    async def _stop_preview(self, running: _Running) -> None:
-        proc, running.preview = running.preview, None
-        if proc is not None and proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(proc.wait(), 5)
+    async def _check_it_myself(self, running: _Running, plan_text: str) -> list[tuple[str, str]]:
+        """Run the plan's test, then have a fresh session do the "How to try it" checks."""
+        assert running.copy is not None
+        results: list[tuple[str, str]] = []
+        argv = plan_check_command(plan_text)
+        if argv is not None:
+            ok, tail = await run_check(running.copy.path, argv)
+            last = tail.strip().splitlines()[-1] if tail.strip() else ""
+            results.append(
+                ("pass", "The plan's own test passes")
+                if ok
+                else ("fail", f"The plan's own test fails: {last[:150]}")
+            )
+        checks = plan_try_checks(plan_text)
+        if not checks or running.run_session is None:
+            return results
+        text, error = await running.run_session(
+            checker_prompt(running.copy.plan_path, checks), "🔎 Checking the finished work"
+        )
+        found = parse_check_results(text)
+        if not found:
+            reason = error or "the check session didn't report back"
+            results.append(("skip", f"I couldn't do the checks myself ({reason[:150]})"))
+        results += found
+        # The checker must not change anything; undo it if it did.
+        await _restore_tracked(running.copy.path)
+        return results
 
     def stop_for(self, channel_id: int) -> _Running | None:
         """Ask the loop tied to *channel_id* (worker or report channel) to stop."""

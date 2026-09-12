@@ -109,3 +109,54 @@ class TestKeepTheWork:
 
         assert not ok and "unsaved" in msg
         assert copy.path.exists()  # nothing lost
+
+
+class TestStartCardHelpers:
+    @pytest.mark.parametrize(
+        "task",
+        [
+            "**C2 Railway.** New service, redeploy",
+            "**C1 Drew tries it on localhost.** Sign in",
+            "Task 13: Push the commits and open a PR on GitHub",
+            "Check: 💲 one question with a lookup",
+        ],
+    )
+    def test_steps_that_need_you(self, task: str) -> None:
+        assert tl.needs_you(task)
+
+    @pytest.mark.parametrize(
+        "task", ["**A3 Brand it PropertyStack.** Name, logo", "Task 2: add a sign-in card"]
+    )
+    def test_steps_that_run_alone(self, task: str) -> None:
+        assert not tl.needs_you(task)
+
+    def test_short_label_is_plain(self) -> None:
+        assert (
+            tl.short_label("**A3 Brand it PropertyStack.** Name, logo") == "Brand it PropertyStack"
+        )
+        assert tl.short_label("Task 4: Merge the branch. Then more") == "Merge the branch"
+        assert len(tl.short_label("x" * 300)) <= 81
+
+
+class TestBotChecksItself:
+    def test_prompt_lists_every_check_and_forbids_changes(self) -> None:
+        prompt = tl.checker_prompt(Path("/p/PLAN.md"), ["Open the page", "Type 3 + 4"])
+        assert "Open the page" in prompt and "Type 3 + 4" in prompt
+        assert "Do not edit" in prompt and "PASS:" in prompt and "SKIP:" in prompt
+
+    def test_parse_results(self) -> None:
+        text = (
+            "I checked things.\n"
+            "PASS: Open the page — it loads\n"
+            "**FAIL: Type 3 + 4 — shows 8**\n"
+            "SKIP: Google sign-in — needs a real login\n"
+            "DONE"
+        )
+        assert tl.parse_check_results(text) == [
+            ("pass", "Open the page — it loads"),
+            ("fail", "Type 3 + 4 — shows 8"),
+            ("skip", "Google sign-in — needs a real login"),
+        ]
+
+    def test_nothing_parsed(self) -> None:
+        assert tl.parse_check_results("no idea\nDONE") == []
