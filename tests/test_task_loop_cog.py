@@ -160,9 +160,11 @@ class TestPings:
         assert thread.id in chat._get_dashboard.return_value.quiet_thread_ids
         texts = [str(c.args[0]) for c in channel.send.call_args_list]
         done_line = next(t for t in texts if "Task 1 of 1 done" in t)
-        end_line = next(t for t in texts if "All 1 tasks are done" in t)
+        all_done = next(t for t in texts if "All 1 tasks are done" in t)
+        end_line = next(t for t in texts if "is finished" in t)
         assert "<@42>" not in done_line  # progress is quiet
-        assert "<@42>" in end_line  # the end pings
+        assert "<@42>" not in all_done  # no double ping before the card
+        assert "<@42>" in end_line  # the finished card pings
 
 
 class TestTypedPickers:
