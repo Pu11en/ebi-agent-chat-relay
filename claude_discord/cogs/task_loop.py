@@ -448,7 +448,7 @@ class TaskLoopCog(commands.Cog):
         """Run *record*'s loop in *thread*. Returns the report function."""
         chat = self._chat()
         work_dir, work_plan = Path(record.copy_path), Path(record.copy_plan)
-        notify_user_id = record.notify_user_id
+        notify_user_id = record.notify_user_id or self._only_user()
 
         async def report(text: str) -> None:
             ping = (
@@ -739,6 +739,11 @@ class TaskLoopCog(commands.Cog):
                 return running
         return None
 
+    def _only_user(self) -> int | None:
+        """The one person allowed to use the bot — who to ping when nobody was named."""
+        users = self._allowed_user_ids or set()
+        return next(iter(users)) if len(users) == 1 else None
+
     def _authorized(self, user_id: int) -> bool:
         return self._allowed_user_ids is None or user_id in self._allowed_user_ids
 
@@ -821,6 +826,13 @@ class TaskLoopCog(commands.Cog):
         for the typed reply, exactly like ``/gowork`` does.
         """
         parent: Any = report_to.parent if isinstance(report_to, discord.Thread) else report_to
+        if harness in _SAME_WORDS:
+            # "Use whatever this thread uses" — started by words, no model named.
+            settings = getattr(self._chat(), "_backend_settings", None)
+            current = (
+                await settings.current_backend(getattr(parent, "id", None)) if settings else None
+            )
+            harness, model = current or "claude", None
         if harness is None:
             settings = getattr(self._chat(), "_backend_settings", None)
             current = (

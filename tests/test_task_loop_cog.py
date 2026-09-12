@@ -715,3 +715,38 @@ class TestAiPickerByLetter:
         picker = asyncio.create_task(cog._ask_harness(channel, "dsh"))
         await _type_when_asked(cog, 9, "codex")
         assert await asyncio.wait_for(picker, 5) == ("codex", None)
+
+
+class TestStartedByWords:
+    async def test_same_means_the_threads_ai_without_asking(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        settings.current_backend = AsyncMock(return_value="codex")
+        chat._backend_settings = settings
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+
+        got = await asyncio.wait_for(
+            cog.start_asking(channel, str(repo / "PLAN.md"), harness="same"), 10
+        )
+        assert got is thread
+        settings.set_backend.assert_awaited_once_with("codex", thread_id=thread.id)
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+    async def test_the_only_allowed_user_is_pinged_when_nobody_was_named(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        cog._allowed_user_ids = {42}
+        thread.delete = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))  # no notify_user_id
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "<@42>" in posted
