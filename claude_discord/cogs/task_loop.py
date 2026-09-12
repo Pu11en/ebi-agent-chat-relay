@@ -100,6 +100,10 @@ def parse_harness_reply(text: str, current: str | None) -> tuple[str, str | None
     return None
 
 
+class PickDeclinedError(Exception):
+    """The person typed something other than a choice, so the normal chat answers it."""
+
+
 def choice_letter(i: int) -> str:
     """0 → A, 25 → Z, 26 → AA … — however many choices there are."""
     letters = ""
@@ -211,6 +215,8 @@ class TaskLoopCog(commands.Cog):
         self._store = store or LoopStore()
         #: Channels/threads waiting for the person's next typed message.
         self._waiters: dict[int, asyncio.Future[str]] = {}
+        #: Waiters that only take a matching reply; anything else goes to the chat.
+        self._accepts: dict[int, Any] = {}
 
     def _chat(self) -> ClaudeChatCog:
         cog: Any = self.bot.cogs.get("ClaudeChatCog")
@@ -222,10 +228,18 @@ class TaskLoopCog(commands.Cog):
     def running(self) -> list[_Running]:
         return list(self._running.values())
 
-    async def wait_for_reply(self, channel_id: int, *, timeout: float) -> str | None:
-        """Wait for the next message typed in *channel_id* (see take_message)."""
+    async def wait_for_reply(
+        self, channel_id: int, *, timeout: float, accept: Any = None
+    ) -> str | None:
+        """Wait for the next message typed in *channel_id* (see take_message).
+
+        With *accept*, a reply it rejects is left for the normal chat and this
+        raises PickDeclinedError, so a question typed instead of a choice gets answered.
+        """
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._waiters[channel_id] = future
+        if accept is not None:
+            self._accepts[channel_id] = accept
         try:
             return await asyncio.wait_for(future, timeout)
         except TimeoutError:
@@ -233,6 +247,7 @@ class TaskLoopCog(commands.Cog):
         finally:
             if self._waiters.get(channel_id) is future:
                 self._waiters.pop(channel_id, None)
+                self._accepts.pop(channel_id, None)
 
     def take_message(self, message: Any) -> bool:
         """Claim a typed message for /gowork. True means the chat cog must ignore it.
@@ -247,6 +262,10 @@ class TaskLoopCog(commands.Cog):
             return False
         future = self._waiters.get(channel_id)
         if future is not None and not future.done():
+            accept = self._accepts.get(channel_id)
+            if accept is not None and not accept(text):
+                future.set_exception(PickDeclinedError(text))
+                return False
             future.set_result(text)
             return True
         for running in self._running.values():
@@ -615,16 +634,18 @@ class TaskLoopCog(commands.Cog):
             )
         for chunk in _chunks(lines):
             await channel.send(chunk)
-        for _ in range(2):
-            reply = await self.wait_for_reply(channel.id, timeout=PICK_TIMEOUT_SECONDS)
-            if reply is None:
-                return None
-            picked = parse_plan_reply(reply, plans)
-            if picked is not None:
-                return str(picked)
+        try:
+            reply = await self.wait_for_reply(
+                channel.id,
+                timeout=PICK_TIMEOUT_SECONDS,
+                accept=lambda text: parse_plan_reply(text, plans) is not None,
+            )
+        except PickDeclinedError:
             with contextlib.suppress(discord.HTTPException):
-                await channel.send("Just type the letter of the plan, e.g. `B`.")
-        return None
+                await channel.send("-# Okay, no build for now. Answering that instead.")
+            raise
+        picked = parse_plan_reply(reply or "", plans)
+        return str(picked) if picked is not None else None
 
     async def start_asking(
         self,
@@ -706,7 +727,10 @@ class TaskLoopCog(commands.Cog):
             return
         await interaction.response.defer(thinking=True)
         await interaction.followup.send("🔁 Getting ready…")
-        plan = plan or await self._pick_plan(channel)
+        try:
+            plan = plan or await self._pick_plan(channel)
+        except PickDeclinedError:
+            return
         if not plan:
             await interaction.followup.send(
                 "I couldn't find a plan with `- [ ]` tasks in this project. "

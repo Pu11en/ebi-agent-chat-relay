@@ -445,3 +445,43 @@ class TestPickPlanAfterClearedSession:
         assert "A)" in listing and "B)" in listing
         assert "realpage" in listing and "gomer" in listing
         assert picked in (str(proj / "PLAN-v5.md"), str(tmp_path / "gomer" / "plan.md"))
+
+
+class TestPickPlanFreeText:
+    """Typing something other than a letter goes to the normal chat instead."""
+
+    def _setup(self, tmp_path: Path) -> tuple[TaskLoopCog, MagicMock]:
+        cog, chat, _ = _cog_with_chat()
+        chat.repo.get = AsyncMock(return_value=None)
+        chat.runner.working_dir = str(tmp_path)
+        proj = tmp_path / "realpage"
+        (proj / ".worktrees" / "wt-77").mkdir(parents=True)
+        (proj / "PLAN-v5.md").write_text("- [ ] a\n")
+        (proj / "PLAN-v4.md").write_text("- [ ] b\n")
+        channel = MagicMock()
+        channel.id = 77
+        channel.send = AsyncMock()
+        return cog, channel
+
+    async def test_a_question_is_released_to_the_chat(self, tmp_path: Path) -> None:
+        from claude_discord.cogs.task_loop import PickDeclinedError
+
+        cog, channel = self._setup(tmp_path)
+        picker = asyncio.create_task(cog._pick_plan(channel))
+        for _ in range(100):
+            if 77 in cog._waiters:
+                break
+            await asyncio.sleep(0.01)
+        message = MagicMock()
+        message.channel.id = 77
+        message.content = "which of these can I delete?"
+        assert cog.take_message(message) is False  # the chat answers it
+        with pytest.raises(PickDeclinedError):
+            await asyncio.wait_for(picker, 5)
+        assert 77 not in cog._waiters
+
+    async def test_a_letter_is_still_taken(self, tmp_path: Path) -> None:
+        cog, channel = self._setup(tmp_path)
+        picker = asyncio.create_task(cog._pick_plan(channel))
+        await _type_when_asked(cog, 77, "A")
+        assert (await asyncio.wait_for(picker, 5)).endswith(".md")
