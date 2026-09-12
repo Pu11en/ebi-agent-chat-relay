@@ -79,6 +79,9 @@ SUGGESTED_MODELS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+_BACKEND_EMOJI = {"claude": "🤖", "codex": "🌀", "local": "🏠", "agui": "🔌", "dsh": "🐳"}
+
+
 def _model_label(model: str | None) -> str:
     """Human-readable model label; ``None`` means the backend CLI default."""
     return f"`{model}`" if model else "_(CLI default)_"
@@ -266,6 +269,79 @@ class BackendCommandCog(commands.Cog):
             label = f"{value} — {description}"
             choices.append(Choice(name=label[:100], value=value))
         return choices[:25]
+
+    # ── /switch: backend + model in one pick ───────────────────────
+
+    async def _switch_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[Choice[str]]:
+        """Every backend's models in one list, current pick first."""
+        thread_id = self._thread_id_or_none(interaction)
+        now_backend = await self._settings.current_backend(thread_id)
+        now_model = await self._settings.current_model(
+            now_backend, thread_id
+        ) or self._factory.default_model_for(now_backend)
+        catalog = {
+            "claude": await claude_model_choices(fallback=SUGGESTED_MODELS["claude"]),
+            "codex": codex_model_choices(fallback=SUGGESTED_MODELS["codex"]),
+            "dsh": await dsh_model_choices(fallback=SUGGESTED_MODELS["dsh"]),
+        }
+        # An even share per backend so one long catalog cannot crowd out the others.
+        per_backend = 8
+        needle = current.lower()
+        choices: list[Choice[str]] = []
+        for backend, models in catalog.items():
+            emoji = _BACKEND_EMOJI.get(backend, "🤖")
+            picked = 0
+            for model, description in models:
+                label = f"{emoji} {backend} · {model} — {description}"
+                if needle and needle not in label.lower():
+                    continue
+                if picked >= per_backend:
+                    break
+                mark = "✅ " if (backend, model) == (now_backend, now_model) else ""
+                choice = Choice(name=f"{mark}{label}"[:100], value=f"{backend}|{model}")
+                if mark:
+                    choices.insert(0, choice)
+                else:
+                    choices.append(choice)
+                picked += 1
+        return choices[:25]
+
+    @app_commands.command(
+        name="switch",
+        description="Switch AI and model in one step (pick from the list)",
+    )
+    @app_commands.autocomplete(choice=_switch_autocomplete)
+    @app_commands.describe(choice="Start typing to filter, e.g. 'opus' or 'codex'.")
+    async def switch_command(self, interaction: discord.Interaction, choice: str) -> None:
+        backend, _, model = choice.partition("|")
+        if backend not in ALL_BACKENDS or not model:
+            await interaction.response.send_message(
+                "Pick an option from the list that appears as you type.", ephemeral=True
+            )
+            return
+        resolved_scope, target_thread_id = self._resolve_scope(interaction, None)
+        await self._settings.set_backend(backend, thread_id=target_thread_id)
+        await self._set_model_selection(
+            backend=backend,
+            name=model,
+            resolved_scope=resolved_scope,
+            target_thread_id=target_thread_id,
+        )
+        if resolved_scope == SCOPE_GLOBAL:
+            try:
+                self._chat_cog.runner = self._factory.build(backend=backend, model=model)  # type: ignore[assignment]
+            except Exception:
+                logger.exception("Failed to swap ClaudeChatCog.runner after /switch")
+        where = "this thread" if resolved_scope == SCOPE_THREAD else "everywhere (default)"
+        emoji = _BACKEND_EMOJI.get(backend, "🤖")
+        await interaction.response.send_message(
+            f"{emoji} Switched {where} to **{backend}** · `{model}`. Your next message uses it.",
+            ephemeral=False,
+        )
 
     @model_group.command(
         name="show",

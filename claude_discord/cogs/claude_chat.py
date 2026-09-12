@@ -87,6 +87,7 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "gowork": "📌 Session",  # run the plan one task at a time, fresh session each
     "stopwork": "📌 Session",
     "model": "🤖 Model",
+    "switch": "🤖 Model",
     "backend": "🤖 Model",
     "engine-status": "🤖 Model",
     "ollama": "🤖 Model",  # manage the runtime behind the `local` backend
