@@ -160,3 +160,13 @@ class TestBotChecksItself:
 
     def test_nothing_parsed(self) -> None:
         assert tl.parse_check_results("no idea\nDONE") == []
+
+
+class TestCheckLineWithComment:
+    def test_only_the_command_in_backticks_runs(self) -> None:
+        text = "Check: `python3 tooling/qa/sweep.py http://localhost:8765` (plus the task's own)"
+        assert tl.plan_check_command(text) == [
+            "python3",
+            "tooling/qa/sweep.py",
+            "http://localhost:8765",
+        ]

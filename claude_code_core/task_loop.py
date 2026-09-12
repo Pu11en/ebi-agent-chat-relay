@@ -131,8 +131,11 @@ def plan_check_command(plan_text: str) -> list[str] | None:
     for line in plan_text.splitlines():
         m = _CHECK_RE.match(line)
         if m:
+            # "Check: `cmd args` (a note)" — only the part in backticks is the command.
+            quoted = re.search(r"`([^`]+)`", line)
+            command = quoted.group(1) if quoted else m.group(1)
             with contextlib.suppress(ValueError):
-                argv = shlex.split(m.group(1))
+                argv = shlex.split(command)
                 return argv or None
             return None
     return None
