@@ -229,8 +229,9 @@ def worker_prompt(
 ) -> str:
     """The prompt every round gets. Same text every time, by design."""
     parts = [
-        "You are the worker in a sequential task loop. You start with no memory; "
-        "the files below are the whole state.",
+        "[gowork build worker — for this worker only] You are the worker in a "
+        "sequential task loop. You start with no memory; the files below are the "
+        "whole state.",
         "",
         f"1. Read the plan: {plan_path}",
         f"2. Read the progress log if it exists: {progress_path}",
