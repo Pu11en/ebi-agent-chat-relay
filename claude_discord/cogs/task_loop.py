@@ -37,9 +37,12 @@ from claude_code_core.task_loop import (
     count_tasks,
     is_looks_good,
     list_plans,
+    list_plans_across,
     plan_open_url,
     plan_try_checks,
     plan_try_command,
+    project_for_thread,
+    project_of,
     take_snapshot,
 )
 from claude_code_core.work_copy import (
@@ -97,18 +100,43 @@ def parse_harness_reply(text: str, current: str | None) -> tuple[str, str | None
     return None
 
 
+def choice_letter(i: int) -> str:
+    """0 → A, 25 → Z, 26 → AA … — however many choices there are."""
+    letters = ""
+    i += 1
+    while i:
+        i, rem = divmod(i - 1, 26)
+        letters = chr(ord("A") + rem) + letters
+    return letters
+
+
+_LETTER_REPLY_RE = re.compile(r"^\s*(?:option\s+)?\(?([a-z]{1,2})\)?[\s.!)]*$", re.IGNORECASE)
+
+
 def parse_plan_reply(text: str, plans: list[Path]) -> Path | None:
-    """A typed number ("2") or a word from the plan's name ("the fix one")."""
-    stripped = text.strip()
-    if stripped.isdigit():
-        i = int(stripped) - 1
-        return plans[i] if 0 <= i < len(plans) else None
-    words = {w for w in _WORD_RE.findall(text.lower()) if len(w) >= 3 and w not in _FILLER}
-    for plan in plans:
-        name = plan.stem.lower()
-        if any(w in name for w in words - {"plan", "one"}):
+    """A typed letter ("B", "b)", "option c") → that plan."""
+    m = _LETTER_REPLY_RE.match(text or "")
+    if not m:
+        return None
+    wanted = m.group(1).upper()
+    for i, plan in enumerate(plans):
+        if choice_letter(i) == wanted:
             return plan
     return None
+
+
+def _chunks(lines: list[str], limit: int = 1900) -> list[str]:
+    """Split a long list into Discord-sized messages without breaking a line."""
+    out: list[str] = []
+    current = ""
+    for line in lines:
+        if current and len(current) + len(line) + 1 > limit:
+            out.append(current)
+            current = ""
+        current = f"{current}\n{line}" if current else line
+    if current:
+        out.append(current)
+    return out
 
 
 @dataclass
@@ -536,35 +564,67 @@ class TaskLoopCog(commands.Cog):
     def _authorized(self, user_id: int) -> bool:
         return self._allowed_user_ids is None or user_id in self._allowed_user_ids
 
-    async def _pick_plan(self, channel: Any) -> str | None:
-        """The project's unfinished plans: one is used directly, several are listed."""
+    async def _thread_project(self, channel: Any) -> Path | None:
+        """The project this thread works in — even after its session was cleared.
+
+        Clearing a session forgets its folder, so fall back to the thread's own
+        session copy, ``<project>/.worktrees/wt-<thread id>``.
+        """
+        chat = self._chat()
         record = None
         with contextlib.suppress(Exception):
-            record = await self._chat().repo.get(channel.id)
-        workdir = (record.working_dir if record else None) or getattr(
-            self._chat().runner, "working_dir", None
-        )
-        if not isinstance(workdir, str) or not workdir:
+            record = await chat.repo.get(channel.id)
+        if record is not None and record.working_dir:
+            return project_of(Path(record.working_dir))
+        root_dir = getattr(chat.runner, "working_dir", None)
+        if not isinstance(root_dir, str) or not root_dir:
             return None
-        project = Path(workdir)
-        plans = list_plans(project)[:5]
-        if len(plans) <= 1:
-            return str(plans[0]) if plans else None
-        lines = ["Which plan? Just type the number or a word from its name:"]
-        for i, plan in enumerate(plans, 1):
+        return project_for_thread(Path(root_dir), channel.id)
+
+    async def _pick_plan(self, channel: Any) -> str | None:
+        """Every plan this thread's project could run, as lettered text choices.
+
+        One plan is used directly. When the thread's project can't be told (or has
+        no open plan), the unfinished plans of all projects are listed instead.
+        The person types a letter — no buttons, no paths.
+        """
+        project = await self._thread_project(channel)
+        base = project
+        plans = list_plans(project) if project is not None else []
+        if not plans:
+            root_dir = getattr(self._chat().runner, "working_dir", None)
+            if isinstance(root_dir, str) and root_dir:
+                base = Path(root_dir)
+                plans = list_plans_across(base)
+        if not plans:
+            return None
+        if len(plans) == 1:
+            return str(plans[0])
+        lines = ["Which plan should I run? Just type its letter:"]
+        for i, plan in enumerate(plans):
             try:
                 checked, unchecked = count_tasks(plan.read_text(encoding="utf-8", errors="replace"))
             except OSError:
                 checked, unchecked = 0, 0
             try:
-                name = str(plan.relative_to(project))
+                name = str(plan.relative_to(base)) if base is not None else plan.name
             except ValueError:
                 name = plan.name
-            lines.append(f"**{i}.** `{name}` · {unchecked} of {checked + unchecked} left")
-        await channel.send("\n".join(lines))
-        reply = await self.wait_for_reply(channel.id, timeout=PICK_TIMEOUT_SECONDS)
-        picked = parse_plan_reply(reply or "", plans)
-        return str(picked) if picked else None
+            lines.append(
+                f"**{choice_letter(i)})** `{name}` · {unchecked} of {checked + unchecked} left"
+            )
+        for chunk in _chunks(lines):
+            await channel.send(chunk)
+        for _ in range(2):
+            reply = await self.wait_for_reply(channel.id, timeout=PICK_TIMEOUT_SECONDS)
+            if reply is None:
+                return None
+            picked = parse_plan_reply(reply, plans)
+            if picked is not None:
+                return str(picked)
+            with contextlib.suppress(discord.HTTPException):
+                await channel.send("Just type the letter of the plan, e.g. `B`.")
+        return None
 
     async def start_asking(
         self,

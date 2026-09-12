@@ -182,13 +182,28 @@ class TestTypedPickers:
 
         assert parse_harness_reply(text, current="dsh") == expected
 
-    def test_plan_reply_by_number_or_words(self, tmp_path: Path) -> None:
+    def test_plan_reply_by_letter(self, tmp_path: Path) -> None:
         from claude_discord.cogs.task_loop import parse_plan_reply
 
         a, b = tmp_path / "PLAN-v1.md", tmp_path / "fix-plan.md"
-        assert parse_plan_reply("2", [a, b]) == b
-        assert parse_plan_reply("the fix one", [a, b]) == b
-        assert parse_plan_reply("9", [a, b]) is None
+        assert parse_plan_reply("B", [a, b]) == b
+        assert parse_plan_reply("a)", [a, b]) == a
+        assert parse_plan_reply("option b", [a, b]) == b
+        assert parse_plan_reply("Z", [a, b]) is None
+        assert parse_plan_reply("the fix one", [a, b]) is None
+
+    def test_letters_keep_going_past_z(self) -> None:
+        from claude_discord.cogs.task_loop import choice_letter
+
+        assert [choice_letter(i) for i in (0, 1, 25, 26, 27)] == ["A", "B", "Z", "AA", "AB"]
+
+    def test_long_lists_are_split_into_messages(self) -> None:
+        from claude_discord.cogs.task_loop import _chunks
+
+        lines = [f"**{i})** plan-{i}.md · 3 of 5 left" for i in range(300)]
+        chunks = _chunks(lines)
+        assert len(chunks) > 1 and all(len(c) <= 1900 for c in chunks)
+        assert sum(c.count("\n") + 1 for c in chunks) == 300
 
     async def test_chosen_harness_and_model_stick_to_the_worker_thread(self, repo: Path) -> None:
         cog, chat, thread = _cog_with_chat()
@@ -399,3 +414,34 @@ class TestStartAsking:
 
         settings.set_backend.assert_awaited_once_with("claude", thread_id=thread.id)
         settings.set_model.assert_awaited_once_with("claude", "sonnet", thread_id=thread.id)
+
+
+class TestPickPlanAfterClearedSession:
+    def _setup(self, tmp_path: Path) -> tuple[TaskLoopCog, MagicMock, Path]:
+        cog, chat, _ = _cog_with_chat()
+        chat.repo.get = AsyncMock(return_value=None)  # the session was cleared
+        chat.runner.working_dir = str(tmp_path)
+        proj = tmp_path / "realpage"
+        (proj / ".worktrees" / "wt-77").mkdir(parents=True)
+        (proj / "PLAN-v5.md").write_text("- [ ] make the chat look nice\n")
+        channel = MagicMock()
+        channel.id = 77
+        channel.send = AsyncMock()
+        return cog, channel, proj
+
+    async def test_finds_the_project_from_the_threads_session_copy(self, tmp_path: Path) -> None:
+        cog, channel, proj = self._setup(tmp_path)
+        assert await cog._pick_plan(channel) == str(proj / "PLAN-v5.md")
+
+    async def test_unknown_project_lists_plans_from_every_project(self, tmp_path: Path) -> None:
+        cog, channel, proj = self._setup(tmp_path)
+        (tmp_path / "gomer").mkdir()
+        (tmp_path / "gomer" / "plan.md").write_text("- [ ] y\n")
+        channel.id = 78  # no session copy for this thread
+        picker = asyncio.create_task(cog._pick_plan(channel))
+        await _type_when_asked(cog, 78, "b")
+        picked = await asyncio.wait_for(picker, 5)
+        listing = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
+        assert "A)" in listing and "B)" in listing
+        assert "realpage" in listing and "gomer" in listing
+        assert picked in (str(proj / "PLAN-v5.md"), str(tmp_path / "gomer" / "plan.md"))

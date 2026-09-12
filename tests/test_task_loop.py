@@ -339,3 +339,31 @@ class TestTypedReplies:
         await loop.run()
         assert "make it friendlier" in fake.prompts[0]
         assert "make it friendlier" not in fake.prompts[1]
+
+
+class TestFindingTheProject:
+    def test_a_session_copy_points_back_to_its_project(self, tmp_path: Path) -> None:
+        proj = tmp_path / "realpage"
+        wt = proj / ".worktrees" / "wt-123"
+        wt.mkdir(parents=True)
+        assert tl.project_of(wt) == proj
+        assert tl.project_of(proj) == proj
+
+    def test_thread_copy_is_found_by_thread_id(self, tmp_path: Path) -> None:
+        (tmp_path / "realpage" / ".worktrees" / "wt-555").mkdir(parents=True)
+        (tmp_path / "other").mkdir()
+        assert tl.project_for_thread(tmp_path, 555) == tmp_path / "realpage"
+        assert tl.project_for_thread(tmp_path, 999) is None
+
+    def test_open_plans_across_every_project_newest_first(self, tmp_path: Path) -> None:
+        import os
+
+        (tmp_path / "realpage").mkdir()
+        (tmp_path / "gomer").mkdir()
+        (tmp_path / "empty").mkdir()
+        a = tmp_path / "realpage" / "PLAN-v5.md"
+        b = tmp_path / "gomer" / "plan.md"
+        a.write_text("- [ ] x\n")
+        b.write_text("- [ ] y\n")
+        os.utime(b, (1, 1))
+        assert tl.list_plans_across(tmp_path) == [a, b]

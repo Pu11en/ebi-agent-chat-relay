@@ -461,3 +461,38 @@ def append_fix_task(plan_path: Path, what: str) -> None:
     if not text.endswith("\n"):
         text += "\n"
     plan_path.write_text(text + f"- [ ] Fix: {what.strip()}\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Which project a thread is about
+# ---------------------------------------------------------------------------
+
+
+def project_of(path: Path) -> Path:
+    """A session copy (``<project>/.worktrees/wt-N``) belongs to ``<project>``."""
+    parts = path.parts
+    if ".worktrees" in parts:
+        return Path(*parts[: parts.index(".worktrees")])
+    return path
+
+
+def project_for_thread(root: Path, thread_id: int) -> Path | None:
+    """Find the project whose session copy is named after *thread_id*.
+
+    Survives a cleared session: clearing forgets the thread's folder, but its
+    ``.worktrees/wt-<thread_id>`` copy still says which project it was.
+    """
+    for candidate in root.glob(f"*/.worktrees/wt-{thread_id}"):
+        if candidate.is_dir():
+            return candidate.parent.parent
+    return None
+
+
+def list_plans_across(root: Path) -> list[Path]:
+    """Unfinished plans in every project under *root*, newest first."""
+    found: list[Path] = []
+    for project in root.iterdir():
+        if project.is_dir() and not project.name.startswith("."):
+            with contextlib.suppress(OSError):
+                found.extend(list_plans(project))
+    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
