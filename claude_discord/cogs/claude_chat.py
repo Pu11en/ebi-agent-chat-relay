@@ -16,7 +16,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import discord
 from discord import app_commands
@@ -369,6 +369,11 @@ class ClaudeChatCog(commands.Cog):
         if self._allowed_user_ids is not None and message.author.id not in self._allowed_user_ids:
             return
 
+        # A /gowork question waiting for a typed answer, or a worker thread
+        # mid-task, claims the message before it can start a chat turn.
+        if self._claimed_by_task_loop(message):
+            return
+
         # Keep configured operators on every thread ccdb is active in — including
         # threads ccdb did not create itself. Cached per thread, so this is a
         # no-op after the first message in each.
@@ -388,6 +393,17 @@ class ClaudeChatCog(commands.Cog):
         # Everywhere else: answer only when summoned, and answer *there*.
         if self._is_summoned(message):
             await self._handle_mention(message)
+
+    def _claimed_by_task_loop(self, message: discord.Message) -> bool:
+        """True when /gowork takes this typed message (an answer or a note)."""
+        loop_cog: Any = self.bot.cogs.get("TaskLoopCog")
+        if loop_cog is None:
+            return False
+        try:
+            return loop_cog.take_message(message) is True
+        except Exception:
+            logger.warning("task loop failed to take a message", exc_info=True)
+            return False
 
     def _is_no_mention_scope(self, channel: discord.abc.MessageableChannel) -> bool:
         """Return whether *channel* is one ccdb was invited to speak in freely.

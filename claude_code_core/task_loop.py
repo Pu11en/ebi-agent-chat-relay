@@ -14,7 +14,7 @@ Two properties matter more than speed:
   reason, then the loop stops — the failure a human would otherwise find
   hours later.
 * **The human is asked, not assumed.** A worker that needs a decision ends with
-  ``ASK: <yes/no question>``; the loop pauses on it and carries the answer into
+  ``ASK: <question>``; the loop pauses on it and carries the person's typed reply into
   the next round. Nothing is pushed, deployed or paid for without that.
 
 This module is surface-agnostic: the frontend supplies ``run_round`` (run one
@@ -220,8 +220,9 @@ def worker_prompt(
     plan_path: Path,
     progress_path: Path,
     *,
-    answer: tuple[str, bool] | None = None,
+    answer: tuple[str, str] | None = None,
     retry_reason: str | None = None,
+    notes: list[str] | None = None,
 ) -> str:
     """The prompt every round gets. Same text every time, by design."""
     parts = [
@@ -239,7 +240,7 @@ def worker_prompt(
         "checked it, anything left open) — commit those too. Leave no uncommitted changes.",
         "",
         "Never push, deploy, delete data, spend money or use new API keys without asking "
-        "first. To ask, stop and end with an ASK line — the human answers yes or no.",
+        "first. To ask, stop and end with an ASK line; the human replies in their own words.",
         "",
         "Finish with a recap written for a non-technical reader:",
         "**Task N of M: <name> — done ✅** (or the honest status)",
@@ -249,17 +250,22 @@ def worker_prompt(
         "",
         "The very last line must be exactly one of:",
         "DONE — the task is finished, committed and ticked",
-        "ASK: <one yes/no question> — you need a decision before continuing",
+        "ASK: <one simple question, plus a plain example of what each answer changes, e.g. 'Round division to 2 decimals? yes: 10/3 shows 3.33, no: 3.3333'> — you need a decision before continuing",
         "STUCK: <plain reason> — you cannot finish this task",
         "COMPLETE — every task in the plan is already ticked",
     ]
     if answer is not None:
-        question, yes = answer
+        question, reply = answer
         parts += [
             "",
-            f'Last round you asked: "{question}" — the human answered '
-            f"{'YES' if yes else 'NO'}. Continue the same task with that answer.",
+            f'Last round you asked: "{question}" — the human replied: "{reply}". '
+            "If that answers it, continue the same task with that answer. If it is a "
+            "question or unclear, explain in plain words with a concrete example and end "
+            "with a new ASK line. Don't start the task until you have a clear answer.",
         ]
+    if notes:
+        parts += ["", "While the last task ran, the human wrote (take it into account):"]
+        parts += [f'- "{n}"' for n in notes]
     if retry_reason:
         parts += [
             "",
@@ -277,7 +283,7 @@ class LoopOutcome:
 
 
 RunRound = Callable[[str], Awaitable[tuple[str | None, str | None]]]
-Ask = Callable[[str], Awaitable[bool | None]]
+Ask = Callable[[str], Awaitable[str | None]]
 Report = Callable[[str], Awaitable[None]]
 
 
@@ -305,6 +311,8 @@ class TaskLoop:
         self.max_rounds = max_rounds
         self.max_retries = max_retries
         self._stop = False
+        #: Things the person typed while a task was running.
+        self._notes: list[str] = []
 
     async def _run_plan_check(self) -> list[str]:
         """The bot's own check after a claimed DONE — trust proof, not words."""
@@ -318,12 +326,16 @@ class TaskLoop:
         ok, tail = await run_check(self.repo_dir, argv)
         return [] if ok else [f"the plan's check failed ({' '.join(argv)}): {tail}"]
 
+    def add_note(self, text: str) -> None:
+        """Something the person typed mid-task; the next round reads it."""
+        self._notes.append(text)
+
     def request_stop(self) -> None:
         """Stop after the round in flight — never mid-task."""
         self._stop = True
 
     async def run(self) -> LoopOutcome:
-        answer: tuple[str, bool] | None = None
+        answer: tuple[str, str] | None = None
         retry_reason: str | None = None
         retries = 0
         rounds = 0
@@ -342,8 +354,13 @@ class TaskLoop:
 
             rounds += 1
             prompt = worker_prompt(
-                self.plan_path, self.progress_path, answer=answer, retry_reason=retry_reason
+                self.plan_path,
+                self.progress_path,
+                answer=answer,
+                retry_reason=retry_reason,
+                notes=self._notes,
             )
+            self._notes = []
             answer = retry_reason = None
             text, error = await self._run_round(prompt)
             status, detail = parse_status(text)

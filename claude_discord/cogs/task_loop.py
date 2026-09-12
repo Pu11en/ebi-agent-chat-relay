@@ -5,8 +5,13 @@ The Discord side of :mod:`claude_code_core.task_loop`. A planner (a person with
 person said yes) points it at a plan file. The cog opens one worker thread next
 to the planner and runs rounds there: each round is a new session on whatever
 harness the thread uses, so the loop works the same on Claude Code, Codex and
-DSH. Progress lines go back to where the loop was started; yes/no questions are
-asked in the worker thread.
+DSH. Progress lines go back to where the loop was started.
+
+Nothing here uses buttons. Every question is a plain message, and whatever the
+person types next in that channel or thread is the answer — Drew answers in his
+own words ("claude sonnet", "yes", "what does that mean"), and the flow adapts
+to that rather than the other way round. Typing in a worker thread while a task
+runs is passed to the next task as a note instead of starting a side chat.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,7 +28,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from claude_code_core.frontend import Choice, ChoicePrompt, FormField, FormPrompt
 from claude_code_core.task_loop import (
     LoopOutcome,
     TaskLoop,
@@ -33,36 +38,62 @@ from claude_code_core.task_loop import (
 from claude_code_core.work_copy import WorkCopy, WorkCopyError, create_work_copy
 
 from ..backend_settings import ALL_BACKENDS
-from ..model_catalog import claude_model_choices, codex_model_choices, dsh_model_choices
-from ..surface import DiscordSurface
-from .backend_command import SUGGESTED_MODELS
 
 if TYPE_CHECKING:
     from .claude_chat import ClaudeChatCog
 
 logger = logging.getLogger(__name__)
 
-#: How long a yes/no question waits before the loop pauses instead.
+#: How long a question waits for a typed reply before the loop pauses.
 ASK_TIMEOUT_SECONDS = 12 * 60 * 60
+#: How long starting a build waits for the harness/model or plan reply.
+PICK_TIMEOUT_SECONDS = 10 * 60
 
 #: Report lines that need the person: a question, a stop, the end. Progress
 #: ("✅ Task 3 of 9 done") posts quietly — Drew chose pings only when needed.
 _PING_PREFIXES = ("❓", "🛑", "🏁", "⏸️", "💥")
 
-#: Choice value for "none of these — let me type the model name".
-TYPE_OWN = "__type_own__"
-#: How long the harness/model pickers wait for a tap.
-PICK_TIMEOUT_SECONDS = 10 * 60
-_HARNESS_LABELS = {
-    "claude": "Claude Code",
-    "codex": "Codex",
-    "dsh": "DeepSeek Harness (DSH)",
-    "local": "Local model",
-    "agui": "AG-UI",
+#: Words that name a harness in a typed reply.
+_HARNESS_WORDS = {
+    "claude": "claude",
+    "codex": "codex",
+    "dsh": "dsh",
+    "deepseek": "dsh",
+    "local": "local",
+    "ollama": "local",
+    "agui": "agui",
 }
+_SAME_WORDS = {"same", "current", "default", "whatever"}
+_FILLER = {"use", "with", "please", "the", "model", "and", "on", "a", "it", "for", "harness"}
+_WORD_RE = re.compile(r"[a-z0-9][a-z0-9._:/-]*")
 
-_YES = "yes"
-_NO = "no"
+
+def parse_harness_reply(text: str, current: str | None) -> tuple[str, str | None] | None:
+    """Read "claude sonnet", "dsh deepseek-pro", "codex" or "same" from a typed reply."""
+    words = _WORD_RE.findall(text.lower())
+    if words and words[0] in _SAME_WORDS and current:
+        return current, None
+    for i, word in enumerate(words):
+        backend = _HARNESS_WORDS.get(word)
+        if backend is None or backend not in ALL_BACKENDS:
+            continue
+        rest = [w for w in words[i + 1 :] if w not in _FILLER]
+        return backend, (rest[0] if rest else None)
+    return None
+
+
+def parse_plan_reply(text: str, plans: list[Path]) -> Path | None:
+    """A typed number ("2") or a word from the plan's name ("the fix one")."""
+    stripped = text.strip()
+    if stripped.isdigit():
+        i = int(stripped) - 1
+        return plans[i] if 0 <= i < len(plans) else None
+    words = {w for w in _WORD_RE.findall(text.lower()) if len(w) >= 3 and w not in _FILLER}
+    for plan in plans:
+        name = plan.stem.lower()
+        if any(w in name for w in words - {"plan", "one"}):
+            return plan
+    return None
 
 
 @dataclass
@@ -73,110 +104,6 @@ class _Running:
     report_channel_id: int
     copy: WorkCopy | None = None
     task: asyncio.Task[LoopOutcome] | None = None
-
-
-def harness_prompt(current: str | None) -> ChoicePrompt:
-    """Step one of starting a build: which harness does the work."""
-    choices = tuple(
-        Choice(
-            value=b,
-            label=f"{_HARNESS_LABELS.get(b, b)}{' (current)' if b == current else ''}",
-            style="positive" if b == current else "default",
-        )
-        for b in ALL_BACKENDS
-    )
-    return ChoicePrompt(
-        question="Which harness should do the work?",
-        header="🔁 Start the build: 1 of 2",
-        choices=choices,
-        timeout_seconds=PICK_TIMEOUT_SECONDS,
-    )
-
-
-def model_prompt(backend: str, options: list[tuple[str, str]]) -> ChoicePrompt:
-    """Step two: which model, from that harness's list, or typed by hand."""
-    choices = [
-        Choice(value=value, label=value[:80], description=(desc or None) and desc[:100])
-        for value, desc in options[:23]
-    ]
-    choices.append(Choice(value=TYPE_OWN, label="✏️ Type another model"))
-    return ChoicePrompt(
-        question=f"Which model should {_HARNESS_LABELS.get(backend, backend)} use?",
-        header="🔁 Start the build: 2 of 2",
-        choices=tuple(choices),
-        timeout_seconds=PICK_TIMEOUT_SECONDS,
-    )
-
-
-async def model_options(backend: str) -> list[tuple[str, str]]:
-    """The same model list `/model` suggests for *backend*."""
-    fallback = list(SUGGESTED_MODELS.get(backend, []))
-    if backend == "claude":
-        return await claude_model_choices(fallback=fallback)
-    if backend == "codex":
-        return codex_model_choices(fallback=fallback)
-    if backend == "dsh":
-        return await dsh_model_choices(fallback=fallback)
-    return fallback
-
-
-async def pick_harness_and_model(
-    surface: DiscordSurface, current: str | None
-) -> tuple[str, str | None] | None:
-    """Ask with buttons. Returns (harness, model or None for its default), or None."""
-    picked = await surface.prompt_choice(harness_prompt(current))
-    if not picked:
-        return None
-    backend = picked[0]
-    options = await model_options(backend)
-    picked_model = await surface.prompt_choice(model_prompt(backend, options))
-    if not picked_model:
-        return None
-    if picked_model[0] != TYPE_OWN:
-        return backend, picked_model[0]
-    form = await surface.prompt_form(
-        FormPrompt(
-            title="Which model?",
-            fields=(
-                FormField(
-                    key="model",
-                    label="Model name",
-                    kind="text",
-                    required=True,
-                    placeholder="e.g. glm-5.3-flash",
-                ),
-            ),
-            timeout_seconds=PICK_TIMEOUT_SECONDS,
-        )
-    )
-    typed = ((form or {}).get("model") or "").strip()
-    return (backend, typed) if typed else None
-
-
-#: A picker shows at most this many plans (newest first).
-MAX_PLAN_CHOICES = 5
-
-
-def plan_prompt(project: Path, plans: list[Path]) -> ChoicePrompt:
-    """Buttons for the project's unfinished plans, newest first."""
-    choices = []
-    for i, plan in enumerate(plans[:MAX_PLAN_CHOICES]):
-        try:
-            checked, unchecked = count_tasks(plan.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            checked, unchecked = 0, 0
-        try:
-            name = str(plan.relative_to(project))
-        except ValueError:
-            name = plan.name
-        label = f"{name} · {unchecked} of {checked + unchecked} left"
-        choices.append(Choice(value=str(i), label=label[:80]))
-    return ChoicePrompt(
-        question="Which plan should I work through?",
-        header="🔁 Pick a plan",
-        choices=tuple(choices),
-        timeout_seconds=PICK_TIMEOUT_SECONDS,
-    )
 
 
 async def resolve_repo(plan_path: Path) -> Path:
@@ -215,6 +142,8 @@ class TaskLoopCog(commands.Cog):
         #: Where each build's own copy of the project is made (None = default).
         self._work_root = work_root
         self._running: dict[Path, _Running] = {}
+        #: Channels/threads waiting for the person's next typed message.
+        self._waiters: dict[int, asyncio.Future[str]] = {}
 
     def _chat(self) -> ClaudeChatCog:
         cog: Any = self.bot.cogs.get("ClaudeChatCog")
@@ -225,6 +154,43 @@ class TaskLoopCog(commands.Cog):
     @property
     def running(self) -> list[_Running]:
         return list(self._running.values())
+
+    async def wait_for_reply(self, channel_id: int, *, timeout: float) -> str | None:
+        """Wait for the next message typed in *channel_id* (see take_message)."""
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._waiters[channel_id] = future
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except TimeoutError:
+            return None
+        finally:
+            if self._waiters.get(channel_id) is future:
+                self._waiters.pop(channel_id, None)
+
+    def take_message(self, message: Any) -> bool:
+        """Claim a typed message for /gowork. True means the chat cog must ignore it.
+
+        A pending question takes it as the answer. In a worker thread with no
+        question pending, it becomes a note for the next task, so it never starts
+        a side chat that races the loop.
+        """
+        channel_id = getattr(message.channel, "id", None)
+        text = (getattr(message, "content", "") or "").strip()
+        if channel_id is None or not text:
+            return False
+        future = self._waiters.get(channel_id)
+        if future is not None and not future.done():
+            future.set_result(text)
+            return True
+        for running in self._running.values():
+            if running.worker_thread_id == channel_id:
+                running.loop.add_note(text)
+                with contextlib.suppress(Exception):
+                    asyncio.get_running_loop().create_task(
+                        message.channel.send("-# 📝 Got it, I'll pass that to the next task.")
+                    )
+                return True
+        return False
 
     async def start_loop(
         self,
@@ -260,7 +226,7 @@ class TaskLoopCog(commands.Cog):
             f"🔁 **Task loop** for `{plan}`\n"
             f"{snap.unchecked} of {snap.checked + snap.unchecked} tasks left. "
             "Each task runs in a fresh session on a separate copy of the project; "
-            "I'll ask here if a yes/no is needed.",
+            "I'll ask here if I need you; just type your answer.",
             thread_name=f"🔁 Task loop · {repo_dir.name}",
             auto_start=False,
             working_dir=str(work_dir),
@@ -313,22 +279,12 @@ class TaskLoopCog(commands.Cog):
                 return None, "the session ended without a result"
             return result.get("text"), result.get("error")
 
-        async def ask(question: str) -> bool | None:
-            await report(f"❓ Needs your yes/no: {question}")
-            answer = await DiscordSurface(thread).prompt_choice(
-                ChoicePrompt(
-                    question=question,
-                    header="🔁 Yes or no?",
-                    choices=(
-                        Choice(value=_YES, label="Yes", style="positive"),
-                        Choice(value=_NO, label="No", style="destructive"),
-                    ),
-                    timeout_seconds=ASK_TIMEOUT_SECONDS,
-                )
-            )
-            if answer is None:
-                return None
-            return _YES in answer
+        async def ask(question: str) -> str | None:
+            mention = f"<@{notify_user_id}> " if notify_user_id else ""
+            with contextlib.suppress(discord.HTTPException):
+                await thread.send(f"❓ {mention}{question}\n-# Just type your answer here.")
+            await report(f"❓ Needs your answer: {question}")
+            return await self.wait_for_reply(thread.id, timeout=ASK_TIMEOUT_SECONDS)
 
         loop = TaskLoop(
             plan_path=work_plan, repo_dir=work_dir, run_round=run_round, ask=ask, report=report
@@ -361,7 +317,7 @@ class TaskLoopCog(commands.Cog):
         return self._allowed_user_ids is None or user_id in self._allowed_user_ids
 
     async def _pick_plan(self, channel: Any) -> str | None:
-        """The project's unfinished plans: one is used directly, several get buttons."""
+        """The project's unfinished plans: one is used directly, several are listed."""
         record = None
         with contextlib.suppress(Exception):
             record = await self._chat().repo.get(channel.id)
@@ -371,13 +327,47 @@ class TaskLoopCog(commands.Cog):
         if not isinstance(workdir, str) or not workdir:
             return None
         project = Path(workdir)
-        plans = list_plans(project)
+        plans = list_plans(project)[:5]
         if len(plans) <= 1:
             return str(plans[0]) if plans else None
-        picked = await DiscordSurface(channel).prompt_choice(plan_prompt(project, plans))
-        if not picked:
-            return None
-        return str(plans[int(picked[0])])
+        lines = ["Which plan? Just type the number or a word from its name:"]
+        for i, plan in enumerate(plans, 1):
+            try:
+                checked, unchecked = count_tasks(plan.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                checked, unchecked = 0, 0
+            try:
+                name = str(plan.relative_to(project))
+            except ValueError:
+                name = plan.name
+            lines.append(f"**{i}.** `{name}` · {unchecked} of {checked + unchecked} left")
+        await channel.send("\n".join(lines))
+        reply = await self.wait_for_reply(channel.id, timeout=PICK_TIMEOUT_SECONDS)
+        picked = parse_plan_reply(reply or "", plans)
+        return str(picked) if picked else None
+
+    async def _ask_harness(
+        self, channel: Any, current: str | None
+    ) -> tuple[str, str | None] | None:
+        """Ask in plain words which harness and model; up to two tries."""
+        example = f"`same` ({current})" if current else "`same`"
+        prompt = (
+            "Which harness and model should do the work? Just type it, e.g. "
+            f"`claude sonnet`, `dsh deepseek-pro`, `codex`, or {example}."
+        )
+        for _ in range(2):
+            await channel.send(prompt)
+            reply = await self.wait_for_reply(channel.id, timeout=PICK_TIMEOUT_SECONDS)
+            if reply is None:
+                return None
+            picked = parse_harness_reply(reply, current)
+            if picked:
+                return picked
+            prompt = (
+                f"I didn't catch a harness in “{reply[:80]}”. Type one of: "
+                f"{', '.join(ALL_BACKENDS)} (plus a model if you like, e.g. `claude opus`)."
+            )
+        return None
 
     @app_commands.command(name="gowork", description="Work through the plan, one task at a time")
     @app_commands.describe(plan="Plan .md file (optional — found automatically in this project)")
@@ -393,6 +383,7 @@ class TaskLoopCog(commands.Cog):
             )
             return
         await interaction.response.defer(thinking=True)
+        await interaction.followup.send("🔁 Getting ready…")
         plan = plan or await self._pick_plan(channel)
         if not plan:
             await interaction.followup.send(
@@ -404,9 +395,9 @@ class TaskLoopCog(commands.Cog):
         await interaction.followup.send(f"📋 Plan: `{plan}`")
         settings = getattr(self._chat(), "_backend_settings", None)
         current = await settings.current_backend(parent.id) if settings else None
-        picked = await pick_harness_and_model(DiscordSurface(report_to), current)
+        picked = await self._ask_harness(report_to, current)
         if picked is None:
-            await interaction.followup.send("Not started: no harness/model was picked.")
+            await interaction.followup.send("Not started: I didn't get a harness to use.")
             return
         harness, model = picked
         try:

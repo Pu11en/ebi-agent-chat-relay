@@ -108,17 +108,17 @@ class TestWorkerPrompt:
         p = tl.worker_prompt(
             tmp_path / "PLAN.md",
             tmp_path / "p.md",
-            answer=("Push to GitHub?", True),
+            answer=("Push to GitHub?", "yes do it"),
             retry_reason="no new commit",
         )
-        assert "Push to GitHub?" in p and "YES" in p
+        assert "Push to GitHub?" in p and "yes do it" in p
         assert "no new commit" in p
 
 
 class _Fake:
     """Drives TaskLoop with scripted worker replies that act on the repo."""
 
-    def __init__(self, repo: Path, script: list, answers: list[bool | None] | None = None):
+    def __init__(self, repo: Path, script: list, answers: list[str | None] | None = None):
         self.repo = repo
         self.script = list(script)
         self.answers = list(answers or [])
@@ -131,7 +131,7 @@ class _Fake:
         action = self.script.pop(0)
         return action(self.repo)
 
-    async def ask(self, question: str) -> bool | None:
+    async def ask(self, question: str) -> str | None:
         self.questions.append(question)
         return self.answers.pop(0) if self.answers else None
 
@@ -183,12 +183,12 @@ class TestTaskLoop:
         fake = _Fake(
             repo,
             [lambda r: ("need ok\nASK: Deploy now?", None), _done, _done],
-            answers=[True],
+            answers=["yes"],
         )
         outcome = await fake.loop().run()
         assert outcome.status == tl.Status.COMPLETE
         assert fake.questions == ["Deploy now?"]
-        assert "Deploy now?" in fake.prompts[1] and "YES" in fake.prompts[1]
+        assert "Deploy now?" in fake.prompts[1] and '"yes"' in fake.prompts[1]
 
     async def test_unanswered_ask_pauses_the_loop(self, repo: Path) -> None:
         fake = _Fake(repo, [lambda r: ("x\nASK: Deploy now?", None)])
@@ -227,7 +227,7 @@ class TestTaskLoop:
         assert len(fake.prompts) == 1
 
     async def test_round_cap(self, repo: Path) -> None:
-        fake = _Fake(repo, [lambda r: ("x\nASK: q?", None)] * 3, answers=[True, True, True])
+        fake = _Fake(repo, [lambda r: ("x\nASK: q?", None)] * 3, answers=["yes", "yes", "yes"])
         outcome = await fake.loop(max_rounds=2).run()
         assert outcome.status == tl.Status.STUCK
         assert len(fake.prompts) == 2
@@ -314,3 +314,28 @@ class TestListPlans:
         os.utime(b, (2, 2))
         assert tl.list_plans(tmp_path) == [c, b, a]
         assert tl.find_plan(tmp_path) == c
+
+
+class TestTypedReplies:
+    def test_unclear_reply_asks_the_worker_to_explain_and_ask_again(self, tmp_path: Path) -> None:
+        p = tl.worker_prompt(
+            tmp_path / "PLAN.md", tmp_path / "p.md", answer=("Round?", "what that mean")
+        )
+        assert "what that mean" in p
+        assert "explain" in p.lower() and "ASK" in p
+
+    def test_notes_typed_during_a_task_reach_the_next_round(self, tmp_path: Path) -> None:
+        p = tl.worker_prompt(tmp_path / "PLAN.md", tmp_path / "p.md", notes=["use blue"])
+        assert "use blue" in p
+
+    def test_ask_lines_must_carry_a_plain_example(self, tmp_path: Path) -> None:
+        p = tl.worker_prompt(tmp_path / "PLAN.md", tmp_path / "p.md")
+        assert "example" in p.lower()
+
+    async def test_notes_are_drained_into_the_next_round(self, repo: Path) -> None:
+        fake = _Fake(repo, [_done, _done])
+        loop = fake.loop()
+        loop.add_note("make it friendlier")
+        await loop.run()
+        assert "make it friendlier" in fake.prompts[0]
+        assert "make it friendlier" not in fake.prompts[1]
