@@ -17,6 +17,7 @@ caller's decision (the try-it step); this module only creates and deletes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import os
 import re
@@ -89,3 +90,28 @@ async def remove_work_copy(copy: WorkCopy) -> None:
     """Delete the copy and its branch. Only after the work was kept or thrown away."""
     await _git(copy.source_repo, "worktree", "remove", "--force", str(copy.path))
     await _git(copy.source_repo, "branch", "-D", copy.branch)
+
+
+async def keep_work(copy: WorkCopy) -> tuple[bool, str]:
+    """ "Looks good": merge the build into the project, then remove the copy.
+
+    Local only — nothing is pushed. Refuses (and loses nothing) when the
+    project has unsaved changes or the merge conflicts.
+    """
+    status = await _git(copy.source_repo, "status", "--porcelain", "--untracked-files=no")
+    if status.strip():
+        return False, "your project has unsaved changes, so I didn't combine anything yet"
+    try:
+        await _git(copy.source_repo, "merge", "--no-edit", copy.branch)
+    except WorkCopyError as exc:
+        with contextlib.suppress(WorkCopyError):
+            await _git(copy.source_repo, "merge", "--abort")
+        return False, f"the work didn't combine cleanly ({exc})"
+    await remove_work_copy(copy)
+    return True, "added to your project (on this computer only — nothing went to GitHub)"
+
+
+async def commit_all(path: Path, message: str) -> None:
+    """Commit every tracked change in *path* (used when a fix task is added)."""
+    await _git(path, "add", "-A")
+    await _git(path, "commit", "-q", "-m", message)

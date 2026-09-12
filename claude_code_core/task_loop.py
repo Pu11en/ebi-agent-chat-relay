@@ -399,3 +399,65 @@ class TaskLoop:
                 return LoopOutcome(Status.STUCK, reason, rounds)
             logger.info("task loop retrying %s: %s", before.next_task, reason)
             retry_reason = reason
+
+
+# ---------------------------------------------------------------------------
+# The ending: try it locally, then keep it or fix it
+# ---------------------------------------------------------------------------
+
+_TRY_RE = re.compile(r"^\s*\**Try:\**\s*`?(.+?)`?\s*$", re.IGNORECASE)
+_OPEN_RE = re.compile(r"^\s*\**Open:\**\s*<?(\S+?)>?\s*$", re.IGNORECASE)
+_BULLET_RE = re.compile(r"^\s*[-*]\s+(?!\[[ xX]\])(.*\S)")
+_LOOKS_GOOD_RE = re.compile(
+    r"^\s*(yes|yep|yeah|y|ok|okay|good|great|perfect|lgtm|keep( it)?|ship( it)?|"
+    r"looks (good|great|fine|perfect)|all good|works|it works)\b[\s!.]*$",
+    re.IGNORECASE,
+)
+
+
+def plan_try_command(plan_text: str) -> list[str] | None:
+    """The plan's ``Try:`` line (how to start a local copy) as an argv."""
+    for line in plan_text.splitlines():
+        m = _TRY_RE.match(line)
+        if m:
+            with contextlib.suppress(ValueError):
+                return shlex.split(m.group(1)) or None
+            return None
+    return None
+
+
+def plan_open_url(plan_text: str) -> str | None:
+    """The plan's ``Open:`` line — the address to open once the copy runs."""
+    for line in plan_text.splitlines():
+        m = _OPEN_RE.match(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def plan_try_checks(plan_text: str) -> list[str]:
+    """The bullets under the plan's "How to try it" heading."""
+    checks: list[str] = []
+    inside = False
+    for line in plan_text.splitlines():
+        if line.lstrip().startswith("#"):
+            inside = "how to try" in line.lower()
+            continue
+        if inside:
+            m = _BULLET_RE.match(line)
+            if m:
+                checks.append(m.group(1))
+    return checks
+
+
+def is_looks_good(reply: str) -> bool:
+    """True for "looks good", "yes", "keep it"… — anything else is something to fix."""
+    return bool(_LOOKS_GOOD_RE.match(reply or ""))
+
+
+def append_fix_task(plan_path: Path, what: str) -> None:
+    """Turn "something's off" into one more unticked task at the end of the plan."""
+    text = plan_path.read_text(encoding="utf-8")
+    if not text.endswith("\n"):
+        text += "\n"
+    plan_path.write_text(text + f"- [ ] Fix: {what.strip()}\n", encoding="utf-8")

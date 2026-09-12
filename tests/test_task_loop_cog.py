@@ -83,15 +83,17 @@ class TestStartLoop:
         channel.send = AsyncMock()
 
         got = await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert got is thread
         assert chat.spawn_session.await_args.kwargs["auto_start"] is False
-        # The work happened in the build's own copy, not in the real project.
+        # The work happened in the build's own copy; "looks good" then added it to
+        # the real project and removed the copy.
         work_dir = Path(chat.spawn_session.await_args.kwargs["working_dir"])
         assert work_dir != repo
-        assert "- [ ]" in (repo / "PLAN.md").read_text()
-        assert "- [x]" in (work_dir / "PLAN.md").read_text()
+        assert "- [x]" in (repo / "PLAN.md").read_text()
+        assert not work_dir.exists()
         assert chat.run_fresh_turn.await_count == 1
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
         assert "Task 1 of 1 done" in posted
@@ -151,6 +153,7 @@ class TestPings:
         channel.send = AsyncMock()
 
         await cog.start_loop(channel, str(repo / "PLAN.md"), notify_user_id=42)
+        await _type_when_asked(cog, 1, "looks good")
         if cog.running:
             await asyncio.wait_for(cog.running[0].task, 10)
 
@@ -198,6 +201,7 @@ class TestTypedPickers:
         channel.send = AsyncMock()
 
         await cog.start_loop(channel, str(repo / "PLAN.md"), harness="dsh", model="deepseek-pro")
+        await _type_when_asked(cog, 1, "looks good")
         if cog.running:
             await asyncio.wait_for(cog.running[0].task, 10)
 
@@ -265,6 +269,7 @@ class TestResume:
         channel.id = 1
         channel.send = AsyncMock()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "looks good")
         if cog.running:
             await asyncio.wait_for(cog.running[0].task, 10)
         assert cog._store.all() == []
@@ -286,12 +291,14 @@ class TestResume:
             )
         )
         report_channel = MagicMock()
+        report_channel.id = 1
         report_channel.send = AsyncMock()
         cog.bot.get_channel = MagicMock(
             side_effect=lambda cid: thread if cid == thread.id else report_channel
         )
 
         assert await cog.resume_all() == 1
+        await _type_when_asked(cog, 1, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         chat.spawn_session.assert_not_called()  # same thread, no new one
@@ -317,3 +324,56 @@ class TestResume:
         cog.bot.get_channel = MagicMock(return_value=thread)
         assert await cog.resume_all() == 0
         assert cog._store.all() == []
+
+
+async def _type_when_asked(cog: TaskLoopCog, channel_id: int, text: str) -> None:
+    """Act like Drew: wait for the bot's question in *channel_id*, then type."""
+    for _ in range(500):
+        if channel_id in cog._waiters:
+            msg = MagicMock()
+            msg.channel.id = channel_id
+            msg.content = text
+            assert cog.take_message(msg)
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the bot never asked")
+
+
+class TestEnding:
+    def _channel(self) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        return channel
+
+    async def test_looks_good_keeps_the_work_and_cleans_up(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
+        assert "ready to try" in posted
+        assert "- [x]" in (repo / "PLAN.md").read_text()  # the work is in the project now
+        thread.delete.assert_awaited()
+        assert cog._store.all() == []
+
+    async def test_anything_else_becomes_a_fix_task_and_it_goes_again(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "the output is ugly")
+        # the worker fixes it (the fake ticks the new Fix task), then asks again
+        for _ in range(500):
+            if chat.run_fresh_turn.await_count >= 2:
+                break
+            await asyncio.sleep(0.01)
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert chat.run_fresh_turn.await_count == 2
+        assert "Fix: the output is ugly" in (repo / "PLAN.md").read_text()
+        thread.delete.assert_awaited()

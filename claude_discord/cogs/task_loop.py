@@ -31,12 +31,24 @@ from discord.ext import commands
 from claude_code_core.loop_store import LoopRecord, LoopStore
 from claude_code_core.task_loop import (
     LoopOutcome,
+    Status,
     TaskLoop,
+    append_fix_task,
     count_tasks,
+    is_looks_good,
     list_plans,
+    plan_open_url,
+    plan_try_checks,
+    plan_try_command,
     take_snapshot,
 )
-from claude_code_core.work_copy import WorkCopy, WorkCopyError, create_work_copy
+from claude_code_core.work_copy import (
+    WorkCopy,
+    WorkCopyError,
+    commit_all,
+    create_work_copy,
+    keep_work,
+)
 
 from ..backend_settings import ALL_BACKENDS
 
@@ -47,6 +59,8 @@ logger = logging.getLogger(__name__)
 
 #: How long a question waits for a typed reply before the loop pauses.
 ASK_TIMEOUT_SECONDS = 12 * 60 * 60
+#: How long a finished build waits for "looks good" or a fix before it pauses.
+VERDICT_TIMEOUT_SECONDS = 24 * 60 * 60
 #: How long starting a build waits for the harness/model or plan reply.
 PICK_TIMEOUT_SECONDS = 10 * 60
 
@@ -105,6 +119,27 @@ class _Running:
     report_channel_id: int
     copy: WorkCopy | None = None
     task: asyncio.Task[LoopOutcome] | None = None
+    thread: Any = None
+    report_target: Any = None
+    report: Any = None
+    notify_user_id: int | None = None
+    #: One plain-English line per finished task, for the summary at the end.
+    recaps: list[str] | None = None
+    preview: asyncio.subprocess.Process | None = None
+
+
+def _recap_line(text: str | None) -> str | None:
+    """ "Task 3: CLI — What happened: …" from a worker's plain-English recap."""
+    title = happened = None
+    for line in (text or "").splitlines():
+        clean = line.strip().strip("*").strip()
+        if title is None and clean.lower().startswith("task "):
+            title = clean.split("—")[0].strip()
+        if happened is None and clean.lower().startswith("what happened:"):
+            happened = clean.split(":", 1)[1].strip()
+    if not (title or happened):
+        return None
+    return (f"{title}: {happened}" if title and happened else title or happened or "")[:200]
 
 
 async def resolve_repo(plan_path: Path) -> Path:
@@ -250,7 +285,7 @@ class TaskLoopCog(commands.Cog):
             copy_plan=str(copy.plan_path),
             branch=copy.branch,
             worker_thread_id=thread.id,
-            report_channel_id=getattr(report_target, "id", channel.id),
+            report_channel_id=getattr(report_target, "id", channel.id),  # waits happen here
             notify_user_id=notify_user_id,
             harness=harness,
             model=model,
@@ -288,6 +323,7 @@ class TaskLoopCog(commands.Cog):
                 await report_target.send(f"{text} · {thread.mention}{ping}")
 
         rounds = 0
+        recaps: list[str] = []
 
         async def run_round(prompt: str) -> tuple[str | None, str | None]:
             nonlocal rounds
@@ -304,6 +340,9 @@ class TaskLoopCog(commands.Cog):
             )
             if not result:
                 return None, "the session ended without a result"
+            recap = _recap_line(result.get("text"))
+            if recap:
+                recaps.append(recap)
             return result.get("text"), result.get("error")
 
         async def ask(question: str) -> str | None:
@@ -320,7 +359,18 @@ class TaskLoopCog(commands.Cog):
         copy = WorkCopy(
             source_repo=repo_dir, path=work_dir, branch=record.branch, plan_path=work_plan
         )
-        running = _Running(loop, repo_dir, thread.id, record.report_channel_id, copy=copy)
+        running = _Running(
+            loop,
+            repo_dir,
+            thread.id,
+            record.report_channel_id,
+            copy=copy,
+            thread=thread,
+            report_target=report_target,
+            report=report,
+            notify_user_id=notify_user_id,
+            recaps=recaps,
+        )
         self._running[repo_dir] = running
         self._quiet(thread.id)
         running.task = asyncio.create_task(self._drive(running, report))
@@ -365,7 +415,12 @@ class TaskLoopCog(commands.Cog):
 
     async def _drive(self, running: _Running, report: Any) -> LoopOutcome:
         try:
-            outcome = await running.loop.run()
+            while True:
+                outcome = await running.loop.run()
+                if outcome.status != Status.COMPLETE:
+                    break
+                if await self._wrap_up(running) != "fix":
+                    break
             self._store.remove(str(running.repo_dir))
             return outcome
         except asyncio.CancelledError:
@@ -379,6 +434,96 @@ class TaskLoopCog(commands.Cog):
             raise
         finally:
             self._running.pop(running.repo_dir, None)
+
+    async def _wrap_up(self, running: _Running) -> str | None:
+        """The ending: summary, a local copy to try, then keep it or fix it.
+
+        Returns "kept", "fix", or None when nobody answered in time.
+        """
+        assert running.copy is not None
+        target, report = running.report_target, running.report
+        plan_text = running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        checked, unchecked = count_tasks(plan_text)
+        mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
+
+        lines = [
+            f"🏁 **{running.repo_dir.name} is ready to try** ({checked} of {checked} tasks done)"
+        ]
+        lines += [f"- {r}" for r in (running.recaps or [])[-10:]]
+        with contextlib.suppress(discord.HTTPException):
+            await target.send("\n".join(lines)[:1900])
+
+        where = await self._start_preview(running, plan_text)
+        checks = plan_try_checks(plan_text)[:3]
+        ask = [f"**Try it:** {where}"]
+        if checks:
+            ask.append("**Check these:**")
+            ask += [f"{i}. {c}" for i, c in enumerate(checks, 1)]
+        ask.append(f"Then just type **looks good** to keep it, or tell me what's off.{mention}")
+        with contextlib.suppress(discord.HTTPException):
+            await target.send("\n".join(ask)[:1900])
+
+        while True:
+            reply = await self.wait_for_reply(
+                running.report_channel_id, timeout=VERDICT_TIMEOUT_SECONDS
+            )
+            if reply is None:
+                await self._stop_preview(running)
+                with contextlib.suppress(discord.HTTPException):
+                    await target.send(
+                        "⏸️ Nobody answered, so I stopped the local copy. "
+                        "The build is kept as it is."
+                    )
+                return None
+            if not is_looks_good(reply):
+                await self._stop_preview(running)
+                append_fix_task(running.copy.plan_path, reply)
+                await commit_all(running.copy.path, f"gowork: fix requested: {reply[:60]}")
+                await report(f"🔧 Got it, fixing: “{reply[:200]}”")
+                return "fix"
+            await self._stop_preview(running)
+            ok, message = await keep_work(running.copy)
+            if not ok:
+                with contextlib.suppress(discord.HTTPException):
+                    await target.send(
+                        f"⚠️ I couldn't keep it yet: {message}. Your build is safe. "
+                        "Sort that out and type **looks good** again."
+                    )
+                continue
+            with contextlib.suppress(discord.HTTPException):
+                await target.send(f"✅ Kept: {message}. I cleaned up the worker thread.")
+            with contextlib.suppress(Exception):
+                await running.thread.delete()
+            return "kept"
+
+    async def _start_preview(self, running: _Running, plan_text: str) -> str:
+        """Start the plan's ``Try:`` command in the build's copy; say where to look."""
+        assert running.copy is not None
+        argv = plan_try_command(plan_text)
+        url = plan_open_url(plan_text)
+        if argv is None:
+            return url or f"the finished files are in `{running.copy.path}`"
+        try:
+            running.preview = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(running.copy.path),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            return f"I couldn't start it ({exc}); the files are in `{running.copy.path}`"
+        await asyncio.sleep(2)
+        if running.preview.returncode is not None:
+            return f"it didn't stay running; the files are in `{running.copy.path}`"
+        return f"{url} (running now)" if url else "it's running now"
+
+    async def _stop_preview(self, running: _Running) -> None:
+        proc, running.preview = running.preview, None
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), 5)
 
     def stop_for(self, channel_id: int) -> _Running | None:
         """Ask the loop tied to *channel_id* (worker or report channel) to stop."""
