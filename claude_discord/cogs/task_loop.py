@@ -848,27 +848,58 @@ class TaskLoopCog(commands.Cog):
                 await report_to.send(f"Could not start: {exc}")
             return None
 
+    async def _ai_choices(self) -> list[tuple[str, str, str]]:
+        """Every AI and model the bot can run: (harness, model, short note).
+
+        The same catalog as ``/switch`` when that cog is loaded (live model
+        lists), otherwise the built-in suggestions.
+        """
+        backend_cog: Any = self.bot.cogs.get("BackendCommandCog")
+        catalog: dict[str, list[tuple[str, str]]] = {}
+        loader = getattr(backend_cog, "_switch_catalog", None)
+        if loader is not None:
+            with contextlib.suppress(Exception):
+                catalog = await loader()
+        if not catalog:
+            from .backend_command import SUGGESTED_MODELS
+
+            catalog = {k: v for k, v in SUGGESTED_MODELS.items() if k in ALL_BACKENDS}
+        return [
+            (harness, model, note) for harness, models in catalog.items() for model, note in models
+        ]
+
     async def _ask_harness(
         self, channel: Any, current: str | None
     ) -> tuple[str, str | None] | None:
-        """Ask in plain words which harness and model; up to two tries."""
-        example = f"`same` ({current})" if current else "`same`"
-        prompt = (
-            "Which harness and model should do the work? Just type it, e.g. "
-            f"`claude sonnet`, `dsh deepseek-pro`, `codex`, or {example}."
-        )
+        """List every AI and model as lettered choices; the person types a letter.
+
+        Typing a name ("claude sonnet", "codex") still works too.
+        """
+        options = await self._ai_choices()
+        lines = ["Which AI should do the work? Just type its letter:"]
+        lines.append(f"**A)** Same as this thread ({current or 'its usual AI'})")
+        for i, (harness, model, note) in enumerate(options, start=1):
+            tail = f" — {note}" if note else ""
+            lines.append(f"**{choice_letter(i)})** {harness} · `{model}`{tail}")
+        for chunk in _chunks(lines):
+            await channel.send(chunk)
         for _ in range(2):
-            await channel.send(prompt)
             reply = await self.wait_for_reply(channel.id, timeout=PICK_TIMEOUT_SECONDS)
             if reply is None:
                 return None
+            m = _LETTER_REPLY_RE.match(reply)
+            if m is not None:
+                wanted = m.group(1).upper()
+                if wanted == "A" and current:
+                    return current, None
+                for i, (harness, model, _note) in enumerate(options, start=1):
+                    if choice_letter(i) == wanted:
+                        return harness, model
             picked = parse_harness_reply(reply, current)
             if picked:
                 return picked
-            prompt = (
-                f"I didn't catch a harness in “{reply[:80]}”. Type one of: "
-                f"{', '.join(ALL_BACKENDS)} (plus a model if you like, e.g. `claude opus`)."
-            )
+            with contextlib.suppress(discord.HTTPException):
+                await channel.send("Just type the letter of the AI you want, e.g. `B`.")
         return None
 
     @app_commands.command(name="gowork", description="Work through the plan, one task at a time")

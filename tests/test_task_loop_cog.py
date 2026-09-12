@@ -663,3 +663,55 @@ class TestStuckBuildWaits:
         assert "- [ ]" in (repo / "PLAN.md").read_text()
         thread.delete.assert_awaited()
         assert cog._store.all() == []
+
+
+class TestAiPickerByLetter:
+    async def test_lists_every_ai_and_model_and_a_letter_picks_one(self) -> None:
+        cog, _, _ = _cog_with_chat()
+
+        async def catalog() -> list[tuple[str, str, str]]:
+            return [
+                ("claude", "sonnet", "balanced"),
+                ("claude", "opus", "strongest"),
+                ("codex", "gpt-6", "newest"),
+                ("dsh", "deepseek-pro", "cheap"),
+            ]
+
+        cog._ai_choices = catalog  # type: ignore[method-assign]
+        channel = MagicMock()
+        channel.id = 9
+        channel.send = AsyncMock()
+        picker = asyncio.create_task(cog._ask_harness(channel, "claude"))
+        await _type_when_asked(cog, 9, "D")
+        assert await asyncio.wait_for(picker, 5) == ("codex", "gpt-6")
+        listing = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
+        assert "A)" in listing and "same" in listing.lower()
+        assert "deepseek-pro" in listing and "E)" in listing
+
+    async def test_a_means_keep_the_threads_ai(self) -> None:
+        cog, _, _ = _cog_with_chat()
+
+        async def catalog() -> list[tuple[str, str, str]]:
+            return [("claude", "sonnet", "")]
+
+        cog._ai_choices = catalog  # type: ignore[method-assign]
+        channel = MagicMock()
+        channel.id = 9
+        channel.send = AsyncMock()
+        picker = asyncio.create_task(cog._ask_harness(channel, "dsh"))
+        await _type_when_asked(cog, 9, "a")
+        assert await asyncio.wait_for(picker, 5) == ("dsh", None)
+
+    async def test_typing_the_name_still_works(self) -> None:
+        cog, _, _ = _cog_with_chat()
+
+        async def catalog() -> list[tuple[str, str, str]]:
+            return [("claude", "sonnet", "")]
+
+        cog._ai_choices = catalog  # type: ignore[method-assign]
+        channel = MagicMock()
+        channel.id = 9
+        channel.send = AsyncMock()
+        picker = asyncio.create_task(cog._ask_harness(channel, "dsh"))
+        await _type_when_asked(cog, 9, "codex")
+        assert await asyncio.wait_for(picker, 5) == ("codex", None)
