@@ -566,6 +566,48 @@ class TaskLoopCog(commands.Cog):
         picked = parse_plan_reply(reply or "", plans)
         return str(picked) if picked else None
 
+    async def start_asking(
+        self,
+        report_to: Any,
+        plan_path: str,
+        *,
+        notify_user_id: int | None = None,
+        harness: str | None = None,
+        model: str | None = None,
+    ) -> discord.Thread | None:
+        """Start a build from outside a slash command (the REST API, a planner).
+
+        When no harness was given, ask in *report_to* in plain words and wait
+        for the typed reply, exactly like ``/gowork`` does.
+        """
+        parent: Any = report_to.parent if isinstance(report_to, discord.Thread) else report_to
+        if harness is None:
+            settings = getattr(self._chat(), "_backend_settings", None)
+            current = (
+                await settings.current_backend(getattr(parent, "id", None)) if settings else None
+            )
+            with contextlib.suppress(discord.HTTPException):
+                await report_to.send(f"📋 Ready to build `{plan_path}`.")
+            picked = await self._ask_harness(report_to, current)
+            if picked is None:
+                with contextlib.suppress(discord.HTTPException):
+                    await report_to.send("Not started: I didn't get a harness to use.")
+                return None
+            harness, model = picked
+        try:
+            return await self.start_loop(
+                parent,
+                plan_path,
+                report_to=report_to,
+                notify_user_id=notify_user_id,
+                harness=harness,
+                model=model,
+            )
+        except (ValueError, RuntimeError) as exc:
+            with contextlib.suppress(discord.HTTPException):
+                await report_to.send(f"Could not start: {exc}")
+            return None
+
     async def _ask_harness(
         self, channel: Any, current: str | None
     ) -> tuple[str, str | None] | None:

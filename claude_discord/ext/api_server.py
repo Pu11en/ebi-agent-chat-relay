@@ -1621,13 +1621,25 @@ class ApiServer:
                 {"error": "report_thread_id must be a text channel or one of its threads"},
                 status=400,
             )
+        raw_user: Any = data.get("user_id")
         try:
-            thread = await cog.start_loop(parent, plan_path.strip(), report_to=report)
-        except (ValueError, RuntimeError) as exc:
-            return web.json_response({"error": str(exc)}, status=400)
-        return web.json_response(
-            {"status": "started", "worker_thread_id": str(thread.id)}, status=201
+            notify_user_id = int(raw_user) if raw_user else None
+        except (TypeError, ValueError):
+            return web.json_response({"error": "user_id must be an integer"}, status=400)
+        harness = data.get("harness") or None
+        model = data.get("model") or None
+        # Runs in the background: with no harness given, the bot asks in the
+        # channel and waits for Drew's typed reply before starting.
+        asyncio.create_task(
+            cog.start_asking(
+                report,
+                plan_path.strip(),
+                notify_user_id=notify_user_id,
+                harness=harness,
+                model=model,
+            )
         )
+        return web.json_response({"status": "starting"}, status=202)
 
     # ------------------------------------------------------------------
     # Authenticated external ingest endpoint (/api/ingest)

@@ -377,3 +377,25 @@ class TestEnding:
         assert chat.run_fresh_turn.await_count == 2
         assert "Fix: the output is ugly" in (repo / "PLAN.md").read_text()
         thread.delete.assert_awaited()
+
+
+class TestStartAsking:
+    async def test_asks_for_harness_by_typing_then_starts(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        settings.current_backend = AsyncMock(return_value="codex")
+        chat._backend_settings = settings
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+
+        starter = asyncio.create_task(cog.start_asking(channel, str(repo / "PLAN.md")))
+        await _type_when_asked(cog, 1, "claude sonnet")
+        await asyncio.wait_for(starter, 10)
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        settings.set_backend.assert_awaited_once_with("claude", thread_id=thread.id)
+        settings.set_model.assert_awaited_once_with("claude", "sonnet", thread_id=thread.id)
