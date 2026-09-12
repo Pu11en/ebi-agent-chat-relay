@@ -917,3 +917,29 @@ class TestWorkerThreadDeleted:
         channel.id = 1
         channel.send = AsyncMock()
         return channel
+
+
+class TestStopButtonStopsTheBuild:
+    async def test_stop_in_the_worker_thread_stops_the_build(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        blocker = asyncio.Event()
+
+        async def slow(*_a, result_sink, **_k):  # noqa: ANN001, ANN002, ANN003
+            await blocker.wait()
+            await result_sink("x\nSTUCK: interrupted", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=slow)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await cog.on_session_stopped(thread.id)
+        assert cog.running[0].loop._stop is True  # stops, does not retry the step
+        await cog.on_session_stopped(1)  # a stop in the planning thread is just a chat stop
+        blocker.set()
+        await _type_when_asked(cog, 1, "throw it away")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+    async def test_other_threads_are_ignored(self) -> None:
+        cog, _, _ = _cog_with_chat()
+        await cog.on_session_stopped(12345)  # no build: nothing happens

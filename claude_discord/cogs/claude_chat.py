@@ -578,6 +578,8 @@ class ClaudeChatCog(commands.Cog):
             return
 
         await runner.interrupt()
+        with contextlib.suppress(Exception):
+            self.bot.dispatch("session_stopped", interaction.channel.id)
         # _active_runners cleanup is handled by _run_claude's finally block.
         # We intentionally do NOT delete from the session DB so the user can resume.
         await interaction.response.send_message(embed=stopped_embed())

@@ -873,6 +873,17 @@ class TaskLoopCog(commands.Cog):
         await _restore_tracked(running.copy.path)
         return results
 
+    @commands.Cog.listener()
+    async def on_session_stopped(self, channel_id: int) -> None:
+        """The Stop button or /stop in a build's worker thread stops the whole build.
+
+        Otherwise the loop sees a step that didn't finish, calls it a failure and
+        runs it again — the person pressed Stop to stop, not to retry.
+        """
+        for running in self._running.values():
+            if running.worker_thread_id == channel_id:
+                running.loop.request_stop()
+
     def stop_for(self, channel_id: int) -> _Running | None:
         """Ask the loop tied to *channel_id* (worker or report channel) to stop."""
         for running in self._running.values():
