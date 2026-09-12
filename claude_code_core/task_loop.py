@@ -604,13 +604,31 @@ _THROW_RE = re.compile(
 )
 
 
-def parked_choice(reply: str) -> str:
-    """What the person wants for a stopped build: "skip", "throw", or "keep"."""
-    if _THROW_RE.search(reply or ""):
+_FINISH_RE = re.compile(
+    r"\b(wrap (it |this )?up|keep what'?s (done|finished)|finish (it |this )?(here|now)|"
+    r"close (it |this )?out|stop here and keep|end it here)\b",
+    re.IGNORECASE,
+)
+_KEEP_RE = re.compile(r"^\s*(keep going|continue|try again|go on|resume|retry|go)\b", re.IGNORECASE)
+
+
+def parked_choice(reply: str) -> str | None:
+    """What the person wants for a stopped build, or None when it isn't an answer.
+
+    "keep" (try the step again), "skip", "finish" (keep the finished steps in the
+    project and end), or "throw" (delete the build). Anything else — "can we do
+    plan 6 now?" — is not an answer, so it goes to the normal chat instead.
+    """
+    text = reply or ""
+    if _THROW_RE.search(text):
         return "throw"
-    if _SKIP_RE.match(reply or ""):
+    if _FINISH_RE.search(text):
+        return "finish"
+    if _SKIP_RE.match(text):
         return "skip"
-    return "keep"
+    if _KEEP_RE.match(text):
+        return "keep"
+    return None
 
 
 def skip_task(plan_path: Path) -> None:

@@ -73,6 +73,8 @@ ASK_TIMEOUT_SECONDS = 12 * 60 * 60
 #: A finished build waits for "looks good" as long as it takes; this is how
 #: often it reminds the person that it is still waiting.
 VERDICT_REMIND_SECONDS = 24 * 60 * 60
+#: How long starting a new plan waits for the project's open build to close.
+SWITCH_TIMEOUT_SECONDS = 45 * 60
 #: How long starting a build waits for the harness/model or plan reply.
 PICK_TIMEOUT_SECONDS = 10 * 60
 
@@ -222,6 +224,11 @@ class _Running:
     run_session: Any = None
     #: True while the finished card waits for "looks good" or a fix.
     in_review: bool = False
+    #: A new plan was started in this project: close this build by itself,
+    #: keeping its finished steps, instead of asking.
+    auto_finish: bool = False
+    #: Wakes a stopped build that is waiting for the person (see auto_finish).
+    wake: asyncio.Event | None = None
 
 
 def _recap_line(text: str | None) -> str | None:
@@ -626,7 +633,15 @@ class TaskLoopCog(commands.Cog):
                             f"**looks good** to keep it, or tell me what's wrong.{mention}"
                         )
                     continue
-                if not is_looks_good(reply):
+                verdict = parked_choice(reply)
+                if verdict == "throw":
+                    await remove_work_copy(running.copy)
+                    with contextlib.suppress(discord.HTTPException):
+                        await target.send("🗑️ Thrown away. Your real project was never touched.")
+                    with contextlib.suppress(Exception):
+                        await running.thread.delete()
+                    return "kept"
+                if not is_looks_good(reply) and verdict != "finish":
                     what = reply
                     if reply.strip().lower().rstrip(".!") in _FIX_WORDS and fails:
                         what = "make these checks pass: " + "; ".join(fails)
@@ -655,6 +670,8 @@ class TaskLoopCog(commands.Cog):
         assert running.copy is not None
         target = running.report_target
         mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
+        if running.auto_finish:
+            return await self._finish_early(running)
         why = {
             Status.STUCK: f"🛑 **I'm stuck.** {outcome.detail}",
             Status.ASK: f"⏸️ **Paused, waiting for your answer:** {outcome.detail}",
@@ -662,23 +679,14 @@ class TaskLoopCog(commands.Cog):
         ask = (
             f"{why}\nNothing is lost: the finished steps are kept.\n"
             "Type **keep going** to try again (add a hint if you have one), "
-            "**skip** to skip this step, or **throw it away** to delete this build."
-            f"{mention}"
+            "**skip** to skip this step, **wrap up** to keep what's done and end here, "
+            f"or **throw it away** to delete this build.{mention}"
         )
         with contextlib.suppress(discord.HTTPException):
             await target.send(ask[:1900])
-        running.in_review = True
-        try:
-            while True:
-                reply = await self.wait_for_reply(
-                    running.report_channel_id, timeout=VERDICT_REMIND_SECONDS
-                )
-                if reply is not None:
-                    break
-                with contextlib.suppress(discord.HTTPException):
-                    await target.send(f"⏰ Still waiting on {running.repo_dir.name}.\n{ask}"[:1900])
-        finally:
-            running.in_review = False
+        reply = await self._wait_parked(running, ask)
+        if reply is None:  # a new plan was started in this project
+            return await self._finish_early(running)
         choice = parked_choice(reply)
         if choice == "throw":
             await remove_work_copy(running.copy)
@@ -690,6 +698,8 @@ class TaskLoopCog(commands.Cog):
             with contextlib.suppress(Exception):
                 await running.thread.delete()
             return "gone"
+        if choice == "finish":
+            return await self._finish_early(running)
         if choice == "skip":
             skip_task(running.copy.plan_path)
             await commit_all(running.copy.path, "gowork: step skipped")
@@ -702,6 +712,100 @@ class TaskLoopCog(commands.Cog):
             await running.report("▶️ Keeping going.")
         running.loop.resume()
         return "again"
+
+    async def _wait_parked(self, running: _Running, ask: str) -> str | None:
+        """Wait for keep going / skip / wrap up / throw it away.
+
+        Anything else typed meanwhile goes to the normal chat, and the build keeps
+        waiting. Returns None when a new plan in this project closes the build.
+        """
+        running.wake = running.wake or asyncio.Event()
+        running.in_review = True
+        try:
+            while not running.auto_finish:
+                reply_task = asyncio.ensure_future(
+                    self.wait_for_reply(
+                        running.report_channel_id,
+                        timeout=VERDICT_REMIND_SECONDS,
+                        accept=lambda text: parked_choice(text) is not None,
+                    )
+                )
+                wake_task = asyncio.ensure_future(running.wake.wait())
+                done, _ = await asyncio.wait(
+                    {reply_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                wake_task.cancel()
+                if reply_task not in done:
+                    reply_task.cancel()
+                    break
+                try:
+                    reply = reply_task.result()
+                except PickDeclinedError:
+                    continue  # the chat answers it; still waiting
+                if reply is not None:
+                    return reply
+                with contextlib.suppress(discord.HTTPException):
+                    await running.report_target.send(
+                        f"⏰ Still waiting on {running.repo_dir.name}.\n{ask}"[:1900]
+                    )
+            return None
+        finally:
+            running.in_review = False
+
+    async def _finish_early(self, running: _Running) -> str:
+        """Keep the finished steps in the project and end the build ("wrap up")."""
+        assert running.copy is not None
+        target = running.report_target
+        checked, unchecked = count_tasks(
+            running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        )
+        ok, message = await keep_work(running.copy)
+        if not ok:
+            running.auto_finish = False
+            with contextlib.suppress(discord.HTTPException):
+                await target.send(
+                    f"⚠️ I couldn't keep {running.repo_dir.name}'s finished steps yet: {message}. "
+                    "The build is safe. Type **wrap up** again once that's sorted, or "
+                    "**throw it away**."
+                )
+            return await self._park(running, LoopOutcome(Status.NONE, "stopped"))
+        with contextlib.suppress(discord.HTTPException):
+            await target.send(
+                f"✅ Wrapped up: kept {checked} finished step{'s' if checked != 1 else ''} in "
+                f"the project ({unchecked} not done). I cleaned up the worker thread."
+            )
+        with contextlib.suppress(Exception):
+            await running.thread.delete()
+        return "gone"
+
+    async def _close_for_switch(self, plan_path: str, report_to: Any) -> None:
+        """Starting a new plan closes the project's open build, keeping its finished steps.
+
+        No stopping by hand: the open build finishes the step it is on, its finished
+        steps go into the project, and then the new plan starts.
+        """
+        with contextlib.suppress(ValueError, OSError):
+            repo_dir = await resolve_repo(Path(plan_path).expanduser())
+            existing = self._running.get(repo_dir)
+            if existing is None or existing.copy is None:
+                return
+            if existing.copy.plan_path.name == Path(plan_path).name and not existing.in_review:
+                return  # the same plan is already running; start_loop will say so
+            old = existing.copy.plan_path.name
+            with contextlib.suppress(discord.HTTPException):
+                await report_to.send(
+                    f"🔀 Switching to `{Path(plan_path).name}`: I'm closing the `{old}` build "
+                    "first (it finishes the step it's on), keeping its finished steps in the "
+                    "project. Nothing for you to do."
+                )
+            existing.auto_finish = True
+            existing.loop.request_stop()
+            if existing.wake is None:
+                existing.wake = asyncio.Event()
+            existing.wake.set()
+            if existing.task is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(asyncio.shield(existing.task), SWITCH_TIMEOUT_SECONDS)
 
     async def _check_it_myself(self, running: _Running, plan_text: str) -> list[tuple[str, str]]:
         """Run the plan's test, then have a fresh session do the "How to try it" checks."""
@@ -826,6 +930,7 @@ class TaskLoopCog(commands.Cog):
         for the typed reply, exactly like ``/gowork`` does.
         """
         parent: Any = report_to.parent if isinstance(report_to, discord.Thread) else report_to
+        await self._close_for_switch(plan_path, report_to)
         if harness in _SAME_WORDS:
             # "Use whatever this thread uses" — started by words, no model named.
             settings = getattr(self._chat(), "_backend_settings", None)
@@ -941,6 +1046,7 @@ class TaskLoopCog(commands.Cog):
             return
         report_to: Any = channel
         await interaction.followup.send(f"📋 Plan: `{plan}`")
+        await self._close_for_switch(plan, report_to)
         settings = getattr(self._chat(), "_backend_settings", None)
         current = await settings.current_backend(parent.id) if settings else None
         picked = await self._ask_harness(report_to, current)

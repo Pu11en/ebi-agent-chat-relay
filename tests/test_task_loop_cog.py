@@ -750,3 +750,87 @@ class TestStartedByWords:
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
         assert "<@42>" in posted
+
+
+class TestSwitchingPlans:
+    def _stuck(self, chat: MagicMock) -> None:
+        async def turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            await result_sink("x\nSTUCK: needs Drew at the computer", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+
+    def _channel(self) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        return channel
+
+    async def test_other_talk_is_left_for_the_chat_while_stopped(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        self._stuck(chat)
+        await cog.start_loop(self._channel(), str(repo / "PLAN.md"))
+        for _ in range(500):
+            if cog.running and cog.running[0].in_review and 1 in cog._waiters:
+                break
+            await asyncio.sleep(0.01)
+        msg = MagicMock()
+        msg.channel.id = 1
+        msg.content = "ok can we do go work now on the plan 6"
+        assert cog.take_message(msg) is False  # the chat answers it
+        await asyncio.sleep(0.05)
+        assert cog.running and cog.running[0].in_review  # still waiting, not resumed
+        await _type_when_asked(cog, 1, "throw it away")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+    async def test_wrap_up_keeps_finished_steps_and_frees_the_project(self, repo: Path) -> None:
+        (repo / "PLAN.md").write_text("- [ ] Task 1: a\n- [ ] Task 2: b\n")
+        _git(repo, "commit", "-qam", "two")
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        real = chat.run_fresh_turn.side_effect
+        calls = {"n": 0}
+
+        async def turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            calls["n"] += 1
+            if calls["n"] == 1:
+                await real(seed, thread, prompt, working_dir=working_dir, result_sink=result_sink)
+            else:
+                await result_sink("x\nSTUCK: needs Drew", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        await cog.start_loop(self._channel(), str(repo / "PLAN.md"))
+        await _type_when_asked(cog, 1, "wrap up")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        text = (repo / "PLAN.md").read_text()
+        assert "- [x] Task 1: a" in text and "- [ ] Task 2: b" in text  # step 1 kept
+        assert cog.running == [] and cog._store.all() == []
+        thread.delete.assert_awaited()
+
+    async def test_starting_a_new_plan_waits_for_the_stopped_one(self, repo: Path) -> None:
+        (repo / "PLAN-v6.md").write_text("- [ ] Task 1: new\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-qm", "v6")
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        self._stuck(chat)
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        for _ in range(500):
+            if cog.running and cog.running[0].in_review:
+                break
+            await asyncio.sleep(0.01)
+        chat._backend_settings = None
+        # Nobody types anything: starting plan 6 closes the stopped build itself.
+        got = await asyncio.wait_for(
+            cog.start_asking(channel, str(repo / "PLAN-v6.md"), harness="claude"), 10
+        )
+        assert got is thread
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "Switching" in posted
+        assert cog.running and cog.running[0].copy.plan_path.name == "PLAN-v6.md"
+        cog.stop_for(thread.id)
+        await _type_when_asked(cog, 1, "throw it away")
+        for r in list(cog.running):
+            await asyncio.wait_for(r.task, 10)

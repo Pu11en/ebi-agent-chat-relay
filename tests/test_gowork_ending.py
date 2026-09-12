@@ -181,9 +181,21 @@ class TestStuckChoices:
     def test_throw_away(self, reply: str) -> None:
         assert tl.parked_choice(reply) == "throw"
 
-    @pytest.mark.parametrize("reply", ["keep going", "try again", "use port 9000 instead"])
-    def test_anything_else_keeps_going(self, reply: str) -> None:
+    @pytest.mark.parametrize("reply", ["keep going", "try again", "keep going, use port 9000"])
+    def test_keep_going(self, reply: str) -> None:
         assert tl.parked_choice(reply) == "keep"
+
+    @pytest.mark.parametrize(
+        "reply", ["wrap up", "wrap it up", "keep what's done", "finish here", "close it out"]
+    )
+    def test_wrap_up_keeps_the_finished_steps(self, reply: str) -> None:
+        assert tl.parked_choice(reply) == "finish"
+
+    @pytest.mark.parametrize(
+        "reply", ["ok can we do go work now on the plan 6", "what is this?", "No bro"]
+    )
+    def test_anything_else_is_not_an_answer(self, reply: str) -> None:
+        assert tl.parked_choice(reply) is None
 
     def test_skip_task_ticks_the_first_open_step_and_says_so(self, tmp_path: Path) -> None:
         plan = tmp_path / "PLAN.md"
