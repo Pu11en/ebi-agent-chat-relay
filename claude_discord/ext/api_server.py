@@ -1000,6 +1000,18 @@ class ApiServer:
         except (TypeError, ValueError):
             return web.json_response({"error": "hop must be an integer"}, status=400)
 
+        # A /gowork build thread is Drew's to talk to directly; a session that
+        # relays "his" instructions there speaks for him and races the loop.
+        loop_cog: Any = self.bot.cogs.get("TaskLoopCog")
+        if loop_cog is not None and loop_cog.is_worker_thread(thread_id):
+            return web.json_response(
+                {
+                    "error": "That thread is a /gowork build. Don't pass messages to it; "
+                    "the user talks to the build in its own thread."
+                },
+                status=409,
+            )
+
         now = time.monotonic()
         refusal = self.relay_guard.check(
             from_thread=from_thread, to_thread=thread_id, hop=hop, now=now

@@ -316,3 +316,20 @@ async def test_queue_mode_forwards_no_preemption() -> None:
     cog._run_claude.assert_awaited_once()
     _, kwargs = cog._run_claude.call_args
     assert kwargs.get("interrupt_existing") is False
+
+
+async def test_relay_into_a_gowork_worker_thread_is_refused(
+    api_client: TestClient, bot: MagicMock, cog: MagicMock
+) -> None:
+    """Drew talks to a build in its own thread; other sessions must not speak for him."""
+    loop_cog = MagicMock()
+    loop_cog.is_worker_thread.side_effect = lambda tid: tid == B
+    bot.cogs["TaskLoopCog"] = loop_cog
+
+    resp = await api_client.post(
+        f"/api/threads/{B}/message", json={"text": "tell the loop X", "from_thread": A}
+    )
+
+    assert resp.status == 409
+    assert "build" in (await resp.json())["error"]
+    cog.deliver_relayed_message.assert_not_called()

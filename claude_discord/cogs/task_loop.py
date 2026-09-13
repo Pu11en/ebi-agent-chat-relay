@@ -884,6 +884,10 @@ class TaskLoopCog(commands.Cog):
             if running.worker_thread_id == channel_id:
                 running.loop.request_stop()
 
+    def is_worker_thread(self, channel_id: int) -> bool:
+        """True when *channel_id* is the thread a running build works in."""
+        return any(r.worker_thread_id == channel_id for r in self._running.values())
+
     def stop_for(self, channel_id: int) -> _Running | None:
         """Ask the loop tied to *channel_id* (worker or report channel) to stop."""
         for running in self._running.values():
