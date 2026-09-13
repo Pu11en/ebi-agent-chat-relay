@@ -357,11 +357,6 @@ class TaskLoopCog(commands.Cog):
             future.set_result(text)
             return True
         for running in self._running.values():
-            if running.worker_thread_id == channel_id and running.in_review:
-                review = self._waiters.get(running.report_channel_id)
-                if review is not None and not review.done():
-                    review.set_result(text)
-                    return True
             if running.worker_thread_id == channel_id:
                 running.loop.add_note(text)
                 with contextlib.suppress(Exception):
@@ -433,7 +428,7 @@ class TaskLoopCog(commands.Cog):
             copy_plan=str(copy.plan_path),
             branch=copy.branch,
             worker_thread_id=thread.id,
-            report_channel_id=getattr(report_target, "id", channel.id),  # waits happen here
+            report_channel_id=getattr(report_target, "id", channel.id),
             notify_user_id=notify_user_id,
             harness=harness,
             model=model,
@@ -631,7 +626,9 @@ class TaskLoopCog(commands.Cog):
         Returns "kept" or "fix".
         """
         assert running.copy is not None
-        target, report = running.report_target, running.report
+        # The card and the "looks good?" wait live in the build's own thread; the
+        # starting channel only gets a pointer, and the result once the thread is gone.
+        target, report, here = running.report_target, running.report, running.thread
         plan_text = running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
         checked, _ = count_tasks(plan_text)
         mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
@@ -639,22 +636,23 @@ class TaskLoopCog(commands.Cog):
         results = await self._check_it_myself(running, plan_text)
         fails = [what for kind, what in results if kind == "fail"]
         with contextlib.suppress(discord.HTTPException):
-            await target.send(
+            await here.send(
                 f"🏁 **{running.repo_dir.name} is finished**{mention}",
                 embed=finished_card(running.repo_dir.name, checked, running.recaps or [], results),
             )
+        await report(f"🏁 **{running.repo_dir.name} is finished**. Have a look in its thread")
 
         running.in_review = True
         try:
             while True:
                 reply, woken = await self._wait_or_wake(
-                    running, running.report_channel_id, VERDICT_REMIND_SECONDS
+                    running, running.worker_thread_id, VERDICT_REMIND_SECONDS
                 )
                 if woken:
                     reply = "looks good"  # a new plan was started: keep this finished one
                 if reply is None:
                     with contextlib.suppress(discord.HTTPException):
-                        await target.send(
+                        await here.send(
                             f"⏰ Still waiting: {running.repo_dir.name} is finished. Type "
                             f"**looks good** to keep it, or tell me what's wrong.{mention}"
                         )
@@ -678,7 +676,7 @@ class TaskLoopCog(commands.Cog):
                 ok, message = await keep_work(running.copy)
                 if not ok:
                     with contextlib.suppress(discord.HTTPException):
-                        await target.send(
+                        await here.send(
                             f"⚠️ I couldn't keep it yet: {message}. Your build is safe. "
                             "Sort that out and type **looks good** again."
                         )
@@ -709,7 +707,8 @@ class TaskLoopCog(commands.Cog):
             f"or **throw it away** to delete this build.{mention}"
         )
         with contextlib.suppress(discord.HTTPException):
-            await target.send(ask[:1900])
+            await running.thread.send(ask[:1900])
+        await running.report(f"{why.splitlines()[0][:300]} Answer in the build's thread")
         reply = await self._wait_parked(running, ask)
         if reply is None:  # a new plan was started in this project
             return await self._finish_early(running)
@@ -764,19 +763,16 @@ class TaskLoopCog(commands.Cog):
     async def _wait_parked(self, running: _Running, ask: str) -> str | None:
         """Wait for keep going / skip / wrap up / throw it away.
 
-        Anything else typed meanwhile goes to the normal chat, and the build keeps
-        waiting. Returns None when a new plan in this project closes the build.
+        The wait is in the build's own thread, so anything typed there is for the
+        build: a word that isn't a choice is a hint, and means keep going.
+        Returns None when a new plan in this project closes the build.
         """
         running.wake = running.wake or asyncio.Event()
         running.in_review = True
         try:
             while not running.auto_finish:
                 reply_task = asyncio.ensure_future(
-                    self.wait_for_reply(
-                        running.report_channel_id,
-                        timeout=VERDICT_REMIND_SECONDS,
-                        accept=lambda text: parked_choice(text) is not None,
-                    )
+                    self.wait_for_reply(running.worker_thread_id, timeout=VERDICT_REMIND_SECONDS)
                 )
                 wake_task = asyncio.ensure_future(running.wake.wait())
                 done, _ = await asyncio.wait(
@@ -793,7 +789,7 @@ class TaskLoopCog(commands.Cog):
                 if reply is not None:
                     return reply
                 with contextlib.suppress(discord.HTTPException):
-                    await running.report_target.send(
+                    await running.thread.send(
                         f"⏰ Still waiting on {running.repo_dir.name}.\n{ask}"[:1900]
                     )
             return None

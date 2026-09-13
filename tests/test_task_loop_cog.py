@@ -83,7 +83,7 @@ class TestStartLoop:
         channel.send = AsyncMock()
 
         got = await cog.start_loop(channel, str(repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert got is thread
@@ -116,7 +116,7 @@ class TestStartLoop:
         with pytest.raises(ValueError, match="already running"):
             await cog.start_loop(channel, str(repo / "PLAN.md"))
         blocker.set()
-        await _type_when_asked(cog, 1, "throw it away")  # a stuck build waits
+        await _type_when_asked(cog, 555, "throw it away")  # a stuck build waits
         await asyncio.wait_for(cog.running[0].task, 10)
 
     async def test_plan_without_checkboxes_refused(self, repo: Path) -> None:
@@ -142,7 +142,7 @@ class TestStartLoop:
         assert cog.stop_for(999) is None
         assert cog.stop_for(thread.id) is not None
         blocker.set()
-        await _type_when_asked(cog, 1, "throw it away")  # a stuck build waits
+        await _type_when_asked(cog, 555, "throw it away")  # a stuck build waits
         await asyncio.wait_for(cog.running[0].task, 10)
 
 
@@ -155,7 +155,7 @@ class TestPings:
         channel.send = AsyncMock()
 
         await cog.start_loop(channel, str(repo / "PLAN.md"), notify_user_id=42)
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         if cog.running:
             await asyncio.wait_for(cog.running[0].task, 10)
 
@@ -220,7 +220,7 @@ class TestTypedPickers:
         channel.send = AsyncMock()
 
         await cog.start_loop(channel, str(repo / "PLAN.md"), harness="dsh", model="deepseek-pro")
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         if cog.running:
             await asyncio.wait_for(cog.running[0].task, 10)
 
@@ -262,7 +262,7 @@ class TestTypedReplyRouting:
         assert cog.take_message(self._message(thread.id, "make it blue")) is True
         assert cog.running[0].loop._notes == ["make it blue"]
         blocker.set()
-        await _type_when_asked(cog, 1, "throw it away")  # a stuck build waits
+        await _type_when_asked(cog, 555, "throw it away")  # a stuck build waits
         await asyncio.wait_for(cog.running[0].task, 10)
 
     async def test_close_in_the_starting_channel_ends_that_session(self, repo: Path) -> None:
@@ -287,7 +287,7 @@ class TestTypedReplyRouting:
         chat.close_session.assert_awaited_once_with(msg.channel)
         assert cog.running[0].loop._notes == []  # the build is untouched
         blocker.set()
-        await _type_when_asked(cog, 1, "throw it away")
+        await _type_when_asked(cog, 555, "throw it away")
         await asyncio.wait_for(cog.running[0].task, 10)
 
 
@@ -314,7 +314,7 @@ class TestResume:
         channel.id = 1
         channel.send = AsyncMock()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         if cog.running:
             await asyncio.wait_for(cog.running[0].task, 10)
         assert cog._store.all() == []
@@ -343,7 +343,7 @@ class TestResume:
         )
 
         assert await cog.resume_all() == 1
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         chat.spawn_session.assert_not_called()  # same thread, no new one
@@ -397,7 +397,7 @@ class TestEnding:
         thread.delete = AsyncMock()
         channel = self._channel()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
@@ -411,13 +411,13 @@ class TestEnding:
         thread.delete = AsyncMock()
         channel = self._channel()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "the output is ugly")
+        await _type_when_asked(cog, 555, "the output is ugly")
         # the worker fixes it (the fake ticks the new Fix task), then asks again
         for _ in range(500):
             if chat.run_fresh_turn.await_count >= 2:
                 break
             await asyncio.sleep(0.01)
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert chat.run_fresh_turn.await_count == 2
@@ -440,7 +440,7 @@ class TestStartAsking:
         starter = asyncio.create_task(cog.start_asking(channel, str(repo / "PLAN.md")))
         await _type_when_asked(cog, 1, "claude sonnet")
         await asyncio.wait_for(starter, 10)
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         settings.set_backend.assert_awaited_once_with("claude", thread_id=thread.id)
@@ -564,7 +564,7 @@ class TestCards:
         _checking_chat(chat, "PASS: Open the page — ok\nPASS: Type 3 + 4 — 7\nDONE")
         channel = self._channel()
         await cog.start_loop(channel, str(checks_repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         start = _embeds(channel)[0].description or ""
@@ -577,10 +577,10 @@ class TestCards:
         _checking_chat(chat, "PASS: Open the page — it loads\nFAIL: Type 3 + 4 — shows 8\nDONE")
         channel = self._channel()
         await cog.start_loop(channel, str(checks_repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
-        end = _embeds(channel)[-1].description or ""
+        end = _embeds(thread)[-1].description or ""  # the card is in the build's thread
         assert "✅ Open the page — it loads" in end
         assert "❌ Type 3 + 4 — shows 8" in end
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
@@ -595,9 +595,9 @@ class TestCards:
         _checking_chat(chat, "FAIL: Type 3 + 4 — shows 8\nDONE")
         channel = self._channel()
         await cog.start_loop(channel, str(checks_repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "fix")
+        await _type_when_asked(cog, 555, "fix")
         await asyncio.sleep(0.3)
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert (
@@ -650,15 +650,15 @@ class TestStuckBuildWaits:
         self._stuck_then_fine(chat)
         channel = self._channel()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "keep going, use sqlite")
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "keep going, use sqlite")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert chat.run_fresh_turn.await_count == 2  # no restart from scratch
         second_prompt = chat.run_fresh_turn.await_args_list[1].args[2]
         assert "keep going, use sqlite" in second_prompt
         assert "- [x]" in (repo / "PLAN.md").read_text()
-        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "keep going" in posted and "skip" in posted and "throw it away" in posted
 
     async def test_skip_moves_past_the_step(self, repo: Path) -> None:
@@ -667,8 +667,8 @@ class TestStuckBuildWaits:
         self._stuck_then_fine(chat)
         channel = self._channel()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "skip")
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "skip")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert chat.run_fresh_turn.await_count == 1
@@ -681,7 +681,7 @@ class TestStuckBuildWaits:
         channel = self._channel()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
         work_dir = Path(chat.spawn_session.await_args.kwargs["working_dir"])
-        await _type_when_asked(cog, 1, "throw it away")
+        await _type_when_asked(cog, 555, "throw it away")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert not work_dir.exists()
@@ -760,7 +760,7 @@ class TestStartedByWords:
         )
         assert got is thread
         settings.set_backend.assert_awaited_once_with("codex", thread_id=thread.id)
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
     async def test_the_only_allowed_user_is_pinged_when_nobody_was_named(self, repo: Path) -> None:
@@ -771,7 +771,7 @@ class TestStartedByWords:
         channel.id = 1
         channel.send = AsyncMock()
         await cog.start_loop(channel, str(repo / "PLAN.md"))  # no notify_user_id
-        await _type_when_asked(cog, 1, "looks good")
+        await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
         assert "<@42>" in posted
@@ -805,7 +805,7 @@ class TestSwitchingPlans:
         assert cog.take_message(msg) is False  # the chat answers it
         await asyncio.sleep(0.05)
         assert cog.running and cog.running[0].in_review  # still waiting, not resumed
-        await _type_when_asked(cog, 1, "throw it away")
+        await _type_when_asked(cog, 555, "throw it away")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
     async def test_wrap_up_keeps_finished_steps_and_frees_the_project(self, repo: Path) -> None:
@@ -825,7 +825,7 @@ class TestSwitchingPlans:
 
         chat.run_fresh_turn = AsyncMock(side_effect=turn)
         await cog.start_loop(self._channel(), str(repo / "PLAN.md"))
-        await _type_when_asked(cog, 1, "wrap up")
+        await _type_when_asked(cog, 555, "wrap up")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         text = (repo / "PLAN.md").read_text()
@@ -856,7 +856,7 @@ class TestSwitchingPlans:
         assert "Switching" in posted
         assert cog.running and cog.running[0].copy.plan_path.name == "PLAN-v6.md"
         cog.stop_for(thread.id)
-        await _type_when_asked(cog, 1, "throw it away")
+        await _type_when_asked(cog, 555, "throw it away")
         for r in list(cog.running):
             await asyncio.wait_for(r.task, 10)
 
@@ -962,7 +962,7 @@ class TestStopButtonStopsTheBuild:
         assert cog.running[0].loop._stop is True  # stops, does not retry the step
         await cog.on_session_stopped(1)  # a stop in the planning thread is just a chat stop
         blocker.set()
-        await _type_when_asked(cog, 1, "throw it away")
+        await _type_when_asked(cog, 555, "throw it away")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
     async def test_other_threads_are_ignored(self) -> None:
@@ -1001,3 +1001,56 @@ async def test_build_rounds_do_not_hear_the_lounge() -> None:
         chat, MagicMock(), MagicMock(), "task", working_dir="/x", result_sink=AsyncMock()
     )
     assert chat._run_claude.await_args.kwargs["lounge"] is False
+
+
+class TestBuildTalksInItsOwnThread:
+    async def test_stuck_question_is_asked_and_answered_in_the_worker_thread(
+        self, repo: Path
+    ) -> None:
+        cog, chat, thread = _cog_with_chat()
+        calls = 0
+
+        async def turn(*_a, result_sink, **_k):  # noqa: ANN001, ANN002, ANN003
+            nonlocal calls
+            calls += 1
+            await result_sink("x\nSTUCK: no idea", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        await _type_when_asked(cog, thread.id, "throw it away")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        in_thread = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "I'm stuck" in in_thread and "keep going" in in_thread
+        in_channel = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "Thrown away" in in_channel  # the thread is deleted, so the result goes here
+        assert 1 not in cog._waiters
+
+    async def test_a_hint_typed_in_a_stuck_build_keeps_it_going(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        outcomes = iter(["x\nSTUCK: no idea", None])
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            nxt = next(outcomes)
+            if nxt is None:
+                plan = Path(working_dir) / "PLAN.md"
+                plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+                _git(Path(working_dir), "commit", "-qam", "tick")
+                nxt = "done\nDONE"
+            await result_sink(nxt, None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        await _type_when_asked(cog, thread.id, "use the other file")
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert "use the other file" in chat.run_fresh_turn.await_args_list[1].args[2]
