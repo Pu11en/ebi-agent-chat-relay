@@ -265,6 +265,31 @@ class TestTypedReplyRouting:
         await _type_when_asked(cog, 1, "throw it away")  # a stuck build waits
         await asyncio.wait_for(cog.running[0].task, 10)
 
+    async def test_close_in_the_starting_channel_ends_that_session(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        chat.close_session = AsyncMock()
+        blocker = asyncio.Event()
+
+        async def slow_turn(*_a, result_sink, **_k):  # noqa: ANN001, ANN002, ANN003
+            await blocker.wait()
+            await result_sink("x\nSTUCK: test", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=slow_turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        assert cog.take_message(self._message(1, "hello")) is False  # normal chat
+        msg = self._message(1, " Close ")
+        assert cog.take_message(msg) is True
+        await asyncio.sleep(0)
+        chat.close_session.assert_awaited_once_with(msg.channel)
+        assert cog.running[0].loop._notes == []  # the build is untouched
+        blocker.set()
+        await _type_when_asked(cog, 1, "throw it away")
+        await asyncio.wait_for(cog.running[0].task, 10)
+
 
 class TestChatCogHandsRepliesToGowork:
     def test_claimed_messages_are_not_treated_as_chat(self) -> None:
@@ -943,3 +968,36 @@ class TestStopButtonStopsTheBuild:
     async def test_other_threads_are_ignored(self) -> None:
         cog, _, _ = _cog_with_chat()
         await cog.on_session_stopped(12345)  # no build: nothing happens
+
+
+class TestCloseSession:
+    async def test_close_kills_forgets_and_archives(self) -> None:
+        from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+        chat = MagicMock()
+        runner = MagicMock()
+        runner.kill = AsyncMock()
+        chat._active_runners = {7: runner}
+        chat.repo.delete = AsyncMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 7
+        thread.send = AsyncMock()
+        thread.edit = AsyncMock()
+
+        await ClaudeChatCog.close_session(chat, thread)
+
+        runner.kill.assert_awaited_once()
+        assert 7 not in chat._active_runners
+        chat.repo.delete.assert_awaited_once_with(7)
+        thread.edit.assert_awaited_once_with(archived=True)
+
+
+async def test_build_rounds_do_not_hear_the_lounge() -> None:
+    from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+    chat = MagicMock()
+    chat._run_claude = AsyncMock()
+    await ClaudeChatCog.run_fresh_turn(
+        chat, MagicMock(), MagicMock(), "task", working_dir="/x", result_sink=AsyncMock()
+    )
+    assert chat._run_claude.await_args.kwargs["lounge"] is False

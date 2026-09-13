@@ -333,3 +333,18 @@ async def test_relay_into_a_gowork_worker_thread_is_refused(
     assert resp.status == 409
     assert "build" in (await resp.json())["error"]
     cog.deliver_relayed_message.assert_not_called()
+
+
+async def test_relay_into_a_build_goes_through_when_the_user_asked(
+    api_client: TestClient, bot: MagicMock, cog: MagicMock
+) -> None:
+    loop_cog = MagicMock()
+    loop_cog.is_worker_thread.return_value = True
+    bot.cogs["TaskLoopCog"] = loop_cog
+
+    resp = await api_client.post(
+        f"/api/threads/{B}/message",
+        json={"text": "Drew says use blue", "from_thread": A, "user_asked": True},
+    )
+
+    assert resp.status == 202

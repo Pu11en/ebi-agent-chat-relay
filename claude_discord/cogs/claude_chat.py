@@ -709,6 +709,19 @@ class ClaudeChatCog(commands.Cog):
                 "No active session found for this thread.", ephemeral=True
             )
 
+    async def close_session(self, channel: discord.abc.Messageable) -> None:
+        """End *channel*'s session: stop its run, forget it, archive the thread."""
+        channel_id = getattr(channel, "id", 0)
+        runner = self._active_runners.pop(channel_id, None)
+        if runner:
+            await runner.kill()
+        await self.repo.delete(channel_id)
+        with contextlib.suppress(discord.HTTPException):
+            await channel.send("🗑️ Session closed. The build keeps going in its own thread.")
+        if isinstance(channel, discord.Thread):
+            with contextlib.suppress(discord.HTTPException):
+                await channel.edit(archived=True)
+
     @app_commands.command(
         name="rewind",
         description="Go back to an earlier point in the conversation",
@@ -1072,6 +1085,7 @@ class ClaudeChatCog(commands.Cog):
             session_id=None,
             working_dir_override=working_dir,
             result_sink=result_sink,
+            lounge=False,  # a build hears only Drew, never other sessions' notes
         )
 
     async def run_resumed_turn(
@@ -1537,6 +1551,7 @@ class ClaudeChatCog(commands.Cog):
         result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None,
         interrupt_existing: bool = False,
         interrupt_notice: str = "-# ⚡ Interrupted. Starting with new instruction...",
+        lounge: bool = True,
     ) -> None:
         """Execute Claude Code CLI and stream results to the thread.
 
@@ -1638,7 +1653,7 @@ class ClaudeChatCog(commands.Cog):
                     status=status,
                     registry=self._registry,
                     ask_repo=self._ask_repo,
-                    lounge_repo=self._lounge_repo,
+                    lounge_repo=self._lounge_repo if lounge else None,
                     file_activity=getattr(self.bot, "file_activity", None),
                     stop_view=stop_view,
                     worktree_manager=getattr(self.bot, "worktree_manager", None),

@@ -93,6 +93,8 @@ _HARNESS_WORDS = {
     "agui": "agui",
 }
 _SAME_WORDS = {"same", "current", "default", "whatever"}
+#: Typed where a build was started, ends that channel's chat session.
+_CLOSE_WORDS = {"close", "close session", "close this session"}
 _FILLER = {"use", "with", "please", "the", "model", "and", "on", "a", "it", "for", "harness"}
 _WORD_RE = re.compile(r"[a-z0-9][a-z0-9._:/-]*")
 
@@ -365,6 +367,14 @@ class TaskLoopCog(commands.Cog):
                 with contextlib.suppress(Exception):
                     asyncio.get_running_loop().create_task(
                         message.channel.send("-# 📝 Got it, I'll pass that to the next task.")
+                    )
+                return True
+            if running.report_channel_id == channel_id and text.lower() in _CLOSE_WORDS:
+                # "close" where the build was started ends that chat session, so
+                # it stops chiming in; the build keeps going in its own thread.
+                with contextlib.suppress(Exception):
+                    asyncio.get_running_loop().create_task(
+                        self._chat().close_session(message.channel)
                     )
                 return True
         return False
