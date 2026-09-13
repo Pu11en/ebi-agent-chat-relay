@@ -77,6 +77,10 @@ VERDICT_REMIND_SECONDS = 24 * 60 * 60
 SWITCH_TIMEOUT_SECONDS = 45 * 60
 #: How long starting a build waits for the harness/model or plan reply.
 PICK_TIMEOUT_SECONDS = 10 * 60
+#: After "wait" on a usage limit, try the same AI again this much later.
+LIMIT_WAIT_SECONDS = 30 * 60
+#: Replies to a usage limit that mean "wait for it to reset".
+_WAIT_WORDS = {"wait", "a", "wait for it", "wait for reset", "same", "later"}
 
 #: Report lines that need the person: a question, a stop, the end. Progress
 #: ("✅ Task 3 of 9 done") posts quietly — Drew chose pings only when needed.
@@ -159,6 +163,19 @@ def _chunks(lines: list[str], limit: int = 1900) -> list[str]:
 _BLUE, _GREEN, _AMBER = 0x2D6A86, 0x2F7D4F, 0xE8A317
 _MARK = {"pass": "✅", "fail": "❌", "skip": "⚪"}
 _FIX_WORDS = {"fix", "fix it", "fix them", "fix those", "fix that"}
+
+
+def _match_ai(
+    reply: str, options: list[tuple[str, str, str]], current: str | None
+) -> tuple[str, str | None] | None:
+    """A lettered choice from *options* (B is the first) or a typed AI name."""
+    m = _LETTER_REPLY_RE.match(reply)
+    if m is not None:
+        wanted = m.group(1).upper()
+        for i, (harness, model, _note) in enumerate(options, start=1):
+            if choice_letter(i) == wanted:
+                return harness, model
+    return parse_harness_reply(reply, current)
 
 
 def plan_card(plan_text: str, plan_name: str, harness: str | None, model: str | None) -> Any:
@@ -520,8 +537,16 @@ class TaskLoopCog(commands.Cog):
             reply, _woken = await self._wait_or_wake(holder[0], thread.id, ASK_TIMEOUT_SECONDS)
             return reply  # None when a new plan closes this build
 
+        async def on_limit(message: str) -> bool:
+            return await self._limit_hit(holder[0], message) if holder else False
+
         loop = TaskLoop(
-            plan_path=work_plan, repo_dir=work_dir, run_round=run_round, ask=ask, report=report
+            plan_path=work_plan,
+            repo_dir=work_dir,
+            run_round=run_round,
+            ask=ask,
+            report=report,
+            on_limit=on_limit,
         )
         repo_dir = Path(record.repo_dir)
         copy = WorkCopy(
@@ -1064,19 +1089,64 @@ class TaskLoopCog(commands.Cog):
             if reply is None:
                 return None
             m = _LETTER_REPLY_RE.match(reply)
-            if m is not None:
-                wanted = m.group(1).upper()
-                if wanted == "A" and current:
-                    return current, None
-                for i, (harness, model, _note) in enumerate(options, start=1):
-                    if choice_letter(i) == wanted:
-                        return harness, model
-            picked = parse_harness_reply(reply, current)
+            if m is not None and m.group(1).upper() == "A" and current:
+                return current, None
+            picked = _match_ai(reply, options, current)
             if picked:
                 return picked
             with contextlib.suppress(discord.HTTPException):
                 await channel.send("Just type the letter of the AI you want, e.g. `B`.")
         return None
+
+    async def _limit_hit(self, running: _Running, message: str) -> bool:
+        """The build's AI hit a usage limit: ask in its thread to switch AI or wait.
+
+        True once another AI is set for the worker thread or the wait is over;
+        False when nobody answered (the build then parks like any pause).
+        """
+        thread = running.thread
+        settings = getattr(self._chat(), "_backend_settings", None)
+        current = None
+        if settings is not None:
+            with contextlib.suppress(Exception):
+                harness = await settings.current_backend(thread.id)
+                model = await settings.current_model(harness, thread.id)
+                current = " · ".join(x for x in (harness, model) if x)
+        options = await self._ai_choices()
+        mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
+        lines = [
+            f"⏳ **{current or 'The AI'} hit its usage limit.**{mention}\n-# {message}",
+            "It didn't count as a try. Type a letter to switch AI, or **wait**:",
+            "**A)** Wait, and try the same AI again in 30 minutes",
+        ]
+        for i, (harness, model, note) in enumerate(options, start=1):
+            tail = f" — {note}" if note else ""
+            lines.append(f"**{choice_letter(i)})** {harness} · `{model}`{tail}")
+        for chunk in _chunks(lines):
+            with contextlib.suppress(discord.HTTPException):
+                await thread.send(chunk)
+        await running.report("⏸️ Usage limit hit. Answer in the build's thread")
+        while True:
+            reply, _woken = await self._wait_or_wake(running, thread.id, ASK_TIMEOUT_SECONDS)
+            if reply is None:
+                return False
+            if reply.strip().lower().rstrip(".!)") in _WAIT_WORDS:
+                with contextlib.suppress(discord.HTTPException):
+                    await thread.send("-# ⏳ OK, I'll try again in 30 minutes.")
+                await asyncio.sleep(LIMIT_WAIT_SECONDS)
+                return True
+            picked = _match_ai(reply, options, None)
+            if picked is None or settings is None:
+                with contextlib.suppress(discord.HTTPException):
+                    await thread.send("Type **wait**, or the letter of the AI to switch to.")
+                continue
+            harness, model = picked
+            await settings.set_backend(harness, thread_id=thread.id)
+            if model:
+                await settings.set_model(harness, model, thread_id=thread.id)
+            with contextlib.suppress(discord.HTTPException):
+                await thread.send(f"-# 🔀 Switched to {harness}{f' · {model}' if model else ''}.")
+            return True
 
     @app_commands.command(name="gowork", description="Work through the plan, one task at a time")
     @app_commands.describe(plan="Plan .md file (optional — found automatically in this project)")

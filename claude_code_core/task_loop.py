@@ -55,6 +55,29 @@ class Status(Enum):
     NONE = "NONE"
 
 
+_LIMIT_RE = re.compile(
+    r"(session|usage|weekly|daily|hourly|5-hour) limit|limit (reached|exceeded)|hit your .*limit|"
+    r"exceeded your current quota|quota exceeded|insufficient_quota|too many requests|\b429\b",
+    re.IGNORECASE,
+)
+
+
+def usage_limit_message(text: str | None, error: str | None) -> str | None:
+    """The provider's "you've hit your limit" line, or None for an ordinary result.
+
+    A limit says nothing about the task, so it must never count as a failed try.
+    A reply that ends with a status line is real work, even if it mentions limits.
+    """
+    candidates = [error or ""]
+    if parse_status(text)[0] is Status.NONE:
+        candidates.append(text or "")
+    for blob in candidates:
+        for line in blob.splitlines():
+            if _LIMIT_RE.search(line):
+                return line.strip()[:300]
+    return None
+
+
 def parse_status(text: str | None) -> tuple[Status, str]:
     """Read the worker's status from the last non-empty line of its reply."""
     lines = [ln.strip().strip("*_`").strip() for ln in (text or "").splitlines()]
@@ -289,6 +312,8 @@ class LoopOutcome:
 
 
 RunRound = Callable[[str], Awaitable[tuple[str | None, str | None]]]
+#: Told the limit message; True once another AI was picked or the wait is over.
+OnLimit = Callable[[str], Awaitable[bool]]
 Ask = Callable[[str], Awaitable[str | None]]
 Report = Callable[[str], Awaitable[None]]
 
@@ -307,6 +332,7 @@ class TaskLoop:
         progress_path: Path | None = None,
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        on_limit: OnLimit | None = None,
     ) -> None:
         self.plan_path = plan_path
         self.repo_dir = repo_dir
@@ -316,6 +342,7 @@ class TaskLoop:
         self._report = report
         self.max_rounds = max_rounds
         self.max_retries = max_retries
+        self._on_limit = on_limit
         self._stop = False
         #: Things the person typed while a task was running.
         self._notes: list[str] = []
@@ -370,9 +397,19 @@ class TaskLoop:
                 retry_reason=retry_reason,
                 notes=self._notes,
             )
-            self._notes = []
+            notes, self._notes = self._notes, []
+            pending = answer, retry_reason
             answer = retry_reason = None
             text, error = await self._run_round(prompt)
+            limit = usage_limit_message(text, error) if self._on_limit else None
+            if limit and self._on_limit is not None:
+                # Not the task's fault: don't count the round or a try, keep the notes.
+                rounds -= 1
+                self._notes = notes + self._notes
+                answer, retry_reason = pending
+                if await self._on_limit(limit):
+                    continue
+                return LoopOutcome(Status.ASK, f"usage limit: {limit}", rounds)
             status, detail = parse_status(text)
             after = await take_snapshot(self.repo_dir, self.plan_path)
 

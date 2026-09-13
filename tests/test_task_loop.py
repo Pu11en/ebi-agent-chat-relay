@@ -367,3 +367,61 @@ class TestFindingTheProject:
         b.write_text("- [ ] y\n")
         os.utime(b, (1, 1))
         assert tl.list_plans_across(tmp_path) == [a, b]
+
+
+_LIMIT = "You've hit your session limit · resets 7pm (America/Chicago)"
+
+
+class TestUsageLimit:
+    @pytest.mark.parametrize(
+        "text,error",
+        [
+            (_LIMIT, None),
+            (None, "Claude AI usage limit reached|1757800000"),
+            (None, "You exceeded your current quota, please check your plan"),
+            ("x", "429 Too Many Requests: rate limit exceeded"),
+        ],
+    )
+    def test_limit_messages_are_recognised(self, text: str | None, error: str | None) -> None:
+        assert tl.usage_limit_message(text, error)
+
+    @pytest.mark.parametrize(
+        "text,error", [("did it\nDONE", None), (None, "boom"), ("added a rate limit\nDONE", None)]
+    )
+    def test_ordinary_results_are_not_limits(self, text: str | None, error: str | None) -> None:
+        assert tl.usage_limit_message(text, error) is None
+
+    async def test_a_limit_asks_and_never_uses_up_a_try(self, repo: Path) -> None:
+        limited = lambda r: (_LIMIT, None)  # noqa: E731
+        fake = _Fake(repo, [limited, limited, _done, _done])
+        seen: list[str] = []
+
+        async def on_limit(message: str) -> bool:
+            seen.append(message)
+            return True  # switched model or waited: try the same step again
+
+        outcome = await fake.loop(on_limit=on_limit).run()
+        assert outcome.status == tl.Status.COMPLETE
+        assert seen == [_LIMIT, _LIMIT]
+        assert not any("Stuck" in r for r in fake.reports)
+
+    async def test_notes_survive_a_limit(self, repo: Path) -> None:
+        fake = _Fake(repo, [lambda r: (_LIMIT, None), _done, _done])
+        loop = fake.loop(on_limit=lambda m: _true())
+        loop.add_note("use sqlite")
+        await loop.run()
+        assert "use sqlite" in fake.prompts[1]
+
+    async def test_no_answer_to_a_limit_pauses(self, repo: Path) -> None:
+        fake = _Fake(repo, [lambda r: (_LIMIT, None)])
+        outcome = await fake.loop(on_limit=lambda m: _false()).run()
+        assert outcome.status == tl.Status.ASK
+        assert "limit" in outcome.detail
+
+
+async def _true() -> bool:
+    return True
+
+
+async def _false() -> bool:
+    return False

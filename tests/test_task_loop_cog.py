@@ -1054,3 +1054,65 @@ class TestBuildTalksInItsOwnThread:
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert "use the other file" in chat.run_fresh_turn.await_args_list[1].args[2]
+
+
+class TestUsageLimitInThread:
+    def _limited_then_fine(self, chat: MagicMock) -> None:
+        calls = 0
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await result_sink(None, "You've hit your session limit · resets 7pm")
+                return
+            plan = Path(working_dir) / "PLAN.md"
+            plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+            _git(Path(working_dir), "commit", "-qam", "tick")
+            await result_sink("done\nDONE", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+
+    async def _start(self, cog: TaskLoopCog, repo: Path) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"), harness="claude", model="sonnet")
+        return channel
+
+    async def test_typing_another_ai_switches_and_retries_the_step(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        chat._backend_settings = settings
+        self._limited_then_fine(chat)
+        channel = await self._start(cog, repo)
+
+        await _type_when_asked(cog, thread.id, "dsh glm-5.3")
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        settings.set_backend.assert_awaited_with("dsh", thread_id=thread.id)
+        settings.set_model.assert_awaited_with("dsh", "glm-5.3", thread_id=thread.id)
+        said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "usage limit" in said and "wait" in said
+        assert "Stuck" not in " ".join(str(c.args[0]) for c in channel.send.call_args_list)
+        assert chat.run_fresh_turn.await_count == 2
+
+    async def test_wait_tries_the_same_ai_again_later(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import claude_discord.cogs.task_loop as mod
+
+        monkeypatch.setattr(mod, "LIMIT_WAIT_SECONDS", 0)
+        cog, chat, thread = _cog_with_chat()
+        chat._backend_settings = None
+        self._limited_then_fine(chat)
+        await self._start(cog, repo)
+
+        await _type_when_asked(cog, thread.id, "wait")
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert chat.run_fresh_turn.await_count == 2
