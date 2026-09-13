@@ -425,3 +425,45 @@ async def _true() -> bool:
 
 async def _false() -> bool:
     return False
+
+
+class TestTheWorkerFollowsThePerson:
+    def test_new_endings_parse(self) -> None:
+        assert tl.parse_status("x\nPAUSE: Drew is planning the bot first") == (
+            tl.Status.PAUSE,
+            "Drew is planning the bot first",
+        )
+        assert tl.parse_status("x\nSKIP: Drew said not yet")[0] == tl.Status.SKIP
+        assert tl.parse_status("x\nPLAN: moved R4 to the end")[0] == tl.Status.PLAN
+
+    def test_prompt_puts_the_persons_words_first_and_offers_the_new_endings(
+        self, tmp_path: Path
+    ) -> None:
+        p = tl.worker_prompt(tmp_path / "PLAN.md", tmp_path / "p.md", notes=["hold off"])
+        assert p.index("hold off") < p.index("Read the plan")
+        assert "PAUSE:" in p and "SKIP:" in p and "PLAN:" in p
+
+    async def test_pause_stops_the_loop_and_does_not_count_as_a_try(self, repo: Path) -> None:
+        fake = _Fake(repo, [lambda r: ("ok\nPAUSE: Drew wants to plan first", None)])
+        outcome = await fake.loop().run()
+        assert outcome.status == tl.Status.PAUSE
+        assert "plan first" in outcome.detail
+        assert len(fake.prompts) == 1
+
+    async def test_skip_ticks_the_step_and_moves_on(self, repo: Path) -> None:
+        fake = _Fake(repo, [lambda r: ("ok\nSKIP: not yet", None), _done])
+        outcome = await fake.loop().run()
+        assert outcome.status == tl.Status.COMPLETE
+        assert "_(skipped)_" in (repo / "PLAN.md").read_text()
+
+    async def test_plan_change_is_accepted_and_the_loop_carries_on(self, repo: Path) -> None:
+        def reorder(r: Path) -> tuple[str, None]:
+            plan = r / "PLAN.md"
+            plan.write_text(plan.read_text() + "- [ ] Task 3: added by the person\n")
+            return ("changed\nPLAN: added task 3", None)
+
+        fake = _Fake(repo, [reorder, _done, _done, _done])
+        outcome = await fake.loop().run()
+        assert outcome.status == tl.Status.COMPLETE
+        assert len(fake.prompts) == 4
+        assert any("Plan changed" in r for r in fake.reports)

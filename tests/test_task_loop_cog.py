@@ -659,7 +659,7 @@ class TestStuckBuildWaits:
         assert "keep going, use sqlite" in second_prompt
         assert "- [x]" in (repo / "PLAN.md").read_text()
         posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
-        assert "keep going" in posted and "skip" in posted and "throw it away" in posted
+        assert "own words" in posted and "close" in posted and "throw it away" in posted
 
     async def test_skip_moves_past_the_step(self, repo: Path) -> None:
         cog, chat, thread = _cog_with_chat()
@@ -1025,7 +1025,7 @@ class TestBuildTalksInItsOwnThread:
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         in_thread = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
-        assert "I'm stuck" in in_thread and "keep going" in in_thread
+        assert "I'm stuck" in in_thread and "own words" in in_thread
         in_channel = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
         assert "Thrown away" in in_channel  # the thread is deleted, so the result goes here
         assert 1 not in cog._waiters
@@ -1154,3 +1154,35 @@ class TestCloseFromTheBuildThread:
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
         assert "Wrapped up" in posted
         thread.delete.assert_awaited()
+
+
+class TestPausedBuildListens:
+    async def test_pause_waits_and_the_reply_reaches_the_ai(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        calls = 0
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await result_sink("saved\nPAUSE: Drew is planning the bot first", None)
+                return
+            plan = Path(working_dir) / "PLAN.md"
+            plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+            _git(Path(working_dir), "commit", "-qam", "tick")
+            await result_sink("done\nDONE", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        await _type_when_asked(cog, thread.id, "planning is done, the bot should remember facts")
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "Paused" in said and "planning the bot first" in said
+        assert "remember facts" in chat.run_fresh_turn.await_args_list[1].args[2]

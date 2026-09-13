@@ -43,7 +43,7 @@ CHECK_TIMEOUT_SECONDS = 600
 
 _TASK_RE = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s+(.*\S)")
 _CHECK_RE = re.compile(r"^\s*\**Check:\**\s*`?(.+?)`?\s*$", re.IGNORECASE)
-_STATUS_RE = re.compile(r"^(DONE|COMPLETE|ASK:|STUCK:)\s*(.*)$")
+_STATUS_RE = re.compile(r"^(DONE|COMPLETE|ASK:|STUCK:|PAUSE:|SKIP:|PLAN:)\s*(.*)$")
 
 
 class Status(Enum):
@@ -51,6 +51,12 @@ class Status(Enum):
     ASK = "ASK"
     STUCK = "STUCK"
     COMPLETE = "COMPLETE"
+    #: The person wants to hold (plan elsewhere, not yet): keep the work, wait for them.
+    PAUSE = "PAUSE"
+    #: The person said to skip this step.
+    SKIP = "SKIP"
+    #: The worker changed the plan itself because the person redirected it.
+    PLAN = "PLAN"
     #: No status line — or, as a loop outcome, stopped on request.
     NONE = "NONE"
 
@@ -250,11 +256,31 @@ def worker_prompt(
     retry_reason: str | None = None,
     notes: list[str] | None = None,
 ) -> str:
-    """The prompt every round gets. Same text every time, by design."""
+    """The prompt every round gets. The person's words, when there are any, come first."""
     parts = [
         "[gowork build worker — for this worker only] You are the worker in a "
         "sequential task loop. You start with no memory; the files below are the "
         "whole state.",
+    ]
+    heard: list[str] = []
+    if answer is not None:
+        question, reply = answer
+        heard.append(f'You asked: "{question}" — they replied: "{reply}"')
+    heard += [f'They wrote: "{n}"' for n in notes or []]
+    if heard:
+        parts += [
+            "",
+            "THE PERSON'S WORDS COME FIRST. Read them before anything else:",
+            *[f"- {h}" for h in heard],
+            "Work out what they actually want, and follow that over the plan. If they "
+            "answered your question, carry on with that answer. If they asked something, "
+            "answer it in plain words. If they changed direction (hold off, not yet, "
+            "skip, do something else, save and stop), do that instead of the task, and "
+            "end with PAUSE, SKIP or PLAN below. If their reply is unclear, explain in "
+            "plain words with a concrete example and end with a new, clearer ASK line — "
+            "never repeat a question they already answered.",
+        ]
+    parts += [
         "",
         f"1. Read the plan: {plan_path}",
         f"2. Read the progress log if it exists: {progress_path}",
@@ -282,19 +308,12 @@ def worker_prompt(
         "— you need a decision before continuing",
         "STUCK: <plain reason> — you cannot finish this task",
         "COMPLETE — every task in the plan is already ticked",
+        "PAUSE: <what they want, in plain words> — the person wants to hold or stop for "
+        "now; save and commit what you have first. The build waits for them.",
+        "SKIP: <why> — the person said to skip this task; the bot marks it skipped",
+        "PLAN: <what you changed> — the person redirected the work, so you edited the "
+        "plan file (added, removed, reordered or reworded tasks) and committed it",
     ]
-    if answer is not None:
-        question, reply = answer
-        parts += [
-            "",
-            f'Last round you asked: "{question}" — the human replied: "{reply}". '
-            "If that answers it, continue the same task with that answer. If it is a "
-            "question or unclear, explain in plain words with a concrete example and end "
-            "with a new ASK line. Don't start the task until you have a clear answer.",
-        ]
-    if notes:
-        parts += ["", "While the last task ran, the human wrote (take it into account):"]
-        parts += [f'- "{n}"' for n in notes]
     if retry_reason:
         parts += [
             "",
@@ -423,6 +442,20 @@ class TaskLoop:
             if status == Status.STUCK:
                 await self._report(f"🛑 Stuck on {before.next_task}: {detail}")
                 return LoopOutcome(Status.STUCK, detail, rounds)
+            if status == Status.PAUSE:
+                await _git(self.repo_dir, "add", "-A")
+                await _git(self.repo_dir, "commit", "-qm", "gowork: paused")
+                return LoopOutcome(Status.PAUSE, detail or "paused", rounds)
+            if status in (Status.SKIP, Status.PLAN):
+                if status == Status.SKIP:
+                    skip_task(self.plan_path)
+                    await self._report(f"⏭️ Skipped {before.next_task}: {detail}")
+                else:
+                    await self._report(f"📝 Plan changed: {detail}")
+                await _git(self.repo_dir, "add", "-A")
+                await _git(self.repo_dir, "commit", "-qm", f"gowork: {status.value.lower()}")
+                retries = 0
+                continue
             if status == Status.COMPLETE and after.unchecked == 0:
                 continue  # the top of the loop reports completion
 

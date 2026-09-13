@@ -764,12 +764,13 @@ class TaskLoopCog(commands.Cog):
         why = {
             Status.STUCK: f"🛑 **I'm stuck.** {outcome.detail}",
             Status.ASK: f"⏸️ **Paused, waiting for your answer:** {outcome.detail}",
+            Status.PAUSE: f"⏸️ **Paused.** {outcome.detail}",
         }.get(outcome.status, "⏹️ **Stopped.**")
         ask = (
             f"{why}\nNothing is lost: the finished steps are kept.\n"
-            "Type **keep going** to try again (add a hint if you have one), "
-            "**skip** to skip this step, **wrap up** to keep what's done and end here, "
-            f"or **throw it away** to delete this build.{mention}"
+            "Just tell me what you want in your own words and I'll carry on from there. "
+            "Or type **close** to keep what's done and end here, or **throw it away** "
+            f"to delete this build.{mention}"
         )
         with contextlib.suppress(discord.HTTPException):
             await running.thread.send(ask[:1900])
