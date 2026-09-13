@@ -43,10 +43,12 @@ from claude_code_core.task_loop import (
     open_tasks,
     parked_choice,
     parse_check_results,
+    parse_status,
     plan_check_command,
     plan_try_checks,
     project_for_thread,
     project_of,
+    review_prompt,
     run_check,
     short_label,
     skip_task,
@@ -730,7 +732,17 @@ class TaskLoopCog(commands.Cog):
                     with contextlib.suppress(Exception):
                         await running.thread.delete()
                     return "kept"
-                if not is_looks_good(reply) and verdict != "finish":
+                decision = "keep" if is_looks_good(reply) or verdict == "finish" else None
+                if decision is None:
+                    # Anything else is read by the AI: a question gets an answer, a
+                    # change becomes new plan steps, a yes keeps it.
+                    decision = await self._read_review_reply(running, reply, fails)
+                if decision == "fix":
+                    await report("🔧 Got it, adding that to the plan and working on it.")
+                    return "fix"
+                if decision == "talk":
+                    continue  # answered in the thread; still waiting for a verdict
+                if decision is None:  # the AI couldn't be reached: the reply is a fix step
                     what = reply
                     if reply.strip().lower().rstrip(".!") in _FIX_WORDS and fails:
                         what = "make these checks pass: " + "; ".join(fails)
@@ -753,6 +765,34 @@ class TaskLoopCog(commands.Cog):
                 return "kept"
         finally:
             running.in_review = False
+
+    async def _read_review_reply(
+        self, running: _Running, reply: str, fails: list[str]
+    ) -> str | None:
+        """Let the AI read a reply to the finished card: "fix", "talk", "keep" or None.
+
+        None means the AI couldn't be reached, and the caller falls back to
+        treating the reply as a fix step.
+        """
+        assert running.copy is not None
+        if running.run_session is None:
+            return None
+        plan = running.copy.plan_path
+        prompt = review_prompt(plan, plan.with_name(f"{plan.stem}.progress.md"), reply, fails)
+        try:
+            text, error = await running.run_session(prompt, "💬 Reading your reply…")
+        except Exception:
+            logger.warning("gowork: couldn't read the review reply", exc_info=True)
+            return None
+        status, _detail = parse_status(text)
+        if status == Status.PLAN:
+            await commit_all(running.copy.path, "gowork: steps added from your reply")
+            return "fix"
+        if status == Status.DONE:
+            return "keep"
+        if status == Status.PAUSE:
+            return "talk"
+        return None if error else "talk"
 
     async def _park(self, running: _Running, outcome: LoopOutcome) -> str:
         """A build that stopped short waits for the person. Returns "again" or "gone"."""

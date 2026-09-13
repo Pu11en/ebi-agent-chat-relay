@@ -409,18 +409,29 @@ class TestEnding:
     async def test_anything_else_becomes_a_fix_task_and_it_goes_again(self, repo: Path) -> None:
         cog, chat, thread = _cog_with_chat()
         thread.delete = AsyncMock()
+        original = chat.run_fresh_turn.side_effect
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            if "replied to the finished build" in prompt:  # the AI reads the reply
+                plan = Path(working_dir) / "PLAN.md"
+                plan.write_text(plan.read_text() + "- [ ] Fix: the output is ugly\n")
+                await result_sink("added it\nPLAN: added a fix step", None)
+                return
+            await original(seed, thread_, prompt, working_dir=working_dir, result_sink=result_sink)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
         channel = self._channel()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
         await _type_when_asked(cog, 555, "the output is ugly")
         # the worker fixes it (the fake ticks the new Fix task), then asks again
         for _ in range(500):
-            if chat.run_fresh_turn.await_count >= 2:
+            if chat.run_fresh_turn.await_count >= 3:
                 break
             await asyncio.sleep(0.01)
         await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
-        assert chat.run_fresh_turn.await_count == 2
+        assert chat.run_fresh_turn.await_count == 3  # task, reading the reply, the fix
         assert "Fix: the output is ugly" in (repo / "PLAN.md").read_text()
         thread.delete.assert_awaited()
 
@@ -1186,3 +1197,34 @@ class TestPausedBuildListens:
         said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "Paused" in said and "planning the bot first" in said
         assert "remember facts" in chat.run_fresh_turn.await_args_list[1].args[2]
+
+
+class TestFinishedCardListens:
+    async def test_a_question_on_the_finished_card_gets_an_answer_not_a_fix_step(
+        self, repo: Path
+    ) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        seen: list[str] = []
+        original = chat.run_fresh_turn.side_effect
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            if "replied to the finished build" in prompt:
+                seen.append(prompt)
+                await result_sink("It adds a calculator.\nPAUSE: answered their question", None)
+                return
+            await original(seed, thread_, prompt, working_dir=working_dir, result_sink=result_sink)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        await _type_when_asked(cog, thread.id, "what did this change?")
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert seen and "what did this change?" in seen[0]
+        assert "fix requested" not in (repo / "PLAN.md").read_text()
+        assert "Fix" not in (repo / "PLAN.md").read_text()
