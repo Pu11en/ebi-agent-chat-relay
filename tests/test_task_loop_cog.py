@@ -1116,3 +1116,41 @@ class TestUsageLimitInThread:
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
         assert chat.run_fresh_turn.await_count == 2
+
+
+class TestCloseFromTheBuildThread:
+    @pytest.mark.parametrize(
+        "text",
+        ["close", "close.", "Stop", "wrap up", "ok can you save what you have and close"],
+    )
+    def test_close_words(self, text: str) -> None:
+        from claude_discord.cogs.task_loop import wants_close
+
+        assert wants_close(text)
+
+    @pytest.mark.parametrize("text", ["make it blue", "don't close the modal", "A", "yes"])
+    def test_not_close_words(self, text: str) -> None:
+        from claude_discord.cogs.task_loop import wants_close
+
+        assert not wants_close(text)
+
+    async def test_close_in_the_thread_keeps_finished_steps_and_ends(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+
+        async def asks(*_a, result_sink, **_k):  # noqa: ANN001, ANN002, ANN003
+            await result_sink("x\nASK: run the paid check?", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=asks)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        await _type_when_asked(cog, thread.id, "close.")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert cog.running == []
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "Wrapped up" in posted
+        thread.delete.assert_awaited()

@@ -165,6 +165,28 @@ _MARK = {"pass": "✅", "fail": "❌", "skip": "⚪"}
 _FIX_WORDS = {"fix", "fix it", "fix them", "fix those", "fix that"}
 
 
+_STOP_WORDS = {
+    "close",
+    "close it",
+    "close this",
+    "stop",
+    "stop it",
+    "wrap up",
+    "wrap it up",
+    "end it",
+    "pause",
+    "save and close",
+    "save and stop",
+}
+_SAVE_THEN_CLOSE_RE = re.compile(r"\b(save|keep)\b.*\b(and|then)\s+(close|stop)\b", re.I)
+
+
+def wants_close(text: str) -> bool:
+    """Typed in a build's thread: keep the finished steps and end the build."""
+    said = text.strip().lower().rstrip(".!")
+    return said in _STOP_WORDS or bool(_SAVE_THEN_CLOSE_RE.search(said))
+
+
 def _match_ai(
     reply: str, options: list[tuple[str, str, str]], current: str | None
 ) -> tuple[str, str | None] | None:
@@ -365,6 +387,10 @@ class TaskLoopCog(commands.Cog):
         text = (getattr(message, "content", "") or "").strip()
         if channel_id is None or not text:
             return False
+        for running in self._running.values():
+            if running.worker_thread_id == channel_id and wants_close(text):
+                self._close_build(running)
+                return True
         future = self._waiters.get(channel_id)
         if future is not None and not future.done():
             accept = self._accepts.get(channel_id)
@@ -390,6 +416,20 @@ class TaskLoopCog(commands.Cog):
                     )
                 return True
         return False
+
+    def _close_build(self, running: _Running) -> None:
+        """ "close" in the build's thread: finish the round, keep what's done, end."""
+        running.auto_finish = True
+        running.loop.request_stop()
+        running.wake = running.wake or asyncio.Event()
+        running.wake.set()
+        with contextlib.suppress(Exception):
+            asyncio.get_running_loop().create_task(
+                running.thread.send(
+                    "-# 🗂️ Closing: I'll keep the finished steps in the project and end "
+                    "this build once the current step stops."
+                )
+            )
 
     async def start_loop(
         self,
