@@ -694,16 +694,31 @@ def parse_check_results(text: str | None) -> list[tuple[str, str]]:
 
 _SKIP_RE = re.compile(r"^\s*skip\b", re.IGNORECASE)
 _THROW_RE = re.compile(
-    r"\b(throw (it |this )?away|scrap( it)?|cancel|give up|delete (it|the build))\b",
+    r"(throw (it |this )?away|scrap( it)?|cancel( it)?|give up|delete (it|the build))",
     re.IGNORECASE,
 )
 
 
 _FINISH_RE = re.compile(
-    r"\b(wrap (it |this )?up|keep what'?s (done|finished)|finish (it |this )?(here|now)|"
-    r"close (it |this )?out|stop here and keep|end it here)\b",
+    r"(wrap (it |this )?up|keep what'?s (done|finished)|finish (it |this )?(here|now)|"
+    r"close (it |this )?out|stop here and keep|end it here)",
     re.IGNORECASE,
 )
+_FILLER_START = re.compile(r"^((ok(ay)?|yes|yeah|just|please|let'?s|lets)[,\s]+)+", re.IGNORECASE)
+_FILLER_END = re.compile(r"([,\s]+(please|now|then|thanks))+$", re.IGNORECASE)
+
+
+def clear_reply(reply: str) -> str:
+    """The reply without filler ("ok", "please", punctuation), lower-cased.
+
+    Actions that end or delete a build only fire when this *whole* string is
+    the command. Anything longer is a sentence, and the AI reads sentences.
+    """
+    text = (reply or "").strip().lower().rstrip(".!?")
+    text = _FILLER_START.sub("", text)
+    return _FILLER_END.sub("", text).strip()
+
+
 _KEEP_RE = re.compile(r"^\s*(keep going|continue|try again|go on|resume|retry|go)\b", re.IGNORECASE)
 
 
@@ -715,9 +730,10 @@ def parked_choice(reply: str) -> str | None:
     plan 6 now?" — is not an answer, so it goes to the normal chat instead.
     """
     text = reply or ""
-    if _THROW_RE.search(text):
+    said = clear_reply(text)
+    if _THROW_RE.fullmatch(said):
         return "throw"
-    if _FINISH_RE.search(text):
+    if _FINISH_RE.fullmatch(said):
         return "finish"
     if _SKIP_RE.match(text):
         return "skip"

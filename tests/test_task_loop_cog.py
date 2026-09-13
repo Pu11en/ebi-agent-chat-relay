@@ -1132,14 +1132,23 @@ class TestUsageLimitInThread:
 class TestCloseFromTheBuildThread:
     @pytest.mark.parametrize(
         "text",
-        ["close", "close.", "Stop", "wrap up", "ok can you save what you have and close"],
+        ["close", "close.", "Stop", "wrap up", "ok close", "please stop"],
     )
     def test_close_words(self, text: str) -> None:
         from claude_discord.cogs.task_loop import wants_close
 
         assert wants_close(text)
 
-    @pytest.mark.parametrize("text", ["make it blue", "don't close the modal", "A", "yes"])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "make it blue",
+            "don't close the modal",
+            "A",
+            "yes",
+            "keep the header and then close the menu",
+        ],
+    )
     def test_not_close_words(self, text: str) -> None:
         from claude_discord.cogs.task_loop import wants_close
 

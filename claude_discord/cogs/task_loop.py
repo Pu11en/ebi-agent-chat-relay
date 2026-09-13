@@ -35,6 +35,7 @@ from claude_code_core.task_loop import (
     TaskLoop,
     append_fix_task,
     checker_prompt,
+    clear_reply,
     count_tasks,
     is_looks_good,
     list_plans,
@@ -180,13 +181,15 @@ _STOP_WORDS = {
     "save and close",
     "save and stop",
 }
-_SAVE_THEN_CLOSE_RE = re.compile(r"\b(save|keep)\b.*\b(and|then)\s+(close|stop)\b", re.I)
 
 
 def wants_close(text: str) -> bool:
-    """Typed in a build's thread: keep the finished steps and end the build."""
-    said = text.strip().lower().rstrip(".!")
-    return said in _STOP_WORDS or bool(_SAVE_THEN_CLOSE_RE.search(said))
+    """Typed in a build's thread: keep the finished steps and end the build.
+
+    Only the bare command counts. A longer sentence ("save what you have and
+    close") goes to the AI, which saves and ends with PAUSE.
+    """
+    return clear_reply(text) in _STOP_WORDS
 
 
 def _match_ai(

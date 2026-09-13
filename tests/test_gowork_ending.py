@@ -197,6 +197,25 @@ class TestStuckChoices:
     def test_anything_else_is_not_an_answer(self, reply: str) -> None:
         assert tl.parked_choice(reply) is None
 
+    @pytest.mark.parametrize("reply", ["Throw it away please.", "ok scrap it", "just cancel"])
+    def test_short_clear_throw_away_still_works(self, reply: str) -> None:
+        assert tl.parked_choice(reply) == "throw"
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "don't cancel, just use the other API",
+            "give up on the red banner and try blue",
+            "throw away the old css and keep going",
+        ],
+    )
+    def test_throw_words_inside_a_longer_reply_never_delete(self, reply: str) -> None:
+        assert tl.parked_choice(reply) != "throw"
+
+    @pytest.mark.parametrize("reply", ["wrap up the styling first", "finish here with blue"])
+    def test_wrap_up_words_inside_a_longer_reply_do_not_end_it(self, reply: str) -> None:
+        assert tl.parked_choice(reply) != "finish"
+
     def test_skip_task_ticks_the_first_open_step_and_says_so(self, tmp_path: Path) -> None:
         plan = tmp_path / "PLAN.md"
         plan.write_text("- [x] a\n- [ ] b\n- [ ] c\n")
