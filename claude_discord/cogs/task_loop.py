@@ -278,6 +278,8 @@ class _Running:
     auto_finish: bool = False
     #: Wakes a stopped build that is waiting for the person (see auto_finish).
     wake: asyncio.Event | None = None
+    #: On a usage limit, switch to this AI by itself instead of asking.
+    fallback: tuple[str, str | None] | None = None
 
 
 def _recap_line(text: str | None) -> str | None:
@@ -448,6 +450,8 @@ class TaskLoopCog(commands.Cog):
         notify_user_id: int | None = None,
         harness: str | None = None,
         model: str | None = None,
+        fallback_harness: str | None = None,
+        fallback_model: str | None = None,
     ) -> discord.Thread:
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
@@ -497,6 +501,8 @@ class TaskLoopCog(commands.Cog):
             notify_user_id=notify_user_id,
             harness=harness,
             model=model,
+            fallback_harness=fallback_harness,
+            fallback_model=fallback_model,
         )
         self._store.save(record)
         self._launch(record, thread, report_target)
@@ -644,6 +650,11 @@ class TaskLoopCog(commands.Cog):
             notify_user_id=notify_user_id,
             recaps=recaps,
             run_session=run_session,
+            fallback=(
+                (record.fallback_harness, record.fallback_model)
+                if record.fallback_harness
+                else None
+            ),
         )
         holder.append(running)
         self._running[repo_dir] = running
@@ -1101,6 +1112,8 @@ class TaskLoopCog(commands.Cog):
         notify_user_id: int | None = None,
         harness: str | None = None,
         model: str | None = None,
+        fallback_harness: str | None = None,
+        fallback_model: str | None = None,
     ) -> discord.Thread | None:
         """Start a build from outside a slash command (the REST API, a planner).
 
@@ -1137,6 +1150,8 @@ class TaskLoopCog(commands.Cog):
                 notify_user_id=notify_user_id,
                 harness=harness,
                 model=model,
+                fallback_harness=fallback_harness,
+                fallback_model=fallback_model,
             )
         except (ValueError, RuntimeError) as exc:
             with contextlib.suppress(discord.HTTPException):
@@ -1206,6 +1221,19 @@ class TaskLoopCog(commands.Cog):
                 harness = await settings.current_backend(thread.id)
                 model = await settings.current_model(harness, thread.id)
                 current = " · ".join(x for x in (harness, model) if x)
+        fb = running.fallback
+        if fb is not None and settings is not None:
+            fb_label = " · ".join(x for x in fb if x)
+            if current != fb_label:
+                await settings.set_backend(fb[0], thread_id=thread.id)
+                if fb[1]:
+                    await settings.set_model(fb[0], fb[1], thread_id=thread.id)
+                with contextlib.suppress(discord.HTTPException):
+                    await thread.send(
+                        f"-# 🔀 {current or 'The AI'} hit its usage limit; switched to "
+                        f"{fb_label} by itself (set when the build started)."
+                    )
+                return True
         options = await self._ai_choices()
         mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
         lines = [

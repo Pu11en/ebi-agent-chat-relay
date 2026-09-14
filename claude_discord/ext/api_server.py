@@ -1598,6 +1598,8 @@ class ApiServer:
 
         Body (JSON):
             plan_path: Absolute path to the plan ``.md`` inside a git repo (required).
+            fallback_harness / fallback_model: AI to switch to by itself when the
+                build's AI hits its usage limit (optional; without it the bot asks).
             report_thread_id: Channel or thread that gets progress lines and
                 whose parent channel hosts the worker thread (optional; defaults
                 to ``default_channel_id``).
@@ -1643,6 +1645,8 @@ class ApiServer:
             return web.json_response({"error": "user_id must be an integer"}, status=400)
         harness = data.get("harness") or None
         model = data.get("model") or None
+        fallback_harness = data.get("fallback_harness") or None
+        fallback_model = data.get("fallback_model") or None
         # Runs in the background: with no harness given, the bot asks in the
         # channel and waits for Drew's typed reply before starting.
         asyncio.create_task(
@@ -1652,6 +1656,8 @@ class ApiServer:
                 notify_user_id=notify_user_id,
                 harness=harness,
                 model=model,
+                fallback_harness=fallback_harness,
+                fallback_model=fallback_model,
             )
         )
         return web.json_response({"status": "starting"}, status=202)

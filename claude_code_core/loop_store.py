@@ -35,6 +35,9 @@ class LoopRecord:
     notify_user_id: int | None = None
     harness: str | None = None
     model: str | None = None
+    #: Used automatically when the build's AI hits its usage limit (no question asked).
+    fallback_harness: str | None = None
+    fallback_model: str | None = None
 
 
 class LoopStore:

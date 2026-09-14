@@ -1236,3 +1236,46 @@ class TestPlannerChangesReachTheBuild:
         assert "- [x] Task 1: a" in final and "- [x] Task 2: from the planner" in final
         said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "planning session" in said
+
+
+class TestLimitFallback:
+    """A build started with a fallback AI switches to it by itself on a usage limit."""
+
+    @pytest.mark.asyncio
+    async def test_switches_without_asking(self) -> None:
+        from claude_discord.cogs.task_loop import _Running
+
+        cog, chat, thread = _cog_with_chat()
+        settings = MagicMock()
+        settings.current_backend = AsyncMock(return_value="claude")
+        settings.current_model = AsyncMock(return_value="sonnet")
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        chat._backend_settings = settings
+        running = _Running(
+            MagicMock(), Path("/x"), 555, 1, thread=thread, fallback=("dsh", "glm-5.3")
+        )
+
+        assert await cog._limit_hit(running, "limit reached") is True
+        settings.set_backend.assert_awaited_once_with("dsh", thread_id=555)
+        settings.set_model.assert_awaited_once_with("dsh", "glm-5.3", thread_id=555)
+        assert "switched to dsh · glm-5.3" in thread.send.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_fallback_itself_limited_asks(self) -> None:
+        from claude_discord.cogs.task_loop import _Running
+
+        cog, chat, thread = _cog_with_chat()
+        settings = MagicMock()
+        settings.current_backend = AsyncMock(return_value="dsh")
+        settings.current_model = AsyncMock(return_value="glm-5.3")
+        settings.set_backend = AsyncMock()
+        chat._backend_settings = settings
+        cog._ai_choices = AsyncMock(return_value=[])
+        cog._wait_or_wake = AsyncMock(return_value=(None, False))
+        running = _Running(
+            MagicMock(), Path("/x"), 555, 1, thread=thread, fallback=("dsh", "glm-5.3")
+        )
+
+        assert await cog._limit_hit(running, "limit reached") is False
+        settings.set_backend.assert_not_awaited()
