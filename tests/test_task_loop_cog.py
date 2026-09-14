@@ -1203,3 +1203,36 @@ class TestPausedBuildListens:
         said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "Paused" in said and "planning the bot first" in said
         assert "remember facts" in chat.run_fresh_turn.await_args_list[1].args[2]
+
+
+class TestPlannerChangesReachTheBuild:
+    async def test_a_step_added_to_the_real_plan_is_built_and_kept(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        calls = 0
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            nonlocal calls
+            calls += 1
+            if calls == 1:  # meanwhile the planning session adds a step (not committed)
+                real = repo / "PLAN.md"
+                real.write_text(real.read_text() + "- [ ] Task 2: from the planner\n")
+            plan = Path(working_dir) / "PLAN.md"
+            plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+            _git(Path(working_dir), "commit", "-qam", "tick")
+            await result_sink("done\nDONE", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert calls == 2
+        final = (repo / "PLAN.md").read_text()
+        assert "- [x] Task 1: a" in final and "- [x] Task 2: from the planner" in final
+        said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "planning session" in said

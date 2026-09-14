@@ -467,3 +467,36 @@ class TestTheWorkerFollowsThePerson:
         assert outcome.status == tl.Status.COMPLETE
         assert len(fake.prompts) == 4
         assert any("Plan changed" in r for r in fake.reports)
+
+
+class TestPlanChangesFromThePlanner:
+    COPY = (
+        "# Plan\n\n- [x] T1 done\n- [ ] T2 old\n  more about T2\n- [ ] T3 old\n"
+        "\n## How to try it\n- open it\n"
+    )
+
+    def test_open_steps_are_replaced_and_finished_ones_kept(self) -> None:
+        real = (
+            "# Plan\n\n- [ ] T1 done\n- [ ] T2 new\n- [ ] T4 added\n\n## How to try it\n- open it\n"
+        )
+        merged = tl.merge_open_tasks(self.COPY, real)
+        assert merged is not None
+        assert "- [x] T1 done" in merged and "- [ ] T1 done" not in merged
+        assert "T2 new" in merged and "T4 added" in merged
+        assert "T2 old" not in merged and "more about T2" not in merged and "T3 old" not in merged
+        assert merged.index("T4 added") < merged.index("## How to try it")
+
+    def test_no_change_returns_none(self) -> None:
+        real = "# Plan\n\n- [ ] T1 done\n- [ ] T2 old\n  more about T2\n- [ ] T3 old\n"
+        assert tl.merge_open_tasks(self.COPY, real) is None
+
+    async def test_the_loop_asks_for_changes_before_every_step(self, repo: Path) -> None:
+        calls = 0
+
+        async def before_round() -> None:
+            nonlocal calls
+            calls += 1
+
+        fake = _Fake(repo, [_done, _done])
+        await fake.loop(before_round=before_round).run()
+        assert calls >= 2  # before every step, and once more before finishing

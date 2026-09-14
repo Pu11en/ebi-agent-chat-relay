@@ -67,3 +67,15 @@ async def test_not_a_repo_raises(tmp_path: Path) -> None:
     (tmp_path / "PLAN.md").write_text("- [ ] a\n")
     with pytest.raises(wc.WorkCopyError):
         await wc.create_work_copy(tmp_path, tmp_path / "PLAN.md", root=tmp_path / "c")
+
+
+async def test_keep_works_when_the_plan_was_never_saved(repo: Path, tmp_path: Path) -> None:
+    (repo / "NEW-PLAN.md").write_text("- [ ] a\n")  # written and built in one breath
+    copy = await wc.create_work_copy(repo, repo / "NEW-PLAN.md", root=tmp_path / "copies")
+    copy.plan_path.write_text("- [x] a\n")
+    _git(copy.path, "commit", "-qam", "tick")
+
+    ok, msg = await wc.keep_work(copy)
+
+    assert ok, msg
+    assert (repo / "NEW-PLAN.md").read_text() == "- [x] a\n"

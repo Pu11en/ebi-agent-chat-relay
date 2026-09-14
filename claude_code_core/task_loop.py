@@ -97,6 +97,55 @@ def parse_status(text: str | None) -> tuple[Status, str]:
     return Status(word), m.group(2).strip()
 
 
+def _task_blocks(lines: list[str]) -> list[tuple[int, int, bool, str]]:
+    """Each task as (first line, end line, ticked, label); indented lines belong to it."""
+    blocks: list[tuple[int, int, bool, str]] = []
+    i = 0
+    while i < len(lines):
+        m = _TASK_RE.match(lines[i])
+        if m is None:
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j][:1] in (" ", "\t") and lines[j].strip():
+            if _TASK_RE.match(lines[j]):
+                break
+            j += 1
+        blocks.append((i, j, m.group(1) != " ", m.group(2).strip()))
+        i = j
+    return blocks
+
+
+def merge_open_tasks(copy_text: str, real_text: str) -> str | None:
+    """The build's plan with its open steps replaced by the planner's, or None if unchanged.
+
+    Finished steps stay exactly as the build left them; every step the build
+    hasn't done comes from the real plan, where the planning session edits it.
+    """
+    copy_lines = copy_text.splitlines(keepends=True)
+    real_lines = real_text.splitlines(keepends=True)
+    done = {label for _s, _e, ticked, label in _task_blocks(copy_lines) if ticked}
+    wanted: list[str] = []
+    for start, end, ticked, label in _task_blocks(real_lines):
+        if not ticked and label not in done:
+            block = real_lines[start:end]
+            if block and not block[-1].endswith("\n"):
+                block[-1] += "\n"
+            wanted += block
+    open_blocks = [(s, e) for s, e, ticked, _label in _task_blocks(copy_lines) if not ticked]
+    if open_blocks:
+        insert_at = open_blocks[0][0]
+        drop = {i for s, e in open_blocks for i in range(s, e)}
+    else:
+        last = _task_blocks(copy_lines)
+        insert_at = last[-1][1] if last else len(copy_lines)
+        drop = set()
+    kept = [ln for i, ln in enumerate(copy_lines) if i not in drop and i < insert_at]
+    rest = [ln for i, ln in enumerate(copy_lines) if i not in drop and i >= insert_at]
+    merged = "".join(kept + wanted + rest)
+    return None if merged == copy_text else merged
+
+
 def count_tasks(plan_text: str) -> tuple[int, int]:
     """Return ``(checked, unchecked)`` checkbox counts in *plan_text*."""
     checked = unchecked = 0
@@ -352,6 +401,7 @@ class TaskLoop:
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         max_retries: int = DEFAULT_MAX_RETRIES,
         on_limit: OnLimit | None = None,
+        before_round: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.plan_path = plan_path
         self.repo_dir = repo_dir
@@ -362,6 +412,8 @@ class TaskLoop:
         self.max_rounds = max_rounds
         self.max_retries = max_retries
         self._on_limit = on_limit
+        #: Runs before every step — the frontend pulls in the planner's plan edits.
+        self._before_round = before_round
         self._stop = False
         #: Things the person typed while a task was running.
         self._notes: list[str] = []
@@ -396,6 +448,11 @@ class TaskLoop:
         retries = 0
         rounds = 0
         while True:
+            if self._before_round is not None:
+                try:
+                    await self._before_round()
+                except Exception:
+                    logger.warning("task loop: before-round hook failed", exc_info=True)
             before = await take_snapshot(self.repo_dir, self.plan_path)
             total = before.checked + before.unchecked
             if before.unchecked == 0:

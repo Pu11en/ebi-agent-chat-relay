@@ -98,15 +98,45 @@ async def keep_work(copy: WorkCopy) -> tuple[bool, str]:
     Local only — nothing is pushed. Refuses (and loses nothing) when the
     project has unsaved changes or the merge conflicts.
     """
+    plan_rel = str(copy.plan_path.relative_to(copy.path))
+    real_plan = copy.source_repo / plan_rel
+    if (
+        real_plan.exists()
+        and not (await _git(copy.source_repo, "ls-files", "--", plan_rel)).strip()
+    ):
+        # A plan written and built in one breath was never saved; save it now so
+        # the finished plan can come back over it.
+        await _git(copy.source_repo, "add", "--", plan_rel)
+        await _git(copy.source_repo, "commit", "-q", "-m", "plan: saved before keeping the build")
     status = await _git(copy.source_repo, "status", "--porcelain", "--untracked-files=no")
-    if status.strip():
+    changed = [line[3:].strip() for line in status.splitlines() if line.strip()]
+    if changed == [plan_rel]:
+        # The planning session edited the plan while the build ran; the build
+        # already took those edits in, so save them and carry on.
+        await _git(
+            copy.source_repo,
+            "commit",
+            "-q",
+            "-m",
+            "plan: edits from the planning session",
+            "--",
+            plan_rel,
+        )
+    elif changed:
         return False, "your project has unsaved changes, so I didn't combine anything yet"
     try:
         await _git(copy.source_repo, "merge", "--no-edit", copy.branch)
     except WorkCopyError as exc:
-        with contextlib.suppress(WorkCopyError):
-            await _git(copy.source_repo, "merge", "--abort")
-        return False, f"the work didn't combine cleanly ({exc})"
+        conflicted = await _git(copy.source_repo, "diff", "--name-only", "--diff-filter=U")
+        if conflicted.split() == [plan_rel]:
+            # Only the plan clashed: the build's copy has every step, ticked or not.
+            await _git(copy.source_repo, "checkout", "--theirs", "--", plan_rel)
+            await _git(copy.source_repo, "add", "--", plan_rel)
+            await _git(copy.source_repo, "commit", "-q", "--no-edit")
+        else:
+            with contextlib.suppress(WorkCopyError):
+                await _git(copy.source_repo, "merge", "--abort")
+            return False, f"the work didn't combine cleanly ({exc})"
     await remove_work_copy(copy)
     return True, "added to your project (on this computer only — nothing went to GitHub)"
 

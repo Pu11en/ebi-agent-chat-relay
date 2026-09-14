@@ -40,6 +40,7 @@ from claude_code_core.task_loop import (
     is_looks_good,
     list_plans,
     list_plans_across,
+    merge_open_tasks,
     needs_you,
     open_tasks,
     parked_choice,
@@ -590,6 +591,31 @@ class TaskLoopCog(commands.Cog):
             reply, _woken = await self._wait_or_wake(holder[0], thread.id, ASK_TIMEOUT_SECONDS)
             return reply  # None when a new plan closes this build
 
+        real_plan = Path(record.plan_path)
+
+        def read_real() -> str | None:
+            try:
+                return real_plan.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+
+        last_seen = [read_real()]
+
+        async def pull_plan_changes() -> None:
+            """The planning session edits the real plan; bring its open steps across."""
+            real_text = read_real()
+            if real_text is None or real_text == last_seen[0]:
+                return
+            last_seen[0] = real_text
+            copy_text = work_plan.read_text(encoding="utf-8", errors="replace")
+            merged = merge_open_tasks(copy_text, real_text)
+            if merged is None:
+                return
+            work_plan.write_text(merged, encoding="utf-8")
+            await commit_all(work_dir, "gowork: plan changes from the planning session")
+            with contextlib.suppress(discord.HTTPException):
+                await thread.send("-# 📝 Picked up changes to the steps from the planning session.")
+
         async def on_limit(message: str) -> bool:
             return await self._limit_hit(holder[0], message) if holder else False
 
@@ -600,6 +626,7 @@ class TaskLoopCog(commands.Cog):
             ask=ask,
             report=report,
             on_limit=on_limit,
+            before_round=pull_plan_changes,
         )
         repo_dir = Path(record.repo_dir)
         copy = WorkCopy(

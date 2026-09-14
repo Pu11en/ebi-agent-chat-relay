@@ -102,13 +102,29 @@ class TestKeepTheWork:
         assert _git(repo, "branch", "--list", copy.branch).strip() == ""
 
     async def test_unsaved_changes_block_it(self, repo: Path, tmp_path: Path) -> None:
+        (repo / "notes.txt").write_text("v1\n")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "notes"], check=True)
         copy = await wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "c")
-        (repo / "PLAN.md").write_text("edited by someone\n")
+        (repo / "notes.txt").write_text("edited by someone\n")  # not the plan
 
         ok, msg = await wc.keep_work(copy)
 
         assert not ok and "unsaved" in msg
         assert copy.path.exists()  # nothing lost
+
+    async def test_planner_edits_to_the_plan_do_not_block_it(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        copy = await wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "c")
+        (repo / "PLAN.md").write_text("- [ ] a\n- [ ] b from the planner\n")
+        copy.plan_path.write_text("- [x] a\n- [x] b from the planner\n")
+        subprocess.run(["git", "-C", str(copy.path), "commit", "-qam", "tick"], check=True)
+
+        ok, msg = await wc.keep_work(copy)
+
+        assert ok, msg
+        assert (repo / "PLAN.md").read_text() == "- [x] a\n- [x] b from the planner\n"
 
 
 class TestStartCardHelpers:
