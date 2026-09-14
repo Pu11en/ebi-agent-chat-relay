@@ -95,7 +95,7 @@ class TestStartLoop:
         assert "- [x]" in (repo / "PLAN.md").read_text()
         assert not work_dir.exists()
         assert chat.run_fresh_turn.await_count == 1
-        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
+        posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "Task 1 of 1 done" in posted
         assert "All 1 tasks are done" in posted
         assert cog.running == []
@@ -160,7 +160,7 @@ class TestPings:
             await asyncio.wait_for(cog.running[0].task, 10)
 
         assert thread.id in chat._get_dashboard.return_value.quiet_thread_ids
-        texts = [str(c.args[0]) for c in channel.send.call_args_list]
+        texts = [str(c.args[0]) for c in thread.send.call_args_list if c.args]
         done_line = next(t for t in texts if "Task 1 of 1 done" in t)
         all_done = next(t for t in texts if "All 1 tasks are done" in t)
         end_line = next(t for t in texts if "is finished" in t)
@@ -348,7 +348,7 @@ class TestResume:
 
         chat.spawn_session.assert_not_called()  # same thread, no new one
         assert chat.run_fresh_turn.await_count == 1
-        posted = " ".join(str(c.args[0]) for c in report_channel.send.call_args_list)
+        posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "Resuming after a restart: Task 1 of 1" in posted
 
     async def test_gone_copy_is_dropped_not_resumed(self, repo: Path) -> None:
@@ -400,7 +400,7 @@ class TestEnding:
         await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
-        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
+        posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "is finished" in posted
         assert "- [x]" in (repo / "PLAN.md").read_text()  # the work is in the project now
         thread.delete.assert_awaited()
@@ -594,7 +594,7 @@ class TestCards:
         end = _embeds(thread)[-1].description or ""  # the card is in the build's thread
         assert "✅ Open the page — it loads" in end
         assert "❌ Type 3 + 4 — shows 8" in end
-        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "is finished" in posted
         assert "localhost" not in posted
 
@@ -784,7 +784,7 @@ class TestStartedByWords:
         await cog.start_loop(channel, str(repo / "PLAN.md"))  # no notify_user_id
         await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
-        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "<@42>" in posted
 
 

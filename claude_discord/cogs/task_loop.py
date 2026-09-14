@@ -500,8 +500,9 @@ class TaskLoopCog(commands.Cog):
         plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
         with contextlib.suppress(discord.HTTPException):
             await report_target.send(
-                f"▶️ Started. The work happens in {thread.mention}; I'll ping you only if "
-                "I need you, and when it's finished.",
+                f"▶️ Started. Everything about this build happens in {thread.mention}: each "
+                "step, and any question for you (I'll ping you there). This channel only "
+                "gets the final result.",
                 embed=plan_card(plan_text, plan.name, harness, model),
             )
         return thread
@@ -530,8 +531,10 @@ class TaskLoopCog(commands.Cog):
                 if notify_user_id and text.startswith(_PING_PREFIXES)
                 else ""
             )
+            # Everything about the build is said in the build's own thread; the
+            # starting channel only gets the start and the final result.
             with contextlib.suppress(discord.HTTPException):
-                await report_target.send(f"{text} · {thread.mention}{ping}")
+                await thread.send(f"{text}{ping}")
 
         rounds = 0
         recaps: list[str] = []
@@ -554,6 +557,10 @@ class TaskLoopCog(commands.Cog):
             recap = _recap_line(result.get("text"))
             if recap:
                 recaps.append(recap)
+            if parse_status(result.get("text"))[0] == Status.DONE:
+                # The bot's own check can take a while; say so, so it never looks stuck.
+                with contextlib.suppress(discord.HTTPException):
+                    await thread.send("-# 🔎 Checking the work, then I'll start the next step…")
             return result.get("text"), result.get("error")
 
         async def run_session(prompt: str, label: str) -> tuple[str | None, str | None]:
@@ -576,7 +583,6 @@ class TaskLoopCog(commands.Cog):
             mention = f"<@{notify_user_id}> " if notify_user_id else ""
             with contextlib.suppress(discord.HTTPException):
                 await thread.send(f"❓ {mention}{question}\n-# Just type your answer here.")
-            await report(f"❓ Needs your answer: {question}")
             if not holder:
                 return await self.wait_for_reply(thread.id, timeout=ASK_TIMEOUT_SECONDS)
             reply, _woken = await self._wait_or_wake(holder[0], thread.id, ASK_TIMEOUT_SECONDS)
@@ -682,7 +688,7 @@ class TaskLoopCog(commands.Cog):
             logger.exception("task loop crashed in %s", running.repo_dir)
             self._store.remove(str(running.repo_dir))
             with contextlib.suppress(Exception):
-                await report(f"💥 Task loop crashed: {exc}")
+                await running.report_target.send(f"💥 The build crashed: {exc}")
             raise
         finally:
             self._running.pop(running.repo_dir, None)
@@ -710,7 +716,6 @@ class TaskLoopCog(commands.Cog):
                 f"🏁 **{running.repo_dir.name} is finished**{mention}",
                 embed=finished_card(running.repo_dir.name, checked, running.recaps or [], results),
             )
-        await report(f"🏁 **{running.repo_dir.name} is finished**. Have a look in its thread")
 
         running.in_review = True
         try:
@@ -817,7 +822,6 @@ class TaskLoopCog(commands.Cog):
         )
         with contextlib.suppress(discord.HTTPException):
             await running.thread.send(ask[:1900])
-        await running.report(f"{why.splitlines()[0][:300]} Answer in the build's thread")
         reply = await self._wait_parked(running, ask)
         if reply is None:  # a new plan was started in this project
             return await self._finish_early(running)
@@ -1209,7 +1213,6 @@ class TaskLoopCog(commands.Cog):
         for chunk in _chunks(lines):
             with contextlib.suppress(discord.HTTPException):
                 await thread.send(chunk)
-        await running.report("⏸️ Usage limit hit. Answer in the build's thread")
         while True:
             reply, _woken = await self._wait_or_wake(running, thread.id, ASK_TIMEOUT_SECONDS)
             if reply is None:
