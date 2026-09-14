@@ -49,7 +49,6 @@ from claude_code_core.task_loop import (
     plan_try_checks,
     project_for_thread,
     project_of,
-    review_prompt,
     run_check,
     short_label,
     skip_task,
@@ -234,10 +233,13 @@ def finished_card(name: str, done: int, recaps: list[str], results: list[tuple[s
     if fails:
         lines.append(
             f"**{len(fails)} check{'s' if len(fails) > 1 else ''} failed.** Type **fix** and "
-            "I'll fix it, **looks good** to keep it anyway, or tell me what's wrong."
+            "I'll fix it, or **looks good** to keep it anyway."
         )
     else:
-        lines.append("Type **looks good** to keep it, or tell me what's wrong.")
+        lines.append("Type **looks good** to keep it.")
+    lines.append(
+        "This thread is a normal chat now: ask me anything, test it with me, or ask for changes."
+    )
     return discord.Embed(
         title=f"🏁 {name} is finished",
         description=_fit("\n".join(lines)),
@@ -698,8 +700,8 @@ class TaskLoopCog(commands.Cog):
 
         Nothing to open: the card says what got done and what passed. "looks good"
         adds the work to the project on this computer (never GitHub); "fix" turns
-        failed checks into a fix step; anything else becomes a fix step as typed.
-        Returns "kept" or "fix".
+        failed checks into a fix step. Anything else is a normal chat in the thread,
+        working on the build's copy. Returns "kept" or "fix".
         """
         assert running.copy is not None
         # The card and the "looks good?" wait live in the build's own thread; the
@@ -717,19 +719,30 @@ class TaskLoopCog(commands.Cog):
                 embed=finished_card(running.repo_dir.name, checked, running.recaps or [], results),
             )
 
+        def is_verdict(text: str) -> bool:
+            """Keep, throw away or a bare "fix". Anything else is a normal chat."""
+            return (
+                is_looks_good(text)
+                or parked_choice(text) in ("throw", "finish")
+                or clear_reply(text) in _FIX_WORDS
+            )
+
         running.in_review = True
         try:
             while True:
-                reply, woken = await self._wait_or_wake(
-                    running, running.worker_thread_id, VERDICT_REMIND_SECONDS
-                )
+                try:
+                    reply, woken = await self._wait_or_wake(
+                        running, running.worker_thread_id, VERDICT_REMIND_SECONDS, is_verdict
+                    )
+                except PickDeclinedError:
+                    continue  # a normal chat message; the chat answers it in this thread
                 if woken:
                     reply = "looks good"  # a new plan was started: keep this finished one
                 if reply is None:
                     with contextlib.suppress(discord.HTTPException):
                         await here.send(
                             f"⏰ Still waiting: {running.repo_dir.name} is finished. Type "
-                            f"**looks good** to keep it, or tell me what's wrong.{mention}"
+                            f"**looks good** to keep it, or just ask me here.{mention}"
                         )
                     continue
                 verdict = parked_choice(reply)
@@ -740,24 +753,18 @@ class TaskLoopCog(commands.Cog):
                     with contextlib.suppress(Exception):
                         await running.thread.delete()
                     return "kept"
-                decision = "keep" if is_looks_good(reply) or verdict == "finish" else None
-                if decision is None:
-                    # Anything else is read by the AI: a question gets an answer, a
-                    # change becomes new plan steps, a yes keeps it.
-                    decision = await self._read_review_reply(running, reply, fails)
-                if decision == "fix":
-                    await report("🔧 Got it, adding that to the plan and working on it.")
-                    return "fix"
-                if decision == "talk":
-                    continue  # answered in the thread; still waiting for a verdict
-                if decision is None:  # the AI couldn't be reached: the reply is a fix step
-                    what = reply
-                    if reply.strip().lower().rstrip(".!") in _FIX_WORDS and fails:
-                        what = "make these checks pass: " + "; ".join(fails)
+                if clear_reply(reply) in _FIX_WORDS:
+                    what = (
+                        "make these checks pass: " + "; ".join(fails)
+                        if fails
+                        else "fix what the last checks found"
+                    )
                     append_fix_task(running.copy.plan_path, what)
                     await commit_all(running.copy.path, f"gowork: fix requested: {what[:60]}")
                     await report(f"🔧 Got it, fixing: “{what[:200]}”")
                     return "fix"
+                # Changes made while chatting after the build are part of the build.
+                await commit_all(running.copy.path, "gowork: changes from the chat afterwards")
                 ok, message = await keep_work(running.copy)
                 if not ok:
                     with contextlib.suppress(discord.HTTPException):
@@ -773,34 +780,6 @@ class TaskLoopCog(commands.Cog):
                 return "kept"
         finally:
             running.in_review = False
-
-    async def _read_review_reply(
-        self, running: _Running, reply: str, fails: list[str]
-    ) -> str | None:
-        """Let the AI read a reply to the finished card: "fix", "talk", "keep" or None.
-
-        None means the AI couldn't be reached, and the caller falls back to
-        treating the reply as a fix step.
-        """
-        assert running.copy is not None
-        if running.run_session is None:
-            return None
-        plan = running.copy.plan_path
-        prompt = review_prompt(plan, plan.with_name(f"{plan.stem}.progress.md"), reply, fails)
-        try:
-            text, error = await running.run_session(prompt, "💬 Reading your reply…")
-        except Exception:
-            logger.warning("gowork: couldn't read the review reply", exc_info=True)
-            return None
-        status, _detail = parse_status(text)
-        if status == Status.PLAN:
-            await commit_all(running.copy.path, "gowork: steps added from your reply")
-            return "fix"
-        if status == Status.DONE:
-            return "keep"
-        if status == Status.PAUSE:
-            return "talk"
-        return None if error else "talk"
 
     async def _park(self, running: _Running, outcome: LoopOutcome) -> str:
         """A build that stopped short waits for the person. Returns "again" or "gone"."""

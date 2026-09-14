@@ -114,4 +114,6 @@ async def keep_work(copy: WorkCopy) -> tuple[bool, str]:
 async def commit_all(path: Path, message: str) -> None:
     """Commit every tracked change in *path* (used when a fix task is added)."""
     await _git(path, "add", "-A")
+    if not (await _git(path, "status", "--porcelain")).strip():
+        return  # nothing changed
     await _git(path, "commit", "-q", "-m", message)

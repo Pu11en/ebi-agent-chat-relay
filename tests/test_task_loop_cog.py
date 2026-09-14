@@ -406,33 +406,30 @@ class TestEnding:
         thread.delete.assert_awaited()
         assert cog._store.all() == []
 
-    async def test_anything_else_becomes_a_fix_task_and_it_goes_again(self, repo: Path) -> None:
+    async def test_after_the_build_the_thread_is_a_normal_chat(self, repo: Path) -> None:
         cog, chat, thread = _cog_with_chat()
         thread.delete = AsyncMock()
-        original = chat.run_fresh_turn.side_effect
-
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
-            if "replied to the finished build" in prompt:  # the AI reads the reply
-                plan = Path(working_dir) / "PLAN.md"
-                plan.write_text(plan.read_text() + "- [ ] Fix: the output is ugly\n")
-                await result_sink("added it\nPLAN: added a fix step", None)
-                return
-            await original(seed, thread_, prompt, working_dir=working_dir, result_sink=result_sink)
-
-        chat.run_fresh_turn = AsyncMock(side_effect=turn)
         channel = self._channel()
         await cog.start_loop(channel, str(repo / "PLAN.md"))
-        await _type_when_asked(cog, 555, "the output is ugly")
-        # the worker fixes it (the fake ticks the new Fix task), then asks again
-        for _ in range(500):
-            if chat.run_fresh_turn.await_count >= 3:
+        for _ in range(500):  # wait for the finished card
+            if cog._waiters.get(555) is not None:
                 break
             await asyncio.sleep(0.01)
+
+        question = MagicMock()
+        question.channel.id = 555
+        question.content = "can i ask you questions here?"
+        assert cog.take_message(question) is False  # the normal chat answers it
+        # ...and a change made in that chat is part of the build
+        work_dir = Path(chat.spawn_session.await_args.kwargs["working_dir"])
+        (work_dir / "chat-edit.txt").write_text("made while chatting")
+
         await _type_when_asked(cog, 555, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
-        assert chat.run_fresh_turn.await_count == 3  # task, reading the reply, the fix
-        assert "Fix: the output is ugly" in (repo / "PLAN.md").read_text()
+        assert chat.run_fresh_turn.await_count == 1  # no fix step was run
+        assert "Fix:" not in (repo / "PLAN.md").read_text()
+        assert (repo / "chat-edit.txt").read_text() == "made while chatting"
         thread.delete.assert_awaited()
 
 
@@ -1206,34 +1203,3 @@ class TestPausedBuildListens:
         said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "Paused" in said and "planning the bot first" in said
         assert "remember facts" in chat.run_fresh_turn.await_args_list[1].args[2]
-
-
-class TestFinishedCardListens:
-    async def test_a_question_on_the_finished_card_gets_an_answer_not_a_fix_step(
-        self, repo: Path
-    ) -> None:
-        cog, chat, thread = _cog_with_chat()
-        thread.delete = AsyncMock()
-        seen: list[str] = []
-        original = chat.run_fresh_turn.side_effect
-
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
-            if "replied to the finished build" in prompt:
-                seen.append(prompt)
-                await result_sink("It adds a calculator.\nPAUSE: answered their question", None)
-                return
-            await original(seed, thread_, prompt, working_dir=working_dir, result_sink=result_sink)
-
-        chat.run_fresh_turn = AsyncMock(side_effect=turn)
-        channel = MagicMock(spec=discord.TextChannel)
-        channel.id = 1
-        channel.send = AsyncMock()
-        await cog.start_loop(channel, str(repo / "PLAN.md"))
-
-        await _type_when_asked(cog, thread.id, "what did this change?")
-        await _type_when_asked(cog, thread.id, "looks good")
-        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
-
-        assert seen and "what did this change?" in seen[0]
-        assert "fix requested" not in (repo / "PLAN.md").read_text()
-        assert "Fix" not in (repo / "PLAN.md").read_text()

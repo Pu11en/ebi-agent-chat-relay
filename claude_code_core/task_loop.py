@@ -533,31 +533,6 @@ def is_looks_good(reply: str) -> bool:
     return bool(_LOOKS_GOOD_RE.match(reply or ""))
 
 
-def review_prompt(plan_path: Path, progress_path: Path, reply: str, fails: list[str]) -> str:
-    """One round that reads the person's reply to the finished card and acts on it."""
-    failed = "; ".join(fails) if fails else "none"
-    return "\n".join(
-        [
-            "[gowork build worker — for this worker only] Every task in this build is "
-            "done and the person was shown the finished card. They replied to the "
-            f'finished build: "{reply}"',
-            "",
-            f"The plan is {plan_path}; the progress log is {progress_path}. Checks that "
-            f"failed at the end: {failed}.",
-            "",
-            "Work out what they want and do only that:",
-            "- A question: answer it in plain words from the plan, the progress log and "
-            "the git log. Change nothing. End with `PAUSE: answered`.",
-            "- Changes or fixes: add them as new unchecked tasks (`- [ ]`) at the end of "
-            "the plan, commit, and end with `PLAN: <what you added>`. Don't do the work yet.",
-            "- They're happy and want to keep it: end with `DONE`.",
-            "- Unclear: explain your reading with a concrete example and end with "
-            "`PAUSE: <your question>`.",
-            "Never push, deploy or spend money.",
-        ]
-    )
-
-
 def append_fix_task(plan_path: Path, what: str) -> None:
     """Turn "something's off" into one more unticked task at the end of the plan."""
     text = plan_path.read_text(encoding="utf-8")
