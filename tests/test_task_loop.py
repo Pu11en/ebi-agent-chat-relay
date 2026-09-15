@@ -534,3 +534,30 @@ class TestGoalLines:
         assert checks[0].startswith("The goal is met:")
         assert "plays the newest recording" in checks[0]
         assert "open the page" in checks
+
+
+class TestStepAiPicker:
+    OPTIONS = [
+        ("claude", "haiku", "fastest"),
+        ("claude", "opus", "most capable"),
+        ("codex", "gpt-5.5", ""),
+    ]
+
+    def test_prompt_lists_the_step_goal_and_lettered_options(self) -> None:
+        p = tl.step_ai_prompt("T2 fix the login bug", "Drew can sign in", self.OPTIONS)
+        assert "T2 fix the login bug" in p and "Drew can sign in" in p
+        assert "A) claude · haiku — fastest" in p and "C) codex · gpt-5.5" in p
+
+    @pytest.mark.parametrize(
+        "reply,expected",
+        [
+            ("B", 1),
+            ("b) it's hard", 1),
+            ("A — a simple edit", 0),
+            ("C", 2),
+            ("Z", None),
+            ("", None),
+        ],
+    )
+    def test_the_pick_is_read_from_the_first_letter(self, reply: str, expected: int | None) -> None:
+        assert tl.parse_pick(reply, 3) == expected

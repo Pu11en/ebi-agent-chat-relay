@@ -718,13 +718,15 @@ class TestAiPickerByLetter:
         channel.id = 9
         channel.send = AsyncMock()
         picker = asyncio.create_task(cog._ask_harness(channel, "claude"))
-        await _type_when_asked(cog, 9, "D")
+        await _type_when_asked(cog, 9, "E")  # A per step, B same, then the list
         assert await asyncio.wait_for(picker, 5) == ("codex", "gpt-6")
         listing = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
-        assert "A)" in listing and "same" in listing.lower()
-        assert "deepseek-pro" in listing and "E)" in listing
+        assert "A)" in listing and "each step" in listing and "same" in listing.lower()
+        assert "deepseek-pro" in listing and "F)" in listing
 
-    async def test_a_means_keep_the_threads_ai(self) -> None:
+    async def test_a_means_the_bot_picks_per_step(self) -> None:
+        from claude_discord.cogs.task_loop import PER_STEP
+
         cog, _, _ = _cog_with_chat()
 
         async def catalog() -> list[tuple[str, str, str]]:
@@ -736,6 +738,20 @@ class TestAiPickerByLetter:
         channel.send = AsyncMock()
         picker = asyncio.create_task(cog._ask_harness(channel, "dsh"))
         await _type_when_asked(cog, 9, "a")
+        assert await asyncio.wait_for(picker, 5) == (PER_STEP, None)
+
+    async def test_b_means_keep_the_threads_ai(self) -> None:
+        cog, _, _ = _cog_with_chat()
+
+        async def catalog() -> list[tuple[str, str, str]]:
+            return [("claude", "sonnet", "")]
+
+        cog._ai_choices = catalog  # type: ignore[method-assign]
+        channel = MagicMock()
+        channel.id = 9
+        channel.send = AsyncMock()
+        picker = asyncio.create_task(cog._ask_harness(channel, "dsh"))
+        await _type_when_asked(cog, 9, "b")
         assert await asyncio.wait_for(picker, 5) == ("dsh", None)
 
     async def test_typing_the_name_still_works(self) -> None:
@@ -1379,3 +1395,47 @@ class TestGoalNotMet:
         card = _embeds(thread)[0].description or ""
         assert "isn't met" in card and "add a play button" in card
         assert "- [x] Task 2: add a play button" in (repo / "PLAN.md").read_text()
+
+
+class TestRightAiPerStep:
+    async def test_each_step_gets_the_ai_the_picker_chose(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        chat._backend_settings = settings
+        cog._ai_choices = AsyncMock(  # type: ignore[method-assign]
+            return_value=[("claude", "haiku", "fastest"), ("codex", "gpt-5.5", "strong")]
+        )
+        cog._quick_ai = AsyncMock(return_value="B — it's a tricky change")
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"), per_step_ai=True)
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        settings.set_backend.assert_any_await("codex", thread_id=thread.id)
+        settings.set_model.assert_any_await("codex", "gpt-5.5", thread_id=thread.id)
+        said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "codex · gpt-5.5" in said and "tricky change" in said
+        assert "Task 1: a" in cog._quick_ai.await_args.args[0]
+
+    async def test_when_the_picker_fails_the_build_keeps_its_ai(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        chat._backend_settings = None
+        cog._quick_ai = AsyncMock(return_value=None)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"), per_step_ai=True)
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        assert chat.run_fresh_turn.await_count >= 1
+
+    def test_start_list_offers_per_step_first(self) -> None:
+        from claude_discord.cogs.task_loop import PER_STEP
+
+        assert PER_STEP == "per-step"

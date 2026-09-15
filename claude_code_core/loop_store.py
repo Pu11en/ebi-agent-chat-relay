@@ -41,6 +41,8 @@ class LoopRecord:
     #: A plan with no Goal line starts with the goal interview (people starting a
     #: build ask for it; an API caller that already knows the goal need not).
     ask_goal: bool = False
+    #: Before every step a quick AI picks which AI does it (idea 3).
+    per_step_ai: bool = False
 
 
 class LoopStore:

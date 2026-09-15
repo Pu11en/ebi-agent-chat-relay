@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +50,7 @@ from claude_code_core.task_loop import (
     parked_choice,
     parse_check_results,
     parse_new_steps,
+    parse_pick,
     parse_status,
     plan_check_command,
     plan_goal,
@@ -58,6 +59,7 @@ from claude_code_core.task_loop import (
     run_check,
     short_label,
     skip_task,
+    step_ai_prompt,
     take_snapshot,
 )
 from claude_code_core.work_copy import (
@@ -87,6 +89,10 @@ SWITCH_TIMEOUT_SECONDS = 45 * 60
 PICK_TIMEOUT_SECONDS = 10 * 60
 #: After "wait" on a usage limit, try the same AI again this much later.
 LIMIT_WAIT_SECONDS = 30 * 60
+#: The start list's first choice: a quick AI picks the AI for each step.
+PER_STEP = "per-step"
+#: How long the quick step-AI picker may take before the build keeps its AI.
+PICK_AI_TIMEOUT_SECONDS = 60
 #: The goal interview: up to 5 questions, the approval, and a couple of changes.
 GOAL_INTERVIEW_ROUNDS = 9
 #: Replies to a usage limit that mean "wait for it to reset".
@@ -201,13 +207,13 @@ def wants_close(text: str) -> bool:
 
 
 def _match_ai(
-    reply: str, options: list[tuple[str, str, str]], current: str | None
+    reply: str, options: list[tuple[str, str, str]], current: str | None, first: int = 1
 ) -> tuple[str, str | None] | None:
-    """A lettered choice from *options* (B is the first) or a typed AI name."""
+    """A lettered choice from *options* (letter *first* is the first) or a typed AI name."""
     m = _LETTER_REPLY_RE.match(reply)
     if m is not None:
         wanted = m.group(1).upper()
-        for i, (harness, model, _note) in enumerate(options, start=1):
+        for i, (harness, model, _note) in enumerate(options, start=first):
             if choice_letter(i) == wanted:
                 return harness, model
     return parse_harness_reply(reply, current)
@@ -301,6 +307,10 @@ class _Running:
     wake: asyncio.Event | None = None
     #: Agree a goal with the person first when the plan has none.
     ask_goal: bool = False
+    #: A quick AI picks the AI for every step.
+    per_step_ai: bool = False
+    #: AIs that hit a usage limit during this build; the picker skips them.
+    limited: set[str] = field(default_factory=set)
     #: On a usage limit, switch to this AI by itself instead of asking.
     fallback: tuple[str, str | None] | None = None
 
@@ -476,6 +486,7 @@ class TaskLoopCog(commands.Cog):
         fallback_harness: str | None = None,
         fallback_model: str | None = None,
         ask_goal: bool = False,
+        per_step_ai: bool = False,
     ) -> discord.Thread:
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
@@ -528,6 +539,7 @@ class TaskLoopCog(commands.Cog):
             fallback_harness=fallback_harness,
             fallback_model=fallback_model,
             ask_goal=ask_goal,
+            per_step_ai=per_step_ai,
         )
         self._store.save(record)
         self._launch(record, thread, report_target)
@@ -537,7 +549,12 @@ class TaskLoopCog(commands.Cog):
                 f"▶️ Started. Everything about this build happens in {thread.mention}: each "
                 "step, and any question for you (I'll ping you there). This channel only "
                 "gets the final result.",
-                embed=plan_card(plan_text, plan.name, harness, model),
+                embed=plan_card(
+                    plan_text,
+                    plan.name,
+                    harness or ("the best AI per step" if per_step_ai else None),
+                    model,
+                ),
             )
         return thread
 
@@ -577,6 +594,8 @@ class TaskLoopCog(commands.Cog):
             nonlocal rounds
             rounds += 1
             now = await take_snapshot(work_dir, work_plan)
+            if holder and holder[0].per_step_ai and now.next_task:
+                await self._pick_step_ai(holder[0], now.next_task)
             seed = await thread.send(f"-# 🔁 Round {rounds} · next task: {now.next_task}")
             result: dict[str, str | None] = {}
 
@@ -676,6 +695,7 @@ class TaskLoopCog(commands.Cog):
             recaps=recaps,
             run_session=run_session,
             ask_goal=record.ask_goal,
+            per_step_ai=record.per_step_ai,
             fallback=(
                 (record.fallback_harness, record.fallback_model)
                 if record.fallback_harness
@@ -1236,6 +1256,9 @@ class TaskLoopCog(commands.Cog):
                     await report_to.send("Not started: I didn't get a harness to use.")
                 return None
             harness, model = picked
+        per_step = harness == PER_STEP
+        if per_step:
+            harness, model = None, None
         try:
             return await self.start_loop(
                 parent,
@@ -1247,6 +1270,7 @@ class TaskLoopCog(commands.Cog):
                 fallback_harness=fallback_harness,
                 fallback_model=fallback_model,
                 ask_goal=True,
+                per_step_ai=per_step,
             )
         except (ValueError, RuntimeError) as exc:
             with contextlib.suppress(discord.HTTPException):
@@ -1282,8 +1306,12 @@ class TaskLoopCog(commands.Cog):
         """
         options = await self._ai_choices()
         lines = ["Which AI should do the work? Just type its letter:"]
-        lines.append(f"**A)** Same as this thread ({current or 'its usual AI'})")
-        for i, (harness, model, note) in enumerate(options, start=1):
+        lines.append(
+            "**A)** Let the bot pick the best AI for each step: fast and cheap for easy "
+            "steps, the strongest for hard ones (recommended)"
+        )
+        lines.append(f"**B)** Same as this thread ({current or 'its usual AI'})")
+        for i, (harness, model, note) in enumerate(options, start=2):
             tail = f" — {note}" if note else ""
             lines.append(f"**{choice_letter(i)})** {harness} · `{model}`{tail}")
         for chunk in _chunks(lines):
@@ -1293,14 +1321,79 @@ class TaskLoopCog(commands.Cog):
             if reply is None:
                 return None
             m = _LETTER_REPLY_RE.match(reply)
-            if m is not None and m.group(1).upper() == "A" and current:
+            if m is not None and m.group(1).upper() == "A":
+                return PER_STEP, None
+            if m is not None and m.group(1).upper() == "B" and current:
                 return current, None
-            picked = _match_ai(reply, options, current)
+            picked = _match_ai(reply, options, current, first=2)
             if picked:
                 return picked
             with contextlib.suppress(discord.HTTPException):
                 await channel.send("Just type the letter of the AI you want, e.g. `B`.")
         return None
+
+    async def _quick_ai(self, prompt: str) -> str | None:
+        """One short answer from a fast, cheap Claude — the per-step AI picker.
+
+        Never raises: any failure is None, and the build keeps the AI it has.
+        """
+        runner: Any = getattr(self._chat(), "runner", None)
+        command = getattr(runner, "command", None) or "claude"
+        env = None
+        with contextlib.suppress(Exception):
+            env = runner._build_env()  # the same keys and overlay as real sessions
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                command,
+                "-p",
+                "--model",
+                "haiku",
+                "--",
+                prompt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                out, _err = await asyncio.wait_for(proc.communicate(), PICK_AI_TIMEOUT_SECONDS)
+            except TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                return None
+        except Exception:
+            logger.warning("gowork: the step-AI picker couldn't run", exc_info=True)
+            return None
+        if proc.returncode != 0:
+            return None
+        return out.decode(errors="replace").strip() or None
+
+    async def _pick_step_ai(self, running: _Running, step: str) -> None:
+        """Before a step: a quick AI picks which AI does it, and the thread switches."""
+        assert running.copy is not None
+        settings = getattr(self._chat(), "_backend_settings", None)
+        options = [
+            o
+            for o in await self._ai_choices()
+            if o[0] != "local" and "vision" not in o[1] and o[0] not in running.limited
+        ]
+        if not options:
+            return
+        goal, _done = plan_goal(
+            running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        )
+        reply = await self._quick_ai(step_ai_prompt(step, goal, options))
+        index = parse_pick(reply, len(options))
+        if index is None:
+            return  # keep the AI the build has
+        harness, model, _note = options[index]
+        if settings is not None:
+            await settings.set_backend(harness, thread_id=running.worker_thread_id)
+            await settings.set_model(harness, model, thread_id=running.worker_thread_id)
+        why = re.sub(r"^\W*[A-Za-z]\W*", "", (reply or "").splitlines()[0]).strip()
+        with contextlib.suppress(discord.HTTPException):
+            await running.thread.send(
+                f"-# 🤖 This step: {harness} · {model}" + (f" — {why[:120]}" if why else "")
+            )
 
     async def _limit_hit(self, running: _Running, message: str) -> bool:
         """The build's AI hit a usage limit: ask in its thread to switch AI or wait.
@@ -1316,6 +1409,7 @@ class TaskLoopCog(commands.Cog):
                 harness = await settings.current_backend(thread.id)
                 model = await settings.current_model(harness, thread.id)
                 current = " · ".join(x for x in (harness, model) if x)
+                running.limited.add(harness)  # the step picker leaves it out from now on
         fb = running.fallback
         if fb is not None and settings is not None:
             fb_label = " · ".join(x for x in fb if x)
@@ -1399,6 +1493,9 @@ class TaskLoopCog(commands.Cog):
             await interaction.followup.send("Not started: I didn't get a harness to use.")
             return
         harness, model = picked
+        per_step = harness == PER_STEP
+        if per_step:
+            harness, model = None, None
         try:
             thread = await self.start_loop(
                 parent,
@@ -1408,6 +1505,7 @@ class TaskLoopCog(commands.Cog):
                 harness=harness,
                 model=model,
                 ask_goal=True,
+                per_step_ai=per_step,
             )
         except (ValueError, RuntimeError) as exc:
             await interaction.followup.send(f"Could not start: {exc}")

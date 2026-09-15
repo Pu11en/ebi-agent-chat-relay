@@ -640,6 +640,41 @@ def goal_interview_prompt(
     return "\n".join(parts)
 
 
+def step_ai_prompt(step: str, goal: str | None, options: list[tuple[str, str, str]]) -> str:
+    """Ask a quick, cheap AI which of *options* should do *step*."""
+    lines = [
+        "Pick the AI that should do one step of a software build. Choose the cheapest, "
+        "fastest one that will still do this step well: simple edits, docs and "
+        "config → a fast model; tricky code, debugging or design → the most capable.",
+        "",
+        f"The step: {step}",
+    ]
+    if goal:
+        lines.append(f"The build's goal: {goal}")
+    lines += ["", "The AIs:"]
+    for i, (harness, model, note) in enumerate(options):
+        tail = f" — {note}" if note else ""
+        lines.append(f"{chr(ord('A') + i)}) {harness} · {model}{tail}")
+    lines += [
+        "",
+        "Answer with the letter first, then a few plain words why, e.g. "
+        "'B — a tricky change to the login code'. Nothing else.",
+    ]
+    return "\n".join(lines)
+
+
+_PICK_RE = re.compile(r"^\W*([A-Za-z])(?![A-Za-z])")
+
+
+def parse_pick(reply: str | None, count: int) -> int | None:
+    """The index the picker chose from its first letter, or None."""
+    m = _PICK_RE.match(reply or "")
+    if m is None:
+        return None
+    index = ord(m.group(1).upper()) - ord("A")
+    return index if 0 <= index < count else None
+
+
 def finished_checks(plan_text: str) -> list[str]:
     """What the bot checks at the end: the goal's done test first, then "How to try it"."""
     _goal, done = plan_goal(plan_text)

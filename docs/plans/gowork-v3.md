@@ -27,8 +27,8 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
   says why and proposes the missing steps; "add them" adds them and the build goes on.
 
 ## Ideas from the roadmap (in the doc's order)
-- [ ] **3 Right AI per step.** A step can name its AI; the start card shows it; Drew can
-  change it in plain words.
+- [x] **3 Right AI per step.** (Drew picked: the bot decides.) "A" on the start list lets a
+  quick, cheap AI pick the AI before every step; an AI that hit a usage limit is skipped.
 - [ ] **2 Parallel steps.** Steps marked independent run at the same time in their own copies,
   then merge.
 - [ ] **4 Smart unsticking.** Before asking Drew, a stuck step tries a stronger AI, then splits
