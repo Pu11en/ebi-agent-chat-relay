@@ -786,6 +786,25 @@ def parallel_prompt(plan_path: Path, step: str) -> str:
     return "\n".join(parts)
 
 
+def split_prompt(plan_path: Path, step: str, why: str) -> str:
+    """A step got stuck twice: replace it in the plan with smaller steps."""
+    return "\n".join(
+        [
+            "[gowork unsticking — for this session only] One step of this build got stuck "
+            f"twice, the second time on the strongest AI. The step: {step}",
+            f"Why it got stuck: {why}",
+            "",
+            f"Read the plan {plan_path}, its progress log and `git log --oneline -10`. "
+            "Replace that one step in the plan with 2–3 smaller steps, in the same place, "
+            "each small enough for one fresh session and each saying how to check it. "
+            "Keep the `- [ ]` format. Change nothing else, and do not do the work.",
+            "If the step needs something only the person can give (a key, a login, money, "
+            "a decision), don't split it: end with `STUCK: <what you need from them>`.",
+            "Commit the plan and end with: PLAN: <the new steps, in a few words>",
+        ]
+    )
+
+
 def tick_task(plan_path: Path, label: str) -> bool:
     """Tick the open task with exactly this *label*. False when there is none."""
     lines = plan_path.read_text(encoding="utf-8").splitlines(keepends=True)

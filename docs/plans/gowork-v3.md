@@ -32,8 +32,9 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
 - [x] **2 Parallel steps.** (Drew picked: a quick AI groups them.) Up to 3 independent steps
   run at the same time, each in its own copy and short-lived thread, then merge; a step that
   fails or clashes runs again on its own. The start card shows the groups.
-- [ ] **4 Smart unsticking.** Before asking Drew, a stuck step tries a stronger AI, then splits
-  itself into smaller steps.
+- [x] **4 Smart unsticking.** Before asking Drew, a stuck step tries the strongest AI (same kind
+  first), then a fresh session splits it into 2–3 smaller steps; then it asks. The build goes
+  back to its usual AI after. Steps that need only Drew (keys, money, decisions) aren't split.
 - [ ] **7 Learning.** A fixed record per step (AI, time, result, retries, why it stopped), a
   short "what to do differently" note per build, used by the next plan and by idea 3.
 - [ ] **1 Goal mode across builds.** With a goal, a finished build whose goal isn't met can

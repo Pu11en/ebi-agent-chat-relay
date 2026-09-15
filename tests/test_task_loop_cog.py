@@ -76,6 +76,7 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
     tmp = Path(tempfile.mkdtemp(prefix="gowork-test-"))
     cog = TaskLoopCog(bot, work_root=tmp / "copies", store=LoopStore(tmp / "loops.json"))
     cog._quick_ai = AsyncMock(return_value=None)  # never call a real AI in tests
+    cog.smart_unstick = False  # the TestSmartUnsticking tests turn it on
     return cog, chat, thread
 
 
@@ -1499,3 +1500,87 @@ class TestParallelSteps:
             side.delete.assert_awaited()
         card = _embeds(channel)[0].description or ""
         assert "at the same time" in card.lower()
+
+
+class TestSmartUnsticking:
+    def _setup(self, repo: Path, script: list[str]):  # noqa: ANN202
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        settings.current_backend = AsyncMock(return_value="claude")
+        settings.current_model = AsyncMock(return_value="sonnet")
+        chat._backend_settings = settings
+        cog._ai_choices = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                ("claude", "sonnet", "balanced"),
+                ("claude", "opus", "most capable"),
+                ("codex", "gpt-6", "most capable"),
+            ]
+        )
+        prompts: list[str] = []
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            prompts.append(prompt)
+            plan = Path(working_dir) / "PLAN.md"
+            if "checking finished work" in prompt:
+                await result_sink("PASS: ok — ok\nDONE", None)
+                return
+            action = script.pop(0) if script else "done"
+            if action == "stuck":
+                await result_sink("tried\nSTUCK: the tests keep failing", None)
+            elif action == "split":
+                plan.write_text(
+                    plan.read_text().replace(
+                        "- [ ] Task 1: a", "- [ ] Task 1a: first half\n- [ ] Task 1b: second half"
+                    )
+                )
+                _git(Path(working_dir), "commit", "-qam", "split")
+                await result_sink("split it\nPLAN: split into two", None)
+            else:
+                plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+                _git(Path(working_dir), "commit", "-qam", "tick")
+                await result_sink("done\nDONE", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        cog.smart_unstick = True
+        return cog, chat, thread, settings, prompts
+
+    async def _run(self, cog: TaskLoopCog, thread: MagicMock, repo: Path) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        return channel
+
+    async def test_a_stuck_step_is_tried_again_on_the_strongest_ai(self, repo: Path) -> None:
+        cog, chat, thread, settings, prompts = self._setup(repo, ["stuck", "done"])
+        await self._run(cog, thread, repo)
+        settings.set_model.assert_any_await("claude", "opus", thread_id=thread.id)
+        assert "keep failing" in prompts[1]
+        settings.set_model.assert_any_await("claude", "sonnet", thread_id=thread.id)  # back after
+        said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "I'm stuck" not in said
+
+    async def test_stuck_twice_splits_the_step(self, repo: Path) -> None:
+        cog, chat, thread, settings, prompts = self._setup(
+            repo, ["stuck", "stuck", "split", "done", "done"]
+        )
+        await self._run(cog, thread, repo)
+        assert "smaller steps" in prompts[2]
+        plan = (repo / "PLAN.md").read_text()
+        assert "- [x] Task 1a: first half" in plan and "- [x] Task 1b: second half" in plan
+
+    async def test_stuck_after_everything_asks_the_person(self, repo: Path) -> None:
+        cog, chat, thread, settings, prompts = self._setup(repo, ["stuck", "stuck", "stuck"])
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, thread.id, "throw it away")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "I'm stuck" in said and "stronger AI" in said

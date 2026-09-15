@@ -39,6 +39,7 @@ from claude_code_core.task_loop import (
     clear_reply,
     count_tasks,
     finished_checks,
+    first_unchecked,
     goal_interview_prompt,
     group_prompt,
     is_looks_good,
@@ -62,6 +63,7 @@ from claude_code_core.task_loop import (
     run_check,
     short_label,
     skip_task,
+    split_prompt,
     step_ai_prompt,
     take_snapshot,
     tick_task,
@@ -329,6 +331,10 @@ class _Running:
     per_step_ai: bool = False
     #: AIs that hit a usage limit during this build; the picker skips them.
     limited: set[str] = field(default_factory=set)
+    #: How far unsticking went per step: 1 = stronger AI tried, 2 = split tried.
+    unstuck: dict[str, int] = field(default_factory=dict)
+    #: (step, harness, model) while a stuck step runs on a stronger AI.
+    boosted: tuple[str, str, str | None] | None = None
     #: The step groups the quick AI made (labels), for parallel steps.
     groups: list[list[str]] = field(default_factory=list)
     #: On a usage limit, switch to this AI by itself instead of asking.
@@ -407,6 +413,8 @@ class TaskLoopCog(commands.Cog):
         self._waiters: dict[int, asyncio.Future[str]] = {}
         #: Waiters that only take a matching reply; anything else goes to the chat.
         self._accepts: dict[int, Any] = {}
+        #: A stuck step tries a stronger AI, then smaller steps, before asking (idea 4).
+        self.smart_unstick = True
 
     def _chat(self) -> ClaudeChatCog:
         cog: Any = self.bot.cogs.get("ClaudeChatCog")
@@ -676,6 +684,8 @@ class TaskLoopCog(commands.Cog):
 
         async def pull_plan_changes() -> None:
             """The planning session edits the real plan; bring its open steps across."""
+            if holder:
+                await self._end_boost(holder[0])
             real_text = read_real()
             if real_text is None or real_text == last_seen[0]:
                 return
@@ -782,6 +792,9 @@ class TaskLoopCog(commands.Cog):
                     break
                 # Stuck, paused or stopped: the build waits instead of being
                 # forgotten, so "keep going" picks up where it left off.
+                handled, outcome = await self._unstick(running, outcome)
+                if handled:
+                    continue
                 if await self._park(running, outcome) == "gone":
                     break
             self._store.remove(str(running.repo_dir))
@@ -1419,6 +1432,114 @@ class TaskLoopCog(commands.Cog):
             await running.thread.send(
                 f"-# 🤖 This step: {harness} · {model}" + (f" — {why[:120]}" if why else "")
             )
+
+    async def _strongest(self, running: _Running) -> tuple[str, str] | None:
+        """The most capable AI to bring in, the same kind as the build's if possible."""
+        settings = getattr(self._chat(), "_backend_settings", None)
+        if settings is None:
+            return None
+        harness = await settings.current_backend(running.worker_thread_id)
+        model = await settings.current_model(harness, running.worker_thread_id)
+        strong = [
+            (h, m)
+            for h, m, note in await self._ai_choices()
+            if ("most capable" in note.lower() or "strongest" in note.lower())
+            and h not in running.limited
+            and h != "local"
+        ]
+        strong.sort(key=lambda hm: hm[0] != harness)  # same kind of AI first
+        for h, m in strong:
+            if (h, m) != (harness, model):
+                return h, m
+        return None
+
+    async def _unstick(self, running: _Running, outcome: LoopOutcome) -> tuple[bool, LoopOutcome]:
+        """Before asking the person about a stuck step: a stronger AI, then smaller steps.
+
+        Returns (handled, outcome). Not handled means ask the person — with the
+        outcome saying what was already tried.
+        """
+        if not self.smart_unstick:
+            return False, outcome
+        try:
+            return await self._try_unstick(running, outcome)
+        except Exception:
+            logger.warning("gowork: unsticking failed; asking the person", exc_info=True)
+            return False, outcome
+
+    async def _try_unstick(
+        self, running: _Running, outcome: LoopOutcome
+    ) -> tuple[bool, LoopOutcome]:
+        assert running.copy is not None
+        if outcome.status != Status.STUCK or outcome.detail == "round limit reached":
+            return False, outcome
+        plan = running.copy.plan_path
+        before = plan.read_text(encoding="utf-8", errors="replace")
+        step = first_unchecked(before)
+        if step is None:
+            return False, outcome
+        settings = getattr(self._chat(), "_backend_settings", None)
+        tries = running.unstuck.get(step, 0)
+        if tries == 0:
+            running.unstuck[step] = 1
+            strong = await self._strongest(running)
+            if strong is not None and settings is not None:
+                harness = await settings.current_backend(running.worker_thread_id)
+                model = await settings.current_model(harness, running.worker_thread_id)
+                running.boosted = running.boosted or (step, harness, model)
+                await settings.set_backend(strong[0], thread_id=running.worker_thread_id)
+                await settings.set_model(strong[0], strong[1], thread_id=running.worker_thread_id)
+                running.loop.add_note(
+                    f"The last try at this step got stuck: {outcome.detail}. You're a "
+                    "stronger AI brought in to finish it — take a different approach."
+                )
+                with contextlib.suppress(discord.HTTPException):
+                    await running.thread.send(
+                        f"-# 💪 That step got stuck, so I'm trying it again on "
+                        f"{strong[0]} · {strong[1]}."
+                    )
+                running.loop.resume()
+                return True, outcome
+            tries = 1
+        if tries == 1 and running.run_session is not None:
+            running.unstuck[step] = 2
+            text, _error = await running.run_session(
+                split_prompt(plan, step, outcome.detail), "✂️ Splitting the stuck step…"
+            )
+            after = plan.read_text(encoding="utf-8", errors="replace")
+            if parse_status(text)[0] == Status.PLAN and step not in open_tasks(after):
+                await commit_all(running.copy.path, "gowork: split a stuck step")
+                for new in set(open_tasks(after)) - set(open_tasks(before)):
+                    running.unstuck[new] = 2  # a part that gets stuck goes to the person
+                await self._end_boost(running, force=True)
+                with contextlib.suppress(discord.HTTPException):
+                    await running.thread.send(
+                        "-# ✂️ Split the stuck step into smaller ones and carrying on."
+                    )
+                running.loop.resume()
+                return True, outcome
+        return False, LoopOutcome(
+            outcome.status,
+            f"{outcome.detail} (I already tried a stronger AI and splitting it into "
+            "smaller steps.)",
+            outcome.rounds,
+        )
+
+    async def _end_boost(self, running: _Running, *, force: bool = False) -> None:
+        """Once the stuck step is done (or split), the build goes back to its usual AI."""
+        if running.boosted is None or running.copy is None:
+            return
+        step, harness, model = running.boosted
+        now = first_unchecked(running.copy.plan_path.read_text(encoding="utf-8", errors="replace"))
+        if now == step and not force:
+            return
+        running.boosted = None
+        settings = getattr(self._chat(), "_backend_settings", None)
+        if settings is None:
+            return
+        await settings.set_backend(harness, thread_id=running.worker_thread_id)
+        if model:
+            await settings.set_model(harness, model, thread_id=running.worker_thread_id)
 
     async def _groups_for(self, steps: list[str]) -> list[list[str]]:
         """Ask the quick AI which of *steps* can be built at the same time."""
