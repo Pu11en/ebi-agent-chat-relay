@@ -30,6 +30,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
 from claude_code_core.gowork_records import (
     append_record,
     lessons_prompt,
@@ -112,6 +113,8 @@ LIMIT_WAIT_SECONDS = 30 * 60
 PER_STEP = "per-step"
 #: How long the quick step-AI picker may take before the build keeps its AI.
 PICK_AI_TIMEOUT_SECONDS = 60
+#: The build queue's morning summary posts after this hour (local time).
+MORNING_HOUR = 8
 #: When the goal isn't met, add the missing steps and keep going this many times.
 GOAL_AUTO_ROUNDS = 3
 #: The goal interview: up to 5 questions, the approval, and a couple of changes.
@@ -349,6 +352,9 @@ class _Running:
     unstuck: dict[str, int] = field(default_factory=dict)
     #: (step, harness, model) while a stuck step runs on a stronger AI.
     boosted: tuple[str, str, str | None] | None = None
+    #: Started from the build queue; True while it waits for the person.
+    queued: bool = False
+    waiting_for_person: bool = False
     #: Rounds of missing steps added by themselves when the goal wasn't met.
     goal_rounds: int = 0
     #: This build's step records, and when the current round started and on which AI.
@@ -436,6 +442,10 @@ class TaskLoopCog(commands.Cog):
         self.smart_unstick = True
         #: Every step of every build, for the picker's track record (idea 7).
         self._records_path = (work_root or DEFAULT_ROOT) / "step-records.jsonl"
+        #: Builds waiting in line (idea 6), and where each asked to be reported.
+        self._queue = BuildQueue((work_root or DEFAULT_ROOT) / "queue.json")
+        self._queue_reports: dict[int, Any] = {}
+        self._queue_lock = asyncio.Lock()
 
     def _chat(self) -> ClaudeChatCog:
         cog: Any = self.bot.cogs.get("ClaudeChatCog")
@@ -536,6 +546,7 @@ class TaskLoopCog(commands.Cog):
         fallback_model: str | None = None,
         ask_goal: bool = False,
         per_step_ai: bool = False,
+        queued: bool = False,
     ) -> discord.Thread:
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
@@ -589,6 +600,7 @@ class TaskLoopCog(commands.Cog):
             fallback_model=fallback_model,
             ask_goal=ask_goal,
             per_step_ai=per_step_ai,
+            queued=queued,
         )
         self._store.save(record)
         plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
@@ -692,7 +704,10 @@ class TaskLoopCog(commands.Cog):
                 await thread.send(f"❓ {mention}{question}\n-# Just type your answer here.")
             if not holder:
                 return await self.wait_for_reply(thread.id, timeout=ASK_TIMEOUT_SECONDS)
+            self._queue_waiting(holder[0], f"waiting for your answer: {question[:150]}")
             reply, _woken = await self._wait_or_wake(holder[0], thread.id, ASK_TIMEOUT_SECONDS)
+            holder[0].waiting_for_person = False
+            self._queue_note(holder[0], "running")
             return reply  # None when a new plan closes this build
 
         real_plan = Path(record.plan_path)
@@ -755,6 +770,7 @@ class TaskLoopCog(commands.Cog):
             run_session=run_session,
             ask_goal=record.ask_goal,
             per_step_ai=record.per_step_ai,
+            queued=record.queued,
             fallback=(
                 (record.fallback_harness, record.fallback_model)
                 if record.fallback_harness
@@ -801,6 +817,11 @@ class TaskLoopCog(commands.Cog):
             with contextlib.suppress(Exception):
                 await self.bot.wait_until_ready()
                 await self.resume_all()
+                await self._advance_queue()
+            while True:  # the morning summary
+                await asyncio.sleep(300)
+                with contextlib.suppress(Exception):
+                    await self._maybe_morning_summary(datetime.datetime.now())
 
         self._resume_task = asyncio.create_task(resume_when_ready())
 
@@ -842,6 +863,8 @@ class TaskLoopCog(commands.Cog):
             raise
         finally:
             self._running.pop(running.repo_dir, None)
+            if running.queued:
+                asyncio.get_running_loop().create_task(self._advance_queue())
 
     async def _goal_interview(self, running: _Running) -> None:
         """A plan with no goal: agree one with the person in the build's thread first.
@@ -963,6 +986,11 @@ class TaskLoopCog(commands.Cog):
                 or (bool(proposed) and clear_reply(text) in _ADD_WORDS)
             )
 
+        self._queue_waiting(
+            running,
+            "finished — waiting for your **looks good**"
+            + (" (the goal isn't met yet)" if proposed else ""),
+        )
         running.in_review = True
         try:
             while True:
@@ -986,6 +1014,7 @@ class TaskLoopCog(commands.Cog):
                     await remove_work_copy(running.copy)
                     with contextlib.suppress(discord.HTTPException):
                         await target.send("🗑️ Thrown away. Your real project was never touched.")
+                    self._queue_note(running, "thrown away 🗑️")
                     with contextlib.suppress(Exception):
                         await running.thread.delete()
                     return "kept"
@@ -1014,6 +1043,7 @@ class TaskLoopCog(commands.Cog):
                             "Sort that out and type **looks good** again."
                         )
                     continue
+                self._queue_note(running, "kept in your project ✅")
                 with contextlib.suppress(discord.HTTPException):
                     await target.send(f"✅ Kept: {message}. I cleaned up the worker thread.")
                 with contextlib.suppress(Exception):
@@ -1042,7 +1072,9 @@ class TaskLoopCog(commands.Cog):
         )
         with contextlib.suppress(discord.HTTPException):
             await running.thread.send(ask[:1900])
+        self._queue_waiting(running, why.splitlines()[0].replace("**", "")[:200])
         reply = await self._wait_parked(running, ask)
+        running.waiting_for_person = False
         if reply is None:  # a new plan was started in this project
             return await self._finish_early(running)
         choice = parked_choice(reply)
@@ -1146,6 +1178,7 @@ class TaskLoopCog(commands.Cog):
                     "**throw it away**."
                 )
             return await self._park(running, LoopOutcome(Status.NONE, "stopped"))
+        self._queue_note(running, f"wrapped up: kept {checked} finished steps")
         with contextlib.suppress(discord.HTTPException):
             await target.send(
                 f"✅ Wrapped up: kept {checked} finished step{'s' if checked != 1 else ''} in "
@@ -1593,6 +1626,110 @@ class TaskLoopCog(commands.Cog):
         if model:
             await settings.set_model(harness, model, thread_id=running.worker_thread_id)
 
+    # -- the build queue (idea 6) ------------------------------------------------
+
+    async def enqueue(
+        self,
+        report_to: Any,
+        plan_path: str,
+        *,
+        notify_user_id: int | None = None,
+        harness: str | None = None,
+        model: str | None = None,
+    ) -> int:
+        """ "Queue it": put a plan in line. It starts when the builds ahead are done or waiting."""
+        item = QueueItem(
+            plan_path=plan_path,
+            report_id=getattr(report_to, "id", 0),
+            notify_user_id=notify_user_id,
+            harness=harness,
+            model=model,
+        )
+        self._queue_reports[item.report_id] = report_to
+        place = self._queue.add(item)
+        with contextlib.suppress(discord.HTTPException):
+            await report_to.send(
+                f"📥 Queued `{Path(plan_path).name}`: number {place} in line. It starts when "
+                "the builds ahead of it are done or waiting for you, and you'll get a summary "
+                "at 8 am."
+            )
+        await self._advance_queue()
+        return place
+
+    async def _queue_report(self, report_id: int) -> Any:
+        report: Any = self._queue_reports.get(report_id) or self.bot.get_channel(report_id)
+        if report is None:
+            with contextlib.suppress(Exception):
+                report = await self.bot.fetch_channel(report_id)
+        return report
+
+    async def _advance_queue(self) -> None:
+        """Start the next queued build unless a queued one is still busy working."""
+        async with self._queue_lock:
+            if any(r.queued and not r.waiting_for_person for r in self._running.values()):
+                return
+            for item in list(self._queue.state.waiting):
+                try:
+                    repo = await resolve_repo(Path(item.plan_path).expanduser())
+                except ValueError:
+                    self._queue.take(item)
+                    continue
+                if repo in self._running:
+                    continue  # that project already has a build open; try the next one
+                report = await self._queue_report(item.report_id)
+                if report is None:
+                    self._queue.take(item)
+                    continue
+                parent: Any = report.parent if isinstance(report, discord.Thread) else report
+                self._queue.take(item)
+                try:
+                    thread = await self.start_loop(
+                        parent,
+                        item.plan_path,
+                        report_to=report,
+                        notify_user_id=item.notify_user_id,
+                        harness=item.harness,
+                        model=item.model,
+                        per_step_ai=item.harness is None,
+                        queued=True,
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    with contextlib.suppress(discord.HTTPException):
+                        await report.send(
+                            f"Couldn't start queued `{Path(item.plan_path).name}`: {exc}"
+                        )
+                    continue
+                self._queue.started(item, repo.name, thread.id)
+                return
+
+    def _queue_note(self, running: _Running, state: str) -> None:
+        if running.queued:
+            self._queue.note(running.worker_thread_id, state)
+
+    def _queue_waiting(self, running: _Running, state: str) -> None:
+        """A queued build now waits for the person: note why and let the line move on."""
+        if not running.queued:
+            return
+        running.waiting_for_person = True
+        self._queue.note(running.worker_thread_id, state)
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(self._advance_queue())
+
+    async def _maybe_morning_summary(self, now: datetime.datetime) -> None:
+        """At 8 am, once a day: what the queue did, posted where builds were queued."""
+        today = now.date().isoformat()
+        if now.hour < MORNING_HOUR or self._queue.state.last_summary == today:
+            return
+        entries = self._queue.unreported()
+        if not entries:
+            return
+        text = morning_summary(entries, len(self._queue.state.waiting))
+        report = await self._queue_report(int(entries[-1].get("report_id") or 0))
+        if report is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await report.send(text)
+        self._queue.mark_reported(today)
+
     async def _ai_label(self, running: _Running, thread_id: int | None = None) -> str:
         """ "harness · model" the thread runs on, for the records."""
         settings = getattr(self._chat(), "_backend_settings", None)
@@ -1802,8 +1939,10 @@ class TaskLoopCog(commands.Cog):
         for chunk in _chunks(lines):
             with contextlib.suppress(discord.HTTPException):
                 await thread.send(chunk)
+        self._queue_waiting(running, "waiting: its AI hit a usage limit")
         while True:
             reply, _woken = await self._wait_or_wake(running, thread.id, ASK_TIMEOUT_SECONDS)
+            running.waiting_for_person = False
             if reply is None:
                 return False
             if reply.strip().lower().rstrip(".!)") in _WAIT_WORDS:

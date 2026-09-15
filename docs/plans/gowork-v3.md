@@ -41,7 +41,12 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
 - [x] **1 Goal mode across builds.** (Drew picked: on its own, capped.) When the goal isn't
   met, the build adds the missing steps and keeps going by itself, up to 3 rounds; then the
   finished card shows the proposal and waits for "add them".
-- [ ] **6 Overnight queue.** Plans wait in a queue and run back to back; one morning summary.
+- [x] **6 Overnight queue.** (Drew picked: "queue it", starts right away, 8 am summary.)
+  `POST /api/loops` with `"queue": true`; builds run one after another and the line moves on
+  when one finishes or waits for Drew; no goal interview, AI picked per step; the 8 am summary
+  goes to the thread of the last queued build.
+  **At the restart:** add the "queue it" rule to `~/AGENTS.md` (not before — the old bot
+  ignores `"queue"` and would start the build at once).
 - [ ] **5 Team-ups.** A different AI reviews each step; optional bake-off on a hard step.
 - [ ] **8 Slim briefing.** Each step gets only what it needs plus a map of the rest.
 

@@ -1653,3 +1653,79 @@ class TestLearning:
 
         pick = next(p for p in prompts if "Pick the AI" in p)
         assert "codex · gpt-5.5: 1 steps (1 stuck)" in pick
+
+
+def _second_repo(tmp_path: Path, name: str) -> Path:
+    r = tmp_path / name
+    r.mkdir()
+    _git(r, "init", "-q")
+    _git(r, "config", "user.email", "t@t")
+    _git(r, "config", "user.name", "t")
+    (r / "PLAN.md").write_text("- [ ] Task 1: a\n")
+    _git(r, "add", ".")
+    _git(r, "commit", "-qm", "init")
+    return r
+
+
+class TestBuildQueue:
+    def _cog(self):  # noqa: ANN202
+        cog, chat, first = _cog_with_chat()
+        threads: list[MagicMock] = []
+
+        async def spawn(channel, text, *, thread_name, auto_start, working_dir):  # noqa: ANN001
+            t = MagicMock(spec=discord.Thread)
+            t.id = 700 + len(threads)
+            t.mention = f"<#{t.id}>"
+            t.send = AsyncMock(return_value=MagicMock())
+            t.delete = AsyncMock()
+            threads.append(t)
+            return t
+
+        chat.spawn_session = AsyncMock(side_effect=spawn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        return cog, chat, threads, channel
+
+    async def test_queued_builds_run_one_after_another(self, tmp_path: Path) -> None:
+        a, b = _second_repo(tmp_path, "alpha"), _second_repo(tmp_path, "beta")
+        cog, chat, threads, channel = self._cog()
+
+        await cog.enqueue(channel, str(a / "PLAN.md"))
+        await cog.enqueue(channel, str(b / "PLAN.md"))
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "in line" in posted
+        assert len(threads) == 1  # only the first build started
+
+        # The first reaches its finished card (waiting for Drew): the line moves on.
+        for _ in range(500):
+            if len(threads) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(threads) == 2
+        await _type_when_asked(cog, threads[0].id, "looks good")
+        await _type_when_asked(cog, threads[1].id, "looks good")
+        for running in list(cog.running):
+            await asyncio.wait_for(running.task, 10)
+        assert "- [x]" in (a / "PLAN.md").read_text() and "- [x]" in (b / "PLAN.md").read_text()
+        states = [e["state"] for e in cog._queue.state.history]
+        assert states == ["kept in your project ✅", "kept in your project ✅"]
+
+    async def test_the_morning_summary_posts_once_after_eight(self, tmp_path: Path) -> None:
+        import datetime as dt
+
+        cog, chat, threads, channel = self._cog()
+        cog.bot.get_channel = MagicMock(return_value=channel)
+        from claude_code_core.build_queue import QueueItem
+
+        item = QueueItem(plan_path="/x/PLAN-a.md", report_id=1)
+        cog._queue.started(item, "alpha", 700)
+        cog._queue.note(700, "stuck: needs a key")
+
+        await cog._maybe_morning_summary(dt.datetime(2026, 9, 16, 7, 30))
+        assert not channel.send.await_count
+        await cog._maybe_morning_summary(dt.datetime(2026, 9, 16, 8, 5))
+        await cog._maybe_morning_summary(dt.datetime(2026, 9, 16, 9, 0))
+        assert channel.send.await_count == 1
+        text = channel.send.await_args.args[0]
+        assert "PLAN-a.md" in text and "needs a key" in text

@@ -43,6 +43,8 @@ class LoopRecord:
     ask_goal: bool = False
     #: Before every step a quick AI picks which AI does it (idea 3).
     per_step_ai: bool = False
+    #: Started from the build queue (idea 6): the line moves on when it waits.
+    queued: bool = False
 
 
 class LoopStore:
