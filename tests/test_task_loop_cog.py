@@ -1757,8 +1757,9 @@ class TestSecondAiReview:
         cog._ai_choices = AsyncMock(  # type: ignore[method-assign]
             return_value=[
                 ("claude", "sonnet", "balanced"),
-                ("codex", "gpt-6", "most capable"),
-                ("codex", "gpt-5.5", ""),
+                ("claude", "opus", ""),
+                ("claude", "haiku", ""),
+                ("codex", "gpt-5.5", ""),  # another family: never used (Drew's pick)
             ]
         )
         cog._quick_ai = AsyncMock(return_value="HARD — it changes the login flow")
@@ -1788,9 +1789,9 @@ class TestSecondAiReview:
         await _type_when_asked(cog, thread.id, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
-        # A different AI than the builder, and a mid-level one, not the priciest.
-        assert reviews == ["codex · gpt-5.5", "codex · gpt-5.5"]
-        assert current["backend"] == "claude"  # back on the builder's AI
+        # A different model of the same family, never a weaker one than needed.
+        assert reviews == ["claude · opus", "claude · opus"]
+        assert current["backend"] == "claude" and current["model"] == "sonnet"  # back after
         assert len(builder_prompts) == 2 and "the test is missing" in builder_prompts[1]
 
     async def test_an_easy_step_is_not_reviewed(self, repo: Path) -> None:
@@ -1839,7 +1840,7 @@ class TestModes:
         cog.smart_review = True
         self._settings(chat)
         cog._ai_choices = AsyncMock(  # type: ignore[method-assign]
-            return_value=[("codex", "gpt-6", "most capable"), ("codex", "gpt-5.5", "")]
+            return_value=[("claude", "opus", ""), ("claude", "sonnet", "")]
         )
         cog._quick_ai = AsyncMock(return_value="EASY — small")
         channel = MagicMock(spec=discord.TextChannel)
@@ -2019,3 +2020,11 @@ async def test_the_quick_helper_always_calls_the_claude_cli(monkeypatch) -> None
     monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
     assert await cog._quick_ai("pick") == "B - hard"
     assert seen[0][0] == "/usr/bin/claude" and "--" in seen[0]
+
+
+def test_model_tiers_from_names() -> None:
+    from claude_discord.cogs.task_loop import model_tier
+
+    assert model_tier("haiku") == 0 and model_tier("deepseek-v4-flash") == 0
+    assert model_tier("sonnet") == 1 and model_tier("gpt-5.5") == 1
+    assert model_tier("claude-opus-5") == 2 and model_tier("deepseek-v4-pro") == 2

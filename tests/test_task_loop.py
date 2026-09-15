@@ -719,3 +719,18 @@ class TestReviewFixes:
         await loop.run()
         assert "- [ ] Task 1: a" in (repo / "PLAN.md").read_text()  # unticked again
         assert any("check" in r.lower() for r in fake.reports)
+
+
+class TestAskWithChoicesBelow:
+    def test_an_ask_line_followed_by_its_choices_is_an_ask(self) -> None:
+        text = (
+            "Small project.\n\nASK: What's the main win?\n\n"
+            "A) (recommended) Get % working\nB) Practice gowork\nC) Docs only\n"
+            "D) Something else\nE) Say it in your own words"
+        )
+        status, detail = tl.parse_status(text)
+        assert status == tl.Status.ASK
+        assert "main win" in detail and "B) Practice gowork" in detail
+
+    def test_ordinary_text_after_an_ask_is_not_an_ask(self) -> None:
+        assert tl.parse_status("ASK: x?\nThen I wrote more code.\nDONE")[0] == tl.Status.DONE

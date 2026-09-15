@@ -45,6 +45,7 @@ _TASK_RE = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s+(.*\S)")
 _GOAL_RE = re.compile(r"^\s*\**Goal:\**\s*(.+?)\s*$", re.IGNORECASE)
 _DONE_WHEN_RE = re.compile(r"^\s*\**Done when:\**\s*(.+?)\s*$", re.IGNORECASE)
 _CHECK_RE = re.compile(r"^\s*\**Check:\**\s*`?(.+?)`?\s*$", re.IGNORECASE)
+_CHOICE_LINE_RE = re.compile(r"^(\*\*)?[A-Ea-e][).:]")
 _STATUS_RE = re.compile(r"^(DONE|COMPLETE|ASK:|STUCK:|PAUSE:|SKIP:|PLAN:)\s*(.*)$")
 
 
@@ -101,6 +102,14 @@ def parse_status(text: str | None) -> tuple[Status, str]:
         return Status.NONE, ""
     m = _STATUS_RE.match(lines[-1])
     if m is None:
+        # An AI often puts the lettered choices *under* its ASK line. Only choice
+        # lines may follow it; anything else means the ASK wasn't the last word.
+        end = len(lines)
+        while end and _CHOICE_LINE_RE.match(lines[end - 1]):
+            end -= 1
+        if 0 < end < len(lines) and lines[end - 1].startswith("ASK:"):
+            question = lines[end - 1][4:].strip()
+            return Status.ASK, "\n".join([question, *lines[end:]])
         return Status.NONE, ""
     word = m.group(1).rstrip(":")
     return Status(word), m.group(2).strip()

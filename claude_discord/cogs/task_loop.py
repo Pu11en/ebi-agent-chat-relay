@@ -111,7 +111,8 @@ VERDICT_REMIND_SECONDS = 24 * 60 * 60
 #: How long starting a new plan waits for the project's open build to close.
 SWITCH_TIMEOUT_SECONDS = 45 * 60
 #: How long starting a build waits for the harness/model or plan reply.
-PICK_TIMEOUT_SECONDS = 10 * 60
+PICK_TIMEOUT_SECONDS = 12 * 60 * 60
+_NOT_PICKED = "Not started: you didn't pick an AI in time. Say go work again when you're ready."
 #: After "wait" on a usage limit, try the same AI again this much later.
 LIMIT_WAIT_SECONDS = 30 * 60
 #: The start list's first choice: a quick AI picks the AI for each step.
@@ -232,6 +233,23 @@ _MODE_NOTES = {
     "balanced": "hard steps reviewed; say cheap or careful to change",
     "careful": "every step reviewed, the strongest AI when stuck",
 }
+
+
+_CHEAP_WORDS = ("haiku", "flash", "mini", "turbo", "nano", "fastest", "cheapest")
+_STRONG_WORDS = ("opus", "fable", "-pro", " pro", "astra", "most capable", "strongest")
+
+
+def model_tier(model: str, note: str = "") -> int:
+    """0 = fast and cheap, 1 = mid-level, 2 = strongest — from the model's name and note.
+
+    Live catalogs rarely say "most capable", so the name decides; the note only helps.
+    """
+    text = f" {model} {note}".lower()
+    if any(w in text for w in _CHEAP_WORDS):
+        return 0
+    if any(w in text for w in _STRONG_WORDS):
+        return 2
+    return 1
 
 
 def parse_mode(text: str | None) -> str | None:
@@ -374,6 +392,8 @@ class _Running:
     ask_goal: bool = False
     #: A quick AI picks the AI for every step.
     per_step_ai: bool = False
+    #: The AI family the build stays in (the thread's backend when it started).
+    family: str | None = None
     #: AIs that hit a usage limit during this build; the picker skips them.
     limited: set[str] = field(default_factory=set)
     #: Steps judged hard (the picker chose the strongest AI, or Haiku said so).
@@ -1460,7 +1480,7 @@ class TaskLoopCog(commands.Cog):
             picked = await self._ask_harness(report_to, current)
             if picked is None:
                 with contextlib.suppress(discord.HTTPException):
-                    await report_to.send("Not started: I didn't get a harness to use.")
+                    await report_to.send(_NOT_PICKED)
                 return None
             harness, model = picked
         per_step = harness == PER_STEP
@@ -1515,8 +1535,8 @@ class TaskLoopCog(commands.Cog):
         options = await self._ai_choices()
         lines = ["Which AI should do the work? Just type its letter:"]
         lines.append(
-            "**A)** Let the bot pick the best AI for each step: fast and cheap for easy "
-            "steps, the strongest for hard ones (recommended)"
+            f"**A)** Let the bot pick the best {current or 'thread'} model for each step: "
+            "fast and cheap for easy steps, the strongest for hard ones (recommended)"
         )
         lines.append(f"**B)** Same as this thread ({current or 'its usual AI'})")
         for i, (harness, model, note) in enumerate(options, start=2):
@@ -1580,15 +1600,34 @@ class TaskLoopCog(commands.Cog):
             return None
         return out.decode(errors="replace").strip() or None
 
+    async def _family_options(self, running: _Running) -> list[tuple[str, str, str]]:
+        """The build's AI family only (Drew's pick) — one model per level, newest first.
+
+        The family is whatever the build's thread uses when it starts (Claude today,
+        Codex tomorrow), so switching plans needs no change here.
+        """
+        settings = getattr(self._chat(), "_backend_settings", None)
+        if running.family is None and settings is not None:
+            with contextlib.suppress(Exception):
+                running.family = await settings.current_backend(running.worker_thread_id)
+        best: dict[int, tuple[str, str, str]] = {}
+        for h, m, note in await self._ai_choices():
+            if running.family and h != running.family:
+                continue
+            if (
+                "vision" in m
+                or h in running.limited
+                or (h == "local" and running.family != "local")
+            ):
+                continue
+            best.setdefault(model_tier(m, note), (h, m, note))
+        return [best[t] for t in sorted(best)]
+
     async def _pick_step_ai(self, running: _Running, step: str) -> None:
         """Before a step: a quick AI picks which AI does it, and the thread switches."""
         assert running.copy is not None
         settings = getattr(self._chat(), "_backend_settings", None)
-        options = [
-            o
-            for o in await self._ai_choices()
-            if o[0] != "local" and "vision" not in o[1] and o[0] not in running.limited
-        ]
+        options = await self._family_options(running)
         if not options:
             return
         goal, _done = plan_goal(
@@ -1600,7 +1639,7 @@ class TaskLoopCog(commands.Cog):
         if index is None:
             return  # keep the AI the build has
         harness, model, note = options[index]
-        if "most capable" in note.lower() or "strongest" in note.lower():
+        if model_tier(model, note) == 2:
             running.hard_steps.add(step)  # it needed the strongest AI: worth a review
         if settings is not None:
             await settings.set_backend(harness, thread_id=running.worker_thread_id)
@@ -1619,13 +1658,8 @@ class TaskLoopCog(commands.Cog):
         harness = await settings.current_backend(running.worker_thread_id)
         model = await settings.current_model(harness, running.worker_thread_id)
         strong = [
-            (h, m)
-            for h, m, note in await self._ai_choices()
-            if ("most capable" in note.lower() or "strongest" in note.lower())
-            and h not in running.limited
-            and h != "local"
+            (h, m) for h, m, note in await self._family_options(running) if model_tier(m, note) == 2
         ]
-        strong.sort(key=lambda hm: hm[0] != harness)  # same kind of AI first
         for h, m in strong:
             if (h, m) != (harness, model):
                 return h, m
@@ -1853,21 +1887,15 @@ class TaskLoopCog(commands.Cog):
             return None
         harness = await settings.current_backend(running.worker_thread_id)
         model = await settings.current_model(harness, running.worker_thread_id)
-        options = [
-            (h, m, note)
-            for h, m, note in await self._ai_choices()
-            if h != "local" and "vision" not in m and h not in running.limited
-        ]
+        options = await self._family_options(running)
 
-        def rank(o: tuple[str, str, str]) -> tuple[bool, bool, bool]:
-            # Another kind of AI first, then a mid-level model: not the priciest
-            # ("most capable"), not the weakest ("fastest, cheapest").
-            note = o[2].lower()
-            strong = "most capable" in note or "strongest" in note
-            cheap = "cheapest" in note or "fastest" in note
+        def rank(o: tuple[str, str, str]) -> tuple[bool, bool]:
+            # A mid-level model of the same family, not the builder's own model;
+            # careful mode takes the strongest.
+            tier = model_tier(o[1], o[2])
             if running.mode == "careful":
-                return (o[0] == harness, not strong, cheap)  # careful: the strongest
-            return (o[0] == harness, strong, cheap)
+                return (tier != 2, tier == 0)
+            return (tier != 1, tier == 0)  # mid-level first, never weaker than needed
 
         for h, m, _note in sorted(options, key=rank):
             if (h, m) != (harness, model):
@@ -2186,7 +2214,7 @@ class TaskLoopCog(commands.Cog):
         current = await settings.current_backend(parent.id) if settings else None
         picked = await self._ask_harness(report_to, current)
         if picked is None:
-            await interaction.followup.send("Not started: I didn't get a harness to use.")
+            await interaction.followup.send(_NOT_PICKED)
             return
         harness, model = picked
         per_step = harness == PER_STEP
