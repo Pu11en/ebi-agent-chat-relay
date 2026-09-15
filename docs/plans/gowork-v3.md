@@ -51,7 +51,8 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
   a different AI (another kind first, the strongest first) reviews the diff; "CHANGES" unticks
   the step and the builder gets the notes (not a try). One bounce per step; a second
   "CHANGES" is only written to the progress log. Parallel steps aren't reviewed yet.
-- [ ] **8 Slim briefing.** Each step gets only what it needs plus a map of the rest.
+- [x] **8 Slim briefing.** Build steps skip the concurrency notice (their copy is private) and
+  get a one-line file rule instead of the chat-session card rules; no lounge (done earlier).
 
 ## How to try it (after the one restart)
 - Start `go work` on a plan with no `Goal:` line: the build's thread asks a few lettered

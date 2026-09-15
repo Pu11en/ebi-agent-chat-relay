@@ -95,6 +95,9 @@ class RunConfig:
     # When True, a compact guardrail was already injected into --append-system-prompt
     # for this run. Prevents infinite interrupt→rerun loops if compact fires again.
     post_compact_rerun: bool = False
+    # A gowork build step: it works in its own copy, so it gets a slim briefing —
+    # no concurrency notice (nothing can collide with it) and one-line file rules.
+    slim_context: bool = False
     # True only for the single automatic rerun created by the owner-PR
     # completion gate. Prevents a genuinely blocked PR from causing a loop.
     pr_completion_gate_rerun: bool = False

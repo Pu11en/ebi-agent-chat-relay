@@ -1654,6 +1654,7 @@ class ClaudeChatCog(commands.Cog):
                     registry=self._registry,
                     ask_repo=self._ask_repo,
                     lounge_repo=self._lounge_repo if lounge else None,
+                    slim_context=not lounge,  # a gowork step: a slim briefing (idea 8)
                     file_activity=getattr(self.bot, "file_activity", None),
                     stop_view=stop_view,
                     worktree_manager=getattr(self.bot, "worktree_manager", None),

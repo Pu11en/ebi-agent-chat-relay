@@ -66,3 +66,27 @@ async def test_lounge_context_is_built_without_a_discord_thread() -> None:
     await _build_system_context(config)
 
     lounge_repo.get_recent.assert_awaited_once()
+
+
+async def test_a_build_step_gets_a_slim_briefing() -> None:
+    """A gowork step works in its own copy: no concurrency notice, short file rules."""
+    registry = SessionRegistry()
+    full = await _build_system_context(
+        RunConfig(surface=MemorySurface(), runner=_runner(), prompt="x", registry=registry)
+    )
+    slim_surface = MemorySurface()
+    slim = await _build_system_context(
+        RunConfig(
+            surface=slim_surface,
+            runner=_runner(),
+            prompt="x",
+            registry=registry,
+            slim_context=True,
+        )
+    )
+    assert slim is not None and full is not None
+    assert len(slim) < len(full) / 2
+    assert "Show documents as cards" not in slim
+    assert ".ccdb-attachments" in slim  # it can still send a file
+    # still registered, so other sessions can see the build is running
+    assert slim_surface.thread_key in {s.thread_id for s in registry.list_active()}
