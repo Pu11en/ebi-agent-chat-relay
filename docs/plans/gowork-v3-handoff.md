@@ -3,11 +3,11 @@
 ## Where things are
 - **Code:** branch `feat/task-loop`, worktree `/home/drewp/main-projects/wt-task-loop`. The live bot
   loads it through dev mode (`~/.ccdb-dev-worktree` points at the worktree).
-- **Live:** everything below is running since the 15:51 restart on 2026-09-15.
+- **Live:** everything below is running since the 17:58 restart on 2026-09-15.
 - **Not on GitHub.** Drew's rule: push only after he has tried it and said it's good, then ask
   "Put it on GitHub?". Another session also commits to this branch (e.g. dae386b, the backup AI),
   so check `git log` before assuming a clean history.
-- **Tests:** 3,392 pass (`uv run pytest tests/ -q -p no:randomly`); ruff and pyright are clean.
+- **Tests:** 3,395 pass (`uv run pytest tests/ -q -p no:randomly`); ruff and pyright are clean.
 - **Plan and design notes:** `docs/plans/gowork-v3.md`. Research: `.planning/harness-research/`
   (`cards-agentic-workflow.md` for the ideas, `goal-elicitation.md` for the goal interview).
 
@@ -53,13 +53,22 @@
     `shutil.which("claude")`.
   - An `ASK:` line with its choices underneath wasn't seen as a question.
   - The AI question gave up after 10 minutes; it now waits 12 hours.
+- **Later runs (PLAN-v4 careful, PLAN-v5 queued cheap) proved:**
+  - the goal interview through to a saved goal
+  - the family-only picker (Haiku, then Sonnet)
+  - a careful-mode review that approved
+  - the strongest-model retry (Fable)
+  - the goal check
+  - a queued cheap build
+- **Fixed from those runs:**
+  - the queue started a build on a project still being set up, overwriting its record
+  - the 8 am summary posted the same afternoon
+  - the bot's own test run left tracked files changed, which made the next step look unsaved
+  - the practice project no longer tracks its caches or history log
 - **Not yet seen for real:**
-  - the goal interview going all the way to a saved goal
-  - the family-only picker with "A"
   - a review sending a step back
-  - stuck-step unsticking
-  - the queue and its 8 am summary
-  - careful and cheap modes
+  - the queue waiting behind a running build, now that it's fixed
+  - the 8 am summary on a real morning
 
 ## Open items
 - **Quick helper is Claude-only** (`_quick_ai`, Haiku). If Drew drops Claude, the picker, grouping,
