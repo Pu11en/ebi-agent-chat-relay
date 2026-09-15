@@ -38,8 +38,9 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
 - [x] **7 Learning.** Every step appends a record (AI, time, how it ended) to
   `step-records.jsonl` next to the build copies. The step picker gets each AI's track record;
   the finished card and the progress log get 2–3 "next time" bullets.
-- [ ] **1 Goal mode across builds.** With a goal, a finished build whose goal isn't met can
-  plan and run the next build itself, with Drew's yes (builds on G3).
+- [x] **1 Goal mode across builds.** (Drew picked: on its own, capped.) When the goal isn't
+  met, the build adds the missing steps and keeps going by itself, up to 3 rounds; then the
+  finished card shows the proposal and waits for "add them".
 - [ ] **6 Overnight queue.** Plans wait in a queue and run back to back; one morning summary.
 - [ ] **5 Team-ups.** A different AI reviews each step; optional bake-off on a hard step.
 - [ ] **8 Slim briefing.** Each step gets only what it needs plus a map of the rest.

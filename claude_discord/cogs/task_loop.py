@@ -112,6 +112,8 @@ LIMIT_WAIT_SECONDS = 30 * 60
 PER_STEP = "per-step"
 #: How long the quick step-AI picker may take before the build keeps its AI.
 PICK_AI_TIMEOUT_SECONDS = 60
+#: When the goal isn't met, add the missing steps and keep going this many times.
+GOAL_AUTO_ROUNDS = 3
 #: The goal interview: up to 5 questions, the approval, and a couple of changes.
 GOAL_INTERVIEW_ROUNDS = 9
 #: Replies to a usage limit that mean "wait for it to reset".
@@ -347,6 +349,8 @@ class _Running:
     unstuck: dict[str, int] = field(default_factory=dict)
     #: (step, harness, model) while a stuck step runs on a stronger AI.
     boosted: tuple[str, str, str | None] | None = None
+    #: Rounds of missing steps added by themselves when the goal wasn't met.
+    goal_rounds: int = 0
     #: This build's step records, and when the current round started and on which AI.
     records: list[dict[str, Any]] = field(default_factory=list)
     round_started: tuple[float, str] | None = None
@@ -915,6 +919,19 @@ class TaskLoopCog(commands.Cog):
         results = await self._check_it_myself(running, plan_text)
         fails = [what for kind, what in results if kind == "fail"]
         proposed = await self._missing_steps(running, fails)
+        if proposed and running.goal_rounds < GOAL_AUTO_ROUNDS:
+            # Drew's pick: add the missing steps and keep going, a few rounds at most.
+            running.goal_rounds += 1
+            append_tasks(running.copy.plan_path, proposed)
+            await commit_all(running.copy.path, "gowork: steps toward the goal")
+            with contextlib.suppress(discord.HTTPException):
+                await here.send(
+                    f"🎯 The goal isn't met yet, so I'm adding {len(proposed)} "
+                    f"step{'s' if len(proposed) != 1 else ''} and keeping going "
+                    f"(round {running.goal_rounds} of {GOAL_AUTO_ROUNDS}):\n"
+                    + "\n".join(f"• {short_label(p)}" for p in proposed)
+                )
+            return "fix"
         lessons = await self._lessons(running)
         if lessons:
             progress = running.copy.plan_path.with_name(

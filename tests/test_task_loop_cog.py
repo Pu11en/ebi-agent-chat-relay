@@ -1360,25 +1360,23 @@ class TestGoalInterview:
 
 
 class TestGoalNotMet:
-    async def test_missing_steps_are_proposed_and_added_on_yes(self, repo: Path) -> None:
+    def _setup(self, repo: Path, passes_on: int):  # noqa: ANN202
         (repo / "PLAN.md").write_text("Goal: g\nDone when: it plays\n- [ ] Task 1: a\n")
         _git(repo, "commit", "-qam", "goal")
         cog, chat, thread = _cog_with_chat()
         thread.delete = AsyncMock()
-        checks = 0
+        state = {"checks": 0, "added": 0}
 
         async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
-            nonlocal checks
             plan = Path(working_dir) / "PLAN.md"
             if "checking finished work" in prompt:
-                checks += 1
-                verdict = "FAIL" if checks == 1 else "PASS"
-                await result_sink(
-                    f"{verdict}: The goal is met: it plays — no play button\nDONE", None
-                )
+                state["checks"] += 1
+                verdict = "PASS" if state["checks"] >= passes_on else "FAIL"
+                await result_sink(f"{verdict}: The goal is met: it plays — no sound\nDONE", None)
                 return
             if "isn't met yet" in prompt:
-                await result_sink("- [ ] Task 2: add a play button\nDONE", None)
+                state["added"] += 1
+                await result_sink(f"- [ ] Extra {state['added']}: fix the sound\nDONE", None)
                 return
             plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
             _git(Path(working_dir), "commit", "-qam", "tick")
@@ -1388,15 +1386,28 @@ class TestGoalNotMet:
         channel = MagicMock(spec=discord.TextChannel)
         channel.id = 1
         channel.send = AsyncMock()
-        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        return cog, thread, channel
 
-        await _type_when_asked(cog, thread.id, "add them")
+    async def test_missing_steps_are_added_and_built_by_themselves(self, repo: Path) -> None:
+        cog, thread, channel = self._setup(repo, passes_on=2)
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, thread.id, "looks good")  # the only reply needed
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert "- [x] Extra 1: fix the sound" in (repo / "PLAN.md").read_text()
+        said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "round 1 of 3" in said
+
+    async def test_after_three_rounds_it_stops_and_asks(self, repo: Path) -> None:
+        cog, thread, channel = self._setup(repo, passes_on=99)
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
         await _type_when_asked(cog, thread.id, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
-        card = _embeds(thread)[0].description or ""
-        assert "isn't met" in card and "add a play button" in card
-        assert "- [x] Task 2: add a play button" in (repo / "PLAN.md").read_text()
+        plan = (repo / "PLAN.md").read_text()
+        assert "- [x] Extra 3: fix the sound" in plan and "Extra 5" not in plan
+        card = _embeds(thread)[-1].description or ""
+        assert "isn't met" in card and "add them" in card
 
 
 class TestRightAiPerStep:
