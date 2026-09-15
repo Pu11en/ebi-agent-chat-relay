@@ -898,6 +898,25 @@ def review_step_prompt(plan_path: Path, step: str, base: str | None) -> str:
     return "\n".join(parts)
 
 
+def hard_step_prompt(step: str, goal: str | None) -> str:
+    """Ask a quick AI whether one step is hard enough to be worth a second AI's review."""
+    return "\n".join(
+        [
+            "Is this step of a software build hard or easy? Hard: tricky logic, security, "
+            "sign-in, payments, data that could be lost, many files, or easy to get "
+            "subtly wrong. Easy: text, styling, docs, config, a small obvious change.",
+            f"The step: {step}",
+            *([f"The build's goal: {goal}"] if goal else []),
+            "Answer HARD or EASY first, then a few words why. Nothing else.",
+        ]
+    )
+
+
+def parse_hard(reply: str | None) -> bool:
+    """True only for a clear HARD — anything else means no review (the cheap side)."""
+    return (reply or "").strip().upper().startswith("HARD")
+
+
 _REVIEW_RE = re.compile(r"^(APPROVE|CHANGES:)\s*(.*)$")
 
 

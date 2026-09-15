@@ -51,6 +51,8 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
   a different AI (another kind first, the strongest first) reviews the diff; "CHANGES" unticks
   the step and the builder gets the notes (not a try). One bounce per step; a second
   "CHANGES" is only written to the progress log. Parallel steps aren't reviewed yet.
+  Cost trim (Drew, 2026-09-15): only **hard** steps are reviewed (the picker chose the
+  strongest AI, the step got stuck, or Haiku says HARD), by a **mid-level** AI, not the priciest.
 - [x] **8 Slim briefing.** Build steps skip the concurrency notice (their copy is private) and
   get a one-line file rule instead of the chat-session card rules; no lounge (done earlier).
 

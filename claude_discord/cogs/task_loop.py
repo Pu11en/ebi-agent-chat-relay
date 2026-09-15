@@ -51,6 +51,7 @@ from claude_code_core.task_loop import (
     first_unchecked,
     goal_interview_prompt,
     group_prompt,
+    hard_step_prompt,
     is_looks_good,
     list_plans,
     list_plans_across,
@@ -62,6 +63,7 @@ from claude_code_core.task_loop import (
     parked_choice,
     parse_check_results,
     parse_groups,
+    parse_hard,
     parse_new_steps,
     parse_pick,
     parse_review,
@@ -350,6 +352,8 @@ class _Running:
     per_step_ai: bool = False
     #: AIs that hit a usage limit during this build; the picker skips them.
     limited: set[str] = field(default_factory=set)
+    #: Steps judged hard (the picker chose the strongest AI, or Haiku said so).
+    hard_steps: set[str] = field(default_factory=set)
     #: How far unsticking went per step: 1 = stronger AI tried, 2 = split tried.
     unstuck: dict[str, int] = field(default_factory=dict)
     #: (step, harness, model) while a stuck step runs on a stronger AI.
@@ -1513,7 +1517,9 @@ class TaskLoopCog(commands.Cog):
         index = parse_pick(reply, len(options))
         if index is None:
             return  # keep the AI the build has
-        harness, model, _note = options[index]
+        harness, model, note = options[index]
+        if "most capable" in note.lower() or "strongest" in note.lower():
+            running.hard_steps.add(step)  # it needed the strongest AI: worth a review
         if settings is not None:
             await settings.set_backend(harness, thread_id=running.worker_thread_id)
             await settings.set_model(harness, model, thread_id=running.worker_thread_id)
@@ -1748,19 +1754,38 @@ class TaskLoopCog(commands.Cog):
             if h != "local" and "vision" not in m and h not in running.limited
         ]
 
-        def rank(o: tuple[str, str, str]) -> tuple[bool, bool]:
-            strong = "most capable" in o[2].lower() or "strongest" in o[2].lower()
-            return (o[0] == harness, not strong)
+        def rank(o: tuple[str, str, str]) -> tuple[bool, bool, bool]:
+            # Another kind of AI first, then a mid-level model: not the priciest
+            # ("most capable"), not the weakest ("fastest, cheapest").
+            note = o[2].lower()
+            strong = "most capable" in note or "strongest" in note
+            cheap = "cheapest" in note or "fastest" in note
+            return (o[0] == harness, strong, cheap)
 
         for h, m, _note in sorted(options, key=rank):
             if (h, m) != (harness, model):
                 return h, m
         return None
 
+    async def _is_hard(self, running: _Running, step: str) -> bool:
+        """Worth a review: the picker chose the strongest AI, it got stuck, or Haiku says so."""
+        if step in running.hard_steps or running.unstuck.get(step):
+            return True
+        assert running.copy is not None
+        goal, _done = plan_goal(
+            running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        )
+        hard = parse_hard(await self._quick_ai(hard_step_prompt(step, goal)))
+        if hard:
+            running.hard_steps.add(step)
+        return hard
+
     async def _review_step(self, running: _Running, step: str, base: str | None) -> str | None:
         """A second AI reviews a finished step. None = approved (or no review possible)."""
         if not self.smart_review or running.copy is None or running.run_session is None:
             return None
+        if not await self._is_hard(running, step):
+            return None  # Drew's pick: only hard steps get a second AI (cost)
         settings = getattr(self._chat(), "_backend_settings", None)
         reviewer = await self._reviewer_for(running)
         if reviewer is None or settings is None:

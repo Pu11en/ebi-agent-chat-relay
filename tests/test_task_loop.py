@@ -640,3 +640,12 @@ class TestReview:
         assert reviewed == ["Task 1: a", "Task 1: a", "Task 2: b"]
         assert "the button does nothing" in fake.prompts[1]  # the builder got the notes
         assert "still not great" in (repo / "PLAN.progress.md").read_text()
+
+
+class TestHardSteps:
+    def test_hardness_prompt_and_verdict(self) -> None:
+        p = tl.hard_step_prompt("T3 rewrite the login flow", "Drew can sign in")
+        assert "T3 rewrite the login flow" in p and "HARD" in p and "EASY" in p
+        assert tl.parse_hard("HARD — auth code") is True
+        assert tl.parse_hard("easy: a typo") is False
+        assert tl.parse_hard(None) is False  # no answer → no review, the cheap side

@@ -1752,8 +1752,13 @@ class TestSecondAiReview:
         settings.current_model = AsyncMock(side_effect=lambda h, tid=None: current["model"])
         chat._backend_settings = settings
         cog._ai_choices = AsyncMock(  # type: ignore[method-assign]
-            return_value=[("claude", "sonnet", "balanced"), ("codex", "gpt-6", "most capable")]
+            return_value=[
+                ("claude", "sonnet", "balanced"),
+                ("codex", "gpt-6", "most capable"),
+                ("codex", "gpt-5.5", ""),
+            ]
         )
+        cog._quick_ai = AsyncMock(return_value="HARD — it changes the login flow")
         reviews: list[str] = []
         builder_prompts: list[str] = []
 
@@ -1763,7 +1768,7 @@ class TestSecondAiReview:
                 await result_sink("PASS: ok — ok\nDONE", None)
                 return
             if "[gowork review" in prompt:
-                reviews.append(current["backend"])
+                reviews.append(f"{current['backend']} · {current['model']}")
                 verdict = "CHANGES: the test is missing" if len(reviews) == 1 else "APPROVE"
                 await result_sink(f"looked\n{verdict}", None)
                 return
@@ -1780,6 +1785,29 @@ class TestSecondAiReview:
         await _type_when_asked(cog, thread.id, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
-        assert reviews == ["codex", "codex"]  # always a different AI than the builder
+        # A different AI than the builder, and a mid-level one, not the priciest.
+        assert reviews == ["codex · gpt-5.5", "codex · gpt-5.5"]
         assert current["backend"] == "claude"  # back on the builder's AI
         assert len(builder_prompts) == 2 and "the test is missing" in builder_prompts[1]
+
+    async def test_an_easy_step_is_not_reviewed(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        cog.smart_review = True
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        settings.current_backend = AsyncMock(return_value="claude")
+        settings.current_model = AsyncMock(return_value="sonnet")
+        chat._backend_settings = settings
+        cog._ai_choices = AsyncMock(return_value=[("codex", "gpt-5.5", "")])  # type: ignore[method-assign]
+        cog._quick_ai = AsyncMock(return_value="EASY — a one-line text change")
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        prompts = [c.args[2] for c in chat.run_fresh_turn.await_args_list]
+        assert not any("[gowork review" in p for p in prompts)
