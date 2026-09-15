@@ -107,7 +107,15 @@ async def keep_work(copy: WorkCopy) -> tuple[bool, str]:
         # A plan written and built in one breath was never saved; save it now so
         # the finished plan can come back over it.
         await _git(copy.source_repo, "add", "--", plan_rel)
-        await _git(copy.source_repo, "commit", "-q", "-m", "plan: saved before keeping the build")
+        await _git(
+            copy.source_repo,
+            "commit",
+            "-q",
+            "-m",
+            "plan: saved before keeping the build",
+            "--",
+            plan_rel,  # only the plan: never sweep up what the person had staged
+        )
     status = await _git(copy.source_repo, "status", "--porcelain", "--untracked-files=no")
     changed = [line[3:].strip() for line in status.splitlines() if line.strip()]
     if changed == [plan_rel]:

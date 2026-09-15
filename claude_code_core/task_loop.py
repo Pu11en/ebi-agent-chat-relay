@@ -68,6 +68,13 @@ _LIMIT_RE = re.compile(
     r"exceeded your current quota|quota exceeded|insufficient_quota|too many requests|\b429\b",
     re.IGNORECASE,
 )
+#: In the AI's own reply only the provider's wording counts: a worker building rate
+#: limiting, or hitting "recursion limit exceeded", is doing its job, not out of quota.
+_LIMIT_IN_REPLY_RE = re.compile(
+    r"(session|usage|weekly|daily|5-hour) limit|hit your .*limit|"
+    r"exceeded your current quota|insufficient_quota",
+    re.IGNORECASE,
+)
 
 
 def usage_limit_message(text: str | None, error: str | None) -> str | None:
@@ -76,12 +83,12 @@ def usage_limit_message(text: str | None, error: str | None) -> str | None:
     A limit says nothing about the task, so it must never count as a failed try.
     A reply that ends with a status line is real work, even if it mentions limits.
     """
-    candidates = [error or ""]
+    for line in (error or "").splitlines():
+        if _LIMIT_RE.search(line):
+            return line.strip()[:300]
     if parse_status(text)[0] is Status.NONE:
-        candidates.append(text or "")
-    for blob in candidates:
-        for line in blob.splitlines():
-            if _LIMIT_RE.search(line):
+        for line in (text or "").splitlines():
+            if _LIMIT_IN_REPLY_RE.search(line):
                 return line.strip()[:300]
     return None
 
@@ -118,33 +125,64 @@ def _task_blocks(lines: list[str]) -> list[tuple[int, int, bool, str]]:
     return blocks
 
 
-def merge_open_tasks(copy_text: str, real_text: str) -> str | None:
-    """The build's plan with its open steps replaced by the planner's, or None if unchanged.
+def merge_open_tasks(copy_text: str, old_real: str, new_real: str) -> str | None:
+    """Apply what the planner changed in the real plan to the build's copy, or None.
 
-    Finished steps stay exactly as the build left them; every step the build
-    hasn't done comes from the real plan, where the planning session edits it.
+    Only the difference between *old_real* (the real plan when the build last
+    looked) and *new_real* is applied: steps the planner removed are dropped if
+    still open, steps the planner added are inserted. Everything the build did
+    to its own plan — ticks, skips, split steps, fix steps — stays as it is.
     """
     copy_lines = copy_text.splitlines(keepends=True)
-    real_lines = real_text.splitlines(keepends=True)
-    done = {label for _s, _e, ticked, label in _task_blocks(copy_lines) if ticked}
-    wanted: list[str] = []
-    for start, end, ticked, label in _task_blocks(real_lines):
-        if not ticked and label not in done:
-            block = real_lines[start:end]
-            if block and not block[-1].endswith("\n"):
-                block[-1] += "\n"
-            wanted += block
-    open_blocks = [(s, e) for s, e, ticked, _label in _task_blocks(copy_lines) if not ticked]
-    if open_blocks:
-        insert_at = open_blocks[0][0]
-        drop = {i for s, e in open_blocks for i in range(s, e)}
-    else:
-        last = _task_blocks(copy_lines)
-        insert_at = last[-1][1] if last else len(copy_lines)
-        drop = set()
-    kept = [ln for i, ln in enumerate(copy_lines) if i not in drop and i < insert_at]
-    rest = [ln for i, ln in enumerate(copy_lines) if i not in drop and i >= insert_at]
-    merged = "".join(kept + wanted + rest)
+    new_lines = new_real.splitlines(keepends=True)
+    old_open = {
+        label
+        for _s, _e, ticked, label in _task_blocks(old_real.splitlines(keepends=True))
+        if not ticked
+    }
+    new_blocks = _task_blocks(new_lines)
+    new_open = {label for _s, _e, ticked, label in new_blocks if not ticked}
+    copy_blocks = _task_blocks(copy_lines)
+    in_copy = {label for _s, _e, _t, label in copy_blocks}
+    removed = old_open - new_open
+    added = [
+        (s, e, label)
+        for s, e, ticked, label in new_blocks
+        if not ticked and label not in old_open and label not in in_copy
+    ]
+    if not removed and not added:
+        return None
+
+    drop = {
+        i
+        for s, e, ticked, label in copy_blocks
+        if not ticked and label in removed
+        for i in range(s, e)
+    }
+    # Where each added step goes: after the nearest earlier real-plan step the copy has.
+    end_of: dict[str, int] = {label: e for _s, e, _t, label in copy_blocks}
+    order = [label for _s, _e, _t, label in new_blocks]
+    open_starts = [s for s, _e, ticked, _l in copy_blocks if not ticked and s not in drop]
+    fallback = (
+        open_starts[0] if open_starts else (copy_blocks[-1][1] if copy_blocks else len(copy_lines))
+    )
+    inserts: dict[int, list[str]] = {}
+    for s, e, label in added:
+        at = fallback
+        for earlier in reversed(order[: order.index(label)]):
+            if earlier in end_of and earlier not in removed:
+                at = end_of[earlier]
+                break
+        block = new_lines[s:e]
+        if block and not block[-1].endswith("\n"):
+            block[-1] += "\n"
+        inserts.setdefault(at, []).extend(block)
+    out: list[str] = []
+    for i, line in enumerate(copy_lines + [""]):
+        out += inserts.get(i, [])
+        if i < len(copy_lines) and i not in drop:
+            out.append(line)
+    merged = "".join(out)
     return None if merged == copy_text else merged
 
 
@@ -468,6 +506,38 @@ class TaskLoop:
         ok, tail = await run_check(self.repo_dir, argv)
         return [] if ok else [f"the plan's check failed ({' '.join(argv)}): {tail}"]
 
+    async def _check_group(self, done: list[str], base: str | None) -> str | None:
+        """Steps built side by side get the same checks as one built alone.
+
+        The plan's check runs on the merged result, and each step gets its review.
+        Anything that fails is unticked and runs again on its own, with the reason.
+        """
+        if not done:
+            return None
+        problems = await self._run_plan_check()
+        sent_back: list[str] = []
+        reasons: list[str] = []
+        if problems:
+            sent_back = list(done)
+            reasons.append("; ".join(problems))
+            await self._report(f"🛑 The steps built together broke the plan's check: {reasons[0]}")
+        else:
+            for step in done:
+                concern = await self._reviewed(step, base)
+                if concern is not None and step not in self._bounced:
+                    self._bounced.add(step)
+                    sent_back.append(step)
+                    reasons.append(f"{step}: {concern}")
+                    await self._report(f"🔍 A second AI reviewed it and sent it back: {concern}")
+        if not sent_back:
+            return None
+        for step in sent_back:
+            untick_task(self.plan_path, step)
+            self._solo.add(step)
+        await _git(self.repo_dir, "add", "-A")
+        await _git(self.repo_dir, "commit", "-qm", "gowork: steps sent back after a group")
+        return "after building steps together: " + " | ".join(reasons)
+
     async def _reviewed(self, step: str, base: str | None) -> str | None:
         if self._review is None:
             return None
@@ -535,7 +605,8 @@ class TaskLoop:
                 await self._report(f"🛑 Stopped after {rounds} rounds (the safety limit).")
                 return LoopOutcome(Status.STUCK, "round limit reached", rounds)
 
-            group = await self._parallel_group()
+            # A pending answer or retry reason belongs to one step, never a crowd.
+            group = await self._parallel_group() if answer is None and retry_reason is None else []
             if len(group) > 1 and self._run_group is not None:
                 rounds += 1
                 results = await self._run_group(group)
@@ -546,6 +617,7 @@ class TaskLoop:
                 if again:
                     line += f", {len(again)} will run again on their own"
                 await self._report(line)
+                retry_reason = await self._check_group(done, before.head)
                 continue
 
             rounds += 1

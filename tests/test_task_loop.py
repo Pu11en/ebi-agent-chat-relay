@@ -475,20 +475,33 @@ class TestPlanChangesFromThePlanner:
         "\n## How to try it\n- open it\n"
     )
 
-    def test_open_steps_are_replaced_and_finished_ones_kept(self) -> None:
+    OLD_REAL = "# Plan\n\n- [ ] T1 done\n- [ ] T2 old\n  more about T2\n- [ ] T3 old\n"
+
+    def test_the_planners_changes_are_applied_and_finished_ones_kept(self) -> None:
         real = (
             "# Plan\n\n- [ ] T1 done\n- [ ] T2 new\n- [ ] T4 added\n\n## How to try it\n- open it\n"
         )
-        merged = tl.merge_open_tasks(self.COPY, real)
+        merged = tl.merge_open_tasks(self.COPY, self.OLD_REAL, real)
         assert merged is not None
         assert "- [x] T1 done" in merged and "- [ ] T1 done" not in merged
         assert "T2 new" in merged and "T4 added" in merged
         assert "T2 old" not in merged and "more about T2" not in merged and "T3 old" not in merged
-        assert merged.index("T4 added") < merged.index("## How to try it")
+        assert merged.index("T2 new") < merged.index("T4 added") < merged.index("## How to try")
 
     def test_no_change_returns_none(self) -> None:
-        real = "# Plan\n\n- [ ] T1 done\n- [ ] T2 old\n  more about T2\n- [ ] T3 old\n"
-        assert tl.merge_open_tasks(self.COPY, real) is None
+        assert tl.merge_open_tasks(self.COPY, self.OLD_REAL, self.OLD_REAL) is None
+
+    def test_the_builds_own_plan_edits_survive_a_planner_edit(self) -> None:
+        copy = (
+            "# Plan\n\n- [x] T1 done\n- [x] T2 old _(skipped)_\n- [ ] T3a first half\n"
+            "- [ ] T3b second half\n- [ ] Fix: the button\n"
+        )
+        real = self.OLD_REAL + "- [ ] T9 from the planner\n"
+        merged = tl.merge_open_tasks(copy, self.OLD_REAL, real)
+        assert merged is not None
+        assert "T2 old _(skipped)_" in merged and "- [ ] T2 old\n" not in merged
+        assert "T3a first half" in merged and "- [ ] T3 old" not in merged
+        assert "Fix: the button" in merged and "T9 from the planner" in merged
 
     async def test_the_loop_asks_for_changes_before_every_step(self, repo: Path) -> None:
         calls = 0
@@ -649,3 +662,60 @@ class TestHardSteps:
         assert tl.parse_hard("HARD — auth code") is True
         assert tl.parse_hard("easy: a typo") is False
         assert tl.parse_hard(None) is False  # no answer → no review, the cheap side
+
+
+class TestReviewFixes:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "I added a rate limit: 429 Too Many Requests when over",
+            "the recursion limit exceeded in the parser",
+        ],
+    )
+    def test_a_workers_own_words_are_not_a_usage_limit(self, text: str) -> None:
+        assert tl.usage_limit_message(text, None) is None
+
+    def test_a_real_limit_in_the_reply_still_counts(self) -> None:
+        assert tl.usage_limit_message("You've hit your session limit · resets 7pm", None)
+
+    async def test_a_pending_answer_is_never_sent_to_a_group(self, repo: Path) -> None:
+        (repo / "PLAN.md").write_text("- [ ] Task 1: a\n- [ ] Task 2: b\n")
+        _git(repo, "commit", "-qam", "two")
+        grouped: list[list[str]] = []
+        calls = 0
+
+        async def next_group(steps: list[str]) -> list[str]:
+            nonlocal calls
+            calls += 1
+            return steps[:1] if calls == 1 else steps[:2]  # the first step asks alone
+
+        async def run_group(steps: list[str]) -> list[tuple[str, bool, str]]:
+            grouped.append(steps)
+            for s in steps:
+                tl.tick_task(repo / "PLAN.md", s)
+            _git(repo, "commit", "-qam", "both")
+            return [(s, True, "ok") for s in steps]
+
+        fake = _Fake(repo, [lambda r: ("x\nASK: keep table X?", None), _done, _done], ["no"])
+        await fake.loop(next_group=next_group, run_group=run_group).run()
+        # The answer went to a single step, not a group; the group came after.
+        assert '"no"' in fake.prompts[1]
+
+    async def test_a_group_that_breaks_the_check_is_sent_back(self, repo: Path) -> None:
+        (repo / "PLAN.md").write_text("Check: false\n- [ ] Task 1: a\n- [ ] Task 2: b\n")
+        _git(repo, "commit", "-qam", "two")
+
+        async def next_group(steps: list[str]) -> list[str]:
+            return steps[:2]
+
+        async def run_group(steps: list[str]) -> list[tuple[str, bool, str]]:
+            for s in steps:
+                tl.tick_task(repo / "PLAN.md", s)
+            _git(repo, "commit", "-qam", "both")
+            return [(s, True, "ok") for s in steps]
+
+        fake = _Fake(repo, [_lie])
+        loop = fake.loop(next_group=next_group, run_group=run_group, max_rounds=2)
+        await loop.run()
+        assert "- [ ] Task 1: a" in (repo / "PLAN.md").read_text()  # unticked again
+        assert any("check" in r.lower() for r in fake.reports)

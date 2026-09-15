@@ -219,7 +219,6 @@ _STOP_WORDS = {
     "wrap up",
     "wrap it up",
     "end it",
-    "pause",
     "save and close",
     "save and stop",
 }
@@ -385,6 +384,10 @@ class _Running:
     #: Started from the build queue; True while it waits for the person.
     queued: bool = False
     waiting_for_person: bool = False
+    #: The backup AI was switched to once already (it may not run out again).
+    fallback_used: bool = False
+    #: The build reached its finished card: the thread is a normal chat now.
+    finished: bool = False
     #: "cheap", "balanced" or "careful" (see MODES).
     mode: str = "balanced"
     #: Rounds of missing steps added by themselves when the goal wasn't met.
@@ -524,7 +527,11 @@ class TaskLoopCog(commands.Cog):
         if channel_id is None or not text:
             return False
         for running in self._running.values():
-            if running.worker_thread_id == channel_id and wants_close(text):
+            if (
+                running.worker_thread_id == channel_id
+                and not running.finished
+                and wants_close(text)
+            ):
                 self._close_build(running)
                 return True
         future = self._waiters.get(channel_id)
@@ -695,7 +702,9 @@ class TaskLoopCog(commands.Cog):
             nonlocal rounds
             rounds += 1
             now = await take_snapshot(work_dir, work_plan)
-            if holder and holder[0].per_step_ai and now.next_task:
+            boosted = holder[0].boosted if holder else None
+            keep_strong = bool(boosted and boosted[0] == now.next_task)  # a stuck-step retry
+            if holder and holder[0].per_step_ai and now.next_task and not keep_strong:
                 await self._pick_step_ai(holder[0], now.next_task)
             if holder:
                 holder[0].round_started = (time.monotonic(), await self._ai_label(holder[0]))
@@ -764,9 +773,9 @@ class TaskLoopCog(commands.Cog):
             real_text = read_real()
             if real_text is None or real_text == last_seen[0]:
                 return
-            last_seen[0] = real_text
+            old_real, last_seen[0] = last_seen[0] or "", real_text
             copy_text = work_plan.read_text(encoding="utf-8", errors="replace")
-            merged = merge_open_tasks(copy_text, real_text)
+            merged = merge_open_tasks(copy_text, old_real, real_text)
             if merged is None:
                 return
             work_plan.write_text(merged, encoding="utf-8")
@@ -1026,6 +1035,7 @@ class TaskLoopCog(commands.Cog):
                 or (bool(proposed) and clear_reply(text) in _ADD_WORDS)
             )
 
+        running.finished = True
         self._queue_waiting(
             running,
             "finished — waiting for your **looks good**"
@@ -1062,6 +1072,7 @@ class TaskLoopCog(commands.Cog):
                     append_tasks(running.copy.plan_path, proposed)
                     await commit_all(running.copy.path, "gowork: steps toward the goal")
                     await report(f"🎯 Added {len(proposed)} steps toward the goal. Keeping going.")
+                    self._back_to_work(running)
                     return "fix"
                 if clear_reply(reply) in _FIX_WORDS:
                     what = (
@@ -1072,6 +1083,7 @@ class TaskLoopCog(commands.Cog):
                     append_fix_task(running.copy.plan_path, what)
                     await commit_all(running.copy.path, f"gowork: fix requested: {what[:60]}")
                     await report(f"🔧 Got it, fixing: “{what[:200]}”")
+                    self._back_to_work(running)
                     return "fix"
                 # Changes made while chatting after the build are part of the build.
                 await commit_all(running.copy.path, "gowork: changes from the chat afterwards")
@@ -1683,6 +1695,8 @@ class TaskLoopCog(commands.Cog):
         harness: str | None = None,
         model: str | None = None,
         mode: str | None = None,
+        fallback_harness: str | None = None,
+        fallback_model: str | None = None,
     ) -> int:
         """ "Queue it": put a plan in line. It starts when the builds ahead are done or waiting."""
         item = QueueItem(
@@ -1692,6 +1706,8 @@ class TaskLoopCog(commands.Cog):
             harness=harness,
             model=model,
             mode=mode,
+            fallback_harness=fallback_harness,
+            fallback_model=fallback_model,
         )
         self._queue_reports[item.report_id] = report_to
         place = self._queue.add(item)
@@ -1729,7 +1745,6 @@ class TaskLoopCog(commands.Cog):
                     self._queue.take(item)
                     continue
                 parent: Any = report.parent if isinstance(report, discord.Thread) else report
-                self._queue.take(item)
                 try:
                     thread = await self.start_loop(
                         parent,
@@ -1741,15 +1756,30 @@ class TaskLoopCog(commands.Cog):
                         per_step_ai=item.harness is None,
                         queued=True,
                         mode=item.mode,
+                        fallback_harness=item.fallback_harness,
+                        fallback_model=item.fallback_model,
                     )
                 except (ValueError, RuntimeError) as exc:
+                    # The plan itself can't be built (no tasks, not a repo): drop it.
+                    self._queue.take(item)
                     with contextlib.suppress(discord.HTTPException):
                         await report.send(
                             f"Couldn't start queued `{Path(item.plan_path).name}`: {exc}"
                         )
                     continue
+                except Exception:
+                    # Discord hiccuped: keep it in line for the next try, lose nothing.
+                    logger.warning("gowork: couldn't start a queued build", exc_info=True)
+                    return
+                self._queue.take(item)
                 self._queue.started(item, repo.name, thread.id)
                 return
+
+    def _back_to_work(self, running: _Running) -> None:
+        """The finished build got more steps: it's building again, not waiting."""
+        running.finished = False
+        running.waiting_for_person = False
+        self._queue_note(running, "running")
 
     def _queue_note(self, running: _Running, state: str) -> None:
         if running.queued:
@@ -2034,7 +2064,8 @@ class TaskLoopCog(commands.Cog):
         fb = running.fallback
         if fb is not None and settings is not None:
             fb_label = " · ".join(x for x in fb if x)
-            if current != fb_label:
+            if fb[0] not in running.limited and not running.fallback_used:
+                running.fallback_used = True  # once: if it runs out too, ask the person
                 await settings.set_backend(fb[0], thread_id=thread.id)
                 if fb[1]:
                     await settings.set_model(fb[0], fb[1], thread_id=thread.id)

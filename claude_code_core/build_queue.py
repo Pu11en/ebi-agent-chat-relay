@@ -26,6 +26,8 @@ class QueueItem:
     harness: str | None = None
     model: str | None = None
     mode: str | None = None
+    fallback_harness: str | None = None
+    fallback_model: str | None = None
     queued_at: str = field(
         default_factory=lambda: datetime.datetime.now().isoformat(timespec="seconds")
     )

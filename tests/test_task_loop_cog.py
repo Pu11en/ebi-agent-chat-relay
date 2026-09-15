@@ -1856,3 +1856,78 @@ class TestModes:
     async def test_cheap_never_reviews(self, repo: Path) -> None:
         prompts = await self._run(repo, "cheap")
         assert not any("[gowork review" in p for p in prompts)
+
+
+class TestReviewFixesInTheCog:
+    def test_pause_is_not_a_close_word(self) -> None:
+        from claude_discord.cogs.task_loop import wants_close
+
+        assert not wants_close("pause")
+        assert wants_close("close")
+
+    async def test_stop_at_the_finished_card_is_just_chat(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        for _ in range(500):
+            if cog._waiters.get(555) is not None:
+                break
+            await asyncio.sleep(0.01)
+        msg = MagicMock()
+        msg.channel.id = 555
+        msg.content = "stop"
+        assert cog.take_message(msg) is False  # the normal chat handles it
+        assert cog.running and not cog.running[0].auto_finish
+        await _type_when_asked(cog, 555, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+    async def test_the_backup_ai_is_used_once_then_the_person_is_asked(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        now = {"backend": "claude"}
+        settings = MagicMock()
+
+        async def set_backend(h: str, *, thread_id: int) -> None:
+            now["backend"] = h
+
+        settings.set_backend = AsyncMock(side_effect=set_backend)
+        settings.set_model = AsyncMock()
+        settings.current_backend = AsyncMock(side_effect=lambda tid=None: now["backend"])
+        settings.current_model = AsyncMock(return_value="gpt-5.4")  # codex's own default
+        chat._backend_settings = settings
+        cog._ai_choices = AsyncMock(return_value=[("dsh", "glm-5.3", "")])  # type: ignore[method-assign]
+        calls = 0
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            nonlocal calls
+            calls += 1
+            if calls <= 2:
+                await result_sink(None, "You've hit your session limit")
+                return
+            plan = Path(working_dir) / "PLAN.md"
+            plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+            _git(Path(working_dir), "commit", "-qam", "tick")
+            await result_sink("done\nDONE", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"), fallback_harness="codex")
+        await _type_when_asked(cog, thread.id, "B")  # the second limit asks the person
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        assert calls == 3
+
+    async def test_a_discord_hiccup_keeps_the_plan_in_line(self, tmp_path: Path) -> None:
+        repo = _second_repo(tmp_path, "gamma")
+        cog, chat, thread = _cog_with_chat()
+        chat.spawn_session = AsyncMock(side_effect=discord.HTTPException(MagicMock(), "down"))
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.enqueue(channel, str(repo / "PLAN.md"))
+        assert [i.plan_path for i in cog._queue.state.waiting] == [str(repo / "PLAN.md")]

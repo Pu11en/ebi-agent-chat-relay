@@ -1658,6 +1658,8 @@ class ApiServer:
                 harness=harness,
                 model=model,
                 mode=data.get("mode") or None,
+                fallback_harness=fallback_harness,
+                fallback_model=fallback_model,
             )
             return web.json_response({"status": "queued", "place": place}, status=202)
         # Runs in the background: with no harness given, the bot asks in the

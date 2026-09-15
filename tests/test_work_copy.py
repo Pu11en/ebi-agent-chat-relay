@@ -119,3 +119,19 @@ async def test_a_leftover_side_copy_from_a_restart_is_replaced(repo: Path, tmp_p
     await wc.create_side_copy(copy, "a")  # left behind by an interrupted group
     again = await wc.create_side_copy(copy, "a")
     assert again.path.exists()
+
+
+async def test_saving_a_new_plan_never_commits_what_the_person_staged(
+    repo: Path, tmp_path: Path
+) -> None:
+    (repo / "NEW-PLAN.md").write_text("- [ ] a\n")
+    copy = await wc.create_work_copy(repo, repo / "NEW-PLAN.md", root=tmp_path / "copies")
+    copy.plan_path.write_text("- [x] a\n")
+    _git(copy.path, "commit", "-qam", "tick")
+    (repo / "app.txt").write_text("staged by the person\n")
+    _git(repo, "add", "app.txt")
+
+    ok, msg = await wc.keep_work(copy)
+
+    assert not ok and "unsaved" in msg  # refused, as before
+    assert "app.txt" in _git(repo, "diff", "--cached", "--name-only")  # still staged, not committed
