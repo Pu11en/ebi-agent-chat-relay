@@ -1811,3 +1811,48 @@ class TestSecondAiReview:
 
         prompts = [c.args[2] for c in chat.run_fresh_turn.await_args_list]
         assert not any("[gowork review" in p for p in prompts)
+
+
+class TestModes:
+    def test_mode_words(self) -> None:
+        from claude_discord.cogs.task_loop import parse_mode
+
+        assert parse_mode("go work, cheap") == "cheap"
+        assert parse_mode("careful please") == "careful"
+        assert parse_mode("go work") is None
+        assert parse_mode(None) is None
+
+    def _settings(self, chat: MagicMock) -> None:
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        settings.current_backend = AsyncMock(return_value="claude")
+        settings.current_model = AsyncMock(return_value="sonnet")
+        chat._backend_settings = settings
+
+    async def _run(self, repo: Path, mode: str) -> list[str]:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        cog.smart_review = True
+        self._settings(chat)
+        cog._ai_choices = AsyncMock(  # type: ignore[method-assign]
+            return_value=[("codex", "gpt-6", "most capable"), ("codex", "gpt-5.5", "")]
+        )
+        cog._quick_ai = AsyncMock(return_value="EASY — small")
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"), mode=mode)
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        card = _embeds(channel)[0].description or ""
+        assert mode in card.lower()
+        return [c.args[2] for c in chat.run_fresh_turn.await_args_list]
+
+    async def test_careful_reviews_even_easy_steps(self, repo: Path) -> None:
+        prompts = await self._run(repo, "careful")
+        assert any("[gowork review" in p for p in prompts)
+
+    async def test_cheap_never_reviews(self, repo: Path) -> None:
+        prompts = await self._run(repo, "cheap")
+        assert not any("[gowork review" in p for p in prompts)

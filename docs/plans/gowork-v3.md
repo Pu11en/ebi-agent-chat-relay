@@ -56,6 +56,15 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
 - [x] **8 Slim briefing.** Build steps skip the concurrency notice (their copy is private) and
   get a one-line file rule instead of the chat-session card rules; no lounge (done earlier).
 
+## Modes (Drew, 2026-09-15): cost, speed and quality
+- **balanced** (default): as built — hard steps reviewed by a mid-level AI, strongest AI when
+  stuck, up to 3 goal rounds.
+- **cheap**: no reviews, a stuck step goes straight to being split, goal steps are proposed
+  and wait for "add them".
+- **careful**: every step reviewed by the strongest other AI, strongest AI when stuck.
+- Chosen in words ("go work, careful"): `/gowork mode:`, `"mode"` in `POST /api/loops`
+  (queue too). **At the restart:** add the mode words to the `~/AGENTS.md` start-by-words rule.
+
 ## How to try it (after the one restart)
 - Start `go work` on a plan with no `Goal:` line: the build's thread asks a few lettered
   questions and writes the goal into the plan.

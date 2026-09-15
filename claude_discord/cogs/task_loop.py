@@ -225,6 +225,24 @@ _STOP_WORDS = {
 }
 
 
+#: Where a build sits between cost and quality (Drew's pick: balanced by default).
+MODES = ("cheap", "balanced", "careful")
+_MODE_NOTES = {
+    "cheap": "no reviews, no strongest-AI retries",
+    "balanced": "hard steps reviewed; say cheap or careful to change",
+    "careful": "every step reviewed, the strongest AI when stuck",
+}
+
+
+def parse_mode(text: str | None) -> str | None:
+    """ "go work, cheap" / "careful" → the mode named in the words, or None."""
+    words = set(re.findall(r"[a-z]+", (text or "").lower()))
+    for mode in ("cheap", "careful"):
+        if mode in words:
+            return mode
+    return None
+
+
 def wants_close(text: str) -> bool:
     """Typed in a build's thread: keep the finished steps and end the build.
 
@@ -253,10 +271,16 @@ def plan_card(
     harness: str | None,
     model: str | None,
     groups: list[list[str]] | None = None,
+    mode: str = "balanced",
 ) -> Any:
     """The "here's what I'm going to do" card: every step left, in plain words."""
     ai = " · ".join(x for x in (harness, model) if x) or "the thread's usual AI"
-    lines = [f"**Plan:** {plan_name}", f"**AI doing the work:** {ai}", ""]
+    lines = [
+        f"**Plan:** {plan_name}",
+        f"**AI doing the work:** {ai}",
+        f"**Mode:** {mode} — " + _MODE_NOTES.get(mode, ""),
+        "",
+    ]
     for task in open_tasks(plan_text):
         dot = "🟡" if needs_you(task) else "🟢"
         tail = " — I'll ask you first" if dot == "🟡" else ""
@@ -361,6 +385,8 @@ class _Running:
     #: Started from the build queue; True while it waits for the person.
     queued: bool = False
     waiting_for_person: bool = False
+    #: "cheap", "balanced" or "careful" (see MODES).
+    mode: str = "balanced"
     #: Rounds of missing steps added by themselves when the goal wasn't met.
     goal_rounds: int = 0
     #: This build's step records, and when the current round started and on which AI.
@@ -555,6 +581,7 @@ class TaskLoopCog(commands.Cog):
         ask_goal: bool = False,
         per_step_ai: bool = False,
         queued: bool = False,
+        mode: str | None = None,
     ) -> discord.Thread:
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
@@ -609,6 +636,7 @@ class TaskLoopCog(commands.Cog):
             ask_goal=ask_goal,
             per_step_ai=per_step_ai,
             queued=queued,
+            mode=mode if mode in MODES else "balanced",
         )
         self._store.save(record)
         plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
@@ -626,6 +654,7 @@ class TaskLoopCog(commands.Cog):
                     harness or ("the best AI per step" if per_step_ai else None),
                     model,
                     groups,
+                    record.mode,
                 ),
             )
         return thread
@@ -780,6 +809,7 @@ class TaskLoopCog(commands.Cog):
             ask_goal=record.ask_goal,
             per_step_ai=record.per_step_ai,
             queued=record.queued,
+            mode=record.mode,
             fallback=(
                 (record.fallback_harness, record.fallback_model)
                 if record.fallback_harness
@@ -951,7 +981,8 @@ class TaskLoopCog(commands.Cog):
         results = await self._check_it_myself(running, plan_text)
         fails = [what for kind, what in results if kind == "fail"]
         proposed = await self._missing_steps(running, fails)
-        if proposed and running.goal_rounds < GOAL_AUTO_ROUNDS:
+        auto_rounds = 0 if running.mode == "cheap" else GOAL_AUTO_ROUNDS
+        if proposed and running.goal_rounds < auto_rounds:
             # Drew's pick: add the missing steps and keep going, a few rounds at most.
             running.goal_rounds += 1
             append_tasks(running.copy.plan_path, proposed)
@@ -1359,6 +1390,7 @@ class TaskLoopCog(commands.Cog):
         model: str | None = None,
         fallback_harness: str | None = None,
         fallback_model: str | None = None,
+        mode: str | None = None,
     ) -> discord.Thread | None:
         """Start a build from outside a slash command (the REST API, a planner).
 
@@ -1402,6 +1434,7 @@ class TaskLoopCog(commands.Cog):
                 fallback_model=fallback_model,
                 ask_goal=True,
                 per_step_ai=per_step,
+                mode=mode,
             )
         except (ValueError, RuntimeError) as exc:
             with contextlib.suppress(discord.HTTPException):
@@ -1576,6 +1609,8 @@ class TaskLoopCog(commands.Cog):
             return False, outcome
         settings = getattr(self._chat(), "_backend_settings", None)
         tries = running.unstuck.get(step, 0)
+        if tries == 0 and running.mode == "cheap":
+            tries = 1  # cheap: no strongest-AI retry, straight to smaller steps
         if tries == 0:
             running.unstuck[step] = 1
             strong = await self._strongest(running)
@@ -1647,6 +1682,7 @@ class TaskLoopCog(commands.Cog):
         notify_user_id: int | None = None,
         harness: str | None = None,
         model: str | None = None,
+        mode: str | None = None,
     ) -> int:
         """ "Queue it": put a plan in line. It starts when the builds ahead are done or waiting."""
         item = QueueItem(
@@ -1655,6 +1691,7 @@ class TaskLoopCog(commands.Cog):
             notify_user_id=notify_user_id,
             harness=harness,
             model=model,
+            mode=mode,
         )
         self._queue_reports[item.report_id] = report_to
         place = self._queue.add(item)
@@ -1703,6 +1740,7 @@ class TaskLoopCog(commands.Cog):
                         model=item.model,
                         per_step_ai=item.harness is None,
                         queued=True,
+                        mode=item.mode,
                     )
                 except (ValueError, RuntimeError) as exc:
                     with contextlib.suppress(discord.HTTPException):
@@ -1760,6 +1798,8 @@ class TaskLoopCog(commands.Cog):
             note = o[2].lower()
             strong = "most capable" in note or "strongest" in note
             cheap = "cheapest" in note or "fastest" in note
+            if running.mode == "careful":
+                return (o[0] == harness, not strong, cheap)  # careful: the strongest
             return (o[0] == harness, strong, cheap)
 
         for h, m, _note in sorted(options, key=rank):
@@ -1784,7 +1824,9 @@ class TaskLoopCog(commands.Cog):
         """A second AI reviews a finished step. None = approved (or no review possible)."""
         if not self.smart_review or running.copy is None or running.run_session is None:
             return None
-        if not await self._is_hard(running, step):
+        if running.mode == "cheap":
+            return None
+        if running.mode != "careful" and not await self._is_hard(running, step):
             return None  # Drew's pick: only hard steps get a second AI (cost)
         settings = getattr(self._chat(), "_backend_settings", None)
         reviewer = await self._reviewer_for(running)
@@ -2040,8 +2082,13 @@ class TaskLoopCog(commands.Cog):
             return True
 
     @app_commands.command(name="gowork", description="Work through the plan, one task at a time")
-    @app_commands.describe(plan="Plan .md file (optional — found automatically in this project)")
-    async def gowork(self, interaction: discord.Interaction, plan: str | None = None) -> None:
+    @app_commands.describe(
+        plan="Plan .md file (optional — found automatically in this project)",
+        mode="cheap, balanced (default) or careful: cost versus quality",
+    )
+    async def gowork(
+        self, interaction: discord.Interaction, plan: str | None = None, mode: str | None = None
+    ) -> None:
         if not self._authorized(interaction.user.id):
             await interaction.response.send_message("Not authorized.", ephemeral=True)
             return
@@ -2087,6 +2134,7 @@ class TaskLoopCog(commands.Cog):
                 model=model,
                 ask_goal=True,
                 per_step_ai=per_step,
+                mode=parse_mode(mode) or (mode if mode in MODES else None),
             )
         except (ValueError, RuntimeError) as exc:
             await interaction.followup.send(f"Could not start: {exc}")

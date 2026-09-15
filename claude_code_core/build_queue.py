@@ -25,6 +25,7 @@ class QueueItem:
     notify_user_id: int | None = None
     harness: str | None = None
     model: str | None = None
+    mode: str | None = None
     queued_at: str = field(
         default_factory=lambda: datetime.datetime.now().isoformat(timespec="seconds")
     )

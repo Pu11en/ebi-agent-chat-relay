@@ -45,6 +45,8 @@ class LoopRecord:
     per_step_ai: bool = False
     #: Started from the build queue (idea 6): the line moves on when it waits.
     queued: bool = False
+    #: "cheap", "balanced" or "careful" — where the build sits between cost and quality.
+    mode: str = "balanced"
 
 
 class LoopStore:
