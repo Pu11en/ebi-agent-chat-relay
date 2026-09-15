@@ -734,3 +734,22 @@ class TestAskWithChoicesBelow:
 
     def test_ordinary_text_after_an_ask_is_not_an_ask(self) -> None:
         assert tl.parse_status("ASK: x?\nThen I wrote more code.\nDONE")[0] == tl.Status.DONE
+
+
+class TestCheckLeavesNoMess:
+    async def test_the_bots_own_check_never_makes_the_next_step_look_unsaved(
+        self, repo: Path
+    ) -> None:
+        # A check that rewrites a tracked file (a log, a cache) must not count against
+        # the next step as unsaved work.
+        (repo / "log.txt").write_text("old\n")
+        (repo / "PLAN.md").write_text(
+            "Check: sh -c 'echo run >> log.txt'\n- [ ] Task 1: a\n- [ ] Task 2: b\n"
+        )
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-qm", "setup")
+        fake = _Fake(repo, [_done, _done])
+        outcome = await fake.loop().run()
+        assert outcome.status == tl.Status.COMPLETE
+        assert len(fake.prompts) == 2  # no retry
+        assert (repo / "log.txt").read_text() == "old\n"

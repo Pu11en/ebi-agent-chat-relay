@@ -513,6 +513,9 @@ class TaskLoop:
         if argv is None:
             return []
         ok, tail = await run_check(self.repo_dir, argv)
+        # The step was already committed and clean; anything the check itself rewrote
+        # in tracked files (a log, a cache) is the check's mess, not unsaved work.
+        await _git(self.repo_dir, "checkout", "--", ".")
         return [] if ok else [f"the plan's check failed ({' '.join(argv)}): {tail}"]
 
     async def _check_group(self, done: list[str], base: str | None) -> str | None:
