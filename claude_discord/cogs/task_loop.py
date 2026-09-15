@@ -845,6 +845,8 @@ class TaskLoopCog(commands.Cog):
             if thread is None or not Path(record.copy_plan).is_file():
                 logger.warning("gowork: can't resume %s (thread or copy gone)", repo_dir)
                 self._store.remove(record.repo_dir)
+                if Path(record.copy_plan).is_file():
+                    await self._tell_orphaned(record)
                 continue
             report_target: Any = (
                 self.bot.get_channel(record.report_channel_id)
@@ -859,6 +861,25 @@ class TaskLoopCog(commands.Cog):
             )
             resumed += 1
         return resumed
+
+    async def _tell_orphaned(self, record: LoopRecord) -> None:
+        """The build's thread is gone but its copy isn't: say where the finished work is."""
+        checked, unchecked = count_tasks(
+            Path(record.copy_plan).read_text(encoding="utf-8", errors="replace")
+        )
+        report: Any = self.bot.get_channel(record.report_channel_id)
+        if report is None:
+            with contextlib.suppress(Exception):
+                report = await self.bot.fetch_channel(record.report_channel_id)
+        if report is None:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await report.send(
+                f"⚠️ The thread for the `{Path(record.plan_path).name}` build is gone, so I "
+                f"stopped it. Its {checked} finished step{'s' if checked != 1 else ''} "
+                f"({unchecked} not done) are safe on branch `{record.branch}`, and nothing "
+                "was added to your project. Ask me to add them or throw them away."
+            )
 
     async def cog_load(self) -> None:
         async def resume_when_ready() -> None:

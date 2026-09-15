@@ -1931,3 +1931,30 @@ class TestReviewFixesInTheCog:
         channel.send = AsyncMock()
         await cog.enqueue(channel, str(repo / "PLAN.md"))
         assert [i.plan_path for i in cog._queue.state.waiting] == [str(repo / "PLAN.md")]
+
+
+async def test_a_build_whose_thread_is_gone_says_where_its_work_is(repo: Path) -> None:
+    from claude_code_core.work_copy import create_work_copy as make_copy
+
+    cog, chat, thread = _cog_with_chat()
+    copy = await make_copy(repo, repo / "PLAN.md", root=cog._work_root)
+    report = MagicMock()
+    report.send = AsyncMock()
+    cog.bot.get_channel = MagicMock(side_effect=lambda cid: report if cid == 1 else None)
+    cog.bot.fetch_channel = AsyncMock(side_effect=RuntimeError("Unknown Channel"))
+    from claude_code_core.loop_store import LoopRecord
+
+    cog._store.save(
+        LoopRecord(
+            repo_dir=str(repo),
+            plan_path=str(repo / "PLAN.md"),
+            copy_path=str(copy.path),
+            copy_plan=str(copy.plan_path),
+            branch=copy.branch,
+            worker_thread_id=999,
+            report_channel_id=1,
+        )
+    )
+    assert await cog.resume_all() == 0
+    text = report.send.await_args.args[0]
+    assert copy.branch in text and "nothing was added" in text
