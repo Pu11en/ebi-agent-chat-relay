@@ -77,6 +77,7 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
     cog = TaskLoopCog(bot, work_root=tmp / "copies", store=LoopStore(tmp / "loops.json"))
     cog._quick_ai = AsyncMock(return_value=None)  # never call a real AI in tests
     cog.smart_unstick = False  # the TestSmartUnsticking tests turn it on
+    cog.smart_review = False  # the TestSecondAiReview tests turn it on
     return cog, chat, thread
 
 
@@ -1729,3 +1730,56 @@ class TestBuildQueue:
         assert channel.send.await_count == 1
         text = channel.send.await_args.args[0]
         assert "PLAN-a.md" in text and "needs a key" in text
+
+
+class TestSecondAiReview:
+    async def test_a_different_ai_reviews_and_can_send_a_step_back(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        cog.smart_review = True
+        current = {"backend": "claude", "model": "sonnet"}
+        settings = MagicMock()
+
+        async def set_backend(h: str, *, thread_id: int) -> None:
+            current["backend"] = h
+
+        async def set_model(h: str, m: str, *, thread_id: int) -> None:
+            current["model"] = m
+
+        settings.set_backend = AsyncMock(side_effect=set_backend)
+        settings.set_model = AsyncMock(side_effect=set_model)
+        settings.current_backend = AsyncMock(side_effect=lambda tid=None: current["backend"])
+        settings.current_model = AsyncMock(side_effect=lambda h, tid=None: current["model"])
+        chat._backend_settings = settings
+        cog._ai_choices = AsyncMock(  # type: ignore[method-assign]
+            return_value=[("claude", "sonnet", "balanced"), ("codex", "gpt-6", "most capable")]
+        )
+        reviews: list[str] = []
+        builder_prompts: list[str] = []
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            plan = Path(working_dir) / "PLAN.md"
+            if "checking finished work" in prompt:
+                await result_sink("PASS: ok — ok\nDONE", None)
+                return
+            if "[gowork review" in prompt:
+                reviews.append(current["backend"])
+                verdict = "CHANGES: the test is missing" if len(reviews) == 1 else "APPROVE"
+                await result_sink(f"looked\n{verdict}", None)
+                return
+            builder_prompts.append(prompt)
+            plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+            _git(Path(working_dir), "commit", "-qam", "tick")
+            await result_sink("done\nDONE", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert reviews == ["codex", "codex"]  # always a different AI than the builder
+        assert current["backend"] == "claude"  # back on the builder's AI
+        assert len(builder_prompts) == 2 and "the test is missing" in builder_prompts[1]

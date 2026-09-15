@@ -64,11 +64,13 @@ from claude_code_core.task_loop import (
     parse_groups,
     parse_new_steps,
     parse_pick,
+    parse_review,
     parse_status,
     plan_check_command,
     plan_goal,
     project_for_thread,
     project_of,
+    review_step_prompt,
     run_check,
     short_label,
     skip_task,
@@ -440,6 +442,8 @@ class TaskLoopCog(commands.Cog):
         self._accepts: dict[int, Any] = {}
         #: A stuck step tries a stronger AI, then smaller steps, before asking (idea 4).
         self.smart_unstick = True
+        #: A different AI reviews every finished step before it counts (idea 5).
+        self.smart_review = True
         #: Every step of every build, for the picker's track record (idea 7).
         self._records_path = (work_root or DEFAULT_ROOT) / "step-records.jsonl"
         #: Builds waiting in line (idea 6), and where each asked to be reported.
@@ -750,6 +754,7 @@ class TaskLoopCog(commands.Cog):
             before_round=pull_plan_changes,
             next_group=lambda steps: self._next_group(holder[0], steps),
             on_result=lambda step, result, detail: self._record(holder[0], step, result, detail),
+            review=lambda step, base: self._review_step(holder[0], step, base),
             run_group=lambda steps: self._run_group(holder[0], steps),
         )
         repo_dir = Path(record.repo_dir)
@@ -1729,6 +1734,52 @@ class TaskLoopCog(commands.Cog):
             with contextlib.suppress(discord.HTTPException):
                 await report.send(text)
         self._queue.mark_reported(today)
+
+    async def _reviewer_for(self, running: _Running) -> tuple[str, str] | None:
+        """A different AI than the builder: another kind if possible, the strongest first."""
+        settings = getattr(self._chat(), "_backend_settings", None)
+        if settings is None:
+            return None
+        harness = await settings.current_backend(running.worker_thread_id)
+        model = await settings.current_model(harness, running.worker_thread_id)
+        options = [
+            (h, m, note)
+            for h, m, note in await self._ai_choices()
+            if h != "local" and "vision" not in m and h not in running.limited
+        ]
+
+        def rank(o: tuple[str, str, str]) -> tuple[bool, bool]:
+            strong = "most capable" in o[2].lower() or "strongest" in o[2].lower()
+            return (o[0] == harness, not strong)
+
+        for h, m, _note in sorted(options, key=rank):
+            if (h, m) != (harness, model):
+                return h, m
+        return None
+
+    async def _review_step(self, running: _Running, step: str, base: str | None) -> str | None:
+        """A second AI reviews a finished step. None = approved (or no review possible)."""
+        if not self.smart_review or running.copy is None or running.run_session is None:
+            return None
+        settings = getattr(self._chat(), "_backend_settings", None)
+        reviewer = await self._reviewer_for(running)
+        if reviewer is None or settings is None:
+            return None
+        tid = running.worker_thread_id
+        harness = await settings.current_backend(tid)
+        model = await settings.current_model(harness, tid)
+        await settings.set_backend(reviewer[0], thread_id=tid)
+        await settings.set_model(reviewer[0], reviewer[1], thread_id=tid)
+        try:
+            text, _error = await running.run_session(
+                review_step_prompt(running.copy.plan_path, step, base),
+                f"🔍 A second AI ({reviewer[0]} · {reviewer[1]}) is reviewing this step…",
+            )
+        finally:
+            await settings.set_backend(harness, thread_id=tid)
+            if model:
+                await settings.set_model(harness, model, thread_id=tid)
+        return parse_review(text)
 
     async def _ai_label(self, running: _Running, thread_id: int | None = None) -> str:
         """ "harness · model" the thread runs on, for the records."""

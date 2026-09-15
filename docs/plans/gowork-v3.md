@@ -47,7 +47,10 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
   goes to the thread of the last queued build.
   **At the restart:** add the "queue it" rule to `~/AGENTS.md` (not before — the old bot
   ignores `"queue"` and would start the build at once).
-- [ ] **5 Team-ups.** A different AI reviews each step; optional bake-off on a hard step.
+- [x] **5 Team-ups.** (Drew picked: review every step.) After a step passes the bot's checks,
+  a different AI (another kind first, the strongest first) reviews the diff; "CHANGES" unticks
+  the step and the builder gets the notes (not a try). One bounce per step; a second
+  "CHANGES" is only written to the progress log. Parallel steps aren't reviewed yet.
 - [ ] **8 Slim briefing.** Each step gets only what it needs plus a map of the rest.
 
 ## How to try it (after the one restart)

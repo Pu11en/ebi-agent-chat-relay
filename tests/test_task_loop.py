@@ -610,3 +610,33 @@ class TestRoundResults:
         fake = _Fake(repo, [_lie, _done, _done])
         await fake.loop(on_result=on_result).run()
         assert seen == [("Task 1: a", "retry"), ("Task 1: a", "done"), ("Task 2: b", "done")]
+
+
+class TestReview:
+    def test_untick_task(self, tmp_path: Path) -> None:
+        plan = tmp_path / "PLAN.md"
+        plan.write_text("- [x] A one\n- [x] B two\n")
+        assert tl.untick_task(plan, "B two")
+        assert plan.read_text() == "- [x] A one\n- [ ] B two\n"
+
+    def test_review_verdicts(self) -> None:
+        assert tl.parse_review("looks right\nAPPROVE") is None
+        assert tl.parse_review("x\nCHANGES: the button is never wired up") == (
+            "the button is never wired up"
+        )
+        assert tl.parse_review("no verdict") is None  # a broken review never blocks
+
+    async def test_changes_send_the_step_back_once(self, repo: Path) -> None:
+        verdicts = iter(["the button does nothing", "still not great", None])
+        reviewed: list[str] = []
+
+        async def review(step: str, base: str | None) -> str | None:
+            reviewed.append(step)
+            return next(verdicts)
+
+        fake = _Fake(repo, [_done, _done, _done])
+        outcome = await fake.loop(review=review).run()
+        assert outcome.status == tl.Status.COMPLETE
+        assert reviewed == ["Task 1: a", "Task 1: a", "Task 2: b"]
+        assert "the button does nothing" in fake.prompts[1]  # the builder got the notes
+        assert "still not great" in (repo / "PLAN.progress.md").read_text()

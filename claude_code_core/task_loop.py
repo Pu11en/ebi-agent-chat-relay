@@ -428,6 +428,7 @@ class TaskLoop:
         next_group: Callable[[list[str]], Awaitable[list[str]]] | None = None,
         run_group: Callable[[list[str]], Awaitable[list[tuple[str, bool, str]]]] | None = None,
         on_result: Callable[[str, str, str], Awaitable[None]] | None = None,
+        review: Callable[[str, str | None], Awaitable[str | None]] | None = None,
     ) -> None:
         self.plan_path = plan_path
         self.repo_dir = repo_dir
@@ -444,6 +445,10 @@ class TaskLoop:
         self._next_group = next_group
         #: Told how every round ended — (step, result, detail) — for the records.
         self._on_result = on_result
+        #: A different AI reviews each finished step (idea 5); None = approved.
+        self._review = review
+        #: Steps a review already sent back once; a second "changes" is only noted.
+        self._bounced: set[str] = set()
         self._run_group = run_group
         #: Steps that failed in a group run on their own from then on.
         self._solo: set[str] = set()
@@ -462,6 +467,15 @@ class TaskLoop:
             return []
         ok, tail = await run_check(self.repo_dir, argv)
         return [] if ok else [f"the plan's check failed ({' '.join(argv)}): {tail}"]
+
+    async def _reviewed(self, step: str, base: str | None) -> str | None:
+        if self._review is None:
+            return None
+        try:
+            return await self._review(step, base)
+        except Exception:
+            logger.warning("task loop: the review failed; counting the step as done", exc_info=True)
+            return None
 
     async def _result(self, step: str | None, result: str, detail: str) -> None:
         if self._on_result is None:
@@ -599,6 +613,29 @@ class TaskLoop:
             )
             if not problems:
                 problems = await self._run_plan_check()
+            if not problems and before.next_task:
+                concern = await self._reviewed(before.next_task, before.head)
+                if concern is not None and before.next_task not in self._bounced:
+                    self._bounced.add(before.next_task)
+                    untick_task(self.plan_path, before.next_task)
+                    await _git(self.repo_dir, "add", "-A")
+                    await _git(self.repo_dir, "commit", "-qm", "gowork: a review sent it back")
+                    await self._result(before.next_task, "review: changes", concern)
+                    await self._report(f"🔍 A second AI reviewed it and sent it back: {concern}")
+                    retry_reason = (
+                        f"a reviewer (a different AI) checked this step and found: {concern}"
+                    )
+                    continue
+                if concern is not None:
+                    with (
+                        contextlib.suppress(OSError),
+                        self.progress_path.open("a", encoding="utf-8") as fh,
+                    ):
+                        fh.write(
+                            f"\n- Reviewer still had concerns about {before.next_task}: {concern}\n"
+                        )
+                    await _git(self.repo_dir, "add", "-A")
+                    await _git(self.repo_dir, "commit", "-qm", "gowork: review concerns noted")
             if not problems:
                 retries = 0
                 await self._result(before.next_task, "done", "")
@@ -832,6 +869,59 @@ def split_prompt(plan_path: Path, step: str, why: str) -> str:
             "Commit the plan and end with: PLAN: <the new steps, in a few words>",
         ]
     )
+
+
+def review_step_prompt(plan_path: Path, step: str, base: str | None) -> str:
+    """A different AI checks one finished step before it counts (idea 5)."""
+    diff = f"`git diff {base}..HEAD`" if base else "`git log -3 -p`"
+    parts = [
+        "[gowork review — for this session only] You are reviewing work another AI just "
+        "finished. You didn't write it. Change no files, commit nothing.",
+    ]
+    with contextlib.suppress(OSError):
+        goal, done = plan_goal(plan_path.read_text(encoding="utf-8", errors="replace"))
+        if goal:
+            parts.append(f"The build's goal: {goal}" + (f" Done when: {done}" if done else ""))
+    parts += [
+        f"The step: {step}",
+        f"The plan: {plan_path}. What changed: {diff}.",
+        "",
+        "Check, plainly: does the change really do the step as written, not an easier "
+        "version of it? Is there a test or a check that proves it, and does it pass (run "
+        "the project's tests)? Did it break or delete anything it shouldn't have?",
+        "Only real problems count, not style or taste.",
+        "",
+        "The very last line must be exactly one of:",
+        "APPROVE",
+        "CHANGES: <what is wrong, in plain words, specific enough to fix>",
+    ]
+    return "\n".join(parts)
+
+
+_REVIEW_RE = re.compile(r"^(APPROVE|CHANGES:)\s*(.*)$")
+
+
+def parse_review(text: str | None) -> str | None:
+    """None for APPROVE (or no verdict at all — a broken review never blocks)."""
+    lines = [ln.strip().strip("*_`").strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return None
+    m = _REVIEW_RE.match(lines[-1])
+    if m is None or m.group(1) == "APPROVE":
+        return None
+    return m.group(2).strip() or "the reviewer didn't say what"
+
+
+def untick_task(plan_path: Path, label: str) -> bool:
+    """Untick the ticked task with exactly this *label* (a review sent it back)."""
+    lines = plan_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        m = _TASK_RE.match(line)
+        if m is not None and m.group(1) != " " and m.group(2).strip() == label.strip():
+            lines[i] = re.sub(r"\[[xX]\]", "[ ]", line, count=1)
+            plan_path.write_text("".join(lines), encoding="utf-8")
+            return True
+    return False
 
 
 def tick_task(plan_path: Path, label: str) -> bool:
