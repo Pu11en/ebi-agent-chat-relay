@@ -123,6 +123,8 @@ PICK_AI_TIMEOUT_SECONDS = 60
 MORNING_HOUR = 8
 #: When the goal isn't met, add the missing steps and keep going this many times.
 GOAL_AUTO_ROUNDS = 3
+#: One goal-interview turn (a one-shot AI reading the project) may take this long.
+INTERVIEW_TIMEOUT_SECONDS = 240
 #: The goal interview: up to 5 questions, the approval, and a couple of changes.
 GOAL_INTERVIEW_ROUNDS = 9
 #: Replies to a usage limit that mean "wait for it to reset".
@@ -634,6 +636,12 @@ class TaskLoopCog(commands.Cog):
             except WorkCopyError as exc:
                 raise ValueError(f"couldn't make a separate copy of the project: {exc}") from exc
             work_dir = copy.path
+            if ask_goal:
+                # Everything before the build happens where it was planned (Drew's
+                # pick): the goal is agreed there, then the build's thread opens.
+                await self._goal_interview_first(
+                    copy, report_to or channel, notify_user_id or self._only_user()
+                )
 
             thread = await chat.spawn_session(
                 channel,
@@ -924,8 +932,6 @@ class TaskLoopCog(commands.Cog):
 
     async def _drive(self, running: _Running, report: Any) -> LoopOutcome:
         try:
-            if running.ask_goal:
-                await self._goal_interview(running)
             while True:
                 outcome = await running.loop.run()
                 if outcome.status == Status.COMPLETE:
@@ -963,43 +969,89 @@ class TaskLoopCog(commands.Cog):
             if running.queued:
                 asyncio.get_running_loop().create_task(self._advance_queue())
 
-    async def _goal_interview(self, running: _Running) -> None:
-        """A plan with no goal: agree one with the person in the build's thread first.
+    async def _interview_ai(self, prompt: str, cwd: Path) -> str | None:
+        """One goal-interview turn: a mid-level Claude reading the build's copy.
 
-        Each round is a fresh session that asks one lettered question; the answers
-        so far travel in the prompt. Ends when the approved goal is in the plan,
-        or quietly when nobody answers — the build then runs without a goal.
+        A one-shot CLI call, not a thread session, so the planning thread's own
+        session is never touched. None when Claude isn't available.
         """
-        assert running.copy is not None
-        plan = running.copy.plan_path
+        command = shutil.which("claude")
+        if command is None:
+            return None
+        runner: Any = getattr(self._chat(), "runner", None)
+        env = None
+        with contextlib.suppress(Exception):
+            env = runner._build_env()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                command,
+                "-p",
+                "--model",
+                "sonnet",
+                "--",
+                prompt,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                out, _err = await asyncio.wait_for(proc.communicate(), INTERVIEW_TIMEOUT_SECONDS)
+            except TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                return None
+        except Exception:
+            logger.warning("gowork: the goal interview couldn't run", exc_info=True)
+            return None
+        return out.decode(errors="replace").strip() if proc.returncode == 0 else None
 
-        def goal_now() -> tuple[str | None, str | None]:
-            return plan_goal(plan.read_text(encoding="utf-8", errors="replace"))
+    async def _goal_interview_first(
+        self, copy: WorkCopy, report_to: Any, notify_user_id: int | None
+    ) -> None:
+        """A plan with no goal: agree one in the planning thread before the build starts.
 
-        if goal_now()[0]:
+        Each round is a fresh one-shot AI that asks one lettered question; the answers
+        so far travel in the prompt. The approved lines are written into the build's
+        plan by the bot. No answer, or no AI: the build starts without a goal.
+        """
+        plan = copy.plan_path
+
+        def goal_now() -> str | None:
+            return plan_goal(plan.read_text(encoding="utf-8", errors="replace"))[0]
+
+        if goal_now():
             return
         progress = plan.with_name(f"{plan.stem}.progress.md")
+        channel_id = getattr(report_to, "id", 0)
+        mention = f"<@{notify_user_id}> " if notify_user_id else ""
         history: list[tuple[str, str]] = []
         nudged = False
+        with contextlib.suppress(discord.HTTPException):
+            await report_to.send("-# 🎯 Before the build starts, let's agree its goal…")
         for _ in range(GOAL_INTERVIEW_ROUNDS):
-            if running.run_session is None:
-                return
-            text, _error = await running.run_session(
-                goal_interview_prompt(plan, progress, history), "🎯 Working out the goal…"
+            text = await self._interview_ai(
+                goal_interview_prompt(plan, progress, history), copy.path
             )
-            goal, done = goal_now()
-            if goal:
-                await commit_all(running.copy.path, "gowork: the build's goal")
-                with contextlib.suppress(discord.HTTPException):
-                    await running.thread.send(
-                        f"🎯 **Goal:** {goal}\n**Done when:** {done or '—'}\n-# Starting the steps."
-                    )
+            if not text:
                 return
             status, detail = parse_status(text)
+            goal, done = plan_goal(text)
+            if status == Status.DONE and goal:
+                lines = plan.read_text(encoding="utf-8").splitlines(keepends=True)
+                at = 1 if lines and lines[0].startswith("#") else 0
+                lines[at:at] = [f"Goal: {goal}\n", f"Done when: {done or '—'}\n"]
+                plan.write_text("".join(lines), encoding="utf-8")
+                await commit_all(copy.path, "gowork: the build's goal")
+                with contextlib.suppress(discord.HTTPException):
+                    await report_to.send(
+                        f"🎯 **Goal:** {goal}\n**Done when:** {done or '—'}\n-# Starting the build."
+                    )
+                return
             if status != Status.ASK or not detail:
                 if nudged:
                     return  # the interview didn't work out; build without a goal
-                nudged = True  # the AI forgot to ask: remind it once
+                nudged = True
                 history.append(
                     (
                         "(your last reply didn't end with an ASK line)",
@@ -1007,9 +1059,11 @@ class TaskLoopCog(commands.Cog):
                     )
                 )
                 continue
-            reply, _woken = await self._wait_or_wake(
-                running, running.worker_thread_id, ASK_TIMEOUT_SECONDS
-            )
+            question = text[: text.rfind("ASK:")].strip()
+            body = f"{question}\n\n**{detail}**" if question else f"**{detail}**"
+            with contextlib.suppress(discord.HTTPException):
+                await report_to.send(f"{mention}{body}"[:1900])
+            reply = await self.wait_for_reply(channel_id, timeout=ASK_TIMEOUT_SECONDS)
             if reply is None:
                 return
             history.append((detail, reply))

@@ -23,7 +23,11 @@
 - **Goals:**
   - A plan's `Goal:` and `Done when:` lines reach every step and the end check.
   - A plan with no goal starts with a short goal interview (guesses first, at most 5 lettered
-    questions, then approval).
+    questions, then approval). It happens in the planning thread, before the build's thread
+    opens (Drew: everything before the build belongs in the thread it was planned in); a
+    one-shot Claude Sonnet reads the copy and the bot writes the approved lines into the plan.
+    Questions during the build stay in the build's thread. **Committed locally, not on the PR,
+    not live until the next restart.**
   - If the goal isn't met, the build adds the missing steps itself, up to 3 rounds, then asks.
 - **Choosing AIs:** option "A" on the start list picks a model per step with Haiku. It stays in the
   build's AI family (Drew wants Claude only for now) and ranks models by name (`model_tier`).

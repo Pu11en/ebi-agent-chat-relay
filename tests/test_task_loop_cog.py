@@ -79,6 +79,7 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
     tmp = Path(tempfile.mkdtemp(prefix="gowork-test-"))
     cog = TaskLoopCog(bot, work_root=tmp / "copies", store=LoopStore(tmp / "loops.json"))
     cog._quick_ai = AsyncMock(return_value=None)  # never call a real AI in tests
+    cog._interview_ai = AsyncMock(return_value=None)  # the goal interview's AI, too
     cog.smart_unstick = False  # the TestSmartUnsticking tests turn it on
     cog.smart_review = False  # the TestSecondAiReview tests turn it on
     return cog, chat, thread
@@ -1307,44 +1308,35 @@ class TestLimitFallback:
 
 
 class TestGoalInterview:
-    async def test_a_plan_without_a_goal_starts_with_the_interview(self, repo: Path) -> None:
+    async def test_the_goal_is_agreed_in_the_planning_thread_first(self, repo: Path) -> None:
         cog, chat, thread = _cog_with_chat()
         thread.delete = AsyncMock()
         prompts: list[str] = []
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def interview(prompt: str, cwd: Path) -> str:
             prompts.append(prompt)
-            if "checking finished work" in prompt:
-                await result_sink("PASS: the goal — it plays\nDONE", None)
-                return
-            plan = Path(working_dir) / "PLAN.md"
-            if "agree the goal" in prompt:
-                if "hear it on my phone" not in prompt:
-                    await result_sink("My guesses:\nASK: What is this build for? A) ...", None)
-                    return
-                plan.write_text(
-                    "Goal: Drew hears it on his phone.\nDone when: it plays.\n" + plan.read_text()
-                )
-                _git(Path(working_dir), "commit", "-qam", "goal")
-                await result_sink("Goal saved.\nDONE", None)
-                return
-            plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
-            _git(Path(working_dir), "commit", "-qam", "tick")
-            await result_sink("done\nDONE", None)
+            if "hear it on my phone" not in prompt:
+                return "My guesses:\nASK: What is this build for? A) ... E) other"
+            return "Goal: Drew hears it on his phone.\nDone when: it plays.\nDONE"
 
-        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        cog._interview_ai = AsyncMock(side_effect=interview)
         channel = MagicMock(spec=discord.TextChannel)
         channel.id = 1
         channel.send = AsyncMock()
-        await cog.start_loop(channel, str(repo / "PLAN.md"), ask_goal=True)
-
-        await _type_when_asked(cog, thread.id, "B, i want to hear it on my phone")
+        starting = asyncio.create_task(
+            cog.start_loop(channel, str(repo / "PLAN.md"), ask_goal=True)
+        )
+        await _type_when_asked(cog, 1, "B, i want to hear it on my phone")  # planning thread
+        await asyncio.wait_for(starting, 10)
+        # The build's thread opened only after the goal was agreed.
+        assert chat.spawn_session.await_count == 1
         await _type_when_asked(cog, thread.id, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
 
-        assert "agree the goal" in prompts[0]
-        assert "hear it on my phone" in prompts[1]
-        assert "Drew hears it on his phone" in prompts[2]  # the step sees the goal
+        asked = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "What is this build for?" in asked and "Goal:" in asked
+        first_step = chat.run_fresh_turn.await_args_list[0].args[2]
+        assert "Drew hears it on his phone" in first_step
         assert "Goal: Drew hears it on his phone." in (repo / "PLAN.md").read_text()
 
     async def test_a_plan_with_a_goal_skips_the_interview(self, repo: Path) -> None:
@@ -1358,9 +1350,7 @@ class TestGoalInterview:
         await cog.start_loop(channel, str(repo / "PLAN.md"), ask_goal=True)
         await _type_when_asked(cog, thread.id, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
-
-        first = chat.run_fresh_turn.await_args_list[0].args[2]
-        assert "agree the goal" not in first
+        cog._interview_ai.assert_not_called()
 
 
 class TestGoalNotMet:
@@ -1969,36 +1959,24 @@ async def test_the_goal_interview_reminds_an_ai_that_forgot_to_ask(repo: Path) -
     thread.delete = AsyncMock()
     prompts: list[str] = []
 
-    async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+    async def interview(prompt: str, cwd: Path) -> str:
         prompts.append(prompt)
-        plan = Path(working_dir) / "PLAN.md"
-        if "checking finished work" in prompt:
-            await result_sink("PASS: ok — ok\nDONE", None)
-            return
-        if "agree the goal" in prompt:
-            if "didn't end with an ASK line" not in prompt:
-                await result_sink("This plan adds a feature.", None)  # forgot to ask
-                return
-            if 'They answered: "A"' in prompt:
-                plan.write_text("Goal: g\nDone when: d\n" + plan.read_text())
-                _git(Path(working_dir), "commit", "-qam", "goal")
-                await result_sink("Saved.\nDONE", None)
-                return
-            await result_sink("Guesses:\nASK: What's it for? A) ... E) other", None)
-            return
-        plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
-        _git(Path(working_dir), "commit", "-qam", "tick")
-        await result_sink("done\nDONE", None)
+        if 'They answered: "A"' in prompt:
+            return "Goal: g\nDone when: d\nDONE"
+        if "didn't end with an ASK line" not in prompt:
+            return "This plan adds a feature."  # forgot to ask
+        return "Guesses:\nASK: What's it for? A) ... E) other"
 
-    chat.run_fresh_turn = AsyncMock(side_effect=turn)
+    cog._interview_ai = AsyncMock(side_effect=interview)
     channel = MagicMock(spec=discord.TextChannel)
     channel.id = 1
     channel.send = AsyncMock()
-    await cog.start_loop(channel, str(repo / "PLAN.md"), ask_goal=True)
-    await _type_when_asked(cog, thread.id, "A")  # the reminded AI asked; Drew answered
+    starting = asyncio.create_task(cog.start_loop(channel, str(repo / "PLAN.md"), ask_goal=True))
+    await _type_when_asked(cog, 1, "A")
+    await asyncio.wait_for(starting, 10)
     await _type_when_asked(cog, thread.id, "looks good")
     await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
-    assert sum("agree the goal" in p for p in prompts) >= 2
+    assert len(prompts) == 3
 
 
 async def test_the_quick_helper_always_calls_the_claude_cli(monkeypatch) -> None:  # noqa: ANN001

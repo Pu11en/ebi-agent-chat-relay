@@ -787,7 +787,8 @@ def goal_interview_prompt(
         "agree the goal of the build with the person. You start with no memory.",
         "",
         f"First look, quietly: the plan {plan_path}, the progress log {progress_path} "
-        "if it exists, and `git log --oneline -10`. Never ask what these already answer.",
+        "if it exists, and `git log --oneline -10`. Never ask what these already answer. "
+        "Only read; never edit a file here.",
         "",
         "Rules for every message:",
         "- Plain words for a non-technical person, at most 5 short sentences.",
@@ -807,8 +808,9 @@ def goal_interview_prompt(
         "with the choices: A) approve (recommended), B) make the done test stricter, "
         "C) make the goal smaller, D) change the goal, E) start over.",
         "",
-        "When they approve: add exactly those two lines (`Goal: …` and `Done when: …`) "
-        "under the plan's title, change nothing else, commit, and end with DONE.",
+        "When they approve: change no files. End your reply with exactly these three "
+        "lines — `Goal: …`, `Done when: …`, then `DONE` — and the bot writes them into "
+        "the plan.",
         "Otherwise end with: ASK: <your question with its lettered choices>",
     ]
     if history:
