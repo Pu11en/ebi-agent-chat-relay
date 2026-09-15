@@ -561,3 +561,40 @@ class TestStepAiPicker:
     )
     def test_the_pick_is_read_from_the_first_letter(self, reply: str, expected: int | None) -> None:
         assert tl.parse_pick(reply, 3) == expected
+
+
+class TestParallelGroups:
+    def test_groups_are_read_from_the_pickers_line(self) -> None:
+        assert tl.parse_groups("1,2 | 3 | 4,5,6", 6) == [[0, 1], [2], [3, 4, 5]]
+
+    def test_bad_or_missing_numbers_fall_back_to_one_at_a_time(self) -> None:
+        assert tl.parse_groups("no idea", 3) == [[0], [1], [2]]
+        assert tl.parse_groups("1,9 | 2", 3) == [[0], [1], [2]]
+
+    def test_tick_task_by_label(self, tmp_path: Path) -> None:
+        plan = tmp_path / "PLAN.md"
+        plan.write_text("- [ ] A one\n- [ ] B two\n")
+        assert tl.tick_task(plan, "B two")
+        assert plan.read_text() == "- [ ] A one\n- [x] B two\n"
+        assert not tl.tick_task(plan, "C three")
+
+    async def test_a_group_runs_together_and_failures_run_again_alone(self, repo: Path) -> None:
+        (repo / "PLAN.md").write_text("- [ ] Task 1: a\n- [ ] Task 2: b\n- [ ] Task 3: c\n")
+        _git(repo, "commit", "-qam", "three")
+        ran_together: list[list[str]] = []
+
+        async def next_group(open_steps: list[str]) -> list[str]:
+            return open_steps[:2] if len(open_steps) == 3 else open_steps[:1]
+
+        async def run_group(steps: list[str]) -> list[tuple[str, bool, str]]:
+            ran_together.append(steps)
+            tl.tick_task(repo / "PLAN.md", steps[0])  # the first merged, the second didn't
+            _git(repo, "commit", "-qam", "merged one")
+            return [(steps[0], True, "did a"), (steps[1], False, "didn't combine")]
+
+        fake = _Fake(repo, [_done, _done])
+        outcome = await fake.loop(next_group=next_group, run_group=run_group).run()
+        assert outcome.status == tl.Status.COMPLETE
+        assert ran_together == [["Task 1: a", "Task 2: b"]]
+        assert len(fake.prompts) == 2  # Task 2 and Task 3, one at a time
+        assert any("at the same time" in r for r in fake.reports)

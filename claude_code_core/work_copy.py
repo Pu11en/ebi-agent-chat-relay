@@ -147,3 +147,54 @@ async def commit_all(path: Path, message: str) -> None:
     if not (await _git(path, "status", "--porcelain")).strip():
         return  # nothing changed
     await _git(path, "commit", "-q", "-m", message)
+
+
+@dataclass(frozen=True)
+class SideCopy:
+    """One parallel step's own checkout, branched from the build's copy."""
+
+    path: Path
+    branch: str
+
+
+async def create_side_copy(copy: WorkCopy, name: str) -> SideCopy:
+    """A fresh worktree of the build's current state for one parallel step."""
+    slug = _SLUG_RE.sub("-", name.lower()).strip("-")[:20] or "step"
+    branch = f"{copy.branch}-{slug}"
+    path = copy.path.parent / f"{copy.path.name}-{slug}"
+    # A restart mid-group can leave the last attempt behind; start clean.
+    await remove_side_copy(copy, SideCopy(path=path, branch=branch))
+    with contextlib.suppress(WorkCopyError):
+        await _git(copy.path, "worktree", "prune")
+    await _git(copy.path, "worktree", "add", "-q", "-b", branch, str(path), "HEAD")
+    return SideCopy(path=path, branch=branch)
+
+
+async def remove_side_copy(copy: WorkCopy, side: SideCopy) -> None:
+    with contextlib.suppress(WorkCopyError):
+        await _git(copy.path, "worktree", "remove", "--force", str(side.path))
+    with contextlib.suppress(WorkCopyError):
+        await _git(copy.path, "branch", "-D", side.branch)
+
+
+async def side_has_new_work(copy: WorkCopy, side: SideCopy) -> bool:
+    """True when the side copy has commits the build's copy doesn't."""
+    count = await _git(copy.path, "rev-list", "--count", f"HEAD..{side.branch}")
+    return int(count.strip() or 0) > 0
+
+
+async def merge_side_copy(copy: WorkCopy, side: SideCopy) -> bool:
+    """Bring a parallel step's work into the build's copy; False (and no change) on a clash.
+
+    The side copy is removed either way — a step that didn't combine runs again
+    on its own, from the build's current state.
+    """
+    try:
+        await _git(copy.path, "merge", "--no-edit", side.branch)
+        return True
+    except WorkCopyError:
+        with contextlib.suppress(WorkCopyError):
+            await _git(copy.path, "merge", "--abort")
+        return False
+    finally:
+        await remove_side_copy(copy, side)

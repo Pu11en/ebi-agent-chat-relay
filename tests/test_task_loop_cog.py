@@ -75,6 +75,7 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
     bot.cogs = {"ClaudeChatCog": chat}
     tmp = Path(tempfile.mkdtemp(prefix="gowork-test-"))
     cog = TaskLoopCog(bot, work_root=tmp / "copies", store=LoopStore(tmp / "loops.json"))
+    cog._quick_ai = AsyncMock(return_value=None)  # never call a real AI in tests
     return cog, chat, thread
 
 
@@ -1439,3 +1440,62 @@ class TestRightAiPerStep:
         from claude_discord.cogs.task_loop import PER_STEP
 
         assert PER_STEP == "per-step"
+
+
+class TestParallelSteps:
+    async def test_independent_steps_run_side_by_side_and_all_land(self, repo: Path) -> None:
+        (repo / "PLAN.md").write_text("- [ ] Task 1: a\n- [ ] Task 2: b\n")
+        _git(repo, "commit", "-qam", "two")
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        thread.parent = MagicMock()
+        side_threads: list[MagicMock] = []
+
+        async def spawn(channel, text, *, thread_name, auto_start, working_dir):  # noqa: ANN001
+            if not side_threads and "Task loop" in thread_name:
+                side_threads.append(thread)
+                return thread
+            t = MagicMock(spec=discord.Thread)
+            t.id = 600 + len(side_threads)
+            t.send = AsyncMock(return_value=MagicMock())
+            t.delete = AsyncMock()
+            side_threads.append(t)
+            return t
+
+        chat.spawn_session = AsyncMock(side_effect=spawn)
+        running_now = 0
+        most_at_once = 0
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            nonlocal running_now, most_at_once
+            if "checking finished work" in prompt:
+                await result_sink("PASS: ok — ok\nDONE", None)
+                return
+            assert "Do exactly this one step" in prompt  # both ran in the group
+            running_now += 1
+            most_at_once = max(most_at_once, running_now)
+            await asyncio.sleep(0.05)
+            name = "a.txt" if "Task 1: a" in prompt else "b.txt"
+            (Path(working_dir) / name).write_text("made\n")
+            _git(Path(working_dir), "add", ".")
+            _git(Path(working_dir), "commit", "-qm", name)
+            running_now -= 1
+            await result_sink(f"Made {name}.\nDONE", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        cog._quick_ai = AsyncMock(return_value="1,2")
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert most_at_once == 2
+        assert (repo / "a.txt").exists() and (repo / "b.txt").exists()
+        plan = (repo / "PLAN.md").read_text()
+        assert "- [x] Task 1: a" in plan and "- [x] Task 2: b" in plan
+        for side in side_threads[1:]:
+            side.delete.assert_awaited()
+        card = _embeds(channel)[0].description or ""
+        assert "at the same time" in card.lower()

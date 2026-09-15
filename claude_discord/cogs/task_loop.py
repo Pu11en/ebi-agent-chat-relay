@@ -40,6 +40,7 @@ from claude_code_core.task_loop import (
     count_tasks,
     finished_checks,
     goal_interview_prompt,
+    group_prompt,
     is_looks_good,
     list_plans,
     list_plans_across,
@@ -47,8 +48,10 @@ from claude_code_core.task_loop import (
     missing_steps_prompt,
     needs_you,
     open_tasks,
+    parallel_prompt,
     parked_choice,
     parse_check_results,
+    parse_groups,
     parse_new_steps,
     parse_pick,
     parse_status,
@@ -61,14 +64,19 @@ from claude_code_core.task_loop import (
     skip_task,
     step_ai_prompt,
     take_snapshot,
+    tick_task,
 )
 from claude_code_core.work_copy import (
     WorkCopy,
     WorkCopyError,
     commit_all,
+    create_side_copy,
     create_work_copy,
     keep_work,
+    merge_side_copy,
+    remove_side_copy,
     remove_work_copy,
+    side_has_new_work,
 )
 
 from ..backend_settings import ALL_BACKENDS
@@ -219,7 +227,13 @@ def _match_ai(
     return parse_harness_reply(reply, current)
 
 
-def plan_card(plan_text: str, plan_name: str, harness: str | None, model: str | None) -> Any:
+def plan_card(
+    plan_text: str,
+    plan_name: str,
+    harness: str | None,
+    model: str | None,
+    groups: list[list[str]] | None = None,
+) -> Any:
     """The "here's what I'm going to do" card: every step left, in plain words."""
     ai = " · ".join(x for x in (harness, model) if x) or "the thread's usual AI"
     lines = [f"**Plan:** {plan_name}", f"**AI doing the work:** {ai}", ""]
@@ -227,6 +241,10 @@ def plan_card(plan_text: str, plan_name: str, harness: str | None, model: str | 
         dot = "🟡" if needs_you(task) else "🟢"
         tail = " — I'll ask you first" if dot == "🟡" else ""
         lines.append(f"{dot} **{short_label(task)}**{tail}")
+    together = [g for g in groups or [] if len(g) > 1]
+    if together:
+        lines += ["", "⚡ **Built at the same time:**"]
+        lines += [f"• {' + '.join(short_label(s, 40) for s in g)}" for g in together]
     lines += ["", "🟢 I do it by myself   🟡 I stop and ask you"]
     return discord.Embed(
         title="📋 Here's what I'm going to do",
@@ -311,6 +329,8 @@ class _Running:
     per_step_ai: bool = False
     #: AIs that hit a usage limit during this build; the picker skips them.
     limited: set[str] = field(default_factory=set)
+    #: The step groups the quick AI made (labels), for parallel steps.
+    groups: list[list[str]] = field(default_factory=list)
     #: On a usage limit, switch to this AI by itself instead of asking.
     fallback: tuple[str, str | None] | None = None
 
@@ -542,8 +562,10 @@ class TaskLoopCog(commands.Cog):
             per_step_ai=per_step_ai,
         )
         self._store.save(record)
-        self._launch(record, thread, report_target)
         plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        groups = await self._groups_for(open_tasks(plan_text))
+        self._launch(record, thread, report_target)
+        self._running[repo_dir].groups = groups  # set before the loop's first step
         with contextlib.suppress(discord.HTTPException):
             await report_target.send(
                 f"▶️ Started. Everything about this build happens in {thread.mention}: each "
@@ -554,6 +576,7 @@ class TaskLoopCog(commands.Cog):
                     plan.name,
                     harness or ("the best AI per step" if per_step_ai else None),
                     model,
+                    groups,
                 ),
             )
         return thread
@@ -677,6 +700,8 @@ class TaskLoopCog(commands.Cog):
             report=report,
             on_limit=on_limit,
             before_round=pull_plan_changes,
+            next_group=lambda steps: self._next_group(holder[0], steps),
+            run_group=lambda steps: self._run_group(holder[0], steps),
         )
         repo_dir = Path(record.repo_dir)
         copy = WorkCopy(
@@ -1394,6 +1419,102 @@ class TaskLoopCog(commands.Cog):
             await running.thread.send(
                 f"-# 🤖 This step: {harness} · {model}" + (f" — {why[:120]}" if why else "")
             )
+
+    async def _groups_for(self, steps: list[str]) -> list[list[str]]:
+        """Ask the quick AI which of *steps* can be built at the same time."""
+        if len(steps) < 2:
+            return [[s] for s in steps]
+        reply = await self._quick_ai(group_prompt(steps))
+        return [[steps[i] for i in g] for g in parse_groups(reply, len(steps))]
+
+    async def _next_group(self, running: _Running, steps: list[str]) -> list[str]:
+        """The group the first open step belongs to (asks again after plan changes)."""
+        for group in running.groups:
+            if group and group[0] == steps[0] and all(s in steps for s in group):
+                return group
+        running.groups = await self._groups_for(steps)
+        return next((g for g in running.groups if g and g[0] == steps[0]), steps[:1])
+
+    async def _run_group(self, running: _Running, steps: list[str]) -> list[tuple[str, bool, str]]:
+        """Build *steps* at the same time, each in its own copy and thread, then merge.
+
+        A step that fails or doesn't combine is left unticked, and the loop runs it
+        again on its own — parallel is a speed-up, never a new way to fail.
+        """
+        assert running.copy is not None
+        copy = running.copy
+        chat = self._chat()
+        settings = getattr(chat, "_backend_settings", None)
+        parent: Any = getattr(running.thread, "parent", None) or running.report_target
+        with contextlib.suppress(discord.HTTPException):
+            await running.thread.send(
+                "-# ⚡ Building these at the same time: " + "; ".join(short_label(s) for s in steps)
+            )
+
+        async def one(index: int, step: str) -> tuple[str, bool, str, Any, Any]:
+            side = await create_side_copy(copy, f"p{index + 1}")
+            sub: Any = await chat.spawn_session(
+                parent,
+                f"⚡ One step of the {running.repo_dir.name} build, running alongside "
+                f"others: {short_label(step)}",
+                thread_name=f"⚡ {short_label(step)[:80]}",
+                auto_start=False,
+                working_dir=str(side.path),
+            )
+            self._quiet(sub.id)
+            if settings is not None:
+                with contextlib.suppress(Exception):
+                    harness = await settings.current_backend(running.worker_thread_id)
+                    model = await settings.current_model(harness, running.worker_thread_id)
+                    await settings.set_backend(harness, thread_id=sub.id)
+                    if model:
+                        await settings.set_model(harness, model, thread_id=sub.id)
+            result: dict[str, str | None] = {}
+
+            async def sink(text: str | None, error: str | None) -> None:
+                result["text"], result["error"] = text, error
+
+            seed = await sub.send(f"-# ⚡ Working on: {step}")
+            await chat.run_fresh_turn(
+                seed,
+                sub,
+                parallel_prompt(copy.plan_path, step),
+                working_dir=str(side.path),
+                result_sink=sink,
+            )
+            status, detail = parse_status(result.get("text"))
+            ok = status == Status.DONE
+            return step, ok, detail or result.get("error") or "", side, sub
+
+        outcomes = await asyncio.gather(
+            *(one(i, s) for i, s in enumerate(steps)), return_exceptions=True
+        )
+        results: list[tuple[str, bool, str]] = []
+        progress = copy.plan_path.with_name(f"{copy.plan_path.stem}.progress.md")
+        for step, outcome in zip(steps, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                logger.warning("gowork: a parallel step failed to run", exc_info=outcome)
+                results.append((step, False, "it couldn't start"))
+                continue
+            _step, ok, detail, side, sub = outcome
+            landed = ok and await side_has_new_work(copy, side)
+            landed = landed and await merge_side_copy(copy, side)
+            if not landed:
+                await remove_side_copy(copy, side)
+            if landed and tick_task(copy.plan_path, step):
+                with progress.open("a", encoding="utf-8") as fh:
+                    fh.write(f"\n## {step} (built alongside other steps)\n- {detail}\n")
+                await commit_all(copy.path, f"gowork: {short_label(step)[:60]} (parallel)")
+                if running.recaps is not None:
+                    running.recaps.append(f"{short_label(step)}: done alongside other steps")
+                with contextlib.suppress(discord.HTTPException):
+                    await running.thread.send(f"✅ Done alongside others: {short_label(step)}")
+                results.append((step, True, detail))
+            else:
+                results.append((step, False, detail or "it didn't combine with the others"))
+            with contextlib.suppress(Exception):
+                await sub.delete()
+        return results
 
     async def _limit_hit(self, running: _Running, message: str) -> bool:
         """The build's AI hit a usage limit: ask in its thread to switch AI or wait.

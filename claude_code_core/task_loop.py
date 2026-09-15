@@ -425,6 +425,8 @@ class TaskLoop:
         max_retries: int = DEFAULT_MAX_RETRIES,
         on_limit: OnLimit | None = None,
         before_round: Callable[[], Awaitable[None]] | None = None,
+        next_group: Callable[[list[str]], Awaitable[list[str]]] | None = None,
+        run_group: Callable[[list[str]], Awaitable[list[tuple[str, bool, str]]]] | None = None,
     ) -> None:
         self.plan_path = plan_path
         self.repo_dir = repo_dir
@@ -437,6 +439,11 @@ class TaskLoop:
         self._on_limit = on_limit
         #: Runs before every step — the frontend pulls in the planner's plan edits.
         self._before_round = before_round
+        #: Parallel steps (idea 2): which open steps can go together, and running them.
+        self._next_group = next_group
+        self._run_group = run_group
+        #: Steps that failed in a group run on their own from then on.
+        self._solo: set[str] = set()
         self._stop = False
         #: Things the person typed while a task was running.
         self._notes: list[str] = []
@@ -452,6 +459,21 @@ class TaskLoop:
             return []
         ok, tail = await run_check(self.repo_dir, argv)
         return [] if ok else [f"the plan's check failed ({' '.join(argv)}): {tail}"]
+
+    async def _parallel_group(self) -> list[str]:
+        """The open steps to run together next, or [] to run the next one alone."""
+        if self._next_group is None or self._run_group is None or self._notes:
+            return []  # a note from the person goes to one step, not a crowd
+        try:
+            text = self.plan_path.read_text(encoding="utf-8", errors="replace")
+            steps = open_tasks(text)
+            if len(steps) < 2 or steps[0] in self._solo:
+                return []
+            group = await self._next_group(steps)
+        except Exception:
+            logger.warning("task loop: grouping steps failed", exc_info=True)
+            return []
+        return [s for s in group if s not in self._solo][:MAX_PARALLEL]
 
     def add_note(self, text: str) -> None:
         """Something the person typed mid-task; the next round reads it."""
@@ -487,6 +509,19 @@ class TaskLoop:
             if rounds >= self.max_rounds:
                 await self._report(f"🛑 Stopped after {rounds} rounds (the safety limit).")
                 return LoopOutcome(Status.STUCK, "round limit reached", rounds)
+
+            group = await self._parallel_group()
+            if len(group) > 1 and self._run_group is not None:
+                rounds += 1
+                results = await self._run_group(group)
+                done = [label for label, ok, _ in results if ok]
+                again = [label for label, ok, _ in results if not ok]
+                self._solo.update(again)
+                line = f"⚡ Ran {len(group)} steps at the same time: {len(done)} done"
+                if again:
+                    line += f", {len(again)} will run again on their own"
+                await self._report(line)
+                continue
 
             rounds += 1
             prompt = worker_prompt(
@@ -673,6 +708,94 @@ def parse_pick(reply: str | None, count: int) -> int | None:
         return None
     index = ord(m.group(1).upper()) - ord("A")
     return index if 0 <= index < count else None
+
+
+#: At most this many steps of a build run at the same time.
+MAX_PARALLEL = 3
+
+
+def group_prompt(open_steps: list[str]) -> str:
+    """Ask a quick AI which open steps can be built at the same time."""
+    lines = [
+        "These are the steps still to do in a software build, in order. Group the steps "
+        "that can be built at the same time by different people: a step can only join "
+        "a group if it doesn't need the result of any step in or before that group, and "
+        "the steps in a group shouldn't change the same files. When unsure, keep a step "
+        "on its own. Keep the order.",
+        "",
+        *[f"{i}. {step}" for i, step in enumerate(open_steps, start=1)],
+        "",
+        "Answer with one line only, the step numbers, commas inside a group and | between "
+        "groups, e.g. `1,2 | 3 | 4,5`.",
+    ]
+    return "\n".join(lines)
+
+
+_GROUPS_LINE_RE = re.compile(r"^[\s`]*\d+(\s*[,|]\s*\d+)*[\s`]*$")
+
+
+def parse_groups(text: str | None, count: int) -> list[list[int]]:
+    """``1,2 | 3`` → ``[[0, 1], [2]]``; anything odd → every step on its own."""
+    alone = [[i] for i in range(count)]
+    for line in (text or "").splitlines():
+        if not _GROUPS_LINE_RE.match(line):
+            continue
+        groups = [
+            [int(n) - 1 for n in part.split(",") if n.strip()]
+            for part in line.strip(" `").split("|")
+        ]
+        if [i for g in groups for i in g] == list(range(count)):
+            return groups
+        return alone
+    return alone
+
+
+def parallel_prompt(plan_path: Path, step: str) -> str:
+    """The prompt for one step of a group that runs at the same time as others."""
+    parts = [
+        "[gowork build worker — for this worker only] You are one of several workers "
+        "building steps of a plan at the same time, each in its own copy. You start "
+        "with no memory.",
+    ]
+    with contextlib.suppress(OSError):
+        goal, done = plan_goal(plan_path.read_text(encoding="utf-8", errors="replace"))
+        if goal:
+            parts += [
+                "",
+                f"The goal of this whole build: {goal}"
+                + (f" It's done when: {done}" if done else ""),
+            ]
+    parts += [
+        "",
+        f"Read the plan for context: {plan_path}",
+        f"Do exactly this one step, nothing else: {step}",
+        "The other steps are being built right now by others: don't do them, and don't "
+        "edit the plan file or its progress log (the bot ticks the box and writes the "
+        "note).",
+        "Check your work actually works (run the project's tests), then commit it with "
+        "git. Leave no uncommitted changes.",
+        "",
+        "Never push, deploy, delete data, spend money or use new API keys. If the step "
+        "needs any of that, don't do it: end with STUCK and say why.",
+        "",
+        "Finish with one or two plain sentences on what you did, for a non-technical "
+        "reader. The very last line must be exactly one of:",
+        "DONE — the step is finished and committed",
+        "STUCK: <plain reason> — you cannot finish it this way",
+    ]
+    return "\n".join(parts)
+
+
+def tick_task(plan_path: Path, label: str) -> bool:
+    """Tick the open task with exactly this *label*. False when there is none."""
+    lines = plan_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        m = _TASK_RE.match(line)
+        if m is not None and m.group(1) == " " and m.group(2).strip() == label.strip():
+            lines[i] = line.replace("[ ]", "[x]", 1)
+            plan_path.write_text("".join(lines), encoding="utf-8")
+            return True
+    return False
 
 
 def finished_checks(plan_text: str) -> list[str]:

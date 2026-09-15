@@ -79,3 +79,43 @@ async def test_keep_works_when_the_plan_was_never_saved(repo: Path, tmp_path: Pa
 
     assert ok, msg
     assert (repo / "NEW-PLAN.md").read_text() == "- [x] a\n"
+
+
+async def test_side_copies_merge_back_into_the_build(repo: Path, tmp_path: Path) -> None:
+    copy = await wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "copies")
+    a = await wc.create_side_copy(copy, "a")
+    b = await wc.create_side_copy(copy, "b")
+    (a.path / "a.txt").write_text("a\n")
+    _git(a.path, "add", ".")
+    _git(a.path, "commit", "-qm", "a")
+    (b.path / "app.txt").write_text("changed by b\n")
+    _git(b.path, "commit", "-qam", "b")
+
+    assert await wc.merge_side_copy(copy, a)
+    assert await wc.merge_side_copy(copy, b)
+    assert (copy.path / "a.txt").exists()
+    assert (copy.path / "app.txt").read_text() == "changed by b\n"
+    assert not a.path.exists() and not b.path.exists()
+
+
+async def test_a_clashing_side_copy_is_refused_and_nothing_is_half_merged(
+    repo: Path, tmp_path: Path
+) -> None:
+    copy = await wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "copies")
+    a = await wc.create_side_copy(copy, "a")
+    b = await wc.create_side_copy(copy, "b")
+    for side, text in ((a, "from a\n"), (b, "from b\n")):
+        (side.path / "app.txt").write_text(text)
+        _git(side.path, "commit", "-qam", "edit")
+
+    assert await wc.merge_side_copy(copy, a)
+    assert not await wc.merge_side_copy(copy, b)
+    assert (copy.path / "app.txt").read_text() == "from a\n"
+    assert _git(copy.path, "status", "--porcelain").strip() == ""
+
+
+async def test_a_leftover_side_copy_from_a_restart_is_replaced(repo: Path, tmp_path: Path) -> None:
+    copy = await wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "copies")
+    await wc.create_side_copy(copy, "a")  # left behind by an interrupted group
+    again = await wc.create_side_copy(copy, "a")
+    assert again.path.exists()

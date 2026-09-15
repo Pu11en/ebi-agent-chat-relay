@@ -29,8 +29,9 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
 ## Ideas from the roadmap (in the doc's order)
 - [x] **3 Right AI per step.** (Drew picked: the bot decides.) "A" on the start list lets a
   quick, cheap AI pick the AI before every step; an AI that hit a usage limit is skipped.
-- [ ] **2 Parallel steps.** Steps marked independent run at the same time in their own copies,
-  then merge.
+- [x] **2 Parallel steps.** (Drew picked: a quick AI groups them.) Up to 3 independent steps
+  run at the same time, each in its own copy and short-lived thread, then merge; a step that
+  fails or clashes runs again on its own. The start card shows the groups.
 - [ ] **4 Smart unsticking.** Before asking Drew, a stuck step tries a stronger AI, then splits
   itself into smaller steps.
 - [ ] **7 Learning.** A fixed record per step (AI, time, result, retries, why it stopped), a
