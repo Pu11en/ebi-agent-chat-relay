@@ -23,7 +23,7 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
   thread: the AI reads the project first, opens with 2–3 guesses (lettered, recommended
   first), asks at most 5 questions one at a time, then shows the goal and done test for
   approve / stricter / smaller / change / start over. The approved lines go into the plan.
-- [ ] **G3 Goal not met.** When every step is done but "Done when" fails, the finished card
+- [x] **G3 Goal not met.** When every step is done but "Done when" fails, the finished card
   says why and proposes the missing steps; "add them" adds them and the build goes on.
 
 ## Ideas from the roadmap (in the doc's order)

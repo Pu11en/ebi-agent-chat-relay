@@ -667,6 +667,40 @@ def is_looks_good(reply: str) -> bool:
     return bool(_LOOKS_GOOD_RE.match(reply or ""))
 
 
+def missing_steps_prompt(plan_path: Path, why: str) -> str:
+    """Every step is done but the goal's done test failed: what steps are missing?"""
+    return "\n".join(
+        [
+            "[gowork goal check — for this session only] Every step of this build is "
+            f"done, but the build's goal isn't met yet. The check said: {why}",
+            f"Read the plan {plan_path}, its progress log and `git log --oneline -10`.",
+            "Propose the smallest set of new steps (at most 5) that would meet the goal, "
+            "each one small enough for one fresh session, written as plan lines:",
+            "- [ ] <step, in plain words, with how to check it>",
+            "Change no files. After the steps, one plain sentence on why these are missing.",
+            "The very last line must be: DONE",
+        ]
+    )
+
+
+def parse_new_steps(text: str | None) -> list[str]:
+    """The ``- [ ] …`` lines an AI proposed, as step labels."""
+    steps: list[str] = []
+    for line in (text or "").splitlines():
+        m = _TASK_RE.match(line)
+        if m is not None and m.group(1) == " ":
+            steps.append(m.group(2).strip())
+    return steps
+
+
+def append_tasks(plan_path: Path, steps: list[str]) -> None:
+    """Add *steps* as unticked tasks at the end of the plan."""
+    text = plan_path.read_text(encoding="utf-8")
+    if not text.endswith("\n"):
+        text += "\n"
+    plan_path.write_text(text + "".join(f"- [ ] {s}\n" for s in steps), encoding="utf-8")
+
+
 def append_fix_task(plan_path: Path, what: str) -> None:
     """Turn "something's off" into one more unticked task at the end of the plan."""
     text = plan_path.read_text(encoding="utf-8")

@@ -34,6 +34,7 @@ from claude_code_core.task_loop import (
     Status,
     TaskLoop,
     append_fix_task,
+    append_tasks,
     checker_prompt,
     clear_reply,
     count_tasks,
@@ -43,10 +44,12 @@ from claude_code_core.task_loop import (
     list_plans,
     list_plans_across,
     merge_open_tasks,
+    missing_steps_prompt,
     needs_you,
     open_tasks,
     parked_choice,
     parse_check_results,
+    parse_new_steps,
     parse_status,
     plan_check_command,
     plan_goal,
@@ -170,6 +173,7 @@ def _chunks(lines: list[str], limit: int = 1900) -> list[str]:
 _BLUE, _GREEN, _AMBER = 0x2D6A86, 0x2F7D4F, 0xE8A317
 _MARK = {"pass": "✅", "fail": "❌", "skip": "⚪"}
 _FIX_WORDS = {"fix", "fix it", "fix them", "fix those", "fix that"}
+_ADD_WORDS = {"add them", "add", "add those", "add these", "yes add them", "add the steps"}
 
 
 _STOP_WORDS = {
@@ -225,7 +229,13 @@ def plan_card(plan_text: str, plan_name: str, harness: str | None, model: str | 
     )
 
 
-def finished_card(name: str, done: int, recaps: list[str], results: list[tuple[str, str]]) -> Any:
+def finished_card(
+    name: str,
+    done: int,
+    recaps: list[str],
+    results: list[tuple[str, str]],
+    proposed: list[str] | None = None,
+) -> Any:
     """The last card: what got done, what the bot checked itself, what to type."""
     fails = [r for r in results if r[0] == "fail"]
     lines = [f"**All {done} steps are done.**"]
@@ -235,6 +245,13 @@ def finished_card(name: str, done: int, recaps: list[str], results: list[tuple[s
         lines += ["", "**What I checked myself**"]
         lines += [f"{_MARK.get(kind, '⚪')} {what}" for kind, what in results]
     lines.append("")
+    if proposed:
+        lines += [
+            "🎯 **The goal isn't met yet.** These steps would get there:",
+            *[f"• {step}" for step in proposed],
+            "Type **add them** to add these steps and keep going.",
+            "",
+        ]
     if fails:
         lines.append(
             f"**{len(fails)} check{'s' if len(fails) > 1 else ''} failed.** Type **fix** and "
@@ -785,6 +802,22 @@ class TaskLoopCog(commands.Cog):
                 return
             history.append((detail, reply))
 
+    async def _missing_steps(self, running: _Running, fails: list[str]) -> list[str]:
+        """When the goal's done test failed, ask a fresh session which steps are missing."""
+        assert running.copy is not None
+        why = next((f for f in fails if f.lower().startswith("the goal is met")), None)
+        if why is None or running.run_session is None:
+            return []
+        try:
+            text, _error = await running.run_session(
+                missing_steps_prompt(running.copy.plan_path, why),
+                "🎯 The goal isn't met yet; working out what's missing…",
+            )
+        except Exception:
+            logger.warning("gowork: couldn't work out the missing steps", exc_info=True)
+            return []
+        return parse_new_steps(text)[:5]
+
     async def _wrap_up(self, running: _Running) -> str | None:
         """The ending: the bot checks the work itself, posts one card, waits for a verdict.
 
@@ -803,10 +836,13 @@ class TaskLoopCog(commands.Cog):
 
         results = await self._check_it_myself(running, plan_text)
         fails = [what for kind, what in results if kind == "fail"]
+        proposed = await self._missing_steps(running, fails)
         with contextlib.suppress(discord.HTTPException):
             await here.send(
                 f"🏁 **{running.repo_dir.name} is finished**{mention}",
-                embed=finished_card(running.repo_dir.name, checked, running.recaps or [], results),
+                embed=finished_card(
+                    running.repo_dir.name, checked, running.recaps or [], results, proposed
+                ),
             )
 
         def is_verdict(text: str) -> bool:
@@ -815,6 +851,7 @@ class TaskLoopCog(commands.Cog):
                 is_looks_good(text)
                 or parked_choice(text) in ("throw", "finish")
                 or clear_reply(text) in _FIX_WORDS
+                or (bool(proposed) and clear_reply(text) in _ADD_WORDS)
             )
 
         running.in_review = True
@@ -843,6 +880,11 @@ class TaskLoopCog(commands.Cog):
                     with contextlib.suppress(Exception):
                         await running.thread.delete()
                     return "kept"
+                if proposed and clear_reply(reply) in _ADD_WORDS:
+                    append_tasks(running.copy.plan_path, proposed)
+                    await commit_all(running.copy.path, "gowork: steps toward the goal")
+                    await report(f"🎯 Added {len(proposed)} steps toward the goal. Keeping going.")
+                    return "fix"
                 if clear_reply(reply) in _FIX_WORDS:
                     what = (
                         "make these checks pass: " + "; ".join(fails)
