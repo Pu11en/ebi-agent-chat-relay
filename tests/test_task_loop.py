@@ -500,3 +500,37 @@ class TestPlanChangesFromThePlanner:
         fake = _Fake(repo, [_done, _done])
         await fake.loop(before_round=before_round).run()
         assert calls >= 2  # before every step, and once more before finishing
+
+
+class TestGoalLines:
+    PLAN = (
+        "# Plan\n\n**Goal:** Drew can hear his recordings on his phone.\n"
+        "Done when: the page plays the newest recording.\n\n- [ ] T1 a\n"
+    )
+
+    def test_goal_and_done_test_are_read(self) -> None:
+        assert tl.plan_goal(self.PLAN) == (
+            "Drew can hear his recordings on his phone.",
+            "the page plays the newest recording.",
+        )
+
+    def test_a_plan_without_a_goal(self) -> None:
+        assert tl.plan_goal("# Plan\n\n- [ ] T1 a\n") == (None, None)
+
+    def test_every_step_sees_the_goal(self, tmp_path: Path) -> None:
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(self.PLAN)
+        p = tl.worker_prompt(plan, tmp_path / "p.md")
+        assert "hear his recordings" in p and "plays the newest recording" in p
+        assert p.index("hear his recordings") < p.index("Read the plan")
+
+    def test_no_goal_no_goal_text(self, tmp_path: Path) -> None:
+        plan = tmp_path / "PLAN.md"
+        plan.write_text("- [ ] T1 a\n")
+        assert "goal of this whole build" not in tl.worker_prompt(plan, tmp_path / "p.md")
+
+    def test_the_end_check_includes_the_done_test(self) -> None:
+        checks = tl.finished_checks(self.PLAN + "\n## How to try it\n- open the page\n")
+        assert checks[0].startswith("The goal is met:")
+        assert "plays the newest recording" in checks[0]
+        assert "open the page" in checks

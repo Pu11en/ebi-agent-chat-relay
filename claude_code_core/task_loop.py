@@ -42,6 +42,8 @@ DEFAULT_MAX_RETRIES = 1
 CHECK_TIMEOUT_SECONDS = 600
 
 _TASK_RE = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s+(.*\S)")
+_GOAL_RE = re.compile(r"^\s*\**Goal:\**\s*(.+?)\s*$", re.IGNORECASE)
+_DONE_WHEN_RE = re.compile(r"^\s*\**Done when:\**\s*(.+?)\s*$", re.IGNORECASE)
 _CHECK_RE = re.compile(r"^\s*\**Check:\**\s*`?(.+?)`?\s*$", re.IGNORECASE)
 _STATUS_RE = re.compile(r"^(DONE|COMPLETE|ASK:|STUCK:|PAUSE:|SKIP:|PLAN:)\s*(.*)$")
 
@@ -200,6 +202,17 @@ def find_plan(directory: Path) -> Path | None:
     return plans[0] if plans else None
 
 
+def plan_goal(plan_text: str) -> tuple[str | None, str | None]:
+    """The plan's ``Goal:`` and ``Done when:`` lines — what the whole build is for."""
+    goal = done = None
+    for line in plan_text.splitlines():
+        if goal is None and (m := _GOAL_RE.match(line)):
+            goal = m.group(1).strip("* ")
+        elif done is None and (m := _DONE_WHEN_RE.match(line)):
+            done = m.group(1).strip("* ")
+    return goal, done
+
+
 def plan_check_command(plan_text: str) -> list[str] | None:
     """The plan's ``Check:`` line as an argv, or None when the plan has none.
 
@@ -311,6 +324,16 @@ def worker_prompt(
         "sequential task loop. You start with no memory; the files below are the "
         "whole state.",
     ]
+    with contextlib.suppress(OSError):
+        goal, done = plan_goal(plan_path.read_text(encoding="utf-8", errors="replace"))
+        if goal:
+            parts += [
+                "",
+                f"The goal of this whole build: {goal}"
+                + (f" It's done when: {done}" if done else ""),
+                "Every step should move toward that goal. If the step as written would "
+                "miss it, say so in your recap.",
+            ]
     heard: list[str] = []
     if answer is not None:
         question, reply = answer
@@ -568,6 +591,13 @@ def plan_open_url(plan_text: str) -> str | None:
         if m:
             return m.group(1)
     return None
+
+
+def finished_checks(plan_text: str) -> list[str]:
+    """What the bot checks at the end: the goal's done test first, then "How to try it"."""
+    _goal, done = plan_goal(plan_text)
+    goal_check = [f"The goal is met: {done}"] if done else []
+    return goal_check + plan_try_checks(plan_text)
 
 
 def plan_try_checks(plan_text: str) -> list[str]:

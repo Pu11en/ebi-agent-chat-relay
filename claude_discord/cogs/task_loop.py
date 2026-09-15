@@ -37,6 +37,7 @@ from claude_code_core.task_loop import (
     checker_prompt,
     clear_reply,
     count_tasks,
+    finished_checks,
     is_looks_good,
     list_plans,
     list_plans_across,
@@ -47,7 +48,6 @@ from claude_code_core.task_loop import (
     parse_check_results,
     parse_status,
     plan_check_command,
-    plan_try_checks,
     project_for_thread,
     project_of,
     run_check,
@@ -994,7 +994,7 @@ class TaskLoopCog(commands.Cog):
                 if ok
                 else ("fail", f"The plan's own test fails: {last[:150]}")
             )
-        checks = plan_try_checks(plan_text)
+        checks = finished_checks(plan_text)
         if not checks or running.run_session is None:
             return results
         text, error = await running.run_session(
