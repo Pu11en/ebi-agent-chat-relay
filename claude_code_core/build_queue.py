@@ -110,8 +110,9 @@ class BuildQueue:
         """Queued builds not yet in a morning summary."""
         return [e for e in self.state.history if not e.get("reported")]
 
-    def mark_reported(self, day: str) -> None:
-        for entry in self.state.history:
+    def mark_reported(self, day: str, entries: list[dict[str, Any]] | None = None) -> None:
+        """Mark *entries* (default: all) as summarised, so they aren't listed again."""
+        for entry in entries if entries is not None else self.state.history:
             entry["reported"] = True
         self.state.last_summary = day
         self.save()

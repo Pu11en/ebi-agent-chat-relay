@@ -2028,3 +2028,42 @@ def test_model_tiers_from_names() -> None:
     assert model_tier("haiku") == 0 and model_tier("deepseek-v4-flash") == 0
     assert model_tier("sonnet") == 1 and model_tier("gpt-5.5") == 1
     assert model_tier("claude-opus-5") == 2 and model_tier("deepseek-v4-pro") == 2
+
+
+class TestQueueFixesFromPracticeRun:
+    async def test_the_queue_waits_for_a_build_still_being_set_up(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        settings = MagicMock()
+        settings.current_backend = AsyncMock(return_value="claude")
+        chat._backend_settings = settings
+        cog._ai_choices = AsyncMock(return_value=[("claude", "sonnet", "")])  # type: ignore[method-assign]
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        # Build 1 is asking which AI to use (not started yet)...
+        asking = asyncio.create_task(cog.start_asking(channel, str(repo / "PLAN.md")))
+        for _ in range(200):
+            if cog._waiters.get(1) is not None:
+                break
+            await asyncio.sleep(0.01)
+        # ...when build 2 for the same project is queued: it must wait.
+        await cog.enqueue(channel, str(repo / "PLAN.md"))
+        assert len(cog._queue.state.waiting) == 1
+        assert chat.spawn_session.await_count == 0
+        asking.cancel()
+
+    async def test_the_summary_is_only_for_overnight_builds(self) -> None:
+        import datetime as dt
+
+        cog, chat, _ = _cog_with_chat()
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        cog.bot.get_channel = MagicMock(return_value=channel)
+        from claude_code_core.build_queue import QueueItem
+
+        cog._queue.started(QueueItem(plan_path="/x/P.md", report_id=1), "alpha", 700)
+        cog._queue.state.history[-1]["started"] = "2026-09-15T16:35:31"
+        await cog._maybe_morning_summary(dt.datetime(2026, 9, 15, 16, 40))
+        assert not channel.send.await_count  # an afternoon build waits for tomorrow
+        await cog._maybe_morning_summary(dt.datetime(2026, 9, 16, 8, 5))
+        assert channel.send.await_count == 1

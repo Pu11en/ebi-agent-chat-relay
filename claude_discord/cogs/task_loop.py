@@ -504,6 +504,9 @@ class TaskLoopCog(commands.Cog):
         self._queue = BuildQueue((work_root or DEFAULT_ROOT) / "queue.json")
         self._queue_reports: dict[int, Any] = {}
         self._queue_lock = asyncio.Lock()
+        #: Projects whose build is being set up (copy, thread) or asking which AI to use.
+        self._starting: set[Path] = set()
+        self._asking: set[Path] = set()
 
     def _chat(self) -> ClaudeChatCog:
         cog: Any = self.bot.cogs.get("ClaudeChatCog")
@@ -614,78 +617,82 @@ class TaskLoopCog(commands.Cog):
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
         repo_dir = await resolve_repo(plan)
-        if repo_dir in self._running:
+        if repo_dir in self._running or repo_dir in self._starting:
             raise ValueError(f"a task loop is already running in {repo_dir}")
-        chat = self._chat()
-        snap = await take_snapshot(repo_dir, plan)
-        if snap.checked + snap.unchecked == 0:
-            raise ValueError("the plan has no `- [ ]` tasks to work through")
-
-        # The build works in its own copy: the real project is untouched until
-        # Drew has tried the result, and other sessions in the same folder
-        # can't collide with it.
+        self._starting.add(repo_dir)  # a queued build must not start here meanwhile
         try:
-            copy = await create_work_copy(repo_dir, plan, root=self._work_root)
-        except WorkCopyError as exc:
-            raise ValueError(f"couldn't make a separate copy of the project: {exc}") from exc
-        work_dir = copy.path
+            chat = self._chat()
+            snap = await take_snapshot(repo_dir, plan)
+            if snap.checked + snap.unchecked == 0:
+                raise ValueError("the plan has no `- [ ]` tasks to work through")
 
-        thread = await chat.spawn_session(
-            channel,
-            f"🔁 **Task loop** for `{plan}`\n"
-            f"{snap.unchecked} of {snap.checked + snap.unchecked} tasks left. "
-            "Each task runs in a fresh session on a separate copy of the project; "
-            "I'll ask here if I need you; just type your answer.",
-            thread_name=f"🔁 Task loop · {repo_dir.name}",
-            auto_start=False,
-            working_dir=str(work_dir),
-        )
-        # The harness and model picked at start stick to the worker thread for
-        # every round (per-thread settings, so other threads are unaffected).
-        settings = getattr(chat, "_backend_settings", None)
-        if settings is not None and harness:
-            await settings.set_backend(harness, thread_id=thread.id)
-            if model:
-                await settings.set_model(harness, model, thread_id=thread.id)
-        report_target: discord.abc.Messageable = report_to or channel
-        record = LoopRecord(
-            repo_dir=str(repo_dir),
-            plan_path=str(plan),
-            copy_path=str(copy.path),
-            copy_plan=str(copy.plan_path),
-            branch=copy.branch,
-            worker_thread_id=thread.id,
-            report_channel_id=getattr(report_target, "id", channel.id),
-            notify_user_id=notify_user_id,
-            harness=harness,
-            model=model,
-            fallback_harness=fallback_harness,
-            fallback_model=fallback_model,
-            ask_goal=ask_goal,
-            per_step_ai=per_step_ai,
-            queued=queued,
-            mode=mode if mode in MODES else "balanced",
-        )
-        self._store.save(record)
-        plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
-        groups = await self._groups_for(open_tasks(plan_text))
-        self._launch(record, thread, report_target)
-        self._running[repo_dir].groups = groups  # set before the loop's first step
-        with contextlib.suppress(discord.HTTPException):
-            await report_target.send(
-                f"▶️ Started. Everything about this build happens in {thread.mention}: each "
-                "step, and any question for you (I'll ping you there). This channel only "
-                "gets the final result.",
-                embed=plan_card(
-                    plan_text,
-                    plan.name,
-                    harness or ("the best AI per step" if per_step_ai else None),
-                    model,
-                    groups,
-                    record.mode,
-                ),
+            # The build works in its own copy: the real project is untouched until
+            # Drew has tried the result, and other sessions in the same folder
+            # can't collide with it.
+            try:
+                copy = await create_work_copy(repo_dir, plan, root=self._work_root)
+            except WorkCopyError as exc:
+                raise ValueError(f"couldn't make a separate copy of the project: {exc}") from exc
+            work_dir = copy.path
+
+            thread = await chat.spawn_session(
+                channel,
+                f"🔁 **Task loop** for `{plan}`\n"
+                f"{snap.unchecked} of {snap.checked + snap.unchecked} tasks left. "
+                "Each task runs in a fresh session on a separate copy of the project; "
+                "I'll ask here if I need you; just type your answer.",
+                thread_name=f"🔁 Task loop · {repo_dir.name}",
+                auto_start=False,
+                working_dir=str(work_dir),
             )
-        return thread
+            # The harness and model picked at start stick to the worker thread for
+            # every round (per-thread settings, so other threads are unaffected).
+            settings = getattr(chat, "_backend_settings", None)
+            if settings is not None and harness:
+                await settings.set_backend(harness, thread_id=thread.id)
+                if model:
+                    await settings.set_model(harness, model, thread_id=thread.id)
+            report_target: discord.abc.Messageable = report_to or channel
+            record = LoopRecord(
+                repo_dir=str(repo_dir),
+                plan_path=str(plan),
+                copy_path=str(copy.path),
+                copy_plan=str(copy.plan_path),
+                branch=copy.branch,
+                worker_thread_id=thread.id,
+                report_channel_id=getattr(report_target, "id", channel.id),
+                notify_user_id=notify_user_id,
+                harness=harness,
+                model=model,
+                fallback_harness=fallback_harness,
+                fallback_model=fallback_model,
+                ask_goal=ask_goal,
+                per_step_ai=per_step_ai,
+                queued=queued,
+                mode=mode if mode in MODES else "balanced",
+            )
+            self._store.save(record)
+            plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
+            groups = await self._groups_for(open_tasks(plan_text))
+            self._launch(record, thread, report_target)
+            self._running[repo_dir].groups = groups  # set before the loop's first step
+            with contextlib.suppress(discord.HTTPException):
+                await report_target.send(
+                    f"▶️ Started. Everything about this build happens in {thread.mention}: each "
+                    "step, and any question for you (I'll ping you there). This channel only "
+                    "gets the final result.",
+                    embed=plan_card(
+                        plan_text,
+                        plan.name,
+                        harness or ("the best AI per step" if per_step_ai else None),
+                        model,
+                        groups,
+                        record.mode,
+                    ),
+                )
+            return thread
+        finally:
+            self._starting.discard(repo_dir)
 
     def _quiet(self, thread_id: int) -> None:
         """Worker threads get no start-fresh nudge and no reply-needed ping."""
@@ -1461,49 +1468,62 @@ class TaskLoopCog(commands.Cog):
         When no harness was given, ask in *report_to* in plain words and wait
         for the typed reply, exactly like ``/gowork`` does.
         """
-        parent: Any = report_to.parent if isinstance(report_to, discord.Thread) else report_to
-        await self._close_for_switch(plan_path, report_to)
-        if harness in _SAME_WORDS:
-            # "Use whatever this thread uses" — started by words, no model named.
-            settings = getattr(self._chat(), "_backend_settings", None)
-            current = (
-                await settings.current_backend(getattr(parent, "id", None)) if settings else None
-            )
-            harness, model = current or "claude", None
-        if harness is None:
-            settings = getattr(self._chat(), "_backend_settings", None)
-            current = (
-                await settings.current_backend(getattr(parent, "id", None)) if settings else None
-            )
-            with contextlib.suppress(discord.HTTPException):
-                await report_to.send(f"📋 Ready to build `{plan_path}`.")
-            picked = await self._ask_harness(report_to, current)
-            if picked is None:
-                with contextlib.suppress(discord.HTTPException):
-                    await report_to.send(_NOT_PICKED)
-                return None
-            harness, model = picked
-        per_step = harness == PER_STEP
-        if per_step:
-            harness, model = None, None
+        asking: Path | None = None
+        with contextlib.suppress(ValueError, OSError):
+            asking = await resolve_repo(Path(plan_path).expanduser())
+        if asking is not None:
+            self._asking.add(asking)  # the queue waits while this build is being set up
         try:
-            return await self.start_loop(
-                parent,
-                plan_path,
-                report_to=report_to,
-                notify_user_id=notify_user_id,
-                harness=harness,
-                model=model,
-                fallback_harness=fallback_harness,
-                fallback_model=fallback_model,
-                ask_goal=True,
-                per_step_ai=per_step,
-                mode=mode,
-            )
-        except (ValueError, RuntimeError) as exc:
-            with contextlib.suppress(discord.HTTPException):
-                await report_to.send(f"Could not start: {exc}")
-            return None
+            parent: Any = report_to.parent if isinstance(report_to, discord.Thread) else report_to
+            await self._close_for_switch(plan_path, report_to)
+            if harness in _SAME_WORDS:
+                # "Use whatever this thread uses" — started by words, no model named.
+                settings = getattr(self._chat(), "_backend_settings", None)
+                current = (
+                    await settings.current_backend(getattr(parent, "id", None))
+                    if settings
+                    else None
+                )
+                harness, model = current or "claude", None
+            if harness is None:
+                settings = getattr(self._chat(), "_backend_settings", None)
+                current = (
+                    await settings.current_backend(getattr(parent, "id", None))
+                    if settings
+                    else None
+                )
+                with contextlib.suppress(discord.HTTPException):
+                    await report_to.send(f"📋 Ready to build `{plan_path}`.")
+                picked = await self._ask_harness(report_to, current)
+                if picked is None:
+                    with contextlib.suppress(discord.HTTPException):
+                        await report_to.send(_NOT_PICKED)
+                    return None
+                harness, model = picked
+            per_step = harness == PER_STEP
+            if per_step:
+                harness, model = None, None
+            try:
+                return await self.start_loop(
+                    parent,
+                    plan_path,
+                    report_to=report_to,
+                    notify_user_id=notify_user_id,
+                    harness=harness,
+                    model=model,
+                    fallback_harness=fallback_harness,
+                    fallback_model=fallback_model,
+                    ask_goal=True,
+                    per_step_ai=per_step,
+                    mode=mode,
+                )
+            except (ValueError, RuntimeError) as exc:
+                with contextlib.suppress(discord.HTTPException):
+                    await report_to.send(f"Could not start: {exc}")
+                return None
+        finally:
+            if asking is not None:
+                self._asking.discard(asking)
 
     async def _ai_choices(self) -> list[tuple[str, str, str]]:
         """Every AI and model the bot can run: (harness, model, short note).
@@ -1809,7 +1829,7 @@ class TaskLoopCog(commands.Cog):
                 except ValueError:
                     self._queue.take(item)
                     continue
-                if repo in self._running:
+                if repo in self._running or repo in self._starting or repo in self._asking:
                     continue  # that project already has a build open; try the next one
                 report = await self._queue_report(item.report_id)
                 if report is None:
@@ -1870,15 +1890,18 @@ class TaskLoopCog(commands.Cog):
         today = now.date().isoformat()
         if now.hour < MORNING_HOUR or self._queue.state.last_summary == today:
             return
-        entries = self._queue.unreported()
+        morning = now.replace(hour=MORNING_HOUR, minute=0, second=0, microsecond=0)
+        entries = [
+            e for e in self._queue.unreported() if str(e.get("started", "")) < morning.isoformat()
+        ]
         if not entries:
-            return
+            return  # nothing ran overnight; afternoon builds wait for tomorrow
         text = morning_summary(entries, len(self._queue.state.waiting))
         report = await self._queue_report(int(entries[-1].get("report_id") or 0))
         if report is not None:
             with contextlib.suppress(discord.HTTPException):
                 await report.send(text)
-        self._queue.mark_reported(today)
+        self._queue.mark_reported(today, entries)
 
     async def _reviewer_for(self, running: _Running) -> tuple[str, str] | None:
         """A different AI than the builder: another kind if possible, the strongest first."""
