@@ -21,6 +21,7 @@ import contextlib
 import datetime
 import logging
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -952,6 +953,7 @@ class TaskLoopCog(commands.Cog):
             return
         progress = plan.with_name(f"{plan.stem}.progress.md")
         history: list[tuple[str, str]] = []
+        nudged = False
         for _ in range(GOAL_INTERVIEW_ROUNDS):
             if running.run_session is None:
                 return
@@ -968,7 +970,16 @@ class TaskLoopCog(commands.Cog):
                 return
             status, detail = parse_status(text)
             if status != Status.ASK or not detail:
-                return  # the interview didn't work out; build without a goal
+                if nudged:
+                    return  # the interview didn't work out; build without a goal
+                nudged = True  # the AI forgot to ask: remind it once
+                history.append(
+                    (
+                        "(your last reply didn't end with an ASK line)",
+                        "Ask your question now, with lettered choices, and end with `ASK: …`.",
+                    )
+                )
+                continue
             reply, _woken = await self._wait_or_wake(
                 running, running.worker_thread_id, ASK_TIMEOUT_SECONDS
             )
@@ -1535,7 +1546,12 @@ class TaskLoopCog(commands.Cog):
         Never raises: any failure is None, and the build keeps the AI it has.
         """
         runner: Any = getattr(self._chat(), "runner", None)
-        command = getattr(runner, "command", None) or "claude"
+        # Always the Claude CLI itself: the bot's default backend may be Codex or
+        # DSH, whose command doesn't take `-p --model haiku` (measured: every call
+        # failed quietly with CCDB_BACKEND=codex). No Claude on this machine → None.
+        command = shutil.which("claude")
+        if command is None:
+            return None
         env = None
         with contextlib.suppress(Exception):
             env = runner._build_env()  # the same keys and overlay as real sessions

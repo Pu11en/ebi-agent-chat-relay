@@ -65,6 +65,9 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
         if "checking finished work" in prompt:  # the bot's own end check
             await result_sink("PASS: the goal — it works\nDONE", None)
             return
+        if "agree the goal" in prompt:  # the goal interview: no goal agreed here
+            await result_sink("No questions.", None)
+            return
         # The worker ticks its task and commits, like a real round would.
         plan = Path(working_dir) / "PLAN.md"
         plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
@@ -1958,3 +1961,61 @@ async def test_a_build_whose_thread_is_gone_says_where_its_work_is(repo: Path) -
     assert await cog.resume_all() == 0
     text = report.send.await_args.args[0]
     assert copy.branch in text and "nothing was added" in text
+
+
+async def test_the_goal_interview_reminds_an_ai_that_forgot_to_ask(repo: Path) -> None:
+    cog, chat, thread = _cog_with_chat()
+    thread.delete = AsyncMock()
+    prompts: list[str] = []
+
+    async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        prompts.append(prompt)
+        plan = Path(working_dir) / "PLAN.md"
+        if "checking finished work" in prompt:
+            await result_sink("PASS: ok — ok\nDONE", None)
+            return
+        if "agree the goal" in prompt:
+            if "didn't end with an ASK line" not in prompt:
+                await result_sink("This plan adds a feature.", None)  # forgot to ask
+                return
+            if 'They answered: "A"' in prompt:
+                plan.write_text("Goal: g\nDone when: d\n" + plan.read_text())
+                _git(Path(working_dir), "commit", "-qam", "goal")
+                await result_sink("Saved.\nDONE", None)
+                return
+            await result_sink("Guesses:\nASK: What's it for? A) ... E) other", None)
+            return
+        plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+        _git(Path(working_dir), "commit", "-qam", "tick")
+        await result_sink("done\nDONE", None)
+
+    chat.run_fresh_turn = AsyncMock(side_effect=turn)
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 1
+    channel.send = AsyncMock()
+    await cog.start_loop(channel, str(repo / "PLAN.md"), ask_goal=True)
+    await _type_when_asked(cog, thread.id, "A")  # the reminded AI asked; Drew answered
+    await _type_when_asked(cog, thread.id, "looks good")
+    await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+    assert sum("agree the goal" in p for p in prompts) >= 2
+
+
+async def test_the_quick_helper_always_calls_the_claude_cli(monkeypatch) -> None:  # noqa: ANN001
+    import claude_discord.cogs.task_loop as mod
+
+    cog, chat, _ = _cog_with_chat()
+    del cog._quick_ai  # use the real one
+    chat.runner = MagicMock(command="codex")  # the bot's default backend is Codex
+    seen: list[tuple] = []
+
+    async def fake_exec(*args, **kwargs):  # noqa: ANN002, ANN003
+        seen.append(args)
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"B - hard\n", b""))
+        proc.returncode = 0
+        return proc
+
+    monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+    assert await cog._quick_ai("pick") == "B - hard"
+    assert seen[0][0] == "/usr/bin/claude" and "--" in seen[0]
