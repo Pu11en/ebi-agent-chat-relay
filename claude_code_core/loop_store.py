@@ -38,6 +38,9 @@ class LoopRecord:
     #: Used automatically when the build's AI hits its usage limit (no question asked).
     fallback_harness: str | None = None
     fallback_model: str | None = None
+    #: A plan with no Goal line starts with the goal interview (people starting a
+    #: build ask for it; an API caller that already knows the goal need not).
+    ask_goal: bool = False
 
 
 class LoopStore:

@@ -593,6 +593,53 @@ def plan_open_url(plan_text: str) -> str | None:
     return None
 
 
+def goal_interview_prompt(
+    plan_path: Path, progress_path: Path, history: list[tuple[str, str]]
+) -> str:
+    """One round of agreeing the build's goal with the person, before any step runs.
+
+    The flow follows .planning/harness-research/goal-elicitation.md: look first,
+    open with guesses, one question at a time with lettered choices, at most five
+    questions, then an approval step. The answers so far travel in *history*
+    because every round is a fresh session.
+    """
+    asked = len(history)
+    parts = [
+        "[gowork goal interview — for this session only] Before this build starts, "
+        "agree the goal of the build with the person. You start with no memory.",
+        "",
+        f"First look, quietly: the plan {plan_path}, the progress log {progress_path} "
+        "if it exists, and `git log --oneline -10`. Never ask what these already answer.",
+        "",
+        "Rules for every message:",
+        "- Plain words for a non-technical person, at most 5 short sentences.",
+        "- ONE question, with 4–5 lettered choices (A–E). Put your recommendation first, "
+        "marked (recommended), with a one-line reason. The last choice is always "
+        "'something else, in your own words'.",
+        f"- At most 5 questions in total. Asked so far: {asked}.",
+        "- The first question offers your 2–3 best guesses at the goal (from what you "
+        "read), plus 'something has been bugging me about this' and 'I'll say it in a "
+        "few words'.",
+        "- Ask about the problem and what a win looks like, not about code.",
+        "",
+        "When you know enough (or after 5 questions), show the draft and ask for approval:",
+        "Goal: <one sentence, what will be true for the person>",
+        "Done when: <one check the bot can prove by running something, that the "
+        "person could also check in 30 seconds>",
+        "with the choices: A) approve (recommended), B) make the done test stricter, "
+        "C) make the goal smaller, D) change the goal, E) start over.",
+        "",
+        "When they approve: add exactly those two lines (`Goal: …` and `Done when: …`) "
+        "under the plan's title, change nothing else, commit, and end with DONE.",
+        "Otherwise end with: ASK: <your question with its lettered choices>",
+    ]
+    if history:
+        parts += ["", "The conversation so far:"]
+        for question, answer in history:
+            parts += [f'- You asked: "{question}"', f'  They answered: "{answer}"']
+    return "\n".join(parts)
+
+
 def finished_checks(plan_text: str) -> list[str]:
     """What the bot checks at the end: the goal's done test first, then "How to try it"."""
     _goal, done = plan_goal(plan_text)

@@ -38,6 +38,7 @@ from claude_code_core.task_loop import (
     clear_reply,
     count_tasks,
     finished_checks,
+    goal_interview_prompt,
     is_looks_good,
     list_plans,
     list_plans_across,
@@ -48,6 +49,7 @@ from claude_code_core.task_loop import (
     parse_check_results,
     parse_status,
     plan_check_command,
+    plan_goal,
     project_for_thread,
     project_of,
     run_check,
@@ -82,6 +84,8 @@ SWITCH_TIMEOUT_SECONDS = 45 * 60
 PICK_TIMEOUT_SECONDS = 10 * 60
 #: After "wait" on a usage limit, try the same AI again this much later.
 LIMIT_WAIT_SECONDS = 30 * 60
+#: The goal interview: up to 5 questions, the approval, and a couple of changes.
+GOAL_INTERVIEW_ROUNDS = 9
 #: Replies to a usage limit that mean "wait for it to reset".
 _WAIT_WORDS = {"wait", "a", "wait for it", "wait for reset", "same", "later"}
 
@@ -278,6 +282,8 @@ class _Running:
     auto_finish: bool = False
     #: Wakes a stopped build that is waiting for the person (see auto_finish).
     wake: asyncio.Event | None = None
+    #: Agree a goal with the person first when the plan has none.
+    ask_goal: bool = False
     #: On a usage limit, switch to this AI by itself instead of asking.
     fallback: tuple[str, str | None] | None = None
 
@@ -452,6 +458,7 @@ class TaskLoopCog(commands.Cog):
         model: str | None = None,
         fallback_harness: str | None = None,
         fallback_model: str | None = None,
+        ask_goal: bool = False,
     ) -> discord.Thread:
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
@@ -503,6 +510,7 @@ class TaskLoopCog(commands.Cog):
             model=model,
             fallback_harness=fallback_harness,
             fallback_model=fallback_model,
+            ask_goal=ask_goal,
         )
         self._store.save(record)
         self._launch(record, thread, report_target)
@@ -650,6 +658,7 @@ class TaskLoopCog(commands.Cog):
             notify_user_id=notify_user_id,
             recaps=recaps,
             run_session=run_session,
+            ask_goal=record.ask_goal,
             fallback=(
                 (record.fallback_harness, record.fallback_model)
                 if record.fallback_harness
@@ -701,6 +710,8 @@ class TaskLoopCog(commands.Cog):
 
     async def _drive(self, running: _Running, report: Any) -> LoopOutcome:
         try:
+            if running.ask_goal:
+                await self._goal_interview(running)
             while True:
                 outcome = await running.loop.run()
                 if outcome.status == Status.COMPLETE:
@@ -732,6 +743,47 @@ class TaskLoopCog(commands.Cog):
             raise
         finally:
             self._running.pop(running.repo_dir, None)
+
+    async def _goal_interview(self, running: _Running) -> None:
+        """A plan with no goal: agree one with the person in the build's thread first.
+
+        Each round is a fresh session that asks one lettered question; the answers
+        so far travel in the prompt. Ends when the approved goal is in the plan,
+        or quietly when nobody answers — the build then runs without a goal.
+        """
+        assert running.copy is not None
+        plan = running.copy.plan_path
+
+        def goal_now() -> tuple[str | None, str | None]:
+            return plan_goal(plan.read_text(encoding="utf-8", errors="replace"))
+
+        if goal_now()[0]:
+            return
+        progress = plan.with_name(f"{plan.stem}.progress.md")
+        history: list[tuple[str, str]] = []
+        for _ in range(GOAL_INTERVIEW_ROUNDS):
+            if running.run_session is None:
+                return
+            text, _error = await running.run_session(
+                goal_interview_prompt(plan, progress, history), "🎯 Working out the goal…"
+            )
+            goal, done = goal_now()
+            if goal:
+                await commit_all(running.copy.path, "gowork: the build's goal")
+                with contextlib.suppress(discord.HTTPException):
+                    await running.thread.send(
+                        f"🎯 **Goal:** {goal}\n**Done when:** {done or '—'}\n-# Starting the steps."
+                    )
+                return
+            status, detail = parse_status(text)
+            if status != Status.ASK or not detail:
+                return  # the interview didn't work out; build without a goal
+            reply, _woken = await self._wait_or_wake(
+                running, running.worker_thread_id, ASK_TIMEOUT_SECONDS
+            )
+            if reply is None:
+                return
+            history.append((detail, reply))
 
     async def _wrap_up(self, running: _Running) -> str | None:
         """The ending: the bot checks the work itself, posts one card, waits for a verdict.
@@ -1152,6 +1204,7 @@ class TaskLoopCog(commands.Cog):
                 model=model,
                 fallback_harness=fallback_harness,
                 fallback_model=fallback_model,
+                ask_goal=True,
             )
         except (ValueError, RuntimeError) as exc:
             with contextlib.suppress(discord.HTTPException):
@@ -1312,6 +1365,7 @@ class TaskLoopCog(commands.Cog):
                 notify_user_id=interaction.user.id,
                 harness=harness,
                 model=model,
+                ask_goal=True,
             )
         except (ValueError, RuntimeError) as exc:
             await interaction.followup.send(f"Could not start: {exc}")

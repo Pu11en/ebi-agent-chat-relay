@@ -17,9 +17,9 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
 - The planning session can change steps the build hasn't started.
 
 ## G. A goal built into every build (Drew's pick: no separate keyword)
-- [ ] **G1 Goal lines.** A plan may have `Goal:` and `Done when:` lines. Every step's prompt
+- [x] **G1 Goal lines.** A plan may have `Goal:` and `Done when:` lines. Every step's prompt
   starts with them, and the end checker checks "Done when" as one of its checks.
-- [ ] **G2 Goal interview.** A plan with no goal starts with a short interview in the build's
+- [x] **G2 Goal interview.** A plan with no goal starts with a short interview in the build's
   thread: the AI reads the project first, opens with 2–3 guesses (lettered, recommended
   first), asks at most 5 questions one at a time, then shows the goal and done test for
   approve / stricter / smaller / change / start over. The approved lines go into the plan.

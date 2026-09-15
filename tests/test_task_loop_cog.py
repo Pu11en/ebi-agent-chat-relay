@@ -62,6 +62,9 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
     chat.spawn_session = AsyncMock(return_value=thread)
 
     async def fresh_turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        if "checking finished work" in prompt:  # the bot's own end check
+            await result_sink("PASS: the goal — it works\nDONE", None)
+            return
         # The worker ticks its task and commits, like a real round would.
         plan = Path(working_dir) / "PLAN.md"
         plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
@@ -1279,3 +1282,60 @@ class TestLimitFallback:
 
         assert await cog._limit_hit(running, "limit reached") is False
         settings.set_backend.assert_not_awaited()
+
+
+class TestGoalInterview:
+    async def test_a_plan_without_a_goal_starts_with_the_interview(self, repo: Path) -> None:
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        prompts: list[str] = []
+
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+            prompts.append(prompt)
+            if "checking finished work" in prompt:
+                await result_sink("PASS: the goal — it plays\nDONE", None)
+                return
+            plan = Path(working_dir) / "PLAN.md"
+            if "agree the goal" in prompt:
+                if "hear it on my phone" not in prompt:
+                    await result_sink("My guesses:\nASK: What is this build for? A) ...", None)
+                    return
+                plan.write_text(
+                    "Goal: Drew hears it on his phone.\nDone when: it plays.\n" + plan.read_text()
+                )
+                _git(Path(working_dir), "commit", "-qam", "goal")
+                await result_sink("Goal saved.\nDONE", None)
+                return
+            plan.write_text(plan.read_text().replace("- [ ]", "- [x]", 1))
+            _git(Path(working_dir), "commit", "-qam", "tick")
+            await result_sink("done\nDONE", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=turn)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"), ask_goal=True)
+
+        await _type_when_asked(cog, thread.id, "B, i want to hear it on my phone")
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert "agree the goal" in prompts[0]
+        assert "hear it on my phone" in prompts[1]
+        assert "Drew hears it on his phone" in prompts[2]  # the step sees the goal
+        assert "Goal: Drew hears it on his phone." in (repo / "PLAN.md").read_text()
+
+    async def test_a_plan_with_a_goal_skips_the_interview(self, repo: Path) -> None:
+        (repo / "PLAN.md").write_text("Goal: g\nDone when: d\n- [ ] Task 1: a\n")
+        _git(repo, "commit", "-qam", "goal")
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"), ask_goal=True)
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        first = chat.run_fresh_turn.await_args_list[0].args[2]
+        assert "agree the goal" not in first
