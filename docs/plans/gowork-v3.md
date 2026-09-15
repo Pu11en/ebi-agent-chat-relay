@@ -35,8 +35,9 @@ Sources: `.planning/harness-research/cards-agentic-workflow.md` (the ideas),
 - [x] **4 Smart unsticking.** Before asking Drew, a stuck step tries the strongest AI (same kind
   first), then a fresh session splits it into 2–3 smaller steps; then it asks. The build goes
   back to its usual AI after. Steps that need only Drew (keys, money, decisions) aren't split.
-- [ ] **7 Learning.** A fixed record per step (AI, time, result, retries, why it stopped), a
-  short "what to do differently" note per build, used by the next plan and by idea 3.
+- [x] **7 Learning.** Every step appends a record (AI, time, how it ended) to
+  `step-records.jsonl` next to the build copies. The step picker gets each AI's track record;
+  the finished card and the progress log get 2–3 "next time" bullets.
 - [ ] **1 Goal mode across builds.** With a goal, a finished build whose goal isn't met can
   plan and run the next build itself, with Drew's yes (builds on G3).
 - [ ] **6 Overnight queue.** Plans wait in a queue and run back to back; one morning summary.

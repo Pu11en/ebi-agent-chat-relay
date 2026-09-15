@@ -598,3 +598,15 @@ class TestParallelGroups:
         assert ran_together == [["Task 1: a", "Task 2: b"]]
         assert len(fake.prompts) == 2  # Task 2 and Task 3, one at a time
         assert any("at the same time" in r for r in fake.reports)
+
+
+class TestRoundResults:
+    async def test_every_round_reports_how_it_ended(self, repo: Path) -> None:
+        seen: list[tuple[str, str]] = []
+
+        async def on_result(step: str, result: str, detail: str) -> None:
+            seen.append((step, result))
+
+        fake = _Fake(repo, [_lie, _done, _done])
+        await fake.loop(on_result=on_result).run()
+        assert seen == [("Task 1: a", "retry"), ("Task 1: a", "done"), ("Task 2: b", "done")]

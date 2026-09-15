@@ -1584,3 +1584,61 @@ class TestSmartUnsticking:
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
         said = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
         assert "I'm stuck" in said and "stronger AI" in said
+
+
+class TestLearning:
+    async def test_steps_are_recorded_and_the_card_says_what_to_do_next_time(
+        self, repo: Path
+    ) -> None:
+        from claude_code_core.gowork_records import read_records
+
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+
+        async def quick(prompt: str) -> str | None:
+            if "differently next time" in prompt:
+                return "- Next time, split the big step in two.\n- Opus did well."
+            return None
+
+        cog._quick_ai = AsyncMock(side_effect=quick)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        records = read_records(cog._records_path)
+        assert [(r["step"], r["result"]) for r in records] == [("Task 1: a", "done")]
+        assert records[0]["repo"] == repo.name and "seconds" in records[0]
+        card = _embeds(thread)[0].description or ""
+        assert "Next time" in card and "split the big step" in card
+        assert "split the big step" in (repo / "PLAN.progress.md").read_text()
+
+    async def test_the_picker_sees_each_ais_track_record(self, repo: Path) -> None:
+        from claude_code_core.gowork_records import append_record
+
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        chat._backend_settings = None
+        append_record(
+            cog._records_path,
+            {"ai": "codex · gpt-5.5", "result": "stuck", "seconds": 600, "step": "x"},
+        )
+        cog._ai_choices = AsyncMock(return_value=[("codex", "gpt-5.5", "")])  # type: ignore[method-assign]
+        prompts: list[str] = []
+
+        async def quick(prompt: str) -> str | None:
+            prompts.append(prompt)
+            return None
+
+        cog._quick_ai = AsyncMock(side_effect=quick)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"), per_step_ai=True)
+        await _type_when_asked(cog, thread.id, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        pick = next(p for p in prompts if "Pick the AI" in p)
+        assert "codex · gpt-5.5: 1 steps (1 stuck)" in pick

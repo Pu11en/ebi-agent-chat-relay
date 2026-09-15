@@ -427,6 +427,7 @@ class TaskLoop:
         before_round: Callable[[], Awaitable[None]] | None = None,
         next_group: Callable[[list[str]], Awaitable[list[str]]] | None = None,
         run_group: Callable[[list[str]], Awaitable[list[tuple[str, bool, str]]]] | None = None,
+        on_result: Callable[[str, str, str], Awaitable[None]] | None = None,
     ) -> None:
         self.plan_path = plan_path
         self.repo_dir = repo_dir
@@ -441,6 +442,8 @@ class TaskLoop:
         self._before_round = before_round
         #: Parallel steps (idea 2): which open steps can go together, and running them.
         self._next_group = next_group
+        #: Told how every round ended — (step, result, detail) — for the records.
+        self._on_result = on_result
         self._run_group = run_group
         #: Steps that failed in a group run on their own from then on.
         self._solo: set[str] = set()
@@ -459,6 +462,14 @@ class TaskLoop:
             return []
         ok, tail = await run_check(self.repo_dir, argv)
         return [] if ok else [f"the plan's check failed ({' '.join(argv)}): {tail}"]
+
+    async def _result(self, step: str | None, result: str, detail: str) -> None:
+        if self._on_result is None:
+            return
+        try:
+            await self._on_result(step or "", result, detail or "")
+        except Exception:
+            logger.warning("task loop: saving a round's result failed", exc_info=True)
 
     async def _parallel_group(self) -> list[str]:
         """The open steps to run together next, or [] to run the next one alone."""
@@ -541,6 +552,7 @@ class TaskLoop:
                 rounds -= 1
                 self._notes = notes + self._notes
                 answer, retry_reason = pending
+                await self._result(before.next_task, "limit", limit)
                 if await self._on_limit(limit):
                     continue
                 return LoopOutcome(Status.ASK, f"usage limit: {limit}", rounds)
@@ -548,6 +560,7 @@ class TaskLoop:
             after = await take_snapshot(self.repo_dir, self.plan_path)
 
             if status == Status.ASK and detail:
+                await self._result(before.next_task, "asked", detail)
                 reply = await self._ask(detail)
                 if reply is None:
                     await self._report(f"⏸️ Paused, waiting for your answer: {detail}")
@@ -555,13 +568,18 @@ class TaskLoop:
                 answer = (detail, reply)
                 continue
             if status == Status.STUCK:
+                await self._result(before.next_task, "stuck", detail)
                 await self._report(f"🛑 Stuck on {before.next_task}: {detail}")
                 return LoopOutcome(Status.STUCK, detail, rounds)
             if status == Status.PAUSE:
+                await self._result(before.next_task, "paused", detail)
                 await _git(self.repo_dir, "add", "-A")
                 await _git(self.repo_dir, "commit", "-qm", "gowork: paused")
                 return LoopOutcome(Status.PAUSE, detail or "paused", rounds)
             if status in (Status.SKIP, Status.PLAN):
+                await self._result(
+                    before.next_task, "skipped" if status == Status.SKIP else "replanned", detail
+                )
                 if status == Status.SKIP:
                     skip_task(self.plan_path)
                     await self._report(f"⏭️ Skipped {before.next_task}: {detail}")
@@ -583,10 +601,14 @@ class TaskLoop:
                 problems = await self._run_plan_check()
             if not problems:
                 retries = 0
+                await self._result(before.next_task, "done", "")
                 await self._report(f"✅ Task {after.checked} of {total} done: {before.next_task}")
                 continue
             retries += 1
             reason = "; ".join(problems)
+            await self._result(
+                before.next_task, "stuck" if retries > self.max_retries else "retry", reason
+            )
             if retries > self.max_retries:
                 await self._report(f"🛑 Stuck on {before.next_task}: {reason}")
                 return LoopOutcome(Status.STUCK, reason, rounds)
@@ -675,7 +697,12 @@ def goal_interview_prompt(
     return "\n".join(parts)
 
 
-def step_ai_prompt(step: str, goal: str | None, options: list[tuple[str, str, str]]) -> str:
+def step_ai_prompt(
+    step: str,
+    goal: str | None,
+    options: list[tuple[str, str, str]],
+    track: list[str] | None = None,
+) -> str:
     """Ask a quick, cheap AI which of *options* should do *step*."""
     lines = [
         "Pick the AI that should do one step of a software build. Choose the cheapest, "
@@ -690,6 +717,8 @@ def step_ai_prompt(step: str, goal: str | None, options: list[tuple[str, str, st
     for i, (harness, model, note) in enumerate(options):
         tail = f" — {note}" if note else ""
         lines.append(f"{chr(ord('A') + i)}) {harness} · {model}{tail}")
+    if track:
+        lines += ["", "How each AI did on past build steps (use it):", *[f"- {t}" for t in track]]
     lines += [
         "",
         "Answer with the letter first, then a few plain words why, e.g. "

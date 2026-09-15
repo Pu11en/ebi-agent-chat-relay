@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,6 +30,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from claude_code_core.gowork_records import (
+    append_record,
+    lessons_prompt,
+    read_records,
+    track_record,
+)
 from claude_code_core.loop_store import LoopRecord, LoopStore
 from claude_code_core.task_loop import (
     LoopOutcome,
@@ -69,6 +77,7 @@ from claude_code_core.task_loop import (
     tick_task,
 )
 from claude_code_core.work_copy import (
+    DEFAULT_ROOT,
     WorkCopy,
     WorkCopyError,
     commit_all,
@@ -261,6 +270,7 @@ def finished_card(
     recaps: list[str],
     results: list[tuple[str, str]],
     proposed: list[str] | None = None,
+    lessons: list[str] | None = None,
 ) -> Any:
     """The last card: what got done, what the bot checked itself, what to type."""
     fails = [r for r in results if r[0] == "fail"]
@@ -270,6 +280,8 @@ def finished_card(
     if results:
         lines += ["", "**What I checked myself**"]
         lines += [f"{_MARK.get(kind, '⚪')} {what}" for kind, what in results]
+    if lessons:
+        lines += ["", "**Next time**", *[f"• {b}" for b in lessons]]
     lines.append("")
     if proposed:
         lines += [
@@ -335,6 +347,9 @@ class _Running:
     unstuck: dict[str, int] = field(default_factory=dict)
     #: (step, harness, model) while a stuck step runs on a stronger AI.
     boosted: tuple[str, str, str | None] | None = None
+    #: This build's step records, and when the current round started and on which AI.
+    records: list[dict[str, Any]] = field(default_factory=list)
+    round_started: tuple[float, str] | None = None
     #: The step groups the quick AI made (labels), for parallel steps.
     groups: list[list[str]] = field(default_factory=list)
     #: On a usage limit, switch to this AI by itself instead of asking.
@@ -415,6 +430,8 @@ class TaskLoopCog(commands.Cog):
         self._accepts: dict[int, Any] = {}
         #: A stuck step tries a stronger AI, then smaller steps, before asking (idea 4).
         self.smart_unstick = True
+        #: Every step of every build, for the picker's track record (idea 7).
+        self._records_path = (work_root or DEFAULT_ROOT) / "step-records.jsonl"
 
     def _chat(self) -> ClaudeChatCog:
         cog: Any = self.bot.cogs.get("ClaudeChatCog")
@@ -627,6 +644,8 @@ class TaskLoopCog(commands.Cog):
             now = await take_snapshot(work_dir, work_plan)
             if holder and holder[0].per_step_ai and now.next_task:
                 await self._pick_step_ai(holder[0], now.next_task)
+            if holder:
+                holder[0].round_started = (time.monotonic(), await self._ai_label(holder[0]))
             seed = await thread.send(f"-# 🔁 Round {rounds} · next task: {now.next_task}")
             result: dict[str, str | None] = {}
 
@@ -711,6 +730,7 @@ class TaskLoopCog(commands.Cog):
             on_limit=on_limit,
             before_round=pull_plan_changes,
             next_group=lambda steps: self._next_group(holder[0], steps),
+            on_result=lambda step, result, detail: self._record(holder[0], step, result, detail),
             run_group=lambda steps: self._run_group(holder[0], steps),
         )
         repo_dir = Path(record.repo_dir)
@@ -895,11 +915,25 @@ class TaskLoopCog(commands.Cog):
         results = await self._check_it_myself(running, plan_text)
         fails = [what for kind, what in results if kind == "fail"]
         proposed = await self._missing_steps(running, fails)
+        lessons = await self._lessons(running)
+        if lessons:
+            progress = running.copy.plan_path.with_name(
+                f"{running.copy.plan_path.stem}.progress.md"
+            )
+            with progress.open("a", encoding="utf-8") as fh:
+                fh.write("\n## Next time (from how this build went)\n")
+                fh.writelines(f"- {b}\n" for b in lessons)
+            await commit_all(running.copy.path, "gowork: what to do differently next time")
         with contextlib.suppress(discord.HTTPException):
             await here.send(
                 f"🏁 **{running.repo_dir.name} is finished**{mention}",
                 embed=finished_card(
-                    running.repo_dir.name, checked, running.recaps or [], results, proposed
+                    running.repo_dir.name,
+                    checked,
+                    running.recaps or [],
+                    results,
+                    proposed,
+                    lessons,
                 ),
             )
 
@@ -1419,7 +1453,8 @@ class TaskLoopCog(commands.Cog):
         goal, _done = plan_goal(
             running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
         )
-        reply = await self._quick_ai(step_ai_prompt(step, goal, options))
+        track = track_record(read_records(self._records_path))
+        reply = await self._quick_ai(step_ai_prompt(step, goal, options, track))
         index = parse_pick(reply, len(options))
         if index is None:
             return  # keep the AI the build has
@@ -1541,6 +1576,60 @@ class TaskLoopCog(commands.Cog):
         if model:
             await settings.set_model(harness, model, thread_id=running.worker_thread_id)
 
+    async def _ai_label(self, running: _Running, thread_id: int | None = None) -> str:
+        """ "harness · model" the thread runs on, for the records."""
+        settings = getattr(self._chat(), "_backend_settings", None)
+        if settings is None:
+            return "the thread's AI"
+        try:
+            tid = thread_id or running.worker_thread_id
+            harness = await settings.current_backend(tid)
+            model = await settings.current_model(harness, tid)
+        except Exception:
+            return "the thread's AI"
+        return " · ".join(str(x) for x in (harness, model) if x) or "the thread's AI"
+
+    async def _record(
+        self,
+        running: _Running,
+        step: str,
+        result: str,
+        detail: str,
+        *,
+        ai: str | None = None,
+        seconds: float | None = None,
+    ) -> None:
+        """Save how one step went — kept across builds for the picker and the lessons."""
+        started = running.round_started
+        record = {
+            "time": datetime.datetime.now().isoformat(timespec="seconds"),
+            "repo": running.repo_dir.name,
+            "plan": running.copy.plan_path.name if running.copy else "",
+            "step": step,
+            "ai": ai or (started[1] if started else "the thread's AI"),
+            "seconds": round(
+                seconds
+                if seconds is not None
+                else (time.monotonic() - started[0] if started else 0)
+            ),
+            "result": result,
+            "detail": detail[:200],
+        }
+        running.records.append(record)
+        append_record(self._records_path, record)
+
+    async def _lessons(self, running: _Running) -> list[str]:
+        """2–3 "next time" bullets from this build's records, by a quick AI."""
+        if not running.records:
+            return []
+        reply = await self._quick_ai(lessons_prompt(running.records, running.recaps or []))
+        bullets = [
+            line.strip()[2:].strip()
+            for line in (reply or "").splitlines()
+            if line.strip().startswith(("- ", "• "))
+        ]
+        return [b for b in bullets if b][:3]
+
     async def _groups_for(self, steps: list[str]) -> list[list[str]]:
         """Ask the quick AI which of *steps* can be built at the same time."""
         if len(steps) < 2:
@@ -1572,7 +1661,7 @@ class TaskLoopCog(commands.Cog):
                 "-# ⚡ Building these at the same time: " + "; ".join(short_label(s) for s in steps)
             )
 
-        async def one(index: int, step: str) -> tuple[str, bool, str, Any, Any]:
+        async def one(index: int, step: str) -> tuple[str, bool, str, Any, Any, str, float]:
             side = await create_side_copy(copy, f"p{index + 1}")
             sub: Any = await chat.spawn_session(
                 parent,
@@ -1595,6 +1684,8 @@ class TaskLoopCog(commands.Cog):
             async def sink(text: str | None, error: str | None) -> None:
                 result["text"], result["error"] = text, error
 
+            ai = await self._ai_label(running, sub.id)
+            started = time.monotonic()
             seed = await sub.send(f"-# ⚡ Working on: {step}")
             await chat.run_fresh_turn(
                 seed,
@@ -1605,7 +1696,15 @@ class TaskLoopCog(commands.Cog):
             )
             status, detail = parse_status(result.get("text"))
             ok = status == Status.DONE
-            return step, ok, detail or result.get("error") or "", side, sub
+            return (
+                step,
+                ok,
+                detail or result.get("error") or "",
+                side,
+                sub,
+                ai,
+                time.monotonic() - started,
+            )
 
         outcomes = await asyncio.gather(
             *(one(i, s) for i, s in enumerate(steps)), return_exceptions=True
@@ -1617,9 +1716,17 @@ class TaskLoopCog(commands.Cog):
                 logger.warning("gowork: a parallel step failed to run", exc_info=outcome)
                 results.append((step, False, "it couldn't start"))
                 continue
-            _step, ok, detail, side, sub = outcome
+            _step, ok, detail, side, sub, ai, seconds = outcome
             landed = ok and await side_has_new_work(copy, side)
             landed = landed and await merge_side_copy(copy, side)
+            await self._record(
+                running,
+                step,
+                "done alongside others" if landed else "didn't combine",
+                detail,
+                ai=ai,
+                seconds=seconds,
+            )
             if not landed:
                 await remove_side_copy(copy, side)
             if landed and tick_task(copy.plan_path, step):
