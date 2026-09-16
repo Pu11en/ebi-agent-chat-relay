@@ -695,6 +695,19 @@ class TaskLoop:
                 if status == Status.DONE
                 else [error or "the worker ended without a status line"]
             )
+            if (
+                problems == ["the task's checkbox in the plan was not ticked"]
+                and before.next_task
+                and not await self._run_plan_check()
+            ):
+                # The work is committed and the check passes: a forgotten checkbox is
+                # tidiness, not failure. Tick it and say so, rather than retry.
+                tick_task(self.plan_path, before.next_task)
+                await _git(self.repo_dir, "add", "-A")
+                await _git(self.repo_dir, "commit", "-qm", "gowork: ticked the finished step")
+                await self._report(f"✅ It forgot the checkbox, so I ticked it: {before.next_task}")
+                problems = []
+                after = await take_snapshot(self.repo_dir, self.plan_path)
             if not problems:
                 problems = await self._run_plan_check()
             if not problems and before.next_task:

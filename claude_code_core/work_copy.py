@@ -92,12 +92,16 @@ async def remove_work_copy(copy: WorkCopy) -> None:
     await _git(copy.source_repo, "branch", "-D", copy.branch)
 
 
-async def keep_work(copy: WorkCopy) -> tuple[bool, str]:
+async def keep_work(copy: WorkCopy, *, prefer_build: bool = False) -> tuple[bool, str]:
     """ "Looks good": merge the build into the project, then remove the copy.
 
     Local only — nothing is pushed. Refuses (and loses nothing) when the
-    project has unsaved changes or the merge conflicts.
+    project has unsaved changes or the merge conflicts. With *prefer_build*,
+    a clash is settled by taking the build's version of the clashing files —
+    what a re-run of an already-kept plan needs.
     """
+    if not copy.path.exists():
+        return False, "the build's own copy is gone from this computer"
     plan_rel = str(copy.plan_path.relative_to(copy.path))
     real_plan = copy.source_repo / plan_rel
     if (
@@ -136,7 +140,13 @@ async def keep_work(copy: WorkCopy) -> tuple[bool, str]:
         await _git(copy.source_repo, "merge", "--no-edit", copy.branch)
     except WorkCopyError as exc:
         conflicted = await _git(copy.source_repo, "diff", "--name-only", "--diff-filter=U")
-        if conflicted.split() == [plan_rel]:
+        if prefer_build and conflicted.split():
+            for path in conflicted.split():
+                with contextlib.suppress(WorkCopyError):
+                    await _git(copy.source_repo, "checkout", "--theirs", "--", path)
+                await _git(copy.source_repo, "add", "--", path)
+            await _git(copy.source_repo, "commit", "-q", "--no-edit")
+        elif conflicted.split() == [plan_rel]:
             # Only the plan clashed: the build's copy has every step, ticked or not.
             await _git(copy.source_repo, "checkout", "--theirs", "--", plan_rel)
             await _git(copy.source_repo, "add", "--", plan_rel)

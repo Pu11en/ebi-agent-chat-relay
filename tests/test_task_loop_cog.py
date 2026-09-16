@@ -1121,6 +1121,9 @@ class TestUsageLimitInThread:
         settings.set_backend = AsyncMock()
         settings.set_model = AsyncMock()
         chat._backend_settings = settings
+        cog._ai_choices = AsyncMock(  # type: ignore[method-assign]
+            return_value=[("claude", "sonnet", ""), ("dsh", "glm-5.3", "")]
+        )
         self._limited_then_fine(chat)
         channel = await self._start(cog, repo)
 
@@ -2073,3 +2076,84 @@ async def test_a_build_that_cannot_combine_stops_instead_of_repeating(repo: Path
     posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
     assert posted.count("couldn't keep it yet") == 1
     assert "still doesn't combine" in posted and running.copy.branch in posted
+
+
+class TestAuditFixesInTheCog:
+    async def test_a_model_that_isnt_on_the_list_is_never_used(self) -> None:
+        from claude_discord.cogs.task_loop import PER_STEP
+
+        cog, _, _ = _cog_with_chat()
+
+        async def catalog() -> list[tuple[str, str, str]]:
+            return [("claude", "sonnet", ""), ("claude", "opus", "")]
+
+        cog._ai_choices = catalog  # type: ignore[method-assign]
+        channel = MagicMock()
+        channel.id = 9
+        channel.send = AsyncMock()
+        picker = asyncio.create_task(cog._ask_harness(channel, "claude"))
+        # Typing the option's words, not its letter (this produced "claude · each").
+        await _type_when_asked(cog, 9, "let the bot pick the best claude model for each step")
+        assert await asyncio.wait_for(picker, 5) == (PER_STEP, None)
+
+    async def test_a_typed_name_keeps_only_a_real_model(self) -> None:
+        cog, _, _ = _cog_with_chat()
+
+        async def catalog() -> list[tuple[str, str, str]]:
+            return [("claude", "sonnet", "")]
+
+        cog._ai_choices = catalog  # type: ignore[method-assign]
+        channel = MagicMock()
+        channel.id = 9
+        channel.send = AsyncMock()
+        picker = asyncio.create_task(cog._ask_harness(channel, "claude"))
+        await _type_when_asked(cog, 9, "claude banana")
+        assert await asyncio.wait_for(picker, 5) == ("claude", None)  # not "banana"
+
+    async def test_a_build_whose_copy_vanished_ends_cleanly(self, repo: Path) -> None:
+        import shutil as sh
+
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        for _ in range(500):
+            if cog._waiters.get(1) is not None:
+                break
+            await asyncio.sleep(0.01)
+        running = cog.running[0]
+        sh.rmtree(running.copy.path)  # someone deleted the build's copy
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(running.task, 10)
+
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "copy" in posted and "gone" in posted
+        assert cog.running == []
+
+    async def test_keeping_a_clash_can_take_the_builds_version(self, repo: Path) -> None:
+        import claude_discord.cogs.task_loop as mod
+
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        calls: list[bool] = []
+
+        async def keep(copy, *, prefer_build: bool = False):  # noqa: ANN001, ANN202
+            calls.append(prefer_build)
+            if not prefer_build:
+                return False, "the work didn't combine cleanly"
+            return True, "added to your project"
+
+        with patch.object(mod, "keep_work", AsyncMock(side_effect=keep)):
+            await _type_when_asked(cog, 1, "looks good")
+            await _type_when_asked(cog, 1, "use the build's version")
+            await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
+        assert calls == [False, True]
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "use the build's version" in posted  # it offered the way out

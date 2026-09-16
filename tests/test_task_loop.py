@@ -753,3 +753,23 @@ class TestCheckLeavesNoMess:
         assert outcome.status == tl.Status.COMPLETE
         assert len(fake.prompts) == 2  # no retry
         assert (repo / "log.txt").read_text() == "old\n"
+
+
+class TestAuditFixes:
+    async def test_the_bot_ticks_the_box_itself_when_the_work_is_really_done(
+        self, repo: Path
+    ) -> None:
+        """A worker that commits and passes the check but forgets the box isn't stuck."""
+
+        def commits_without_ticking(r: Path) -> tuple[str, None]:
+            (r / "done.txt").write_text("work\n")
+            _git(r, "add", ".")
+            _git(r, "commit", "-qm", "did the work")
+            return ("did it\nDONE", None)
+
+        fake = _Fake(repo, [commits_without_ticking, _done])
+        outcome = await fake.loop().run()
+        assert outcome.status == tl.Status.COMPLETE
+        assert len(fake.prompts) == 2  # no retry for the missing tick
+        assert "- [x] Task 1: a" in (repo / "PLAN.md").read_text()
+        assert any("ticked it" in r for r in fake.reports)

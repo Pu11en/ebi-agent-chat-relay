@@ -212,6 +212,15 @@ _BLUE, _GREEN, _AMBER = 0x2D6A86, 0x2F7D4F, 0xE8A317
 _MARK = {"pass": "✅", "fail": "❌", "skip": "⚪"}
 _FIX_WORDS = {"fix", "fix it", "fix them", "fix those", "fix that"}
 _ADD_WORDS = {"add them", "add", "add those", "add these", "yes add them", "add the steps"}
+#: "Keep it anyway": on a clash, the build's version of the clashing files wins.
+_TAKE_BUILD_WORDS = {
+    "use the build's version",
+    "use the builds version",
+    "take the build's version",
+    "take the builds version",
+    "the build wins",
+    "keep it anyway",
+}
 
 
 _STOP_WORDS = {
@@ -282,7 +291,13 @@ def _match_ai(
         for i, (harness, model, _note) in enumerate(options, start=first):
             if choice_letter(i) == wanted:
                 return harness, model
-    return parse_harness_reply(reply, current)
+    picked = parse_harness_reply(reply, current)
+    if picked is None:
+        return None
+    harness, model = picked
+    if model and not any(h == harness and m == model for h, m, _n in options):
+        model = None  # a word that isn't a real model (this made "claude · each")
+    return harness, model
 
 
 def plan_card(
@@ -953,6 +968,16 @@ class TaskLoopCog(commands.Cog):
         except asyncio.CancelledError:
             # Bot shutting down: keep the record so startup resumes this build.
             raise
+        except (WorkCopyError, FileNotFoundError, NotADirectoryError):
+            # The build's copy was deleted while it worked: stop, don't crash.
+            logger.info("gowork: the copy of %s is gone; stopping", running.repo_dir)
+            self._store.remove(str(running.repo_dir))
+            with contextlib.suppress(Exception):
+                await running.report_target.send(
+                    f"⚠️ {running.repo_dir.name}'s build copy is gone from this computer, so I "
+                    "stopped it. Nothing was added to your project."
+                )
+            return LoopOutcome(Status.NONE, "the build's copy is gone")
         except discord.NotFound:
             # The worker thread was deleted: end here, keeping the finished steps.
             logger.info("gowork: worker thread gone for %s, wrapping up", running.repo_dir)
@@ -1096,6 +1121,13 @@ class TaskLoopCog(commands.Cog):
         working on the build's copy. Returns "kept" or "fix".
         """
         assert running.copy is not None
+        if not running.copy.path.exists():
+            with contextlib.suppress(discord.HTTPException):
+                await running.report_target.send(
+                    f"⚠️ {running.repo_dir.name}'s build copy is gone from this computer, so I "
+                    "stopped it. Nothing was added to your project."
+                )
+            return "kept"
         # The card and the "looks good?" wait live in the build's own thread; the
         # starting channel only gets a pointer, and the result once the thread is gone.
         target, report, here = running.report_target, running.report, running.thread
@@ -1153,6 +1185,7 @@ class TaskLoopCog(commands.Cog):
                 is_looks_good(text)
                 or parked_choice(text) in ("throw", "finish")
                 or clear_reply(text) in _FIX_WORDS
+                or clear_reply(text) in _TAKE_BUILD_WORDS
                 or (bool(proposed) and clear_reply(text) in _ADD_WORDS)
             )
 
@@ -1223,13 +1256,15 @@ class TaskLoopCog(commands.Cog):
                 # Changes made while chatting after the build are part of the build.
                 await commit_all(running.copy.path, "gowork: changes from the chat afterwards")
                 tried_keep = True
-                ok, message = await keep_work(running.copy)
+                take_build = clear_reply(reply) in _TAKE_BUILD_WORDS
+                ok, message = await keep_work(running.copy, prefer_build=take_build)
                 if not ok:
                     with contextlib.suppress(discord.HTTPException):
                         await target.send(
                             f"⚠️ I couldn't keep it yet: {message}. Your build is safe on branch "
-                            f"`{running.copy.branch}`. Sort that out and type **looks good** "
-                            "again, or ask me to sort it out for you."
+                            f"`{running.copy.branch}`. Type **use the build's version** to keep "
+                            "it anyway (the build wins where they clash), or sort the clash out "
+                            "and type **looks good** again."
                         )
                     continue
                 self._queue_note(running, "kept in your project ✅")
@@ -1670,7 +1705,8 @@ class TaskLoopCog(commands.Cog):
             if reply is None:
                 return None
             m = _LETTER_REPLY_RE.match(reply)
-            if m is not None and m.group(1).upper() == "A":
+            said = reply.lower()
+            if (m is not None and m.group(1).upper() == "A") or "each step" in said:
                 return PER_STEP, None
             if m is not None and m.group(1).upper() == "B" and current:
                 return current, None
