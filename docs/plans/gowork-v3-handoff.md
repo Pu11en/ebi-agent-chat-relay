@@ -44,7 +44,10 @@
 - **Learning:** records go to `~/.local/state/ccdb/gowork/step-records.jsonl`. The picker sees each
   AI's track record, and the finished card gets "Next time" bullets.
 - **Usage limits** pause and ask, or switch once to a backup AI if one was set.
-- **After the last step:** the thread becomes a normal chat on the build's copy. "Looks good" keeps
+- **After the last step:** the finished card and the "looks good" question go to the planning
+  thread (Drew: a build starts and ends where it was planned); the build's own thread stays a
+  normal chat on its copy. Any build question can be answered in either thread — in the planning
+  thread only a real choice counts, so ordinary chat there is never swallowed. "Looks good" keeps
   everything, including chat edits.
 - **Plan changes from the planner:** only what changed is applied, so the build's own plan edits
   survive.

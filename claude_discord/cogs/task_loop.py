@@ -351,7 +351,8 @@ def finished_card(
     else:
         lines.append("Type **looks good** to keep it.")
     lines.append(
-        "This thread is a normal chat now: ask me anything, test it with me, or ask for changes."
+        "Type **looks good** here to keep it. The build's own thread is a normal chat now: "
+        "ask it anything or test it there."
     )
     return discord.Embed(
         title=f"🏁 {name} is finished",
@@ -521,17 +522,18 @@ class TaskLoopCog(commands.Cog):
         return list(self._running.values())
 
     async def wait_for_reply(
-        self, channel_id: int, *, timeout: float, accept: Any = None
+        self, channel_id: int, *, timeout: float, accept: Any = None, release: bool = True
     ) -> str | None:
         """Wait for the next message typed in *channel_id* (see take_message).
 
-        With *accept*, a reply it rejects is left for the normal chat and this
-        raises PickDeclinedError, so a question typed instead of a choice gets answered.
+        With *accept*, a reply it rejects is left for the normal chat. With
+        *release* (a picker), rejecting also ends this wait with PickDeclinedError;
+        without it (a build waiting for an answer) the question keeps waiting.
         """
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._waiters[channel_id] = future
         if accept is not None:
-            self._accepts[channel_id] = accept
+            self._accepts[channel_id] = (accept, release)
         try:
             return await asyncio.wait_for(future, timeout)
         except TimeoutError:
@@ -562,10 +564,11 @@ class TaskLoopCog(commands.Cog):
                 return True
         future = self._waiters.get(channel_id)
         if future is not None and not future.done():
-            accept = self._accepts.get(channel_id)
+            accept, release = self._accepts.get(channel_id) or (None, True)
             if accept is not None and not accept(text):
-                future.set_exception(PickDeclinedError(text))
-                return False
+                if release:
+                    future.set_exception(PickDeclinedError(text))
+                return False  # not an answer: the normal chat takes it
             future.set_result(text)
             return True
         for running in self._running.values():
@@ -1128,6 +1131,11 @@ class TaskLoopCog(commands.Cog):
             await commit_all(running.copy.path, "gowork: what to do differently next time")
         with contextlib.suppress(discord.HTTPException):
             await here.send(
+                "-# 🏁 Finished. The card and the **looks good** question are back in the "
+                "thread you started this from; ask me anything here."
+            )
+        with contextlib.suppress(discord.HTTPException):
+            await target.send(
                 f"🏁 **{running.repo_dir.name} is finished**{mention}",
                 embed=finished_card(
                     running.repo_dir.name,
@@ -1159,7 +1167,10 @@ class TaskLoopCog(commands.Cog):
             while True:
                 try:
                     reply, woken = await self._wait_or_wake(
-                        running, running.worker_thread_id, VERDICT_REMIND_SECONDS, is_verdict
+                        running,
+                        [running.report_channel_id, running.worker_thread_id],
+                        VERDICT_REMIND_SECONDS,
+                        is_verdict,
                     )
                 except PickDeclinedError:
                     continue  # a normal chat message; the chat answers it in this thread
@@ -1167,9 +1178,9 @@ class TaskLoopCog(commands.Cog):
                     reply = "looks good"  # a new plan was started: keep this finished one
                 if reply is None:
                     with contextlib.suppress(discord.HTTPException):
-                        await here.send(
+                        await target.send(
                             f"⏰ Still waiting: {running.repo_dir.name} is finished. Type "
-                            f"**looks good** to keep it, or just ask me here.{mention}"
+                            f"**looks good** to keep it, or ask me in its thread.{mention}"
                         )
                     continue
                 verdict = parked_choice(reply)
@@ -1203,7 +1214,7 @@ class TaskLoopCog(commands.Cog):
                 ok, message = await keep_work(running.copy)
                 if not ok:
                     with contextlib.suppress(discord.HTTPException):
-                        await here.send(
+                        await target.send(
                             f"⚠️ I couldn't keep it yet: {message}. Your build is safe. "
                             "Sort that out and type **looks good** again."
                         )
@@ -1269,53 +1280,76 @@ class TaskLoopCog(commands.Cog):
         return "again"
 
     async def _wait_or_wake(
-        self, running: _Running, channel_id: int, timeout: float, accept: Any = None
+        self,
+        running: _Running,
+        channel_id: int | list[int],
+        timeout: float,
+        accept: Any = None,
+        accepts: dict[int, Any] | None = None,
     ) -> tuple[str | None, bool]:
         """Wait for a typed reply, or give way when a new plan closes this build.
 
+        Several channels may be watched at once (the finished card is in the planning
+        thread, but an answer in the build's own thread counts too).
         Returns (reply, woken). ``woken`` is True when a plan switch interrupted.
         """
         if running.wake is None:
             running.wake = asyncio.Event()
         if running.auto_finish:
             return None, True
-        reply_task = asyncio.ensure_future(
-            self.wait_for_reply(channel_id, timeout=timeout, accept=accept)
-        )
+        ids = [channel_id] if isinstance(channel_id, int) else list(dict.fromkeys(channel_id))
+        reply_tasks = [
+            asyncio.ensure_future(
+                self.wait_for_reply(
+                    cid,
+                    timeout=timeout,
+                    accept=(accepts or {}).get(cid, accept),
+                    release=False,  # a build's question waits; other talk goes to the chat
+                )
+            )
+            for cid in ids
+        ]
         wake_task = asyncio.ensure_future(running.wake.wait())
-        done, _ = await asyncio.wait({reply_task, wake_task}, return_when=asyncio.FIRST_COMPLETED)
+        done, _pending = await asyncio.wait(
+            {*reply_tasks, wake_task}, return_when=asyncio.FIRST_COMPLETED
+        )
         wake_task.cancel()
-        if reply_task not in done:
-            reply_task.cancel()
+        answered = [t for t in reply_tasks if t in done]
+        for task in reply_tasks:
+            if task not in answered:
+                task.cancel()
+        if not answered:
             return None, True
-        return reply_task.result(), False
+        first = answered[0]
+        for other in answered[1:]:
+            with contextlib.suppress(Exception):
+                other.result()  # the same reply can't arrive twice; drop any second
+        return first.result(), False
 
     async def _wait_parked(self, running: _Running, ask: str) -> str | None:
         """Wait for keep going / skip / wrap up / throw it away.
 
-        The wait is in the build's own thread, so anything typed there is for the
-        build: a word that isn't a choice is a hint, and means keep going.
-        Returns None when a new plan in this project closes the build.
+        The question is in the build's own thread, but an answer typed where the build
+        was started counts too: a word that isn't a choice is a hint, and means keep
+        going. Returns None when a new plan in this project closes the build.
         """
         running.wake = running.wake or asyncio.Event()
         running.in_review = True
         try:
             while not running.auto_finish:
-                reply_task = asyncio.ensure_future(
-                    self.wait_for_reply(running.worker_thread_id, timeout=VERDICT_REMIND_SECONDS)
-                )
-                wake_task = asyncio.ensure_future(running.wake.wait())
-                done, _ = await asyncio.wait(
-                    {reply_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
-                )
-                wake_task.cancel()
-                if reply_task not in done:
-                    reply_task.cancel()
-                    break
                 try:
-                    reply = reply_task.result()
+                    reply, woken = await self._wait_or_wake(
+                        running,
+                        [running.worker_thread_id, running.report_channel_id],
+                        VERDICT_REMIND_SECONDS,
+                        # In the build's thread anything is for the build; where it was
+                        # planned, only a real choice is (the rest is normal chat).
+                        accepts={running.report_channel_id: lambda t: parked_choice(t) is not None},
+                    )
                 except PickDeclinedError:
                     continue  # the chat answers it; still waiting
+                if woken:
+                    break
                 if reply is not None:
                     return reply
                 with contextlib.suppress(discord.HTTPException):
