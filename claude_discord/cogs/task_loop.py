@@ -1163,6 +1163,7 @@ class TaskLoopCog(commands.Cog):
             + (" (the goal isn't met yet)" if proposed else ""),
         )
         running.in_review = True
+        tried_keep = False
         try:
             while True:
                 try:
@@ -1176,6 +1177,16 @@ class TaskLoopCog(commands.Cog):
                     continue  # a normal chat message; the chat answers it in this thread
                 if woken:
                     reply = "looks good"  # a new plan was started: keep this finished one
+                    if tried_keep:
+                        # It already failed once and nobody is watching this build any
+                        # more: stop here instead of trying again and again.
+                        with contextlib.suppress(discord.HTTPException):
+                            await target.send(
+                                f"⚠️ {running.repo_dir.name}'s work still doesn't combine with "
+                                f"your project. It's safe on branch `{running.copy.branch}`; "
+                                "sort the clash out, then ask me to add it."
+                            )
+                        return "kept"
                 if reply is None:
                     with contextlib.suppress(discord.HTTPException):
                         await target.send(
@@ -1211,12 +1222,14 @@ class TaskLoopCog(commands.Cog):
                     return "fix"
                 # Changes made while chatting after the build are part of the build.
                 await commit_all(running.copy.path, "gowork: changes from the chat afterwards")
+                tried_keep = True
                 ok, message = await keep_work(running.copy)
                 if not ok:
                     with contextlib.suppress(discord.HTTPException):
                         await target.send(
-                            f"⚠️ I couldn't keep it yet: {message}. Your build is safe. "
-                            "Sort that out and type **looks good** again."
+                            f"⚠️ I couldn't keep it yet: {message}. Your build is safe on branch "
+                            f"`{running.copy.branch}`. Sort that out and type **looks good** "
+                            "again, or ask me to sort it out for you."
                         )
                     continue
                 self._queue_note(running, "kept in your project ✅")

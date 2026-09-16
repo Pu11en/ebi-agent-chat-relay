@@ -6,7 +6,7 @@ import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
@@ -2046,3 +2046,30 @@ class TestQueueFixesFromPracticeRun:
         assert not channel.send.await_count  # an afternoon build waits for tomorrow
         await cog._maybe_morning_summary(dt.datetime(2026, 9, 16, 8, 5))
         assert channel.send.await_count == 1
+
+
+async def test_a_build_that_cannot_combine_stops_instead_of_repeating(repo: Path) -> None:
+    """A plan switch while keeping fails must not retry for ever (it spammed Discord)."""
+    import claude_discord.cogs.task_loop as mod
+
+    cog, chat, thread = _cog_with_chat()
+    thread.delete = AsyncMock()
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 1
+    channel.send = AsyncMock()
+    await cog.start_loop(channel, str(repo / "PLAN.md"))
+    for _ in range(500):
+        if cog._waiters.get(1) is not None:
+            break
+        await asyncio.sleep(0.01)
+    running = cog.running[0]
+    failing = AsyncMock(return_value=(False, "the work didn't combine cleanly"))
+    with patch.object(mod, "keep_work", failing):
+        await _type_when_asked(cog, 1, "looks good")  # first try fails
+        running.auto_finish = True  # a new plan closes this build
+        running.wake.set()
+        await asyncio.wait_for(running.task, 10)
+
+    posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+    assert posted.count("couldn't keep it yet") == 1
+    assert "still doesn't combine" in posted and running.copy.branch in posted
