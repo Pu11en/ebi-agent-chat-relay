@@ -8,7 +8,7 @@
 
 ⏳ The application has not joined the server, and no bridge has been installed or tested on David’s computer from this session.
 
-The intended connection is **David’s Discord bot → bridge running on David’s Windows computer → David’s own Claude Code installation and login**.
+The intended connection is **David’s Discord bot → bridge running on David’s Windows computer → David’s own Claude Code installation and subscription**. Drew confirmed David owns both the computer and subscription, and David will paste the prompt below into Claude Code on that computer.
 
 The public key is not needed for this bridge’s Discord connection; it uses a bot token and Discord’s persistent connection instead.
 
@@ -27,7 +27,7 @@ The invite requests no extra server-wide permissions. After the bot joins, grant
 The prompt contains no secrets. It tells the local agent what to install and which Discord section to use.
 
 ```text
-Set up a separate claude-code-discord-bridge instance on this Windows computer so Discord talks to this computer’s Claude Code, using its own existing login.
+Set up a separate claude-code-discord-bridge instance on David’s Windows computer so Discord talks to Claude Code running here. This computer and the Claude subscription both belong to David. Use David’s own subscription login; do not copy credentials from Drew’s computer.
 
 First check whether this Claude Code session runs in native Windows or WSL. Keep the bridge and Claude CLI in the same environment. Inspect any existing installation before changing it; do not overwrite credentials or another bridge instance.
 
