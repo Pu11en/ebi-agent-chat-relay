@@ -41,7 +41,7 @@ David category ID: 1550644903384580167
 control-center ID: 1550644904617582662
 workers ID: 1550644907100741783
 
-Ask David for his Discord USER ID and which project directory agents should work in. The application ID is not his user ID. Require an explicit allowed-user list before starting the bot.
+David’s Discord user ID is 718234548139196476; Drew’s is 488763953397235712. Both must be allowed to operate agents and auto-joined to session threads. Ask David which project directory agents should work in. The application ID is not a human user ID.
 
 Have David enter the newly reset bot token through a masked local prompt or a local configuration editor. Never request it in chat, print it, put it in shell history, or commit it. Validate the token belongs to application 1550644558176460961 without revealing it.
 
@@ -53,9 +53,12 @@ CCDB_MONITOR_ALL_CHANNELS=false
 CCDB_MENTION_ANYWHERE=false
 CLAUDE_PERMISSION_MODE=acceptEdits
 CCDB_DANGEROUSLY_SKIP_PERMISSIONS=false
-MAX_CONCURRENT_SESSIONS=1
+MAX_CONCURRENT_SESSIONS=3
+DISCORD_OWNER_ID=718234548139196476
+CCDB_ALLOWED_USER_IDS=488763953397235712,718234548139196476
+CCDB_THREAD_MEMBER_IDS=488763953397235712,718234548139196476
 
-Set DISCORD_OWNER_ID and CCDB_ALLOWED_USER_IDS to the confirmed human user IDs. Set CCDB_WORKING_DIR to the agreed project directory and CCDB_DATA_ROOT to a dedicated absolute local data directory. Store DISCORD_BOT_TOKEN only in the local ignored .env file. Verify the installed revision recognizes each setting.
+Use the owner, allowed-user, and thread-member IDs above. Create shared public session threads rather than a separate private copy per person. Allow separate session threads to run concurrently within the configured limit. Do not mirror or synchronize personal Leave Thread actions into destructive deletion. Set CCDB_WORKING_DIR to the agreed project directory and CCDB_DATA_ROOT to a dedicated absolute local data directory. Store DISCORD_BOT_TOKEN only in the local ignored .env file. Verify the installed revision recognizes each setting.
 
 Check the Claude CLI executable and login availability without issuing a paid model request. Verify Discord membership, Message Content Intent, and both channels’ permissions. Check slash-command authorization as well as ordinary message handling. Do not alter Drew’s existing bots, channels, credentials, or services.
 
