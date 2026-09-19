@@ -14,6 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from ..category_scope import category_allowed
 from ..database.repository import SessionRepository
 from ..database.settings_repo import SettingsRepository
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
@@ -154,7 +155,7 @@ class FolderMenu(PersonalView):
                     await cog.change_favorite(interaction.guild_id or 0, user_id, path, add=False)
                     await interaction.followup.send("Favorite removed.", ephemeral=True)
                 else:
-                    await cog.new_session(interaction, path)
+                    await cog.show_browser(interaction, path, edit=True)
 
             select.callback = choose
             self.add_item(select)
@@ -178,7 +179,9 @@ class FolderMenu(PersonalView):
                     )
                     return
                 self.used = True
-                await cog.new_session(interaction, recent_folders[int(recent.values[0])])
+                await cog.show_browser(
+                    interaction, recent_folders[int(recent.values[0])], edit=True
+                )
 
             recent.callback = choose_recent
             self.add_item(recent)
@@ -227,6 +230,94 @@ class FolderMenu(PersonalView):
 
         add.callback = add_folder
         self.add_item(add)
+
+
+class FolderBrowser(PersonalView):
+    """Navigate a real directory tree; only Start here creates a thread."""
+
+    def __init__(
+        self,
+        cog: ProjectLauncherCog,
+        user_id: int,
+        path: str | None,
+        entries: list[Path],
+        page: int,
+    ) -> None:
+        super().__init__(cog, user_id)
+        self.used = False
+        pages = max(1, (len(entries) + _LIMIT - 1) // _LIMIT)
+        page = max(0, min(page, pages - 1))
+        offered = entries[page * _LIMIT : (page + 1) * _LIMIT]
+        if offered:
+            select = discord.ui.Select(
+                placeholder=f"Open a folder · page {page + 1}/{pages}",
+                row=0,
+                options=[
+                    discord.SelectOption(label=(p.name or str(p))[:100], value=str(i))
+                    for i, p in enumerate(offered)
+                ],
+            )
+
+            async def open_folder(interaction: discord.Interaction) -> None:
+                await cog.show_browser(interaction, str(offered[int(select.values[0])]), edit=True)
+
+            select.callback = open_folder
+            self.add_item(select)
+
+        def navigation(
+            label: str,
+            target: str | None,
+            *,
+            number: int = 0,
+            drives: bool = False,
+            disabled: bool = False,
+        ) -> None:
+            button = discord.ui.Button(label=label, row=1, disabled=disabled)
+
+            async def go(interaction: discord.Interaction) -> None:
+                await cog.show_browser(interaction, target, page=number, drives=drives, edit=True)
+
+            button.callback = go
+            self.add_item(button)
+
+        parent = str(Path(path).parent) if path else None
+        navigation("Up", parent, disabled=path is None or parent == path)
+        navigation("Home", str(Path.home()))
+        navigation("Drives", None, drives=True)
+        navigation("Previous", path, number=page - 1, drives=path is None, disabled=page == 0)
+        navigation("Next", path, number=page + 1, drives=path is None, disabled=page + 1 >= pages)
+        start = discord.ui.Button(
+            label="Start here", style=discord.ButtonStyle.primary, row=2, disabled=path is None
+        )
+
+        async def start_here(interaction: discord.Interaction) -> None:
+            if self.used or path is None:
+                await interaction.response.send_message(
+                    "Open a fresh folder picker.", ephemeral=True
+                )
+                return
+            self.used = True
+            await cog.new_session(interaction, path)
+
+        start.callback = start_here
+        self.add_item(start)
+        favorite = discord.ui.Button(label="Save favorite", row=2, disabled=path is None)
+
+        async def save_favorite(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True)
+            if path is not None:
+                await cog.change_favorite(interaction.guild_id or 0, user_id, path, add=True)
+                await interaction.followup.send("Favorite saved.", ephemeral=True)
+
+        favorite.callback = save_favorite
+        self.add_item(favorite)
+        back = discord.ui.Button(label="Favorites + recent", row=2)
+
+        async def go_back(interaction: discord.Interaction) -> None:
+            await cog.show_folders(interaction, edit=True)
+
+        back.callback = go_back
+        self.add_item(back)
 
 
 class ResumeMenu(PersonalView):
@@ -279,13 +370,16 @@ class ProjectLauncherCog(commands.Cog):
         channel_id: int,
         channel_ids: set[int],
         working_dir: str | None = None,
+        home_channel_id: int | None = None,
+        session_channel_id: int | None = None,
     ) -> None:
         self.bot = bot
         self.repo = repo
         self.settings = settings
         self.chat = chat
-        self.channel_id = channel_id
-        self.channel_ids = channel_ids
+        self.channel_id = home_channel_id or channel_id
+        self.channel_ids = set(channel_ids)
+        self.session_channel_id = session_channel_id
         self.working_dir = working_dir
         self._favorites_lock = asyncio.Lock()
         self._panel_lock = asyncio.Lock()
@@ -321,7 +415,8 @@ class ProjectLauncherCog(commands.Cog):
         )
         if (
             interaction.guild_id is None
-            or channel_id not in self.channel_ids
+            or not category_allowed(channel)
+            or channel_id not in self.channel_ids | {self.channel_id}
             or (allowed is not None and interaction.user.id not in allowed)
         ):
             await interaction.response.send_message(
@@ -408,8 +503,16 @@ class ProjectLauncherCog(commands.Cog):
         return result
 
     async def show_folders(
-        self, interaction: discord.Interaction, *, manage: bool = False, browse: bool = False
+        self,
+        interaction: discord.Interaction,
+        *,
+        manage: bool = False,
+        browse: bool = False,
+        edit: bool = False,
     ) -> None:
+        if browse:
+            await self.show_browser(interaction, edit=True)
+            return
         if not await self.authorize(interaction):
             return
         await interaction.response.defer(ephemeral=True)
@@ -421,7 +524,7 @@ class ProjectLauncherCog(commands.Cog):
             suggestions = [
                 path for path in await asyncio.to_thread(self._suggestions) if path not in folders
             ]
-        if not manage and not browse:
+        if not manage:
             recent_folders = [
                 path
                 for path in await self.recents(interaction.guild_id or 0, interaction.user.id)
@@ -433,30 +536,68 @@ class ProjectLauncherCog(commands.Cog):
             if not folders and not recent_folders:
                 folders = await asyncio.to_thread(self._suggestions)
                 primary_label = "Project folders"
-        if browse:
-            folders = await asyncio.to_thread(self._suggestions)
-            primary_label = "Project folders"
         text = "Your favorite folders: select one to remove, or add a folder."
         if not manage:
-            text = "Choose from your favorite or recent folders to start a new session."
-        if browse:
-            text = "Browse project folders on this computer; choose one to start a new session."
+            text = "Choose a favorite or recent folder, then press **Start here**."
         if not folders and not suggestions and not recent_folders:
-            text = "No folders saved yet. Add a favorite using its full path on this computer."
-        await interaction.followup.send(
-            text,
-            view=FolderMenu(
-                self,
-                interaction.user.id,
-                folders,
-                manage=manage,
-                suggestions=suggestions,
-                recent_folders=recent_folders,
-                primary_label=primary_label,
-                browsing=browse,
-            ),
-            ephemeral=True,
+            text = "No folders saved yet. Use **Browse folders** to find one on this computer."
+        view = FolderMenu(
+            self,
+            interaction.user.id,
+            folders,
+            manage=manage,
+            suggestions=suggestions,
+            recent_folders=recent_folders,
+            primary_label=primary_label,
+            browsing=browse,
         )
+        if edit:
+            await interaction.edit_original_response(content=text, view=view)
+        else:
+            await interaction.followup.send(text, view=view, ephemeral=True)
+
+    async def show_browser(
+        self,
+        interaction: discord.Interaction,
+        path: str | None = None,
+        *,
+        page: int = 0,
+        drives: bool = False,
+        edit: bool = False,
+    ) -> None:
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        def read() -> tuple[str | None, list[Path]]:
+            if drives:
+                reader: Any = getattr(os, "listdrives", None)
+                roots = reader() if reader is not None else [Path.home().anchor]
+                return None, [Path(root) for root in roots]
+            current = directory(path or self.working_dir or str(Path.home()))
+            children = sorted(
+                (child for child in Path(current).iterdir() if child.is_dir()),
+                key=lambda child: (child.name.casefold(), child.name),
+            )
+            return current, children
+
+        try:
+            current, entries = await asyncio.to_thread(read)
+        except (OSError, ValueError):
+            await interaction.followup.send(
+                "That folder is unavailable or cannot be read. Choose another folder.",
+                ephemeral=True,
+            )
+            return
+        text = (
+            f"📂 **Current folder**\n`{current}`" if current else "**Drives and filesystem roots**"
+        )
+        text += "\nOpen subfolders, or press **Start here** to create your session."
+        view = FolderBrowser(self, interaction.user.id, current, entries, page)
+        if edit:
+            await interaction.edit_original_response(content=text, view=view)
+        else:
+            await interaction.followup.send(text, view=view, ephemeral=True)
 
     async def new_session(self, interaction: discord.Interaction, path: str) -> None:
         if not await self.authorize(interaction):
@@ -468,7 +609,9 @@ class ProjectLauncherCog(commands.Cog):
             await interaction.followup.send(str(exc), ephemeral=True)
             return
         channel = interaction.channel
-        if isinstance(channel, discord.Thread):
+        if self.session_channel_id is not None:
+            channel = self.bot.get_channel(self.session_channel_id)
+        elif isinstance(channel, discord.Thread):
             channel = channel.parent
         if not isinstance(channel, discord.TextChannel):
             await interaction.followup.send("This channel cannot create threads.", ephemeral=True)

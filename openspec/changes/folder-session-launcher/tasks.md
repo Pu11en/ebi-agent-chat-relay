@@ -23,3 +23,18 @@ Check: .venv/bin/python -m pytest tests/test_project_launcher.py -q --no-cov
 - [x] Update the self-contained handoff for David and iMac category mappings and idle activation.
 - Validation: 3,095 tests pass in the clean snapshot; the unchanged known aggregate-hanging ingest test was excluded and previously passed alone. Four additional regressions cover ordering, persistence, recent selection and no-typing browse. Lint, format, type checks and new-Cog security checks pass.
 - Previous local launcher activation was verified at commit 4ed013b; this update requires a later idle activation. David reports auth commit e72a851 is tested but not active. Windows/iMac launcher activation is not yet verified.
+
+
+## Folder browser, fixed home and category scope
+- [x] Add tests first for nested/outside-root browsing, pagination and explicit Start here.
+- [x] Implement filesystem navigation and personal favorites without path typing.
+- [x] Separate launcher home from the workers destination, retaining old defaults.
+- [x] Add command/autocomplete/chat category checks without changing operator access.
+- [x] Create the three category start-here channels and record their IDs.
+- [x] Validate local code: 3110 full-suite passes plus the isolated ingest test; lint, format, pyright, security review clean for changed code.
+- [ ] Activate local code after the current turn ends and verify the new panel.
+- [ ] Apply the self-contained upgrade on David and iMac and verify their buttons.
+
+Try: Open your category's start-here channel, New session, Browse folders, Start here.
+The full filesystem browser and fixed home supersede the earlier shallow suggestion picker.
+Native slash-menu visibility for administrators is a Discord limitation, not fixed here.

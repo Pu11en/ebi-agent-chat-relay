@@ -1,55 +1,71 @@
 # Computer session launcher
 
-## Start work with buttons
+## A fixed place to start
 
-Each configured bot publishes a pinned session launcher in its primary channel on
-startup. The heading uses the bot's display name, or `CCDB_COMPUTER_NAME` when set.
-The persistent **Favorite folders**, **New session**, and **Resume** buttons route
-to that bot, so operators do not need to identify it in a duplicated slash-command
-list. `/launcher` also opens a private copy inside that bot's configured channels.
+Each bot publishes persistent **Favorite folders**, **New session**, and **Resume**
+buttons, labelled with its display name or `CCDB_COMPUTER_NAME`. The category
+already identifies the computer. Buttons always belong to the bot that posted them.
+`/launcher` opens a private copy in an authorized channel.
 
-## Favorite folders
+Set `CCDB_LAUNCHER_CHANNEL_ID` to a dedicated start-here channel and
+`CCDB_LAUNCHER_SESSION_CHANNEL_ID` to its workers channel. The workers channel is
+automatically included in chat routing. Normal messages in the launcher channel
+do not start chat sessions. Existing channels and threads remain available.
+When unset, existing consumers keep their original primary-channel launcher and
+create sessions under the invoking channel. The framework does not create channels.
 
-Select an existing project folder to save it, or enter another absolute folder
-path using **Add by path**. Suggestions come from `CCDB_PROJECT_ROOTS`
-(comma-separated) or the backend's default working directory. Folder discovery
-only examines immediate children and offers up to 25 entries.
+## Find any accessible folder
 
-Favorites persist in the instance's settings database, separately for each guild
-and user. Sharing operator access does not replace anyone's personal favorites.
-Select a saved favorite in the management menu to remove it. Up to 25 favorites
-are supported. Missing folders remain removable but cannot start a session.
+**New session → Favorites / Recent / Browse folders → Start here**.
+Selecting a favorite or recent folder opens the browser at that location.
+Browse opens the default working folder. Open child folders, use **Up**, **Home**,
+or **Drives**, and use **Previous / Next** for directories with more than 25 children.
+Windows uses its available drive list; macOS and Linux start at the filesystem root.
+Hidden folders are included. Browsing is limited by the bot account's filesystem
+permissions, not by the configured projects directory. There is no live keyword
+search or folder-creation button in this revision.
 
-## New session and Resume
+Only **Start here** creates a new public thread bound to the displayed absolute
+folder. It joins the requester and configured shared members and shows the folder
+in the welcome message. The first human reply starts the model normally. Menus
+and thread creation make no model calls. Filesystem reads run off the event loop.
 
-**New session** shows separate **Favorite folders** and **Recent folders** lists,
-with favorites taking precedence over duplicates. Recent folders are personal
-and persist when you start or resume work through the launcher, newest first.
-When both lists are empty it offers project folders. **Browse folders** opens
-project-folder suggestions without typing, with a **Favorites + recent** button
-to return. Selecting a folder creates a public thread bound to that absolute path,
-joins the requester and configured shared thread members, and shows the folder
-in its welcome message. The first human message starts the model through the
-normal chat pipeline. Opening menus and creating threads make no model calls.
+## Favorites and existing work
 
-**Resume** offers accessible existing threads from the 25 most recently used
-session records. It links to the original conversation, including archived
-threads; it does not clone or overwrite a running session. Deleted, forbidden,
-other-guild and other-computer-channel threads are excluded. The existing
-`/resume` command keeps its separate behavior of resuming into a new thread.
+**Save favorite** saves the currently displayed folder without typing.
+**Favorite folders** manages up to 25 saved entries; optional **Add by path**
+accepts an absolute path. Suggestions come from `CCDB_PROJECT_ROOTS`
+(comma-separated) or the default working directory. Favorites and recent folders
+persist separately for each guild and user in the instance settings database.
 
-## Access and operation
+**Resume** offers accessible original threads among the 25 most recent session
+records. It links to the existing conversation, including archived threads, without
+cloning it. Deleted, forbidden, other-guild and other-computer threads are omitted.
+Private threads require membership or thread-management permission. The separate
+legacy `/resume` command retains its existing behavior.
 
-All interactions check the bot's configured operator list and channel list.
-Personal menus only accept the user who opened them, and expire after five
-minutes. Open a fresh menu from the persistent panel after expiry or restart.
-Folder paths are checked again before creating a session. Resume checks thread
-access again when selected. Private threads additionally require membership or
-thread-management permissions.
+## Keep bots in their categories
 
-The panel message ID is stored in the settings database. Reconnects edit it;
-deleting the panel causes recreation on the next reconnect/startup. Pinning is
-best effort, so missing pin permission does not prevent the panel being usable.
-No credentials, Claude settings, model preferences or personal instruction files
-are copied between computers. Linux automated tests do not constitute Windows
-runtime verification.
+Optional `CCDB_ALLOWED_CATEGORY_IDS` is a comma-separated category boundary for
+application commands, autocomplete, launcher buttons and normal framework chat.
+Threads inherit their parent's category. Outside the boundary commands get a
+private explanation, autocomplete returns no suggestions, and chat is ignored.
+The tree check composes with existing consumer authorization; it does not replace
+operator checks. With the variable unset, existing consumers are unchanged.
+Custom message listeners, scheduled jobs and API-triggered work retain their own
+policies; this setting does not remove bots from guild membership or change roles.
+
+This is an execution boundary, not a slash-menu visibility promise. Discord
+Administrators can use all application commands regardless of command permissions:
+https://docs.discord.com/developers/interactions/application-commands#permissions
+Category buttons avoid choosing among duplicate slash commands. Changing native
+command permissions requires a suitably scoped user OAuth token, not a bot token.
+
+## Access and recovery
+
+Every launcher action checks the instance operator/channel/category policies.
+Private menus belong to the requesting user and expire after five minutes; reopen
+the persistent panel after expiry or restart. Paths are rechecked before starting.
+Reconnects update the saved panel; a deleted panel is recreated. Pinning is best
+effort. No credentials, model preferences, permission defaults or personal
+instructions are copied between computers. Linux tests do not verify Windows boot.

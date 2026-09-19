@@ -239,6 +239,16 @@ async def setup_bridge(
     if claude_channel_ids is not None:
         _all_channel_ids.update(claude_channel_ids)
 
+    _launcher_home = os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip()
+    _launcher_sessions = os.getenv("CCDB_LAUNCHER_SESSION_CHANNEL_ID", "").strip()
+    _launcher_home_id = int(_launcher_home) if _launcher_home else None
+    _launcher_session_id = int(_launcher_sessions) if _launcher_sessions else None
+    if _launcher_session_id is not None:
+        _all_channel_ids.add(_launcher_session_id)
+    from .category_scope import install_category_check
+
+    install_category_check(bot)
+
     # Thread members — who is auto-joined to every ccdb thread.  Defaults to
     # the authorization allowlist (so an upgrade changes nothing), with
     # CCDB_THREAD_MEMBER_IDS narrowing it and CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS
@@ -509,6 +519,8 @@ async def setup_bridge(
                 channel_id=_primary_channel_id,
                 channel_ids=_all_channel_ids,
                 working_dir=runner.working_dir,
+                home_channel_id=_launcher_home_id,
+                session_channel_id=_launcher_session_id,
             )
         )
         skill_cog = SkillCommandCog(
