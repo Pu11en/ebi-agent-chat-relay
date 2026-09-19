@@ -20,6 +20,7 @@ from .cogs.context_links import ContextLinksCog
 from .cogs.event_processor import EventProcessor
 from .cogs.notification_dispatch import NotificationDispatchCog
 from .cogs.ollama_command import OllamaCommandCog
+from .cogs.project_launcher import ProjectLauncherCog
 from .cogs.run_config import RunConfig
 from .cogs.scheduler import SchedulerCog
 from .cogs.session_manage import SessionManageCog
@@ -60,6 +61,7 @@ __all__ = [
     "CollisionWatchCog",
     "AskCommandCog",
     "OllamaCommandCog",
+    "ProjectLauncherCog",
     "SkillCommandCog",
     "SessionRepository",
     "SettingsRepository",

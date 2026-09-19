@@ -40,6 +40,7 @@ async def test_setup_bridge_registers_core_cogs(tmp_path: object) -> None:
     assert "ClaudeChatCog" in cog_names
     assert "SessionManageCog" in cog_names
     assert "SkillCommandCog" in cog_names
+    assert "ProjectLauncherCog" in cog_names
     assert isinstance(result, BridgeComponents)
 
 
