@@ -32,5 +32,6 @@
     "Favorites and recent folders first, with real filesystem browsing.",
     "New work opens under workers.",
     "Both operators keep access; notify the current requester."
-  ]
+  ],
+  "planning_focus": "Deferred: establish argument-free /new and category/thread command behavior first."
 }

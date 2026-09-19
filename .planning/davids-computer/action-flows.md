@@ -11,7 +11,7 @@
 ## Start a task in an existing folder
 - **Control-center → New session → Favorites / Recent / Browse → select folder → Start here**.
 - The new workers thread shows the chosen folder and the bot/model it will use.
-- Send the task as a message, including any screenshots or files it needs.
+- The new thread starts idle: no copied task or automatic model call. Send the first task there when ready, including any screenshots or files it needs.
 - Ordinary starts use the saved model; changing it is optional, not another required screen.
 - Keep replying in that thread for follow-up work on the same task.
 - Navigation needs no path typing; describing the task still requires your message.
