@@ -47,20 +47,20 @@
   ],
   "deferred_decisions": [],
   "additional_settings": {
-    "selected": [
-      "concurrent_session_limit"
-    ],
+    "selected": [],
     "user_answer": "A, B and C; discuss each one separately",
     "discussion_order": [],
     "browser_starting_folder_definition": "Where folder browsing opens initially; it does not automatically select the new session working directory or restrict browsing elsewhere.",
     "user_correction": "Nah, not A; we do not need notification controls.",
     "excluded": [
       "notification_noise",
-      "browser_starting_folder"
+      "browser_starting_folder",
+      "concurrent_session_limit"
     ],
     "user_corrections": [
       "No notification controls in settings.",
-      "No browser starting-folder setting."
+      "No browser starting-folder setting.",
+      "Automatic capacity is default behavior; do not expose a concurrency setting."
     ]
   },
   "notification_noise": {
@@ -99,6 +99,8 @@
     "remote_capacity": {
       "david": "Last reported 3; not reverified live.",
       "imac": "Not verified."
-    }
+    },
+    "settings_visibility": "excluded_from_settings",
+    "default_behavior": true
   }
 }
