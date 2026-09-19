@@ -38,3 +38,22 @@ The launcher SHALL use its configured computer channel without asking the operat
 #### Scenario: Another project
 - **WHEN** an operator presses Browse folders
 - **THEN** project-folder suggestions appear without a text-entry modal
+
+
+### Requirement: Navigate before starting
+Folder selection SHALL show the absolute current folder and allow child, parent,
+home and filesystem-root navigation, including pagination, without starting a model.
+Only Start here SHALL create a folder-bound thread in the configured workers channel.
+
+#### Scenario: Folder beyond the projects directory
+An authorized operator navigates Up from projects, opens another directory and
+starts there. The saved working directory is that selected absolute folder.
+
+### Requirement: Fixed launcher and category boundary
+A configured launcher home SHALL remain separate from worker thread creation.
+Optional category scope SHALL reject foreign-category commands/autocomplete and
+ignore normal framework chat there, including for administrators.
+
+#### Scenario: An administrator chooses the wrong bot
+The bot responds privately that it belongs to another category and performs no
+command action. Its native slash entry may remain visible due to Discord rules.

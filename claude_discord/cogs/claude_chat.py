@@ -350,6 +350,13 @@ class ClaudeChatCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         """Handle incoming messages."""
+        from ..category_scope import category_allowed
+
+        if not category_allowed(message.channel):
+            return
+        if str(message.channel.id) == os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip():
+            return
+
         # Ignore bot messages
         if message.author.bot:
             return

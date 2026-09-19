@@ -29,6 +29,7 @@ def interaction(user: int = 42, channel: int = 100) -> MagicMock:
     item.response.send_modal = AsyncMock()
     item.followup = MagicMock()
     item.followup.send = AsyncMock()
+    item.edit_original_response = AsyncMock()
     return item
 
 
@@ -151,11 +152,11 @@ async def test_one_menu_cannot_create_two_threads(cog, tmp_path):
     event = interaction()
     await cog.show_folders(event)
     select = event.followup.send.call_args.kwargs["view"].children[0]
-    cog.new_session = AsyncMock()
+    cog.show_browser = AsyncMock()
     select._values = ["0"]
     await select.callback(event)
     await select.callback(event)
-    cog.new_session.assert_awaited_once()
+    cog.show_browser.assert_awaited_once()
 
 
 async def test_persistent_buttons_and_menu_owner(cog):
@@ -322,10 +323,85 @@ async def test_recent_selector_creates_one_folder_bound_session(cog, tmp_path):
     ]
     recent = next(c for c in selects if c.placeholder == "Recent folders")
     recent._values = ["0"]
+    cog.show_browser = AsyncMock()
+    await recent.callback(event)
+    await recent.callback(event)
+    cog.show_browser.assert_awaited_once_with(event, str(tmp_path), edit=True)
+
+
+async def test_browser_navigates_outside_project_root_without_starting(cog, tmp_path):
+    nested = tmp_path / "outside" / "deep"
+    nested.mkdir(parents=True)
     cog.new_session = AsyncMock()
-    await recent.callback(event)
-    await recent.callback(event)
+    event = interaction()
+    await cog.show_browser(event, str(tmp_path))
+    view = event.followup.send.call_args.kwargs["view"]
+    select = next(c for c in view.children if isinstance(c, discord.ui.Select))
+    select._values = [next(o.value for o in select.options if o.label == "outside")]
+    await select.callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    select = next(c for c in view.children if isinstance(c, discord.ui.Select))
+    assert [o.label for o in select.options] == ["deep"]
+    cog.new_session.assert_not_awaited()
+
+
+async def test_browser_paginates_all_folders_and_shows_hidden_folders(cog, tmp_path):
+    for n in range(30):
+        (tmp_path / f"project-{n:02}").mkdir()
+    (tmp_path / ".hidden-project").mkdir()
+    event = interaction()
+    await cog.show_browser(event, str(tmp_path))
+    view = event.followup.send.call_args.kwargs["view"]
+    select = next(c for c in view.children if isinstance(c, discord.ui.Select))
+    assert len(select.options) == 25
+    assert select.options[0].label == ".hidden-project"
+    next_button = next(
+        c for c in view.children if isinstance(c, discord.ui.Button) and c.label == "Next"
+    )
+    await next_button.callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    select = next(c for c in view.children if isinstance(c, discord.ui.Select))
+    assert len(select.options) == 6
+    assert select.options[-1].label == "project-29"
+
+
+async def test_start_here_is_explicit_and_single_use(cog, tmp_path):
+    event = interaction()
+    await cog.show_browser(event, str(tmp_path))
+    view = event.followup.send.call_args.kwargs["view"]
+    start = next(
+        c for c in view.children if isinstance(c, discord.ui.Button) and c.label == "Start here"
+    )
+    cog.new_session = AsyncMock()
+    await start.callback(event)
+    await start.callback(event)
     cog.new_session.assert_awaited_once_with(event, str(tmp_path))
+
+
+async def test_fixed_launcher_home_creates_sessions_in_worker_channel(cog, tmp_path):
+    fixed = ProjectLauncherCog(
+        cog.bot,
+        cog.repo,
+        cog.settings,
+        cog.chat,
+        channel_id=100,
+        channel_ids={100, 200},
+        home_channel_id=500,
+        session_channel_id=200,
+    )
+    worker = MagicMock(spec=discord.TextChannel)
+    worker.id = 200
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.add_user = AsyncMock()
+    thread.send = AsyncMock()
+    worker.create_thread = AsyncMock(return_value=thread)
+    cog.bot.get_channel.return_value = worker
+    event = interaction(channel=500)
+    await fixed.new_session(event, str(tmp_path))
+    worker.create_thread.assert_awaited_once()
+    event.channel.create_thread.assert_not_called()
+    assert fixed.channel_id == 500
 
 
 async def test_browse_button_lists_folders_without_a_typing_modal(cog, tmp_path, monkeypatch):
@@ -342,7 +418,7 @@ async def test_browse_button_lists_folders_without_a_typing_modal(cog, tmp_path,
     )
     await browse.callback(event)
     event.response.send_modal.assert_not_awaited()
-    view = event.followup.send.call_args.kwargs["view"]
+    view = event.edit_original_response.call_args.kwargs["view"]
     options = [
         option.label
         for child in view.children
@@ -350,3 +426,10 @@ async def test_browse_button_lists_folders_without_a_typing_modal(cog, tmp_path,
         for option in child.options
     ]
     assert "another-project" in options
+
+
+async def test_launcher_category_scope_also_guards_buttons(cog, monkeypatch):
+    monkeypatch.setenv("CCDB_ALLOWED_CATEGORY_IDS", "123")
+    event = interaction()
+    event.channel.category_id = 456
+    assert not await cog.authorize(event)

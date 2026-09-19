@@ -666,3 +666,21 @@ async def test_setup_bridge_reads_thread_mute_env(
     )
     # A muted user keeps their thread membership; only the ping is dropped.
     assert chat_cog._thread_member_ids == {42, 43, 44}
+
+
+async def test_launcher_home_and_workers_are_separate(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCDB_LAUNCHER_CHANNEL_ID", "500")
+    monkeypatch.setenv("CCDB_LAUNCHER_SESSION_CHANNEL_ID", "600")
+    bot = _make_bot()
+    await setup_bridge(
+        bot,
+        _make_runner(),
+        session_db_path=str(tmp_path / "sessions.db"),
+        claude_channel_id=100,
+        enable_scheduler=False,
+    )
+    cogs = {type(call.args[0]).__name__: call.args[0] for call in bot.add_cog.call_args_list}
+    launcher = cogs["ProjectLauncherCog"]
+    assert launcher.channel_id == 500
+    assert launcher.session_channel_id == 600
+    assert cogs["ClaudeChatCog"]._channel_ids == {100, 600}
