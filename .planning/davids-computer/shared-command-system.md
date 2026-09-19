@@ -108,3 +108,10 @@
 - Check existing authentication first. If sign-in is needed, initiate GitHub CLI browser authorization under the bot’s Windows user; Drew completes the GitHub browser step.
 - Configure Git to use GitHub CLI credentials and verify the actual bot/session account can access the intended repos without printing secrets.
 - Save authentication for reuse; reconnect when needed. No credentials have been moved and David’s current auth status is not verified here.
+
+## David minimal project picker delivery
+- Standalone custom Cog implemented locally in examples/project_creation, with Recent / All projects / Create project and empty-folder or GitHub-clone creation.
+- Clone uses an existing GitHub CLI login and a new child folder; successful selection opens an idle folder-bound workers thread.
+- 37 focused tests, lint, formatting, types and security checks pass. Full clean suite with the first 36 focused tests passed 3150 tests; one isolated framework check passed separately.
+- Installation package (source, tests and configuration instructions) delivered to David setup thread, message 1550754808259018772.
+- Delivery is not execution: David bot ignores bot-authored messages, so a human must start this first installation from that thread. No Windows runtime change or activation is claimed.
