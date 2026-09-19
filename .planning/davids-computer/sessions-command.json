@@ -14,9 +14,14 @@
     "Refresh availability before opening or closing; omit deleted or inaccessible threads."
   ],
   "open_decisions": [
-    "Whether additional actions beyond Open and Close belong in this command.",
-    "How to select multiple sessions for closing."
+    "Whether additional actions beyond Open and Close belong in this command."
   ],
-  "next_question": "Batch selection: select multiple, one at a time, all shown, or by folder.",
-  "close_behavior": "Stop immediately and archive the thread; retain history and project files."
+  "next_question": "Whether to keep Open/Close only, add Rename, add New session in this folder, or add both.",
+  "close_behavior": "Stop immediately and archive the thread; retain history and project files.",
+  "batch_close": {
+    "selection": "explicit_multi_select",
+    "user_answer": "A",
+    "action": "Stop and archive selected sessions only, preserving history and project files.",
+    "scope": "Current category and authorized accessible threads only."
+  }
 }

@@ -52,5 +52,6 @@
 - **A — Stop and archive:** stop the current run immediately, archive the thread, and retain conversation history and project files.
 - This is the selected behavior for the Close action and natural-language requests to close a session.
 - The choice is a design decision, not an instruction to close the current planning thread.
-- Next /sessions decision: how the picker should support closing multiple sessions.
+- **Multi-select chosen:** select one or several sessions, then press Close; only the explicitly selected sessions are stopped and archived.
+- Next /sessions decision: keep Open/Close only, or add Rename and/or New session in this folder.
 - Parallel working-copy policy and optional background features remain unanswered and deferred while we establish the basic commands.
