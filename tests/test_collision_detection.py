@@ -246,6 +246,20 @@ async def test_old_edits_are_not_a_collision() -> None:
     cog._lounge_repo.post.assert_not_awaited()
 
 
+async def test_a_turn_that_just_ended_still_counts() -> None:
+    """Quick turns finish between watcher passes; a fresh write is still news."""
+    threads = {A: _make_thread(A), B: _make_thread(B)}
+    bot = _make_bot(threads)
+    bot.file_activity.record(A, SHARED, now=0.0)
+    bot.file_activity.record(B, SHARED, now=100.0)  # B's turn already ended
+    cog = _make_cog(bot)
+
+    await cog._check_once(now=130.0)
+
+    threads[A].send.assert_awaited_once()
+    threads[B].send.assert_awaited_once()
+
+
 async def test_two_idle_threads_are_left_alone() -> None:
     """Only a pair with someone still working is worth interrupting."""
     threads = {A: _make_thread(A), B: _make_thread(B)}
@@ -254,7 +268,7 @@ async def test_two_idle_threads_are_left_alone() -> None:
     bot.file_activity.record(B, SHARED, now=0.0)
     cog = _make_cog(bot)
 
-    await cog._check_once(now=1.0)
+    await cog._check_once(now=600.0)
 
     threads[A].send.assert_not_awaited()
 

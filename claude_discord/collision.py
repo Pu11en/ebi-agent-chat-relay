@@ -84,6 +84,10 @@ class FileActivityTracker:
         paths = self._writes.get(thread_id, {})
         return {p for p, at in paths.items() if now - at <= ACTIVITY_WINDOW_SECONDS}
 
+    def written_since(self, since: float) -> set[int]:
+        """Threads with a write at or after *since*."""
+        return {t for t, paths in self._writes.items() if paths and max(paths.values()) >= since}
+
     def thread_ids(self) -> set[int]:
         """Every thread with remembered writes, working or idle."""
         return set(self._writes)
