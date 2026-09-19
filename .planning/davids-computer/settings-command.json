@@ -14,14 +14,16 @@
     "choose_existing_thread": "not part of current agreed control-center settings flow after user correction"
   },
   "session_thread": {
-    "scope": "current_thread_only",
+    "status": "separate options not yet defined",
+    "model_changes": "excluded; use /switch only",
     "does_not_change": "category defaults or other sessions"
   },
   "switch_shortcut": {
     "command": "/switch",
     "purpose": "quick agent/model selection",
     "default_location": "current session thread",
-    "settings_overlap": "same underlying agent/model selector; settings in control-center selects future-session defaults"
+    "settings_overlap": "No model selector in thread settings; control-center settings handles future-session defaults only."
   },
-  "next_question": "What should the model picker show first: favorites/recent plus search, all grouped by agent, agent then model, or current selection with Change?"
+  "next_question": "What should the model picker show first: favorites/recent plus search, all grouped by agent, agent then model, or current selection with Change?",
+  "user_correction": "Thread settings are not for model changes; thread session commands differ from control-center commands."
 }

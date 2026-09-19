@@ -22,7 +22,7 @@
 ## Proposed commands inside a session thread
 - **/stop** — stop this thread’s current run while keeping its conversation and files.
 - **/switch** — keep the existing quick agent/model picker for this session.
-- **/settings inside a thread** — clickable/searchable options that affect only this thread, including agent/model selection; they do not change category defaults or other sessions.
+- **Thread settings** — separate options still to be defined; model changes are excluded and belong only to /switch. Do not copy control-center settings into threads.
 - **/help** — show thread-specific actions, including natural-language session management examples.
 - Normal task requests remain ordinary messages, and follow-ups stay in this thread.
 - More detailed context/tools/usage controls can sit inside the session’s settings/help controls rather than crowding the initial slash list.
