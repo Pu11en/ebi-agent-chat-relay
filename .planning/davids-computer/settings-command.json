@@ -1,0 +1,27 @@
+{
+  "command": "/settings",
+  "status": "design_in_progress_not_implemented",
+  "required_arguments": [],
+  "navigation": {
+    "clickable_options": true,
+    "typed_search": true,
+    "implementation_note": "Choose a Discord-supported search/picker interaction during implementation; do not promise live filtering without verifying it."
+  },
+  "control_center": {
+    "scope": "current_category_defaults_for_future_sessions",
+    "existing_sessions": "retain current settings",
+    "default_agent_and_model": "available here",
+    "choose_existing_thread": "not part of current agreed control-center settings flow after user correction"
+  },
+  "session_thread": {
+    "scope": "current_thread_only",
+    "does_not_change": "category defaults or other sessions"
+  },
+  "switch_shortcut": {
+    "command": "/switch",
+    "purpose": "quick agent/model selection",
+    "default_location": "current session thread",
+    "settings_overlap": "same underlying agent/model selector; settings in control-center selects future-session defaults"
+  },
+  "next_question": "What should the model picker show first: favorites/recent plus search, all grouped by agent, agent then model, or current selection with Change?"
+}

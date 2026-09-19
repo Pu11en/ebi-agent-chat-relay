@@ -13,7 +13,7 @@
 ## Proposed control-center commands
 - **/new** — Favorites / Recent / Browse → choose a folder → create an idle workers thread → return its link.
 - **/sessions** — show sessions started by the requester, including older and archived threads, newest activity first, strictly within this category; offer an Everyone filter within that same category. Show project and idle/running/archived state; select one to open or manage it.
-- **/settings** — guided computer-bot defaults and personal preferences, with the scope of each change made clear.
+- **/settings in control-center** — clickable/searchable settings for this category’s future-session defaults, including agent/model. Existing sessions keep their settings; do not choose and mutate another thread from this default-settings flow.
 - **/help** — show only the relevant control-center actions and short examples.
 - No additional command is required to finish one of these flows.
 - Advanced maintenance stays inside appropriate menus instead of adding every feature as another top-level command.
@@ -21,7 +21,8 @@
 
 ## Proposed commands inside a session thread
 - **/stop** — stop this thread’s current run while keeping its conversation and files.
-- **/model** — open a picker for this session’s model, with no required typed model name or second command.
+- **/switch** — keep the existing quick agent/model picker for this session.
+- **/settings inside a thread** — clickable/searchable options that affect only this thread, including agent/model selection; they do not change category defaults or other sessions.
 - **/help** — show thread-specific actions, including natural-language session management examples.
 - Normal task requests remain ordinary messages, and follow-ups stay in this thread.
 - More detailed context/tools/usage controls can sit inside the session’s settings/help controls rather than crowding the initial slash list.
