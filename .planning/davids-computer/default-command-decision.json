@@ -1,0 +1,28 @@
+{
+  "id": "default_background_features",
+  "status": "unanswered",
+  "question": "Which background-work features belong in every bot by default?",
+  "recommendation": "queue",
+  "options": [
+    {
+      "id": "queue",
+      "label": "Task lists and queues only",
+      "tradeoff": "Organize multiple requested jobs without recurring unattended work."
+    },
+    {
+      "id": "reminders",
+      "label": "Queues and reminders",
+      "tradeoff": "Also schedule notifications without scheduled agent runs."
+    },
+    {
+      "id": "scheduled",
+      "label": "Queues, reminders and scheduled agents",
+      "tradeoff": "Most capable; needs explicit schedules and controls for unattended work."
+    },
+    {
+      "id": "threads",
+      "label": "Session threads only",
+      "tradeoff": "Smallest default; add automation only where needed."
+    }
+  ]
+}
