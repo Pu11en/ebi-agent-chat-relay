@@ -25,7 +25,7 @@
     "settings_overlap": "No model selector in thread settings; control-center settings handles future-session defaults only.",
     "selection_flow": "Choose a model; resolve its harness automatically, with no separate harness step."
   },
-  "next_question": "What other control-center setting should be defined next: notification noise, starting folder, concurrency, or no additional setting yet?",
+  "next_question": "Which events should ping the requester? Starting folder and concurrency remain queued for later discussion.",
   "user_correction": "Thread settings are not for model changes; thread session commands differ from control-center commands.",
   "default_model_picker": {
     "initial_view": "favorites_and_recent",
@@ -45,5 +45,30 @@
   "user_corrections": [
     "Do not organize model selection by harness; select the harness automatically from the chosen model."
   ],
-  "deferred_decisions": []
+  "deferred_decisions": [],
+  "additional_settings": {
+    "selected": [
+      "notification_noise",
+      "browser_starting_folder",
+      "concurrent_session_limit"
+    ],
+    "user_answer": "A, B and C; discuss each one separately",
+    "discussion_order": [
+      "notification_noise",
+      "browser_starting_folder",
+      "concurrent_session_limit"
+    ],
+    "browser_starting_folder_definition": "Where folder browsing opens initially; it does not automatically select the new session working directory or restrict browsing elsewhere."
+  },
+  "notification_noise": {
+    "status": "discuss_next",
+    "recipient": "requester of the corresponding turn, as already agreed",
+    "open_question": "Which events should ping the requester?",
+    "options": [
+      "Completion, questions and errors",
+      "Questions and errors only",
+      "Immediate questions/errors, grouped completion digest",
+      "Custom event toggles"
+    ]
+  }
 }

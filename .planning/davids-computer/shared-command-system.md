@@ -17,6 +17,8 @@
 - **/help** — show only the relevant control-center actions and short examples.
 - **Default model picker chosen:** one unified Favorites + Recent view with clickable choices and typed search; do not group by harness or ask for a separate harness choice. The selected model automatically determines its matching configured harness on this category’s computer. Selecting a default affects future sessions in this category only.
 - **Model favorites and recents are personal:** each user sees their own shortcuts and selection history. This does not change the agreed category-wide scope of future-session model defaults.
+- **Additional settings areas selected:** notification noise, folder-browser starting location, and concurrent-session limit; discuss and decide these individually.
+- The starting folder is only where browsing initially opens, not an automatic working-folder choice or a restriction on available folders.
 - No additional command is required to finish one of these flows.
 - Advanced maintenance stays inside appropriate menus instead of adding every feature as another top-level command.
 - Do not remove old commands until the agreed replacements have been built and checked.
