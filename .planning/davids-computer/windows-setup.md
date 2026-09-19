@@ -6,7 +6,11 @@
 
 ✅ David’s Discord application ID is recorded: `1550644558176460961`.
 
-⏳ The application has not joined the server, and no bridge has been installed or tested on David’s computer from this session.
+✅ David’s bot has joined the server and started a Claude session from his computer.
+
+⏳ The first session stalled after command-permission refusals; recovery is not yet verified.
+
+**Permission decision, 2026-09-18:** Drew explicitly requested `--dangerously-skip-permissions` by default for David’s Discord Claude sessions. This replaces the earlier restricted setup below. The setting permits commands and edits without approval prompts; changing these instructions does not change the running Windows instance.
 
 The intended connection is **David’s Discord bot → bridge running on David’s Windows computer → David’s own Claude Code installation and subscription**. Drew confirmed David owns both the computer and subscription, and David will paste the prompt below into Claude Code on that computer.
 
@@ -51,14 +55,18 @@ DISCORD_CHANNEL_ID=1550644904617582662
 CCDB_CHANNEL_IDS=1550644904617582662,1550644907100741783
 CCDB_MONITOR_ALL_CHANNELS=false
 CCDB_MENTION_ANYWHERE=false
-CLAUDE_PERMISSION_MODE=acceptEdits
-CCDB_DANGEROUSLY_SKIP_PERMISSIONS=false
+CCDB_PERMISSION_MODE=bypassPermissions
+CLAUDE_PERMISSION_MODE=bypassPermissions
+CCDB_DANGEROUSLY_SKIP_PERMISSIONS=true
+CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=true
 MAX_CONCURRENT_SESSIONS=3
 DISCORD_OWNER_ID=718234548139196476
 CCDB_ALLOWED_USER_IDS=488763953397235712,718234548139196476
 CCDB_THREAD_MEMBER_IDS=488763953397235712,718234548139196476
 
 Use the owner, allowed-user, and thread-member IDs above. Create shared public session threads rather than a separate private copy per person. Allow separate session threads to run concurrently within the configured limit. Do not mirror or synchronize personal Leave Thread actions into destructive deletion. Set CCDB_WORKING_DIR to the agreed project directory and CCDB_DATA_ROOT to a dedicated absolute local data directory. Store DISCORD_BOT_TOKEN only in the local ignored .env file. Verify the installed revision recognizes each setting.
+
+Permission bypass is explicitly authorized for this instance. Update its existing local configuration and any launcher environment overrides to the values above; preserve credentials and other settings. Check per-session overrides as well: auto or plan mode suppresses the bypass flag in this runner. Inspect active sessions before restarting only David’s bridge, preserve session history, and recover stalled session 87447a2c-ea1f-4735-8421-70f0e4453444. Verify the effective Claude launch arguments contain --permission-mode bypassPermissions and --dangerously-skip-permissions without printing secrets. Report the change as configured until a fresh Discord message successfully completes; a Discord interaction timeout may need separate diagnosis if it persists.
 
 Check the Claude CLI executable and login availability without issuing a paid model request. Verify Discord membership, Message Content Intent, and both channels’ permissions. Check slash-command authorization as well as ordinary message handling. Do not alter Drew’s existing bots, channels, credentials, or services.
 
