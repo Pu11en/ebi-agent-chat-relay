@@ -17,7 +17,7 @@
 - **/help** — show only the relevant control-center actions and short examples.
 - **Default model picker chosen:** one unified Favorites + Recent view with clickable choices and typed search; do not group by harness or ask for a separate harness choice. The selected model automatically determines its matching configured harness on this category’s computer. Selecting a default affects future sessions in this category only.
 - **Model favorites and recents are personal:** each user sees their own shortcuts and selection history. This does not change the agreed category-wide scope of future-session model defaults.
-- **Remaining proposed setting:** concurrent-session limit; discuss it next.
+- **Concurrency direction chosen:** each computer should run as much simultaneous work as it can sustain, automatically queueing when resources or provider limits constrain it. No manual numeric limit is needed in the normal settings flow. Idle threads do not consume running-task slots; automatic capacity control is not yet implemented.
 - **Notification controls excluded:** keep the agreed requester-only notification behavior without adding notification customization to this settings menu.
 - **Starting-folder setting excluded:** /new keeps Favorites, Recent and Browse without adding a configurable browser starting location to /settings.
 - No additional command is required to finish one of these flows.
