@@ -83,3 +83,11 @@
 - Finish identifying control-center sections before discussing each in detail; thread commands remain deferred.
 - Two additional candidates, not accepted: Memory (remembered facts/preferences) and Backups & recovery (recover earlier bot settings).
 - No runtime, account, instruction, memory, installation or update changes are authorized by accepting this menu design.
+
+## Natural-language settings access agreed
+- Every supported settings action must also be accessible through an ordinary request inside a session; commands and menus remain the discoverable, explicit alternative.
+- Use the same validated control operations and persistent settings as menu actions; inspect the outcome before reporting success.
+- Resolve whether a request targets this session, future-session defaults or the category computer; preserve personal ownership and category boundaries. Ask only when the target is genuinely ambiguous.
+- This expands natural-language management beyond opening and closing sessions to all supported settings sections. It does not add a model picker to thread settings.
+- Natural-language and menu actions have the same capability limits; report required owner sign-in or unreachable computers instead of pretending the change completed.
+- This is an agreed design requirement, not a claim that the management controls are installed.
