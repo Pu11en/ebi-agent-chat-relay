@@ -1,6 +1,6 @@
 {
   "command": "/sessions",
-  "status": "design_in_progress",
+  "status": "core_design_agreed_not_implemented",
   "user_selection": "D and B, most recent at top, only this category",
   "required_arguments": [],
   "default_owner_filter": "sessions_started_by_requester",
@@ -13,15 +13,26 @@
     "Provide search and pagination for older sessions.",
     "Refresh availability before opening or closing; omit deleted or inaccessible threads."
   ],
-  "open_decisions": [
-    "Whether additional actions beyond Open and Close belong in this command."
-  ],
-  "next_question": "Whether to keep Open/Close only, add Rename, add New session in this folder, or add both.",
+  "open_decisions": [],
+  "next_question": null,
   "close_behavior": "Stop immediately and archive the thread; retain history and project files.",
   "batch_close": {
     "selection": "explicit_multi_select",
     "user_answer": "A",
     "action": "Stop and archive selected sessions only, preserving history and project files.",
     "scope": "Current category and authorized accessible threads only."
+  },
+  "actions": [
+    "open",
+    "close",
+    "new_in_same_folder"
+  ],
+  "actions_user_answer": "C",
+  "new_in_same_folder": {
+    "source": "one selected session",
+    "working_dir": "same as selected session",
+    "conversation": "fresh, no inherited task or pending goal",
+    "auto_start": false,
+    "start_trigger": "first user task message in the new thread"
   }
 }
