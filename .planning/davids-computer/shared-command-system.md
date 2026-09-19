@@ -102,3 +102,9 @@
 - Cloning into an existing folder stays an ordinary natural-language request in a session, outside this new-project menu.
 - After successful creation or cloning, open a clean idle thread bound to the new folder; no model task starts until the user sends one.
 - This is planning, not a claim that David’s remote installation was changed or checked.
+
+## David GitHub account chosen
+- David’s bot should use Drew’s GitHub account through GitHub CLI installed on David’s Windows computer. This is explicitly requested for repository access; it does not replace David’s model subscription or personal instructions.
+- Check existing authentication first. If sign-in is needed, initiate GitHub CLI browser authorization under the bot’s Windows user; Drew completes the GitHub browser step.
+- Configure Git to use GitHub CLI credentials and verify the actual bot/session account can access the intended repos without printing secrets.
+- Save authentication for reuse; reconnect when needed. No credentials have been moved and David’s current auth status is not verified here.

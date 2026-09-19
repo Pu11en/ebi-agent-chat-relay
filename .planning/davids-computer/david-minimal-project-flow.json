@@ -33,5 +33,22 @@
     "existing_destination": "Do not overwrite or reuse an existing folder through this creation flow.",
     "after_success": "Open a clean idle session bound to the newly created or cloned project; first user task starts the agent.",
     "clone_into_existing_folder": "Use an ordinary natural-language request inside a session; not an option in this new-project menu."
+  },
+  "github": {
+    "account_owner": "Drew: user explicitly wants his GitHub login available to David bot",
+    "client": "GitHub CLI (gh) on David Windows computer",
+    "status": "required_not_verified_authenticated",
+    "setup": "Inspect gh and existing account first; when needed use gh auth login --hostname github.com --git-protocol https --web under the Windows user running the bot. Drew completes browser authorization.",
+    "git_credentials": "Configure gh auth setup-git --hostname github.com after successful authentication.",
+    "persistence": "Verify the bot and spawned session processes can use saved credentials under their actual Windows user; prefer the operating-system credential store and verify storage rather than assuming it.",
+    "verification": "Check authenticated identity and access to a selected private repo without exposing tokens or making a model call.",
+    "runtime": "Reuse saved authentication for supported repository operations; show a reconnect action if credentials expire or access is revoked.",
+    "scope": "This preference concerns GitHub only; preserve David own Claude subscription, login, personal instructions and other accounts.",
+    "repo_picker": "Use the authenticated account as the repository source; exact picker layout remains to settle.",
+    "authorization": "Account selection is agreed; no local credential export, secret posting, remote installation or publishing has occurred.",
+    "sources": [
+      "https://cli.github.com/manual/gh_auth_login",
+      "https://cli.github.com/manual/gh_auth_setup-git"
+    ]
   }
 }
