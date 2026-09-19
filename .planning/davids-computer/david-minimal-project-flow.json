@@ -1,5 +1,5 @@
 {
-  "status": "planning_not_implemented_or_live_verified",
+  "status": "standalone_custom_cog_implemented_and_locally_tested; David installation pending",
   "priority": "David minimal project workflow first; broader common settings design deferred, not discarded.",
   "entry": "Type /new alone in David control-center to open the project picker. This is the intended command, not a verified installed replacement.",
   "project_root": "C:/Users/david/projects",
@@ -52,5 +52,12 @@
     ],
     "user_confirmation": "It is already connected; do it for David.",
     "delivery": "Self-contained target-side GitHub task attached here; not remotely executed from this session."
+  },
+  "implementation": {
+    "source": "examples/project_creation/project_creation.py",
+    "tests": "37 focused tests passed",
+    "delivery": "install-new-project-picker.md: source, tests and instance installation instructions",
+    "activation": "not yet installed on David",
+    "clone_picker": "GitHub link or owner/repo input with optional folder name; GitHub account browser deferred"
   }
 }
