@@ -1,0 +1,13 @@
+{
+  "status": "activation_report_received",
+  "thread_id": "1550681218717192263",
+  "activation_message_id": "1550766026851885069",
+  "instance_commit": "106acaf",
+  "bridge_revision": "e72a851",
+  "reported_instance_tests_passed": 59,
+  "project_creation_cog_loaded": true,
+  "new_command_in_tree": true,
+  "live_interaction_test_pending": true,
+  "github_clone_blocker": "Target agent reports gh absent and no saved GitHub login under david; cloning not ready.",
+  "next_trial": "David control-center: /new -> Create project -> Empty folder -> idle workers thread"
+}
