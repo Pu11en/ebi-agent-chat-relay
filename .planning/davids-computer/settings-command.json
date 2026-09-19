@@ -25,7 +25,7 @@
     "settings_overlap": "No model selector in thread settings; control-center settings handles future-session defaults only.",
     "selection_flow": "Choose a model; resolve its harness automatically, with no separate harness step."
   },
-  "next_question": "Which events should ping the requester? Starting folder and concurrency remain queued for later discussion.",
+  "next_question": "Where should Browse folders open initially: projects root, personal last-used folder, home folder, or a chosen folder?",
   "user_correction": "Thread settings are not for model changes; thread session commands differ from control-center commands.",
   "default_model_picker": {
     "initial_view": "favorites_and_recent",
@@ -48,27 +48,20 @@
   "deferred_decisions": [],
   "additional_settings": {
     "selected": [
-      "notification_noise",
       "browser_starting_folder",
       "concurrent_session_limit"
     ],
     "user_answer": "A, B and C; discuss each one separately",
     "discussion_order": [
-      "notification_noise",
       "browser_starting_folder",
       "concurrent_session_limit"
     ],
-    "browser_starting_folder_definition": "Where folder browsing opens initially; it does not automatically select the new session working directory or restrict browsing elsewhere."
+    "browser_starting_folder_definition": "Where folder browsing opens initially; it does not automatically select the new session working directory or restrict browsing elsewhere.",
+    "user_correction": "Nah, not A; we do not need notification controls."
   },
   "notification_noise": {
-    "status": "discuss_next",
+    "status": "excluded_from_settings",
     "recipient": "requester of the corresponding turn, as already agreed",
-    "open_question": "Which events should ping the requester?",
-    "options": [
-      "Completion, questions and errors",
-      "Questions and errors only",
-      "Immediate questions/errors, grouped completion digest",
-      "Custom event toggles"
-    ]
+    "note": "No runtime notification behavior is changed by this planning choice."
   }
 }
