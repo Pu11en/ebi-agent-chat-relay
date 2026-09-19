@@ -15,6 +15,7 @@
 - **/sessions** — show sessions started by the requester, including older and archived threads, newest activity first, strictly within this category; offer an Everyone filter within that same category. Show project and idle/running/archived state; select one to open or manage it.
 - **/settings in control-center** — clickable/searchable settings for this category’s future-session defaults, including agent/model. Existing sessions keep their settings; do not choose and mutate another thread from this default-settings flow.
 - **/help** — show only the relevant control-center actions and short examples.
+- **Default agent/model picker chosen:** show Favorites + Recent first, with clickable choices and typed search; selecting a default affects future sessions in this category only.
 - No additional command is required to finish one of these flows.
 - Advanced maintenance stays inside appropriate menus instead of adding every feature as another top-level command.
 - Do not remove old commands until the agreed replacements have been built and checked.
