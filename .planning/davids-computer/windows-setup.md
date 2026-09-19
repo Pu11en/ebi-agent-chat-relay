@@ -16,6 +16,8 @@ The intended connection is **David’s Discord bot → bridge running on David�
 
 **Personal settings decision:** preserve David’s own AGENTS.md, CLAUDE.md, skills, memory, model preferences, projects, and login. Do not copy Drew’s home configuration or inject Drew’s personal instructions into David’s sessions. Keep the bridge installation separate from the project working directory. The next-step prompt in `discord-only-setup.md` covers background operation and recovery for the already-installed bot; do not reinstall from scratch.
 
+**Correction after source verification:** the published baseline below does not read `CCDB_ALLOWED_USER_IDS` or `CCDB_THREAD_MEMBER_IDS`, and its completion alert targets the owner. Those settings alone do not implement shared access or requester-only notifications. Use the revised single-file `discord-only-setup.md`, which includes the feature patch and regression tests; do not use this older initial-install prompt alone.
+
 The public key is not needed for this bridge’s Discord connection; it uses a bot token and Discord’s persistent connection instead.
 
 ## 2. Reset the token and invite the bot
