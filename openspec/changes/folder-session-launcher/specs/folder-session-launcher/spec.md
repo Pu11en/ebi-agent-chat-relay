@@ -27,3 +27,14 @@ Resume SHALL list accessible existing threads for this bot's configured channels
 #### Scenario: Deleted thread
 - **WHEN** Discord reports a saved thread missing
 - **THEN** it is excluded from the resume menu
+
+### Requirement: Category-local favorites and recents
+The launcher SHALL use its configured computer channel without asking the operator to choose a computer. New session SHALL show personal favorites and recent launcher folders, deduplicated, and offer button-driven browsing.
+
+#### Scenario: Favorite was used recently
+- **WHEN** an operator opens New session after using a favorite and another folder
+- **THEN** the favorite appears in Favorites and only the other folder appears in Recent folders
+
+#### Scenario: Another project
+- **WHEN** an operator presses Browse folders
+- **THEN** project-folder suggestions appear without a text-entry modal

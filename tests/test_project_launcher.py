@@ -42,7 +42,9 @@ async def cog(tmp_path: Path) -> ProjectLauncherCog:
         _allowed_user_ids={42, 43},
         _ensure_thread_members=AsyncMock(),
     )
-    repo = SimpleNamespace(save=AsyncMock(), list_all=AsyncMock(return_value=[]))
+    repo = SimpleNamespace(
+        save=AsyncMock(), list_all=AsyncMock(return_value=[]), get=AsyncMock(return_value=None)
+    )
     return ProjectLauncherCog(
         bot,
         repo,
@@ -101,6 +103,7 @@ async def test_new_session_binds_folder_and_joins_shared_members(cog, tmp_path):
     thread.add_user.assert_awaited_once_with(event.user)
     assert str(tmp_path) in thread.send.call_args.args[0]
     event.response.defer.assert_awaited_once_with(ephemeral=True)
+    assert await cog.recents(10, 42) == [str(tmp_path)]
 
 
 @pytest.mark.parametrize("user,channel", [(99, 100), (42, 200)])
@@ -274,3 +277,76 @@ async def test_cog_load_registers_persistent_view_and_unload_stops_it(cog):
     assert view.is_persistent()
     await cog.cog_unload()
     assert view.is_finished()
+
+
+async def test_favorites_and_recents_are_separate_and_deduplicated(cog, tmp_path):
+    favorite = tmp_path / "favorite"
+    recent = tmp_path / "recent"
+    favorite.mkdir()
+    recent.mkdir()
+    await cog.change_favorite(10, 42, str(favorite), add=True)
+    await cog.remember_folder(10, 42, str(recent))
+    await cog.remember_folder(10, 42, str(favorite))
+    event = interaction()
+    await cog.show_folders(event)
+    selects = [
+        c
+        for c in event.followup.send.call_args.kwargs["view"].children
+        if isinstance(c, discord.ui.Select)
+    ]
+    assert [c.placeholder for c in selects] == ["Favorite folders", "Recent folders"]
+    assert [o.label for o in selects[0].options] == ["favorite"]
+    assert [o.label for o in selects[1].options] == ["recent"]
+
+
+async def test_recent_order_persists_and_is_personal(cog, tmp_path):
+    for name in ("first", "second", "first"):
+        await cog.remember_folder(10, 42, str(tmp_path / name))
+    assert await cog.recents(10, 42) == [str(tmp_path / "first"), str(tmp_path / "second")]
+    assert await cog.recents(10, 43) == []
+    assert await cog.recents(11, 42) == []
+    fresh = ProjectLauncherCog(
+        cog.bot, cog.repo, cog.settings, cog.chat, channel_id=100, channel_ids={100}
+    )
+    assert await fresh.recents(10, 42) == await cog.recents(10, 42)
+
+
+async def test_recent_selector_creates_one_folder_bound_session(cog, tmp_path):
+    await cog.remember_folder(10, 42, str(tmp_path))
+    event = interaction()
+    await cog.show_folders(event)
+    selects = [
+        c
+        for c in event.followup.send.call_args.kwargs["view"].children
+        if isinstance(c, discord.ui.Select)
+    ]
+    recent = next(c for c in selects if c.placeholder == "Recent folders")
+    recent._values = ["0"]
+    cog.new_session = AsyncMock()
+    await recent.callback(event)
+    await recent.callback(event)
+    cog.new_session.assert_awaited_once_with(event, str(tmp_path))
+
+
+async def test_browse_button_lists_folders_without_a_typing_modal(cog, tmp_path, monkeypatch):
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
+    (tmp_path / "another-project").mkdir()
+    await cog.change_favorite(10, 42, str(tmp_path), add=True)
+    event = interaction()
+    await cog.show_folders(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    browse = next(
+        child
+        for child in view.children
+        if isinstance(child, discord.ui.Button) and child.label == "Browse folders"
+    )
+    await browse.callback(event)
+    event.response.send_modal.assert_not_awaited()
+    view = event.followup.send.call_args.kwargs["view"]
+    options = [
+        option.label
+        for child in view.children
+        if isinstance(child, discord.ui.Select)
+        for option in child.options
+    ]
+    assert "another-project" in options

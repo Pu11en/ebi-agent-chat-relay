@@ -122,12 +122,15 @@ class FolderMenu(PersonalView):
         *,
         manage: bool,
         suggestions: list[str] | None = None,
+        recent_folders: list[str] | None = None,
+        primary_label: str = "Favorite folders",
+        browsing: bool = False,
     ) -> None:
         super().__init__(cog, user_id)
         self.used = False
         if folders:
             select = discord.ui.Select(
-                placeholder="Remove a favorite" if manage else "Choose a folder to start",
+                placeholder="Remove a favorite" if manage else primary_label,
                 options=[
                     discord.SelectOption(
                         label=(Path(path).name or path)[:100],
@@ -155,6 +158,30 @@ class FolderMenu(PersonalView):
 
             select.callback = choose
             self.add_item(select)
+        if recent_folders:
+            recent = discord.ui.Select(
+                placeholder="Recent folders",
+                options=[
+                    discord.SelectOption(
+                        label=(Path(path).name or path)[:100],
+                        description=path[-100:],
+                        value=str(index),
+                    )
+                    for index, path in enumerate(recent_folders)
+                ],
+            )
+
+            async def choose_recent(interaction: discord.Interaction) -> None:
+                if self.used:
+                    await interaction.response.send_message(
+                        "This menu was already used. Open the launcher again.", ephemeral=True
+                    )
+                    return
+                self.used = True
+                await cog.new_session(interaction, recent_folders[int(recent.values[0])])
+
+            recent.callback = choose_recent
+            self.add_item(recent)
         if manage and suggestions:
             browse = discord.ui.Select(
                 placeholder="Add an existing folder to favorites",
@@ -187,10 +214,16 @@ class FolderMenu(PersonalView):
 
             browse.callback = save_folder
             self.add_item(browse)
-        add = discord.ui.Button(label="Add favorite folder", style=discord.ButtonStyle.secondary)
+        label = (
+            "Add by path" if manage else ("Favorites + recent" if browsing else "Browse folders")
+        )
+        add = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary)
 
         async def add_folder(interaction: discord.Interaction) -> None:
-            await interaction.response.send_modal(FavoriteModal(cog, user_id))
+            if manage:
+                await interaction.response.send_modal(FavoriteModal(cog, user_id))
+            else:
+                await cog.show_folders(interaction, browse=not browsing)
 
         add.callback = add_folder
         self.add_item(add)
@@ -219,6 +252,11 @@ class ResumeMenu(PersonalView):
                 return
             # A link opens the original thread, including archived threads. No cloning,
             # session writes, extra model calls, or changes to another running turn.
+            record = await cog.repo.get(thread.id)
+            if record is not None and record.working_dir:
+                await cog.remember_folder(
+                    interaction.guild_id or 0, interaction.user.id, record.working_dir
+                )
             await interaction.followup.send(
                 f"Continue here: https://discord.com/channels/{thread.guild.id}/{thread.id}",
                 ephemeral=True,
@@ -319,6 +357,23 @@ class ProjectLauncherCog(commands.Cog):
                 saved = [item for item in saved if item != path]
             await self.settings.set(self._key(guild_id, user_id), json.dumps(saved))
 
+    async def recents(self, guild_id: int, user_id: int) -> list[str]:
+        raw = await self.settings.get(f"launcher.recents:{guild_id}:{user_id}")
+        if raw is None:
+            return []
+        values = json.loads(raw)
+        if not isinstance(values, list) or not all(isinstance(path, str) for path in values):
+            raise ValueError("Saved recent folders are invalid; ask the bot to repair them.")
+        return values[:_LIMIT]
+
+    async def remember_folder(self, guild_id: int, user_id: int, path: str) -> None:
+        async with self._favorites_lock:
+            previous = await self.recents(guild_id, user_id)
+            latest = [path] + [item for item in previous if item != path]
+            await self.settings.set(
+                f"launcher.recents:{guild_id}:{user_id}", json.dumps(latest[:_LIMIT])
+            )
+
     def _suggestions(self) -> list[str]:
         roots = os.environ.get("CCDB_PROJECT_ROOTS", "").split(",")
         roots = [root.strip() for root in roots if root.strip()]
@@ -352,27 +407,53 @@ class ProjectLauncherCog(commands.Cog):
                 logger.debug("Skipping unavailable launcher project root")
         return result
 
-    async def show_folders(self, interaction: discord.Interaction, *, manage: bool = False) -> None:
+    async def show_folders(
+        self, interaction: discord.Interaction, *, manage: bool = False, browse: bool = False
+    ) -> None:
         if not await self.authorize(interaction):
             return
         await interaction.response.defer(ephemeral=True)
         folders = await self.favorites(interaction.guild_id or 0, interaction.user.id)
         suggestions = []
+        recent_folders = []
+        primary_label = "Favorite folders"
         if manage:
             suggestions = [
                 path for path in await asyncio.to_thread(self._suggestions) if path not in folders
             ]
-        if not folders and not manage:
+        if not manage and not browse:
+            recent_folders = [
+                path
+                for path in await self.recents(interaction.guild_id or 0, interaction.user.id)
+                if path not in folders
+            ]
+            recent_folders = await asyncio.to_thread(
+                lambda: [path for path in recent_folders if Path(path).is_dir()]
+            )
+            if not folders and not recent_folders:
+                folders = await asyncio.to_thread(self._suggestions)
+                primary_label = "Project folders"
+        if browse:
             folders = await asyncio.to_thread(self._suggestions)
+            primary_label = "Project folders"
         text = "Your favorite folders: select one to remove, or add a folder."
         if not manage:
-            text = "Choose a folder on this computer for a new session."
-        if not folders and not suggestions:
+            text = "Choose from your favorite or recent folders to start a new session."
+        if browse:
+            text = "Browse project folders on this computer; choose one to start a new session."
+        if not folders and not suggestions and not recent_folders:
             text = "No folders saved yet. Add a favorite using its full path on this computer."
         await interaction.followup.send(
             text,
             view=FolderMenu(
-                self, interaction.user.id, folders, manage=manage, suggestions=suggestions
+                self,
+                interaction.user.id,
+                folders,
+                manage=manage,
+                suggestions=suggestions,
+                recent_folders=recent_folders,
+                primary_label=primary_label,
+                browsing=browse,
             ),
             ephemeral=True,
         )
@@ -414,6 +495,7 @@ class ProjectLauncherCog(commands.Cog):
             "Send your task here to begin; replies continue this session.",
             allowed_mentions=discord.AllowedMentions.none(),
         )
+        await self.remember_folder(interaction.guild_id or 0, interaction.user.id, path)
         await interaction.followup.send(
             f"New session ready: {thread.mention}",
             ephemeral=True,
