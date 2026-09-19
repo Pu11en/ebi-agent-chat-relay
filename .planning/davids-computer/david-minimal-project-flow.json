@@ -1,13 +1,13 @@
 {
   "status": "planning_not_implemented_or_live_verified",
   "priority": "David minimal project workflow first; broader common settings design deferred, not discarded.",
-  "entry": "One project picker in David control-center; preserve the existing launcher entry instead of waiting for new shared commands.",
+  "entry": "Type /new alone in David control-center to open the project picker. This is the intended command, not a verified installed replacement.",
   "project_root": "C:/Users/david/projects",
   "root_basis": "Previously verified David working directory; reverify on his computer before implementation.",
   "menu": [
     "Recent",
     "All projects",
-    "Create folder"
+    "Create project"
   ],
   "projects": "Each project is a child folder of the project root; list these as the simple default without removing the already planned ability to browse other accessible folders.",
   "recent": "Personal recent project folders, newest use first, scoped to this computer; do not confuse projects with session history.",
@@ -19,15 +19,19 @@
     "Existing notification and coordination fixes",
     "Existing project files and sessions"
   ],
-  "open_decision": {
-    "question": "What should Create project support in the first version?",
-    "recommendation": "Empty folder only for the smallest useful delivery",
+  "open_decision": null,
+  "remote_status": "No current access to David computer verified; this local plan is not a remote installation receipt.",
+  "command": "/new",
+  "required_arguments": [],
+  "creation_choice": {
+    "user_answer": "B: empty folder or GitHub repo",
     "options": [
-      "Empty folder only",
-      "Empty folder or clone a GitHub repository",
-      "Empty folder or register an existing folder",
-      "Empty folder or starter template"
-    ]
-  },
-  "remote_status": "No current access to David computer verified; this local plan is not a remote installation receipt."
+      "Empty folder",
+      "Clone GitHub repository"
+    ],
+    "clone_destination": "A new child folder under C:/Users/david/projects, alongside the other projects.",
+    "existing_destination": "Do not overwrite or reuse an existing folder through this creation flow.",
+    "after_success": "Open a clean idle session bound to the newly created or cloned project; first user task starts the agent.",
+    "clone_into_existing_folder": "Use an ordinary natural-language request inside a session; not an option in this new-project menu."
+  }
 }

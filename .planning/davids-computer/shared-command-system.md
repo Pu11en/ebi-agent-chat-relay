@@ -94,9 +94,11 @@
 
 ## Immediate priority: David’s minimal project workflow
 - Defer the broader settings discussion and get David’s simple project flow settled first; preserve existing decisions for later.
-- One picker in David’s control-center: Recent, All projects and Create folder.
+- Type **/new** alone in David’s control-center: Recent, All projects and Create project. This is the intended command, not a verified live replacement.
 - Use the previously reported C:/Users/david/projects as the common project root; each project has its own child folder. Reverify on David’s machine before implementation.
 - Selecting a project creates a clean idle workers thread bound to that folder; the user’s first task starts work.
 - Creating a project asks for a name, creates its folder without overwriting another, and opens a clean idle session there.
-- The first-version creation scope is still open: empty folders only, or additionally GitHub cloning, existing-folder registration, or starter templates.
+- **Creation scope chosen: B — Empty folder or GitHub clone.** A clone gets a new child folder alongside other projects under David’s projects root; do not reuse or overwrite an existing destination.
+- Cloning into an existing folder stays an ordinary natural-language request in a session, outside this new-project menu.
+- After successful creation or cloning, open a clean idle thread bound to the new folder; no model task starts until the user sends one.
 - This is planning, not a claim that David’s remote installation was changed or checked.
