@@ -14,8 +14,9 @@
     "Refresh availability before opening or closing; omit deleted or inaccessible threads."
   ],
   "open_decisions": [
-    "Close behavior for idle versus running sessions.",
-    "Whether additional actions beyond Open and Close belong in this command."
+    "Whether additional actions beyond Open and Close belong in this command.",
+    "How to select multiple sessions for closing."
   ],
-  "next_question": "Close behavior; see session-close-decision.json"
+  "next_question": "Batch selection: select multiple, one at a time, all shown, or by folder.",
+  "close_behavior": "Stop immediately and archive the thread; retain history and project files."
 }

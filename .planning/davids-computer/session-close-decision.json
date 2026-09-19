@@ -1,6 +1,6 @@
 {
   "id": "session_close_behavior",
-  "status": "unanswered",
+  "status": "decided",
   "question": "When you say close a session, what should happen to running work and its thread?",
   "recommendation": "stop_archive",
   "options": [
@@ -32,5 +32,14 @@
     "Natural-language session management stays within the category.",
     "Control-center remains the entry point; workers threads are sessions.",
     "One shared default system across all three categories."
-  ]
+  ],
+  "selected": "stop_archive",
+  "user_answer": "A",
+  "behavior": {
+    "running_task": "stop_immediately",
+    "thread": "archive",
+    "conversation_history": "preserve",
+    "project_files": "preserve",
+    "natural_language_close": "same behavior within the current category"
+  }
 }

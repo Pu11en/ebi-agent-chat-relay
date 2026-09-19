@@ -33,7 +33,7 @@
 - **“Show the other sessions”** — list accessible sessions in this category with clear names and current state.
 - **“Close this session”** — apply the close behavior we choose below; keep the project files.
 - **“Close the session called [name]”** — resolve an unambiguous session in this category; if names collide, present the matching choices.
-- **“Close the other sessions”** — scope “other” to this category and exclude the current thread; how to handle running work depends on the close policy still to be chosen.
+- **“Close the other sessions”** — scope “other” to this category and exclude the current thread; stop selected running work immediately and archive those threads, preserving history and project files.
 - Session management must use explicit, validated control operations, not merely claim success in a model reply.
 - Validate requester access and destination category when performing every action; names and quoted text are not permission to operate on another computer.
 - Keep each operator’s personal preferences; notify the person requesting the action.
@@ -48,10 +48,9 @@
 - Other instances would stop registering duplicate versions of these commands only after routing is working; their normal task-message handling remains local.
 - Until that exists, separate bots can enforce where commands execute, but we cannot honestly promise category-only slash visibility for administrators.
 
-## One decision next: what does close mean
-- **A — Stop and archive:** stop the current run, archive the thread, retain history and files; quickest way to tidy a session, but it interrupts unfinished work.
-- **B — Finish then archive:** let the current task finish and close the thread afterward; no interruption, but closure may take time.
-- **C — Stop only:** stop the run and leave the thread visible for continuing later; no automatic tidying.
-- **D — Choose each time:** offer these close modes whenever asked to close running work; more control, more clicks.
-- Recommendation: A if “close” should act immediately; /stop remains the separate keep-open action.
+## Close behavior chosen
+- **A — Stop and archive:** stop the current run immediately, archive the thread, and retain conversation history and project files.
+- This is the selected behavior for the Close action and natural-language requests to close a session.
+- The choice is a design decision, not an instruction to close the current planning thread.
+- Next /sessions decision: how the picker should support closing multiple sessions.
 - Parallel working-copy policy and optional background features remain unanswered and deferred while we establish the basic commands.
