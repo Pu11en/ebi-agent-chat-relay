@@ -1,9 +1,10 @@
 # Overall Discord bot changes — continuation
 
 ## Purpose and current split
-- Drew requested a new session for overall Discord bot changes while the original session finishes David’s minimal project-picker delivery.
+- Drew now reports David’s setup is good, plans to clear the original session, and wants to move to overall Discord server changes. Preserve the working David setup while discussing the next server-wide change.
 - Original thread: 1550639669589442661; project: /home/drewp/main-projects/ebi-agent-chat-relay.
 - Continue from current local git. Do not discard unrelated changes or push anything merely because Drew said “ship” the David installation.
+- Work locally and let Drew try changes in Discord before publishing to GitHub. Server-specific behavior belongs in instance/custom Cogs; shared framework code changes only when actually required. This project is the central place to maintain those changes.
 - Keep the conversation short and discuss one command or menu detail at a time. Finish control-center design before thread commands.
 - Prioritize a few discoverable commands with clickable/searchable menus, plus equivalent natural-language actions inside sessions.
 - Do not reopen settled questions, claim designs are live, or make Drew repeatedly forward agent tasks once a trusted connection exists.
@@ -34,18 +35,21 @@
 - Public command visibility: administrators can still see app commands despite channel restrictions. Runtime category guards do not guarantee a clean native picker.
 - One command-owning app routing by category was proposed for removing duplicates; that architecture is not built or fully settled. Do not remove remote command registrations before routing exists.
 
-## David delivery already prepared — avoid duplicate work
+## David installed — avoid duplicate work
 - Implemented a standalone custom Cog in `examples/project_creation/project_creation.py`, tests in `examples/project_creation/tests`, usage in its README; feature commit 2214551.
 - `/new` -> Recent / All projects / Create project -> Empty folder or Clone GitHub repo. Cloning currently takes a pasted GitHub HTTPS link or owner/repo and optional folder name; no account repo-browser in this minimal release.
 - Every created/cloned project gets a new child folder under C:/Users/david/projects; the existing-folder clone action remains natural-language work within a thread.
-- Uses existing gh authentication, no signup/login/model call; staged cloning, no overwrite, Windows-name validation, scoped menus, personal persistent recents, idle spawn and same-category workers validation.
+- The original delivered source uses gh for cloning; it includes staged cloning, no overwrite, Windows-name validation, scoped menus, personal persistent recents, idle spawn and same-category workers validation. Do not assume this local source includes David’s subsequent Windows fixes.
 - 37 focused tests pass; lint, format, type and security checks pass. Full clean suite with the first 36 focused tests: 3150 passed, one known aggregate-hanging framework test passed separately. Final additional category test passed with all 37 focused tests.
 - Self-contained tested source/test ZIP is embedded in `.planning/davids-computer/install-new-project-picker.md` with SHA-256 and exact Windows instance instructions.
 - Package already delivered to David’s existing setup thread: https://discord.com/channels/1546639912848199742/1550681218717192263/1550754808259018772 . Delivery receipt is in project-picker-delivery.json.
-- Last read showed NO human trigger or receiver install reply after that delivery. Therefore installation, restart and real button clicks are pending, not complete.
-- Human bootstrap phrase already provided: “Read this thread’s latest setup message and install its attached /new project picker now, preserving David’s settings.” One human message is currently needed because no trusted-bot inbox exists yet.
+- David installed the picker in instance commit 106acaf. Activation report 1550766026851885069 confirmed ProjectCreationCog loaded and /new registered; 59 instance tests passed after a Windows-specific test correction.
+- The subsequent GitHub repair installed gh 2.101.0 and fixed the supervisor PATH in instance commit e08e425; 62 instance tests passed. Activation report 1550773844292407308 confirmed gh visible to the running bot but unauthenticated. A device-login attempt was started and its code expired; never reuse that old code.
+- Drew clarified the desired repository is PUBLIC. Latest requested fix: use git clone for public HTTPS repositories without requiring GitHub CLI login, retaining authenticated private-clone support. Drew then said “now its good”; treat the public flow as user-reported working, not an independently verified new commit or test receipt. Retrieve David’s latest receipt only if needed for further code work.
+- Do not block public cloning on GitHub login or reopen completed installation work. Private GitHub authentication remains unverified and is separate from this public-repository workflow.
+- Trusted bot-to-bot execution remains absent: tasks can be delivered as Discord messages/files, but a human message currently starts the receiving agent. The original missing-attachment confusion was resolved by verified readback and posting repair instructions inline.
 - Do not reinstall the bridge, overwrite the older auth/notification fixes, change David’s personal configuration, remove old commands, or restart another bot as part of this installation.
-- User confirms the GitHub login already exists. Use Drew’s GitHub account through gh in the bot’s Windows user context; preserve David’s own Claude subscription and settings. Reverify effective access without exposing tokens.
+- Earlier belief that a GitHub login already existed was contradicted by David’s runtime audit. Preserve David’s Claude subscription/settings and any credentials subsequently established; do not claim GitHub authentication is complete without checking.
 
 ## Machines, channels and evidence
 - Guild 1546639912848199742; Drew user 488763953397235712; David user 718234548139196476; both retain access.
@@ -53,9 +57,13 @@
 - iMac bot 1546757772052537385; category 1546805993441206282; control-center 1546805995685290054; workers 1546805996997967892.
 - David bot 1550644558176460961; category 1550644903384580167; control-center 1550644904617582662; workers 1550644907100741783.
 - David native Windows: bridge C:/Users/david/ccdb/bridge; instance C:/Users/david/ccdb/instance; runtime venv C:/Users/david/ccdb/.venv; dev venv .venv-dev; own model login under his user profile.
-- Last known David active bridge revision e72a851; custom FolderLauncherCog, CompletionPingCog and ThreadMembersCog. Existing launcher was /new-session and favorites; do not claim its /new replacement is live.
+- Last verified David active bridge revision e72a851; custom FolderLauncherCog, CompletionPingCog, ProjectCreationCog and ThreadMembersCog. /new is activated alongside the older launcher.
 - David has existing supervisor, health checker, recover.ps1 and independent idle-aware restart task. Activate only when tasks finish; distinguish scheduled activation from verified running code.
-- Current local runtime is a separate checkout `/home/drewp/main-projects/wt-task-loop`, last known a87b265. New custom Cog has not been activated locally or remotely.
+- Current local runtime was last identified as a separate checkout `/home/drewp/main-projects/wt-task-loop`, revision a87b265; recheck before changing runtime. The new custom Cog is verified activated on David, not verified activated on Lenovo/iMac.
 - Preserve unrelated dirty voice-recorder, health-check, older planning and project-picker extension work. Check current git status and live sessions before editing.
 - Existing design details: `.planning/davids-computer/shared-command-system.md`, settings-command.json, sessions-command.json and david-minimal-project-flow.json. New explicit decisions supersede older broad inventories.
 - Current local control API is available through CCDB_API_URL; use the environment, not copied credentials. Never post bot tokens, API secrets or GitHub credentials in messages or artifacts.
+
+## Start after clearing this session
+- Copy-paste prompt: “Continue overall Discord server work. Read .planning/davids-computer/overall-changes-handoff.md first. David’s public project flow is reported working; preserve it. Keep changes local. Start with one decision about the shared control-center commands and category routing, while retaining the requirement for automatic agent-to-agent tasks and results.”
+- Existing overall changes thread: https://discord.com/channels/1546639912848199742/1550757693784989707 . Reuse it rather than creating duplicate sessions. Clearing the original conversation does not implement or automatically start the broader server redesign.
