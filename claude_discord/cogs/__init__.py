@@ -8,6 +8,7 @@ from .context_links import ContextLinksCog
 from .event_processor import EventProcessor
 from .notification_dispatch import NotificationDispatchCog
 from .ollama_command import OllamaCommandCog
+from .project_launcher import ProjectLauncherCog
 from .run_config import RunConfig
 from .scheduler import SchedulerCog
 from .session_manage import SessionManageCog
@@ -23,6 +24,7 @@ __all__ = [
     "RunConfig",
     "NotificationDispatchCog",
     "OllamaCommandCog",
+    "ProjectLauncherCog",
     "SchedulerCog",
     "SessionManageCog",
     "AskCommandCog",

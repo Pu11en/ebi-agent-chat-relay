@@ -1,0 +1,4 @@
+# Design
+Use the existing SessionRepository.save(empty session ID, working_dir) contract used by the folder picker. Resume returns the original thread instead of cloning context. Favorites are scoped by guild/user within each instance database; reads and writes retain personal configuration. Every interaction checks operator authorization and channel scope. Menus belong to their requesting user. Persistent panel buttons register at startup; panel message IDs persist and reconnects update the existing panel. Deleted or inaccessible threads do not appear. Local paths are validated again at selection, directory reads run off the event loop. No shell commands or live model calls.
+
+Deployment: test in the local checkout, commit only owned files, apply to the actual runtime and activate at an idle boundary. David's Windows agent installs the identical framework change separately; do not claim Windows validation from Linux tests.

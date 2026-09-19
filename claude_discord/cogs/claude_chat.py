@@ -80,6 +80,7 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "sessions": "📌 Session",
     "search": "📌 Session",
     "resume": "📌 Session",
+    "launcher": "📌 Session",
     "resume-info": "📌 Session",
     "sync-sessions": "📌 Session",
     "sync-settings": "📌 Session",

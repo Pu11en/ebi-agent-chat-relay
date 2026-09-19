@@ -1,0 +1,8 @@
+{
+  "change": "folder-session-launcher",
+  "thread_id": "1550639669589442661",
+  "decisions": {
+    "selection": "User selected A: Favorite folders + New session + Resume",
+    "scope": "Existing authorized shared Discord workflow; no additional model workers"
+  }
+}

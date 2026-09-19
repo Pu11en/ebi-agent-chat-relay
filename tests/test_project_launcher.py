@@ -1,0 +1,276 @@
+"""Launcher behavior without Discord network calls or model execution."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+import pytest
+
+from claude_discord.cogs.project_launcher import LauncherView, ProjectLauncherCog
+from claude_discord.database.models import init_db
+from claude_discord.database.settings_repo import SettingsRepository
+
+
+def interaction(user: int = 42, channel: int = 100) -> MagicMock:
+    item = MagicMock(spec=discord.Interaction)
+    item.user = MagicMock(spec=discord.Member)
+    item.user.id = user
+    item.guild_id = 10
+    item.channel_id = channel
+    item.channel = MagicMock(spec=discord.TextChannel)
+    item.channel.id = channel
+    item.response = MagicMock()
+    item.response.send_message = AsyncMock()
+    item.response.defer = AsyncMock()
+    item.response.send_modal = AsyncMock()
+    item.followup = MagicMock()
+    item.followup.send = AsyncMock()
+    return item
+
+
+@pytest.fixture
+async def cog(tmp_path: Path) -> ProjectLauncherCog:
+    db = str(tmp_path / "settings.db")
+    await init_db(db)
+    bot = MagicMock()
+    bot.user = SimpleNamespace(id=999, display_name="Test computer")
+    chat = SimpleNamespace(
+        _allowed_user_ids={42, 43},
+        _ensure_thread_members=AsyncMock(),
+    )
+    repo = SimpleNamespace(save=AsyncMock(), list_all=AsyncMock(return_value=[]))
+    return ProjectLauncherCog(
+        bot,
+        repo,
+        SettingsRepository(db),
+        chat,
+        channel_id=100,
+        channel_ids={100},
+        working_dir=str(tmp_path),
+    )
+
+
+async def test_favorites_persist_and_are_personal(cog, tmp_path):
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+    await asyncio.gather(
+        cog.change_favorite(10, 42, str(first), add=True),
+        cog.change_favorite(10, 42, str(second), add=True),
+    )
+    assert set(await cog.favorites(10, 42)) == {str(first), str(second)}
+    assert await cog.favorites(10, 43) == []
+    assert await cog.favorites(11, 42) == []
+    fresh = ProjectLauncherCog(
+        cog.bot,
+        cog.repo,
+        cog.settings,
+        cog.chat,
+        channel_id=100,
+        channel_ids={100},
+        working_dir=str(tmp_path),
+    )
+    assert len(await fresh.favorites(10, 42)) == 2
+    await fresh.change_favorite(10, 42, str(first), add=False)
+    assert await fresh.favorites(10, 42) == [str(second)]
+
+
+async def test_favorite_rejects_missing_and_relative_directory(cog, tmp_path):
+    for path in (str(tmp_path / "missing"), "."):
+        with pytest.raises(ValueError):
+            await cog.change_favorite(10, 42, path, add=True)
+    assert await cog.favorites(10, 42) == []
+
+
+async def test_new_session_binds_folder_and_joins_shared_members(cog, tmp_path):
+    event = interaction()
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.mention = "<#333>"
+    thread.add_user = AsyncMock()
+    thread.send = AsyncMock()
+    event.channel.create_thread = AsyncMock(return_value=thread)
+    await cog.new_session(event, str(tmp_path))
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(tmp_path))
+    cog.chat._ensure_thread_members.assert_awaited_once_with(thread)
+    thread.add_user.assert_awaited_once_with(event.user)
+    assert str(tmp_path) in thread.send.call_args.args[0]
+    event.response.defer.assert_awaited_once_with(ephemeral=True)
+
+
+@pytest.mark.parametrize("user,channel", [(99, 100), (42, 200)])
+async def test_unauthorized_or_other_computer_channel_cannot_start(cog, tmp_path, user, channel):
+    event = interaction(user, channel)
+    await cog.new_session(event, str(tmp_path))
+    cog.repo.save.assert_not_awaited()
+
+
+async def test_deleted_folder_cannot_create_thread(cog, tmp_path):
+    event = interaction()
+    await cog.new_session(event, str(tmp_path / "deleted"))
+    cog.repo.save.assert_not_awaited()
+    assert "folder" in event.followup.send.call_args.args[0].lower()
+
+
+async def test_favorites_offer_existing_folders_without_typing_paths(cog, tmp_path, monkeypatch):
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
+    project = tmp_path / "use-this-folder"
+    project.mkdir()
+    event = interaction()
+    await cog.show_folders(event, manage=True)
+    view = event.followup.send.call_args.kwargs["view"]
+    select = next(item for item in view.children if isinstance(item, discord.ui.Select))
+    selected = next(option for option in select.options if option.label == project.name)
+    select._values = [selected.value]
+    await select.callback(event)
+    assert await cog.favorites(10, 42) == [str(project)]
+
+
+async def test_new_session_database_failure_removes_only_new_empty_thread(cog, tmp_path):
+    event = interaction()
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.delete = AsyncMock()
+    event.channel.create_thread = AsyncMock(return_value=thread)
+    cog.repo.save.side_effect = RuntimeError("Database unavailable")
+    with pytest.raises(RuntimeError):
+        await cog.new_session(event, str(tmp_path))
+    thread.delete.assert_awaited_once()
+
+
+async def test_one_menu_cannot_create_two_threads(cog, tmp_path):
+    await cog.change_favorite(10, 42, str(tmp_path), add=True)
+    event = interaction()
+    await cog.show_folders(event)
+    select = event.followup.send.call_args.kwargs["view"].children[0]
+    cog.new_session = AsyncMock()
+    select._values = ["0"]
+    await select.callback(event)
+    await select.callback(event)
+    cog.new_session.assert_awaited_once()
+
+
+async def test_persistent_buttons_and_menu_owner(cog):
+    panel = LauncherView(cog)
+    assert panel.is_persistent()
+    assert {button.label for button in panel.children} == {
+        "Favorite folders",
+        "New session",
+        "Resume",
+    }
+    assert await panel.interaction_check(interaction())
+    assert not await panel.interaction_check(interaction(99))
+    await cog.show_folders(interaction())
+    event = interaction()
+    await cog.show_folders(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    assert not await view.interaction_check(interaction(43))
+
+
+async def test_resume_filters_deleted_foreign_and_inaccessible_threads(cog):
+    records = [SimpleNamespace(thread_id=i, working_dir="/project") for i in (1, 2, 3, 4)]
+    cog.repo.list_all.return_value = records
+    live = MagicMock(spec=discord.Thread)
+    live.id = 1
+    live.parent_id = 100
+    live.guild.id = 10
+    live.name = "Existing work"
+    live.permissions_for.return_value.view_channel = True
+    live.is_private.return_value = False
+    foreign = MagicMock(spec=discord.Thread)
+    foreign.id = 3
+    foreign.parent_id = 200
+    foreign.guild.id = 10
+    hidden = MagicMock(spec=discord.Thread)
+    hidden.id = 4
+    hidden.parent_id = 100
+    hidden.guild.id = 10
+    hidden.permissions_for.return_value.view_channel = False
+    cog.bot.fetch_channel = AsyncMock(
+        side_effect=[
+            live,
+            discord.NotFound(MagicMock(status=404), "deleted"),
+            foreign,
+            hidden,
+        ]
+    )
+    event = interaction()
+    await cog.show_resume(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    select = view.children[0]
+    assert [option.value for option in select.options] == ["1"]
+    select._values = ["1"]
+    cog.bot.fetch_channel = AsyncMock(return_value=live)
+    await select.callback(event)
+    assert "https://discord.com/channels/10/1" in event.followup.send.call_args.args[0]
+    cog.repo.save.assert_not_awaited()
+
+
+async def test_reconnect_updates_one_panel(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    message = MagicMock(spec=discord.Message)
+    message.id = 555
+    message.author.id = cog.bot.user.id
+    message.pin = AsyncMock()
+    message.edit = AsyncMock()
+    channel.send = AsyncMock(return_value=message)
+    channel.fetch_message = AsyncMock(return_value=message)
+    cog.bot.get_channel.return_value = channel
+    await cog.on_ready()
+    await cog.on_ready()
+    channel.send.assert_awaited_once()
+    message.edit.assert_awaited_once()
+    assert "Test computer" in channel.send.call_args.kwargs["embed"].title
+
+
+async def test_deleted_panel_is_recreated(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.fetch_message = AsyncMock(
+        side_effect=discord.NotFound(MagicMock(status=404), "deleted")
+    )
+    message = MagicMock(spec=discord.Message)
+    message.id = 556
+    message.pinned = False
+    message.pin = AsyncMock()
+    channel.send = AsyncMock(return_value=message)
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.panel:100", "555")
+    await cog.on_ready()
+    assert await cog.settings.get("launcher.panel:100") == "556"
+    message.pin.assert_awaited_once()
+
+
+async def test_private_thread_requires_membership(cog):
+    thread = MagicMock(spec=discord.Thread)
+    thread.parent_id = 100
+    thread.guild.id = 10
+    thread.permissions_for.return_value.view_channel = True
+    thread.permissions_for.return_value.manage_threads = False
+    thread.is_private.return_value = True
+    thread.fetch_member = AsyncMock(
+        side_effect=discord.NotFound(MagicMock(status=404), "not a member")
+    )
+    cog.bot.fetch_channel = AsyncMock(return_value=thread)
+    assert await cog.visible_thread(333, interaction()) is None
+
+
+async def test_revoked_operator_cannot_use_existing_personal_menu(cog):
+    event = interaction()
+    await cog.show_folders(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    cog.chat._allowed_user_ids.remove(42)
+    assert not await view.interaction_check(event)
+
+
+async def test_cog_load_registers_persistent_view_and_unload_stops_it(cog):
+    await cog.cog_load()
+    view = cog.bot.add_view.call_args.args[0]
+    assert view.is_persistent()
+    await cog.cog_unload()
+    assert view.is_finished()

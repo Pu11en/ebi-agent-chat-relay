@@ -222,6 +222,7 @@ async def setup_bridge(
     from .cogs.claude_chat import ClaudeChatCog
     from .cogs.collision_watch import CollisionWatchCog
     from .cogs.context_links import ContextLinksCog
+    from .cogs.project_launcher import ProjectLauncherCog
     from .cogs.scheduler import SchedulerCog
     from .cogs.session_manage import SessionManageCog
     from .cogs.skill_command import SkillCommandCog
@@ -493,6 +494,17 @@ async def setup_bridge(
     if _all_channel_ids:
         # Primary channel: prefer the explicit claude_channel_id, else pick from set
         _primary_channel_id = claude_channel_id or next(iter(_all_channel_ids))
+        await bot.add_cog(
+            ProjectLauncherCog(
+                bot,
+                session_repo,
+                settings_repo,
+                chat_cog,
+                channel_id=_primary_channel_id,
+                channel_ids=_all_channel_ids,
+                working_dir=runner.working_dir,
+            )
+        )
         skill_cog = SkillCommandCog(
             bot,
             repo=session_repo,
