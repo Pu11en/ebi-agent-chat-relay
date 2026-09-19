@@ -3,6 +3,7 @@
   "thread_id": "1550639669589442661",
   "decisions": {
     "selection": "User selected A: Favorite folders + New session + Resume",
-    "scope": "Existing authorized shared Discord workflow; no additional model workers"
+    "scope": "Existing authorized shared Discord workflow; no additional model workers",
+    "folder_picker": "User selected Favorites + recent folders; category already selects computer, no computer picker. Navigation should not require typing paths."
   }
 }

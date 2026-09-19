@@ -15,3 +15,11 @@ Check: .venv/bin/python -m pytest tests/test_project_launcher.py -q --no-cov
 - Lint, formatting, type checking, import checks and security scan of the new Cog pass. Repository-wide security scan still reports pre-existing findings in untouched code.
 - The ordinary development environment additionally exposes its known import-hook test contamination and an unrelated untracked folder-picker archive-policy violation; the clean snapshot includes neither artifact.
 - Actual Discord button clicks and David's Windows runtime require post-activation checks. The Linux activation helper waits for all turns to be idle and reports the verified panel link automatically.
+
+## Category flow update
+- [x] Show separate Favorites and Recent folders, with no computer-selection step.
+- [x] Persist recent launcher folders per operator and guild; deduplicate favorites.
+- [x] Offer Browse folders and return buttons without typing a path.
+- [x] Update the self-contained handoff for David and iMac category mappings and idle activation.
+- Validation: 3,095 tests pass in the clean snapshot; the unchanged known aggregate-hanging ingest test was excluded and previously passed alone. Four additional regressions cover ordering, persistence, recent selection and no-typing browse. Lint, format, type checks and new-Cog security checks pass.
+- Previous local launcher activation was verified at commit 4ed013b; this update requires a later idle activation. David reports auth commit e72a851 is tested but not active. Windows/iMac launcher activation is not yet verified.

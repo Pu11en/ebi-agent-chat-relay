@@ -11,7 +11,7 @@ list. `/launcher` also opens a private copy inside that bot's configured channel
 ## Favorite folders
 
 Select an existing project folder to save it, or enter another absolute folder
-path using **Add favorite folder**. Suggestions come from `CCDB_PROJECT_ROOTS`
+path using **Add by path**. Suggestions come from `CCDB_PROJECT_ROOTS`
 (comma-separated) or the backend's default working directory. Folder discovery
 only examines immediate children and offers up to 25 entries.
 
@@ -22,8 +22,12 @@ are supported. Missing folders remain removable but cannot start a session.
 
 ## New session and Resume
 
-**New session** offers favorites, falling back to suggested folders when none are
-saved. Selecting a folder creates a public thread bound to that absolute path,
+**New session** shows separate **Favorite folders** and **Recent folders** lists,
+with favorites taking precedence over duplicates. Recent folders are personal
+and persist when you start or resume work through the launcher, newest first.
+When both lists are empty it offers project folders. **Browse folders** opens
+project-folder suggestions without typing, with a **Favorites + recent** button
+to return. Selecting a folder creates a public thread bound to that absolute path,
 joins the requester and configured shared thread members, and shows the folder
 in its welcome message. The first human message starts the model through the
 normal chat pipeline. Opening menus and creating threads make no model calls.
