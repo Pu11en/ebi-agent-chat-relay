@@ -91,3 +91,12 @@
 - This expands natural-language management beyond opening and closing sessions to all supported settings sections. It does not add a model picker to thread settings.
 - Natural-language and menu actions have the same capability limits; report required owner sign-in or unreachable computers instead of pretending the change completed.
 - This is an agreed design requirement, not a claim that the management controls are installed.
+
+## Immediate priority: David’s minimal project workflow
+- Defer the broader settings discussion and get David’s simple project flow settled first; preserve existing decisions for later.
+- One picker in David’s control-center: Recent, All projects and Create folder.
+- Use the previously reported C:/Users/david/projects as the common project root; each project has its own child folder. Reverify on David’s machine before implementation.
+- Selecting a project creates a clean idle workers thread bound to that folder; the user’s first task starts work.
+- Creating a project asks for a name, creates its folder without overwriting another, and opens a clean idle session there.
+- The first-version creation scope is still open: empty folders only, or additionally GitHub cloning, existing-folder registration, or starter templates.
+- This is planning, not a claim that David’s remote installation was changed or checked.
