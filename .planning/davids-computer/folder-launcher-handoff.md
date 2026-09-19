@@ -10,15 +10,22 @@
 - No terminal commands for ordinary use and no model calls from the buttons themselves.
 
 ## Prompt for the computer’s existing session
-Apply this updated category launcher handoff on this computer: Favorites + recent folders first, button-driven browsing, no computer picker; preserve your local changes and personal setup, finish verification, queue activation when all sessions are idle without requiring manual terminal work, and post the working panel link and results.
+Your previous auth-only assignment is complete; your next assignment now includes installing this provided launcher on this computer, fixing duplicate/wrong-recipient completion pings, and activating the combined changes when sessions are idle. Preserve e72a851 and personal settings, implement and test the remaining work yourself, and post the actual launcher link and verification results. Do not stop after another audit or require the user to operate a terminal.
 
 ## Installation work for the agent
+
+**Ownership correction:** Drew’s agent built the shared launcher; the agent running on David’s computer must install and activate it there. The old instruction to work only on auth examples no longer defines this assignment.
+
+**Latest verified Discord evidence:** David’s setup thread `1550681218717192263` has the auth-only receipt and no newer activation report; the latest control-center messages contain no launcher panel. Completion of Drew’s run sent both `<@488763953397235712> ✅ done` and a separate `<@718234548139196476>` dashboard ping, so requester-only notification is still broken.
+
+**Required notification fix:** inspect the custom completion Cog and framework dashboard together, choose one completion-notification owner, and make each turn notify only the author of that turn. Keep both operators’ thread access. Add regressions for alternating requesters and parallel threads; verify mention IDs and AllowedMentions, not display names. Preserve error/action-required notices, but target the corresponding requester. This is part of this assignment even though it was outside the earlier auth-only task.
 This is an additive launcher feature, not a replacement installation or a change to permission mode.
 - David: category `1550644903384580167`, control-center `1550644904617582662`, workers `1550644907100741783`, bot application `1550644558176460961`.
 - iMac: category `1546805993441206282`, control-center `1546805995685290054`, workers `1546805996997967892`, expected bot application `1546757772052537385`; confirm the running bot identity before changes.
 - Detect which local instance you are working on and retain its own identity and channel mapping; never copy another computer’s token, credentials, instructions, memory, or favorites.
 - The local iMac agent must discover its actual checkout, Python environment and launch mechanism; its machine paths have not been verified from Drew’s Linux host.
 - David’s latest report says authentication fix `e72a851` is committed and tested but not loaded by the running bot; preserve that commit, update stale operational version notes, and activate both changes together at an idle boundary.
+- The authentication fix remains inactive according to David’s receipt; code committed on disk is not evidence that the running bot loaded it.
 - No remote Windows or iMac activation has been verified by Drew’s agent; installation/testing must run on the corresponding computer.
 - On David’s Windows computer inspect `C:\Users\david\ccdb\bridge`, its status, and the real running instance before editing; preserve your authentication fix and every unrelated change.
 - Decode the embedded gzip/base64 JSON below, verify its SHA-256, inspect the three text files, and install them at the listed relative paths; if any already exist with different content, merge deliberately rather than overwriting.
