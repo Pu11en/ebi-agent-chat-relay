@@ -9,13 +9,17 @@
     "principle": "Few top-level commands; discover related actions through clickable menus instead of memorizing separate commands."
   },
   "control_center": {
-    "scope": "Current category: future-session model defaults plus a skills inventory; no existing-session model changes.",
+    "scope": "Settings and capability visibility for the current category computer; model defaults affect future sessions only. Detailed scope of new menu sections remains to discuss.",
     "existing_sessions": "retain current settings",
     "default_agent_and_model": "available here",
     "choose_existing_thread": "not part of current agreed control-center settings flow after user correction",
     "menu_sections": [
       "default_model_for_new_sessions",
-      "skills_inventory"
+      "skills_inventory",
+      "shared_instructions",
+      "connections",
+      "bot_status",
+      "updates"
     ]
   },
   "session_thread": {
@@ -116,5 +120,16 @@
     "initial_view": "undecided",
     "purpose": "Browse and search skills on this computer, see their purpose and verified availability across harnesses.",
     "installation_or_sync": "not authorized by this design discussion"
-  }
+  },
+  "accepted_sections_pending_detail": [
+    "shared_instructions",
+    "connections",
+    "bot_status",
+    "updates"
+  ],
+  "candidate_sections_not_agreed": {
+    "memory": "View and manage remembered preferences and facts, with ownership and sharing still to define.",
+    "backups_and_recovery": "Recover earlier bot settings after a bad change; exact backup scope and restore behavior still to define."
+  },
+  "planning_scope": "Finish control-center menu inventory, then discuss each section one at a time; thread commands remain deferred. Acceptance of menu sections is not implementation authorization."
 }

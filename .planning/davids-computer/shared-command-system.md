@@ -15,7 +15,7 @@
 - **Discussion order:** finish control-center commands before discussing thread commands; earlier thread proposals remain deferred.
 - **/new** — Favorites / Recent / Browse → choose a folder → create an idle workers thread → return its link.
 - **/sessions** — show sessions started by the requester, including older and archived threads, newest activity first, strictly within this category; offer an Everyone filter within that same category. Show project and idle/running/archived state; select one to open or manage it.
-- **/settings in control-center** — a clickable menu with Default model for future sessions and Skills inventory on this computer. Existing sessions keep their settings; do not choose and mutate another thread from this default-settings flow.
+- **/settings in control-center** — one clickable menu containing Default model, Skills, Shared instructions, Connections, Bot status and Updates. These sections are accepted for design; their detailed behavior is not all settled or implemented. Default model changes affect future sessions only; this is not a picker for changing an existing thread’s model.
 - **/help** — show only the relevant control-center actions and short examples.
 - **Default model picker chosen:** one unified Favorites + Recent view with clickable choices and typed search; do not group by harness or ask for a separate harness choice. The selected model automatically determines its matching configured harness on this category’s computer. Selecting a default affects future sessions in this category only.
 - **Model favorites and recents are personal:** each user sees their own shortcuts and selection history. This does not change the agreed category-wide scope of future-session model defaults.
@@ -73,3 +73,13 @@
 - Global scope on one computer does not imply installation on David’s or iMac’s computer; unavailable remote inventory must be shown as unverified.
 - Initial-screen question: all skills, shared across harnesses, availability gaps, or search first.
 - This discussion does not authorize installing or syncing skills, changing personal instructions, or running model probes.
+
+## Additional settings sections accepted
+- User accepted Shared instructions, Connections, Bot status and Updates as menu sections, not separate commands.
+- Shared instructions: view and manage rules intended for the computer’s harnesses; preserve personal ownership and define sharing before implementation.
+- Connections: show accounts/services and sign-in status; exact account operations remain to discuss.
+- Bot status: show what is working, unavailable or needs attention; recovery actions remain to discuss.
+- Updates: show installed versions and manage updates for the current computer; activation behavior remains to discuss.
+- Finish identifying control-center sections before discussing each in detail; thread commands remain deferred.
+- Two additional candidates, not accepted: Memory (remembered facts/preferences) and Backups & recovery (recover earlier bot settings).
+- No runtime, account, instruction, memory, installation or update changes are authorized by accepting this menu design.
