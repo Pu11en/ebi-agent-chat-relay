@@ -39,3 +39,15 @@
 - Category buttons always call the bot that posted them, which avoids choosing among duplicate commands.
 - Recommended next outcome: establish and verify a management connection to each remaining instance, then install this same tested flow on both.
 - Alternative focused outcomes: finish David’s installation with his current local agent, finish iMac’s installation with its current local agent, or refine the shared button layout before those upgrades.
+
+## Planning decision: two-way agent handoffs
+- Every trusted computer agent must be able to send a task to every other trusted computer agent: DrewAI ↔ iMac, DrewAI ↔ David, and iMac ↔ David.
+- The destination computer runs the task with its own folders, tools, model logins and local settings.
+- The destination acknowledges the task, reports progress and returns the result in Discord so the requesting agent and people can follow it.
+- Task IDs, trusted-sender checks and message types must prevent duplicate execution and reply loops.
+- This is the prerequisite for registering the shared slash commands on DrewAI alone without taking away the other computers’ ability to work.
+
+## Command planning method
+- Decide the interface shape first because Discord still exposes registered commands to server owners even when a channel rule would reject them.
+- Then settle one command at a time: whether it stays, where it works, exactly what opens, its defaults, and what old command it replaces.
+- Keep the existing safety rule: remove an old command only after its replacement is built and tried locally.
