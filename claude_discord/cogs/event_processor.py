@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import time
 from collections.abc import Callable, Coroutine
@@ -40,7 +41,7 @@ from claude_code_core.frontend import (
 from claude_code_core.types import ElicitationRequest
 
 from ..claude.types import AskQuestion, MessageType, SessionState, StreamEvent, ToolUseEvent
-from ..collision import extract_written_path
+from ..collision import extract_written_paths
 from .run_config import RunConfig
 
 logger = logging.getLogger(__name__)
@@ -738,9 +739,17 @@ class EventProcessor:
         tracker = self._config.file_activity
         if tracker is None:
             return
-        path = extract_written_path(tool_use.tool_name, tool_use.tool_input)
-        if path is not None:
-            tracker.record(self._config.surface.thread_key, path, time.monotonic())
+        paths = extract_written_paths(tool_use.tool_name, tool_use.tool_input)
+        if not paths:
+            return
+        # Codex may report paths relative to its working directory; two threads
+        # can only be compared on absolute paths.
+        base = getattr(self._config.runner, "working_dir", None)
+        now = time.monotonic()
+        for path in paths:
+            if not os.path.isabs(path) and isinstance(base, str) and base:
+                path = os.path.normpath(os.path.join(base, path))
+            tracker.record(self._config.surface.thread_key, path, now)
 
     async def _handle_tool_use(self, event: StreamEvent) -> None:
         """Open a frontend-native activity for a tool call."""

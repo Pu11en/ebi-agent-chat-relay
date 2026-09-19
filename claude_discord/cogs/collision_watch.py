@@ -85,11 +85,17 @@ class CollisionWatchCog(commands.Cog):
         if self._tracker is None or self._registry is None:
             return
 
+        # A thread waiting for its next message still counts: its recent edits
+        # are unfinished work. But at least one of the pair must be working
+        # right now, or nothing new happened worth interrupting for.
         live = {s.thread_id for s in self._registry.list_active()}
-        if len(live) < 2:
+        if not live:
             return
+        known = self._tracker.thread_ids() | live
 
-        for collision in find_collisions(self._tracker.snapshot(live, now)):
+        for collision in find_collisions(self._tracker.snapshot(known, now)):
+            if not live.intersection(collision.threads):
+                continue
             if not self._ledger.should_alert(collision, now):
                 continue
             self._ledger.record(collision, now)
