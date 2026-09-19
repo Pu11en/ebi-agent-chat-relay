@@ -156,6 +156,14 @@ def test_notice_is_a_plain_heads_up_with_a_thread_link() -> None:
     assert "curl" not in text and "/api/" not in text  # a human reads this
 
 
+def test_notice_tells_how_to_authenticate_the_api_calls() -> None:
+    """The endpoints it points at are behind bearer auth; a pointer without the
+    header sends the session straight into a 401."""
+    text = build_collision_notice(Collision(threads=(A, B), shared_paths=(SHARED,)), for_thread=A)
+
+    assert "Authorization: Bearer $CCDB_API_SECRET" in text
+
+
 # ---------------------------------------------------------------------------
 # CollisionWatchCog
 # ---------------------------------------------------------------------------

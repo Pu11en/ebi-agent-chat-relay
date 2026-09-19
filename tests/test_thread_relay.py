@@ -98,6 +98,12 @@ def test_relay_prompt_marks_the_sender_and_the_reply_path() -> None:
     assert "hop=2" in prompt  # tells the receiver what to send back
 
 
+def test_relay_prompt_tells_how_to_authenticate_the_reply() -> None:
+    prompt = build_relay_prompt(text="please stand down", from_thread=A, hop=1)
+
+    assert "Authorization: Bearer $CCDB_API_SECRET" in prompt
+
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------

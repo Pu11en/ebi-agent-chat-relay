@@ -41,7 +41,7 @@ from ..agent_router import AgentRoute, parse_agent_routes
 from ..catalog_service import entry_to_dict, project_to_dict, resolution_to_dict
 from ..discord_ui.file_sender import send_file_blobs
 from ..handoff_status import load_handoff_status, render_handoff_status
-from ..lounge import length_hint
+from ..lounge import API_AUTH_HEADER, length_hint
 from ..project_catalog import DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, RootStatus, normalize_token
 from ..project_lookup_worker import (
     build_project_lookup_prompt,
@@ -2668,6 +2668,7 @@ class ApiServer:
                 "文脈を完全に復元できるようにするのが目的です。"
                 "Bash ツールで次を実行します（要約は JSON として正しくエスケープすること）:\n"
                 f'  curl -sS -X POST "$CCDB_API_URL/api/ingest/summary" \\\n'
+                f'    -H "{API_AUTH_HEADER}" \\\n'
                 f'    -H "Content-Type: application/json" \\\n'
                 f"    --data-binary @/tmp/ccdb_summary_{result_id}.json\n"
                 f"  # 事前に /tmp/ccdb_summary_{result_id}.json へ "
@@ -3281,9 +3282,10 @@ class ApiServer:
     async def save_thread_summary(self, request: web.Request) -> web.Response:
         """POST /api/ingest/summary — save an updated running summary.
 
-        Internal control-plane endpoint (localhost, no token — same trust model
-        as /api/tasks): the Claude session spawned by an ingest run calls this
-        with its own ``result_id`` after drafting a reply. ccdb resolves the
+        Internal control-plane endpoint (localhost, behind the global
+        ``api_secret`` middleware — same trust model as /api/tasks): the Claude
+        session spawned by an ingest run calls this with its own ``result_id``
+        after drafting a reply. ccdb resolves the
         ``summary_key`` and the pending marker from the ingest row, so the marker
         only advances when a summary is actually saved (a failed session leaves
         the marker untouched and the same diff is re-exported next time).

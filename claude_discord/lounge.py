@@ -10,6 +10,14 @@ from __future__ import annotations
 
 from .database.lounge_repo import LoungeMessage
 
+#: Every ``$CCDB_API_URL`` endpoint except ``/api/health`` sits behind bearer
+#: auth once ``CCDB_API_SECRET`` is configured, and the runner exports that same
+#: secret into each session's environment.  Prompt examples reference the
+#: variable verbatim so the shell expands it; the secret itself never appears
+#: in any prompt.  Harmless when no secret is set (the middleware is off).
+API_AUTH_HEADER = "Authorization: Bearer $CCDB_API_SECRET"
+API_AUTH_CURL_FLAG = f'-H "{API_AUTH_HEADER}"'
+
 # The invitation block tells Claude *what* the lounge is, *how* to post,
 # and sets the expectation that posting at session start is mandatory.
 _LOUNGE_INVITE = """\
@@ -47,10 +55,14 @@ Good: "Made the dev server a systemd unit. Done, PR #97 merged — details there
 Post command:
 ```bash
 curl -s -X POST "$CCDB_API_URL/api/lounge" \\
+  -H "{auth}" \\
   -H "Content-Type: application/json" \\
   -d '{{"message": "your note here", "label": "your nickname", \\
        "thread_id": "'$DISCORD_THREAD_ID'"}}'
 ```
+
+Every `$CCDB_API_URL` call below needs that same `-H "{auth}"` header (only
+`/api/health` is open). Both variables are already in your environment.
 
 Labels are free-form. Examples: "bug-hunter", "night-shift", "frontend", "careful"
 
@@ -78,10 +90,12 @@ A lounge note tells you a thread ID. These two endpoints let you go and look:
 
 ```bash
 # Who else is alive, where are they working, what did they last announce?
-curl -s "$CCDB_API_URL/api/sessions?exclude_thread=$DISCORD_THREAD_ID"
+curl -s -H "{auth}" \\
+  "$CCDB_API_URL/api/sessions?exclude_thread=$DISCORD_THREAD_ID"
 
 # Read another thread's actual conversation (thread_id from the call above)
-curl -s "$CCDB_API_URL/api/threads/<thread_id>/messages?limit=30"
+curl -s -H "{auth}" \\
+  "$CCDB_API_URL/api/threads/<thread_id>/messages?limit=30"
 ```
 
 Use them when a lounge note sounds like your task, when you are about to touch a
@@ -95,7 +109,8 @@ Before starting substantial work on a repo, issue, or file, claim it. This is
 cheaper than discovering the collision later — no reading, no negotiating:
 
 ```bash
-curl -s -X POST "$CCDB_API_URL/api/claims" -H "Content-Type: application/json" \\
+curl -s -X POST "$CCDB_API_URL/api/claims" -H "{auth}" \\
+  -H "Content-Type: application/json" \\
   -d '{{"resource": "repo:my-repo#issue-42", "thread_id": "'$DISCORD_THREAD_ID'", \\
        "note": "what you intend to do"}}'
 ```
@@ -107,7 +122,7 @@ curl -s -X POST "$CCDB_API_URL/api/claims" -H "Content-Type: application/json" \
 
 Release when you are done (or when you stop early):
 ```bash
-curl -s -X DELETE \\
+curl -s -X DELETE -H "{auth}" \\
   "$CCDB_API_URL/api/claims?resource=repo:my-repo%23issue-42&thread_id=$DISCORD_THREAD_ID"
 ```
 
@@ -119,6 +134,7 @@ When you find a session genuinely duplicating your work, say so directly:
 
 ```bash
 curl -s -X POST "$CCDB_API_URL/api/threads/<their_thread_id>/message" \\
+  -H "{auth}" \\
   -H "Content-Type: application/json" \\
   -d '{{"text": "your message", "from_thread": "'$DISCORD_THREAD_ID'", \\
        "mode": "queue", "hop": 0}}'
@@ -186,7 +202,7 @@ def build_lounge_prompt(
                            own earlier posts from other sessions' posts
                            (critical after context compaction).
     """
-    parts = [_LOUNGE_INVITE]
+    parts = [_LOUNGE_INVITE.format(auth=API_AUTH_HEADER)]
 
     if recent_messages:
         parts.append(_RECENT_HEADER)

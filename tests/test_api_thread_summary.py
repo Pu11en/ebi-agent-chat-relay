@@ -198,6 +198,19 @@ class TestBuildIngestPrompt:
         assert "rid42" in prompt
         assert "teams-export.md" in prompt
 
+    def test_save_instruction_carries_the_bearer_header(self, api: ApiServer) -> None:
+        """/api/ingest/summary sits behind the global api_secret middleware like
+        every other endpoint, so the curl the session is told to run must
+        authenticate or the summary is silently never saved."""
+        prompt = api._build_ingest_prompt(
+            content="返信して",
+            saved_paths=[],
+            summary_key="teams:1",
+            stored_summary="",
+            result_id="rid42",
+        )
+        assert "Authorization: Bearer $CCDB_API_SECRET" in prompt
+
     def test_first_run_has_no_stored_block_but_still_asks_to_save(self, api: ApiServer) -> None:
         prompt = api._build_ingest_prompt(
             content="返信して",
