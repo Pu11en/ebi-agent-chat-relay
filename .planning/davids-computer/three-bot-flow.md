@@ -8,19 +8,19 @@
 - Both people keep their shared access; category ownership chooses the agent’s computer, not which person may use it.
 
 ## Start and continue work
-- Open the computer’s category, then **start-here**.
+- Open the computer’s category, then **control-center**.
 - **New session** shows your favorites and recent folders, with **Browse folders** for another location.
 - Navigate folders and press **Start here**; the new conversation appears under that category’s **workers** channel.
 - **Resume** opens an existing conversation; **Favorite folders** manages your shortcuts.
-- The launcher stays in start-here while work stays in threads, so conversation does not bury the controls.
+- The pinned launcher stays in control-center; a quiet copy of its buttons moves near the bottom after channel messages, replacing only its previous copy.
 - No separate computer picker and no full path typing for ordinary folder browsing.
 
 ## What is actually active
-- ✅ DrewAI’s new launcher is live at https://discord.com/channels/1546639912848199742/1550703906483343444/1550705493448720469 .
+- ✅ DrewAI’s new launcher is live at https://discord.com/channels/1546639912848199742/1546658182989086720/1550689028234281088 .
 - ✅ Its restart receipt reports runtime e4911bd and a healthy new process, PID 237039.
-- ✅ All three start-here channels exist.
-- ⬜ David’s and iMac’s start-here channels are still empty in this live check; their latest shared upgrade is not verified as installed.
-- David’s earlier custom launcher remains in his control-center; this new version should replace that entry point without deleting threads.
+- ✅ All three original control-center channels remain the entry points; no extra launcher channel is wanted.
+- ⬜ David and iMac still need the latest shared browser/shortcut upgrade verified in their existing control-centers.
+- David’s earlier custom launcher remains in his control-center; upgrade that entry point in place without deleting threads.
 - ⬜ Human button clicks and remote computer restart behavior still need verification.
 
 ## Why this session cannot yet update everything

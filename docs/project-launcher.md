@@ -7,12 +7,18 @@ buttons, labelled with its display name or `CCDB_COMPUTER_NAME`. The category
 already identifies the computer. Buttons always belong to the bot that posted them.
 `/launcher` opens a private copy in an authorized channel.
 
-Set `CCDB_LAUNCHER_CHANNEL_ID` to a dedicated start-here channel and
+Set `CCDB_LAUNCHER_CHANNEL_ID` to the existing control-center channel and
 `CCDB_LAUNCHER_SESSION_CHANNEL_ID` to its workers channel. The workers channel is
 automatically included in chat routing. Normal messages in the launcher channel
 do not start chat sessions. Existing channels and threads remain available.
 When unset, existing consumers keep their original primary-channel launcher and
 create sessions under the invoking channel. The framework does not create channels.
+
+The pinned anchor stays in control-center. After channel messages, a ten-second
+coalescing delay adds a silent three-button shortcut at the bottom, replacing only
+the previous bot-owned shortcut. Worker threads, system events and the launcher’s
+own controls do not trigger it. Conversation messages and the pinned anchor are
+never removed by this refresh.
 
 ## Find any accessible folder
 

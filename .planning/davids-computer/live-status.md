@@ -34,3 +34,16 @@ Discord's administrator command-permission bypass means native slash entries can
 remain visible. The runtime guard prevents wrong-category execution; it does not
 hide entries, remove bot members, or restrict independent custom listeners/API jobs.
 Source: https://docs.discord.com/developers/interactions/application-commands#permissions
+
+
+## User correction: control-center, not another channel
+The user explicitly rejected separate start-here channels. Home mappings now point
+to the existing control-centers; workers destinations are unchanged. DrewAI’s original
+control-center panel was restored live. A tested silent bottom shortcut is being
+prepared for idle activation so users do not need to hunt through channel history.
+Earlier start-here links/status above are historical and no longer the intended flow.
+
+Unused extra start-here channels were removed only after checking they contained
+no user messages or active/archived threads. All three home IDs now reference
+the original control-centers. Validation: 3114 suite tests plus the isolated ingest
+test pass; ruff lint/format, pyright and changed-code security checks pass.

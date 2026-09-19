@@ -38,3 +38,11 @@ Check: .venv/bin/python -m pytest tests/test_project_launcher.py -q --no-cov
 Try: Open your category's start-here channel, New session, Browse folders, Start here.
 The full filesystem browser and fixed home supersede the earlier shallow suggestion picker.
 Native slash-menu visibility for administrators is a Discord limitation, not fixed here.
+
+
+## Correction: control-center remains the entry point
+- [x] Restore each computer’s home mapping to its existing control-center.
+- [x] Restore DrewAI’s original live panel; remove unused extra channels created by this session.
+- [x] Add tests first for a silent bottom shortcut, coalescing, own-message deletion and unload cleanup.
+- [x] Keep workers as the destination for new session threads.
+- [ ] Activate bottom-shortcut code at the next idle window and verify it.
