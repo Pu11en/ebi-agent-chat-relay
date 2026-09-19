@@ -48,6 +48,43 @@ def _make_cog() -> ClaudeChatCog:
     return ClaudeChatCog(bot=bot, repo=repo, runner=runner)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requester", [42, 99])
+async def test_run_notifies_message_author_instead_of_server_owner(
+    monkeypatch: pytest.MonkeyPatch, requester: int
+) -> None:
+    import claude_discord.cogs.claude_chat as chat_mod
+    from claude_discord.discord_ui.thread_dashboard import ThreadStatusDashboard
+
+    cog = _make_cog()
+    channel = MagicMock(spec=discord.TextChannel)
+    dashboard = ThreadStatusDashboard(channel, owner_id=42, mention_user_ids={42, 99})
+    cog._get_dashboard = lambda: dashboard
+    cog._prepare_cross_backend_handoff = AsyncMock(return_value=(None, "work"))
+    cog._get_current_model = AsyncMock(return_value=None)
+    cog._get_allowed_tools = AsyncMock(return_value=None)
+    cog._get_current_effort = AsyncMock(return_value=None)
+    runner = MagicMock()
+    runner.command = "claude"
+    cog._build_runner_for_thread = AsyncMock(return_value=runner)
+    fake_run = AsyncMock()
+    monkeypatch.setattr(chat_mod, "run_claude_with_config", fake_run)
+    monkeypatch.setattr(chat_mod, "StatusManager", lambda *a, **k: _StubStatus())
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 123
+    thread.send = AsyncMock()
+    message = MagicMock(spec=discord.Message)
+    message.author = SimpleNamespace(id=requester, bot=False)
+
+    await cog._run_claude(message, thread, "work", None, chat_only=True)
+
+    assert fake_run.call_args.args[0].notify_user_id == requester
+    assert thread.send.call_args.args[0] == (
+        f"🟡 <@{requester}> The agent has finished — your reply is needed here."
+    )
+    assert thread.send.call_args.kwargs["allowed_mentions"].to_dict()["users"] == [requester]
+
+
 def _make_thread_interaction(thread_id: int = 12345) -> MagicMock:
     """Return an Interaction whose channel is a discord.Thread."""
     interaction = MagicMock(spec=discord.Interaction)

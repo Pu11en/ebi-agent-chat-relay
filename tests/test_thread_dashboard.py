@@ -130,6 +130,54 @@ class TestSetState:
 
 class TestOwnerMention:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("requester", [42, 99])
+    async def test_explicit_requester_is_the_only_notification_recipient(
+        self, requester: int
+    ) -> None:
+        dashboard = ThreadStatusDashboard(
+            channel=_make_channel(),
+            owner_id=42,
+            mention_user_ids={42, 99},
+            muted_user_ids={99},
+        )
+        thread = _make_thread(10)
+
+        await dashboard.set_state(10, ThreadState.PROCESSING, "work", thread=thread)
+        await dashboard.set_state(
+            10, ThreadState.WAITING_INPUT, "work", thread=thread, notify_user_id=requester
+        )
+
+        sent = thread.send.call_args
+        assert sent.args[0] == (
+            f"🟡 <@{requester}> The agent has finished — your reply is needed here."
+        )
+        mentions = sent.kwargs["allowed_mentions"].to_dict()
+        assert mentions["users"] == [requester]
+        assert mentions["parse"] == []
+
+    @pytest.mark.asyncio
+    async def test_recipient_changes_with_each_turn_without_affecting_other_threads(self) -> None:
+        dashboard, _ = _make_dashboard(owner_id=42)
+        first, second = _make_thread(10), _make_thread(20)
+        await dashboard.set_state(10, ThreadState.PROCESSING, "one", thread=first)
+        await dashboard.set_state(20, ThreadState.PROCESSING, "two", thread=second)
+        await dashboard.set_state(
+            20, ThreadState.WAITING_INPUT, "two", thread=second, notify_user_id=99
+        )
+        await dashboard.set_state(
+            10, ThreadState.WAITING_INPUT, "one", thread=first, notify_user_id=42
+        )
+        await dashboard.set_state(10, ThreadState.PROCESSING, "follow-up", thread=first)
+        await dashboard.set_state(
+            10, ThreadState.WAITING_INPUT, "follow-up", thread=first, notify_user_id=99
+        )
+
+        assert [
+            call.kwargs["allowed_mentions"].to_dict()["users"] for call in first.send.call_args_list
+        ] == [[42], [99]]
+        assert second.send.call_args.kwargs["allowed_mentions"].to_dict()["users"] == [99]
+
+    @pytest.mark.asyncio
     async def test_mention_sent_on_waiting_input_transition(self) -> None:
         dashboard, channel = _make_dashboard(owner_id=42)
         await dashboard.initialize()

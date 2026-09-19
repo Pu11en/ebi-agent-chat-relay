@@ -1719,6 +1719,8 @@ class TestBuildQueue:
         item = QueueItem(plan_path="/x/PLAN-a.md", report_id=1)
         cog._queue.started(item, "alpha", 700)
         cog._queue.note(700, "stuck: needs a key")
+        # Model an overnight build independently of the date pytest is run.
+        cog._queue.state.history[-1]["started"] = "2026-09-15T23:30:00"
 
         await cog._maybe_morning_summary(dt.datetime(2026, 9, 16, 7, 30))
         assert not channel.send.await_count

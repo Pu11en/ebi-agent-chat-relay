@@ -1686,12 +1686,13 @@ class ClaudeChatCog(commands.Cog):
             if self._active_tasks.get(thread.id) is current_task:
                 self._active_tasks.pop(thread.id, None)
 
-            # Transition to WAITING_INPUT so owner knows a reply is needed
+            # Notify this message's author, independently of shared thread membership.
             if dashboard is not None:
                 await dashboard.set_state(
                     thread.id,
                     ThreadState.WAITING_INPUT,
                     description,
                     thread=thread,
+                    notify_user_id=user_message.author.id,
                 )
             self.context_nudger.after_turn(thread)
