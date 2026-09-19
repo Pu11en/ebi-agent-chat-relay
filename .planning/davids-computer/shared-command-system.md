@@ -115,3 +115,11 @@
 - 37 focused tests, lint, formatting, types and security checks pass. Full clean suite with the first 36 focused tests passed 3150 tests; one isolated framework check passed separately.
 - Installation package (source, tests and configuration instructions) delivered to David setup thread, message 1550754808259018772.
 - Delivery is not execution: David bot ignores bot-authored messages, so a human must start this first installation from that thread. No Windows runtime change or activation is claimed.
+
+## Trusted agent-to-agent control required
+- David’s agent must accept explicit tasks dispatched by DrewAI automatically and return acknowledgement, progress and results to the originating thread. Drew should not have to forward each task or approve the same established sender repeatedly.
+- Execute on David’s computer using its own session context; posting through DrewAI’s local session API must not masquerade as execution on David.
+- Recognize the configured sender bot by its actual Discord identity (DrewAI 1546642963709427832), the intended recipient (David 1550644558176460961), guild and task envelope; ordinary bot conversation and task-result messages must not start new tasks.
+- Use request IDs, duplicate detection, bounded reply handling and explicit delivery/running/completed states so retries do not repeat work or create reply loops.
+- This is a required follow-up capability, not part of the already-delivered project-picker package; it is not installed or verified.
+- Do not require direct desktop access or Tailscale for this agent-mediated workflow.
