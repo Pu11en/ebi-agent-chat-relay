@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Control-center shortcut prototype</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #111214; color: #dbdee1; }
+    .app { min-height: 900px; display: grid; grid-template-columns: 210px 1fr; }
+    aside { background: #2b2d31; padding: 22px 12px; border-right: 1px solid #1e1f22; }
+    .category { color: #b5bac1; font-size: 12px; font-weight: 800; margin: 8px 8px 14px; }
+    .channel { padding: 10px 12px; color: #949ba4; border-radius: 5px; font-weight: 650; }
+    .channel.active { background: #404249; color: white; }
+    main { background: #313338; position: relative; min-width: 0; }
+    header { height: 56px; display: flex; align-items: center; padding: 0 22px; border-bottom: 1px solid #26272b; box-shadow: 0 1px 0 #202225; font-weight: 800; }
+    header span { color: #949ba4; margin-right: 8px; }
+    .messages { padding: 24px 28px 122px; }
+    .message { display: grid; grid-template-columns: 42px 1fr; gap: 12px; margin: 0 0 26px; }
+    .avatar { width: 42px; height: 42px; border-radius: 50%; background: linear-gradient(140deg,#5865f2,#9b59ff); display:flex; align-items:center; justify-content:center; font-weight:900; color:white; }
+    .name { color: white; font-weight: 800; margin-right: 7px; }
+    .bot { background: #5865f2; color: white; border-radius: 3px; font-size: 10px; padding: 1px 4px; }
+    .time { color: #949ba4; font-size: 12px; margin-left: 6px; }
+    .copy { color: #dbdee1; margin-top: 5px; line-height: 1.45; }
+    .controls { margin-top: 11px; display: flex; flex-wrap: wrap; gap: 8px; }
+    button { appearance: none; border: 0; border-radius: 4px; padding: 10px 14px; color: white; background: #4e5058; font-weight: 750; font-size: 14px; }
+    button.primary { background: #5865f2; }
+    button.good { background: #248046; }
+    .notice { margin: 0 0 22px 54px; color: #b5bac1; font-size: 13px; border-left: 3px solid #5865f2; padding: 6px 12px; }
+    .composer { position: absolute; left: 24px; right: 24px; bottom: 24px; height: 52px; border-radius: 8px; background: #383a40; display: flex; align-items: center; padding: 0 18px; color: #949ba4; }
+    .private-panel { margin-top: 10px; background: #2b2d31; border: 1px solid #1e1f22; border-radius: 8px; padding: 14px; max-width: 520px; }
+    .private-panel strong { color: white; }
+    .ephemeral { color: #b5bac1; font-size: 12px; margin-top: 10px; }
+    .switcher { position: fixed; left: 50%; bottom: 9px; transform: translateX(-50%); z-index: 5; background: #111214; border: 1px solid #4e5058; box-shadow: 0 6px 24px #000a; border-radius: 999px; padding: 6px 12px; display: flex; align-items: center; gap: 12px; font-weight: 800; }
+    .switcher button { border-radius: 999px; padding: 5px 10px; background: #5865f2; }
+    .label { position: fixed; top: 10px; right: 14px; z-index: 4; color: white; background: #111214dd; border: 1px solid #4e5058; border-radius: 7px; padding: 8px 11px; font-size: 13px; }
+    @media (max-width: 700px) { .app { grid-template-columns: 1fr; } aside { display: none; } .messages { padding-left: 18px; padding-right: 18px; } }
+  </style>
+</head>
+<body>
+  <!-- Three feasible Discord control-center variants, switchable via ?variant=A/B/C. -->
+  <div class="label" id="variantLabel"></div>
+  <div class="app">
+    <aside>
+      <div class="category">LENOVO CODEX CONTROL CENTER</div>
+      <div class="channel active"># control-center</div>
+      <div class="channel"># workers</div>
+    </aside>
+    <main>
+      <header><span>#</span> control-center</header>
+      <div class="messages" id="messages"></div>
+      <div class="composer">Message #control-center</div>
+    </main>
+  </div>
+  <div class="switcher">
+    <button id="prev" aria-label="Previous variant">←</button>
+    <span id="switcherLabel"></span>
+    <button id="next" aria-label="Next variant">→</button>
+  </div>
+  <script>
+    const variants = {
+      A: {
+        name: "Fresh buttons at bottom",
+        html: `
+          <div class="message"><div class="avatar">D</div><div><div><span class="name">Drew</span><span class="time">Today at 4:30 PM</span></div><div class="copy">Start a fresh session for the website project.</div></div></div>
+          <div class="message"><div class="avatar">AI</div><div><div><span class="name">DrewAI</span><span class="bot">BOT</span><span class="time">Today at 4:30 PM</span></div><div class="copy">Created the website session. It is ready for your first message.</div></div></div>
+          <div class="notice">After activity, the old shortcut is deleted and this fresh copy appears at the bottom after 10 seconds.</div>
+          <div class="message"><div class="avatar">AI</div><div><div><span class="name">DrewAI</span><span class="bot">BOT</span><span class="time">Today at 4:30 PM</span></div><div class="copy"><strong>Session controls</strong> · choose a folder or return to existing work</div><div class="controls"><button class="good">New session</button><button>Sessions</button><button>Settings</button></div></div></div>`
+      },
+      B: {
+        name: "One quiet Controls button",
+        html: `
+          <div class="message"><div class="avatar">D</div><div><div><span class="name">Drew</span><span class="time">Today at 4:30 PM</span></div><div class="copy">Start a fresh session for the website project.</div></div></div>
+          <div class="message"><div class="avatar">AI</div><div><div><span class="name">DrewAI</span><span class="bot">BOT</span><span class="time">Today at 4:30 PM</span></div><div class="copy">Created the website session. It is ready for your first message.</div></div></div>
+          <div class="notice">Only this small shortcut follows activity. One tap opens the private menu below.</div>
+          <div class="message"><div class="avatar">AI</div><div><div><span class="name">DrewAI</span><span class="bot">BOT</span><span class="time">Today at 4:30 PM</span></div><div class="copy"><strong>Computer controls</strong></div><div class="controls"><button class="primary">Open controls</button></div><div class="private-panel"><strong>What do you want to do?</strong><div class="controls"><button class="good">New session</button><button>Sessions</button><button>Settings</button></div><div class="ephemeral">Only you can see this menu</div></div></div></div>`
+      },
+      C: {
+        name: "Type /control when needed",
+        html: `
+          <div class="message"><div class="avatar">D</div><div><div><span class="name">Drew</span><span class="time">Today at 4:30 PM</span></div><div class="copy">/control</div></div></div>
+          <div class="notice">Nothing is reposted in the channel. The command opens a private menu that cannot be buried.</div>
+          <div class="message"><div class="avatar">AI</div><div><div><span class="name">DrewAI</span><span class="bot">BOT</span><span class="time">Today at 4:30 PM</span></div><div class="private-panel"><strong>Lenovo controls</strong><div class="copy">Start new work, return to a session, or change computer settings.</div><div class="controls"><button class="good">New session</button><button>Sessions</button><button>Settings</button></div><div class="ephemeral">Only you can see this · dismiss message</div></div></div></div>`
+      }
+    };
+    const keys = Object.keys(variants);
+    const params = new URLSearchParams(location.search);
+    let current = variants[params.get("variant")] ? params.get("variant") : "A";
+    function render() {
+      const variant = variants[current];
+      document.getElementById("messages").innerHTML = variant.html;
+      document.getElementById("variantLabel").textContent = `PROTOTYPE · ${current}`;
+      document.getElementById("switcherLabel").textContent = `${current} · ${variant.name}`;
+      document.title = `${current} · ${variant.name}`;
+    }
+    function move(step) {
+      current = keys[(keys.indexOf(current) + step + keys.length) % keys.length];
+      history.replaceState({}, "", `?variant=${current}`);
+      render();
+    }
+    document.getElementById("prev").onclick = () => move(-1);
+    document.getElementById("next").onclick = () => move(1);
+    document.addEventListener("keydown", event => {
+      if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+      if (event.key === "ArrowLeft") move(-1);
+      if (event.key === "ArrowRight") move(1);
+    });
+    render();
+  </script>
+</body>
+</html>
