@@ -6,6 +6,7 @@
 - Each computer keeps its **control-center** and **workers** channels; each workers thread is a session.
 - The category determines the computer and its bot. Both operators keep their existing access.
 - Type a command by itself and let its buttons/pickers guide the rest; no required extra command or typed argument after it.
+- Keep few top-level commands and expose related features as visible menu options; do not add a separate slash command for every feature.
 - **/new creates a clean idle session.** Choose the folder, create the thread, then type the first task there when ready.
 - Creating the thread must not start a model, invent a greeting task, copy another conversation or carry its pending goal into the new one.
 - This corrects the earlier suggestion to collect a task before opening the thread.
@@ -14,7 +15,7 @@
 - **Discussion order:** finish control-center commands before discussing thread commands; earlier thread proposals remain deferred.
 - **/new** — Favorites / Recent / Browse → choose a folder → create an idle workers thread → return its link.
 - **/sessions** — show sessions started by the requester, including older and archived threads, newest activity first, strictly within this category; offer an Everyone filter within that same category. Show project and idle/running/archived state; select one to open or manage it.
-- **/settings in control-center** — clickable/searchable settings for this category’s future-session defaults, including agent/model. Existing sessions keep their settings; do not choose and mutate another thread from this default-settings flow.
+- **/settings in control-center** — a clickable menu with Default model for future sessions and Skills inventory on this computer. Existing sessions keep their settings; do not choose and mutate another thread from this default-settings flow.
 - **/help** — show only the relevant control-center actions and short examples.
 - **Default model picker chosen:** one unified Favorites + Recent view with clickable choices and typed search; do not group by harness or ask for a separate harness choice. The selected model automatically determines its matching configured harness on this category’s computer. Selecting a default affects future sessions in this category only.
 - **Model favorites and recents are personal:** each user sees their own shortcuts and selection history. This does not change the agreed category-wide scope of future-session model defaults.
@@ -66,7 +67,7 @@
 - Parallel working-copy policy and optional background features remain unanswered and deferred while we establish the basic commands.
 
 ## Skills inventory under discussion
-- Proposed **/skills** in control-center: a clickable, searchable inventory on the current category computer. This command and its initial screen are not yet agreed or implemented.
+- **/settings → Skills** in control-center: a clickable, searchable inventory on the current category computer. The separate /skills proposal is withdrawn in favor of fewer commands with visible options; the inventory and its initial screen are not implemented.
 - Show what each skill does, whether it is shared globally on that computer or project-specific, and which installed harnesses actually discover it.
 - Distinguish shared files from verified harness discovery and runtime prerequisites; do not assume identical availability just because files exist.
 - Global scope on one computer does not imply installation on David’s or iMac’s computer; unavailable remote inventory must be shown as unverified.

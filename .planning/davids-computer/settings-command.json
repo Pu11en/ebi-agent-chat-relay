@@ -5,13 +5,18 @@
   "navigation": {
     "clickable_options": true,
     "typed_search": true,
-    "implementation_note": "Choose a Discord-supported search/picker interaction during implementation; do not promise live filtering without verifying it."
+    "implementation_note": "Choose a Discord-supported search/picker interaction during implementation; do not promise live filtering without verifying it.",
+    "principle": "Few top-level commands; discover related actions through clickable menus instead of memorizing separate commands."
   },
   "control_center": {
-    "scope": "current_category_defaults_for_future_sessions",
+    "scope": "Current category: future-session model defaults plus a skills inventory; no existing-session model changes.",
     "existing_sessions": "retain current settings",
     "default_agent_and_model": "available here",
-    "choose_existing_thread": "not part of current agreed control-center settings flow after user correction"
+    "choose_existing_thread": "not part of current agreed control-center settings flow after user correction",
+    "menu_sections": [
+      "default_model_for_new_sessions",
+      "skills_inventory"
+    ]
   },
   "session_thread": {
     "status": "separate options not yet defined",
@@ -43,7 +48,8 @@
     "ownership_user_answer": "Yes, personal to each user"
   },
   "user_corrections": [
-    "Do not organize model selection by harness; select the harness automatically from the chosen model."
+    "Do not organize model selection by harness; select the harness automatically from the chosen model.",
+    "Prefer selectable options within a few commands; fold the skills inventory into /settings rather than adding /skills."
   ],
   "deferred_decisions": [],
   "additional_settings": {
@@ -102,5 +108,13 @@
     },
     "settings_visibility": "excluded_from_settings",
     "default_behavior": true
+  },
+  "skills_inventory": {
+    "entry": "/settings -> Skills",
+    "standalone_command": false,
+    "status": "design_in_progress_not_implemented",
+    "initial_view": "undecided",
+    "purpose": "Browse and search skills on this computer, see their purpose and verified availability across harnesses.",
+    "installation_or_sync": "not authorized by this design discussion"
   }
 }
