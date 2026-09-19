@@ -14,6 +14,8 @@
 
 The intended connection is **David’s Discord bot → bridge running on David’s Windows computer → David’s own Claude Code installation and subscription**. Drew confirmed David owns both the computer and subscription, and David will paste the prompt below into Claude Code on that computer.
 
+**Personal settings decision:** preserve David’s own AGENTS.md, CLAUDE.md, skills, memory, model preferences, projects, and login. Do not copy Drew’s home configuration or inject Drew’s personal instructions into David’s sessions. Keep the bridge installation separate from the project working directory. The next-step prompt in `discord-only-setup.md` covers background operation and recovery for the already-installed bot; do not reinstall from scratch.
+
 The public key is not needed for this bridge’s Discord connection; it uses a bot token and Discord’s persistent connection instead.
 
 ## 2. Reset the token and invite the bot
