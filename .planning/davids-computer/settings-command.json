@@ -22,9 +22,10 @@
     "command": "/switch",
     "purpose": "quick agent/model selection",
     "default_location": "current session thread",
-    "settings_overlap": "No model selector in thread settings; control-center settings handles future-session defaults only."
+    "settings_overlap": "No model selector in thread settings; control-center settings handles future-session defaults only.",
+    "selection_flow": "Choose a model; resolve its harness automatically, with no separate harness step."
   },
-  "next_question": "Should model favorites and recents be personal to each operator or shared within the category?",
+  "next_question": null,
   "user_correction": "Thread settings are not for model changes; thread session commands differ from control-center commands.",
   "default_model_picker": {
     "initial_view": "favorites_and_recent",
@@ -33,6 +34,16 @@
     "user_answer": "A: favorites and recent",
     "scope": "future sessions in current category only",
     "existing_sessions": "unchanged",
-    "favorite_ownership": "not_yet_decided"
-  }
+    "favorite_ownership": "not_yet_decided",
+    "selection_unit": "model",
+    "group_by_harness": false,
+    "separate_harness_selection": false,
+    "harness_resolution": "Automatically select the compatible configured harness associated with the chosen model on the current category computer."
+  },
+  "user_corrections": [
+    "Do not organize model selection by harness; select the harness automatically from the chosen model."
+  ],
+  "deferred_decisions": [
+    "Whether model favorites and recents are personal or shared; latest correction was about harness selection, not ownership."
+  ]
 }

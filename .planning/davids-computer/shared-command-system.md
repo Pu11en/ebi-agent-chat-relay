@@ -15,14 +15,14 @@
 - **/sessions** — show sessions started by the requester, including older and archived threads, newest activity first, strictly within this category; offer an Everyone filter within that same category. Show project and idle/running/archived state; select one to open or manage it.
 - **/settings in control-center** — clickable/searchable settings for this category’s future-session defaults, including agent/model. Existing sessions keep their settings; do not choose and mutate another thread from this default-settings flow.
 - **/help** — show only the relevant control-center actions and short examples.
-- **Default agent/model picker chosen:** show Favorites + Recent first, with clickable choices and typed search; selecting a default affects future sessions in this category only.
+- **Default model picker chosen:** one unified Favorites + Recent view with clickable choices and typed search; do not group by harness or ask for a separate harness choice. The selected model automatically determines its matching configured harness on this category’s computer. Selecting a default affects future sessions in this category only.
 - No additional command is required to finish one of these flows.
 - Advanced maintenance stays inside appropriate menus instead of adding every feature as another top-level command.
 - Do not remove old commands until the agreed replacements have been built and checked.
 
 ## Proposed commands inside a session thread
 - **/stop** — stop this thread’s current run while keeping its conversation and files.
-- **/switch** — keep the existing quick agent/model picker for this session.
+- **/switch** — quick model selection for this session; resolve the matching harness automatically from the chosen model, with no separate harness selection.
 - **Thread settings** — separate options still to be defined; model changes are excluded and belong only to /switch. Do not copy control-center settings into threads.
 - **/help** — show thread-specific actions, including natural-language session management examples.
 - Normal task requests remain ordinary messages, and follow-ups stay in this thread.
