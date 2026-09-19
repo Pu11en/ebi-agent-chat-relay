@@ -433,3 +433,79 @@ async def test_launcher_category_scope_also_guards_buttons(cog, monkeypatch):
     event = interaction()
     event.channel.category_id = 456
     assert not await cog.authorize(event)
+
+
+async def test_bottom_shortcut_replaces_only_its_previous_message(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    previous = MagicMock(spec=discord.Message)
+    previous.id = 777
+    previous.author.id = cog.bot.user.id
+    previous.delete = AsyncMock()
+    channel.fetch_message = AsyncMock(return_value=previous)
+    current = MagicMock(spec=discord.Message)
+    current.id = 778
+    channel.send = AsyncMock(return_value=current)
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.shortcut:100", "777")
+    await cog.settings.set("launcher.panel:100", "555")
+    await cog.refresh_shortcut()
+    previous.delete.assert_awaited_once()
+    assert await cog.settings.get("launcher.shortcut:100") == "778"
+    assert await cog.settings.get("launcher.panel:100") == "555"
+    assert channel.send.call_args.kwargs["silent"] is True
+    assert len(channel.send.call_args.kwargs["view"].children) == 3
+
+
+async def test_shortcut_never_deletes_someone_elses_message(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    previous = MagicMock(spec=discord.Message)
+    previous.author.id = 42
+    previous.delete = AsyncMock()
+    channel.fetch_message = AsyncMock(return_value=previous)
+    channel.send = AsyncMock(return_value=SimpleNamespace(id=778))
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.shortcut:100", "777")
+    await cog.refresh_shortcut()
+    previous.delete.assert_not_awaited()
+
+
+async def test_shortcut_ignores_threads_system_messages_and_its_own_controls(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 200
+    event = SimpleNamespace(
+        channel=channel,
+        type=discord.MessageType.default,
+        author=SimpleNamespace(id=42),
+        components=[],
+    )
+    await cog.keep_launcher_visible(event)
+    assert cog._shortcut_task is None
+    channel.id = 100
+    event.type = discord.MessageType.pins_add
+    await cog.keep_launcher_visible(event)
+    assert cog._shortcut_task is None
+    event.type = discord.MessageType.default
+    event.author.id = cog.bot.user.id
+    event.components = [
+        SimpleNamespace(children=[SimpleNamespace(custom_id="ccdb:launcher:new:v1")])
+    ]
+    await cog.keep_launcher_visible(event)
+    assert cog._shortcut_task is None
+
+
+async def test_shortcut_coalesces_messages_and_cancels_on_unload(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    event = SimpleNamespace(
+        channel=channel,
+        type=discord.MessageType.default,
+        author=SimpleNamespace(id=42),
+        components=[],
+    )
+    await cog.keep_launcher_visible(event)
+    first = cog._shortcut_task
+    await cog.keep_launcher_visible(event)
+    assert cog._shortcut_task is first
+    await cog.cog_unload()
+    assert first.cancelled()

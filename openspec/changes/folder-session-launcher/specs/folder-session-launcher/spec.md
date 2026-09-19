@@ -57,3 +57,10 @@ ignore normal framework chat there, including for administrators.
 #### Scenario: An administrator chooses the wrong bot
 The bot responds privately that it belongs to another category and performs no
 command action. Its native slash entry may remain visible due to Discord rules.
+
+
+### Requirement: Keep control-center controls reachable
+The user’s existing control-center SHALL remain the entry point. The pinned
+anchor SHALL remain in place and a silent bottom shortcut SHALL be refreshed
+after channel activity, coalesced across a ten-second window. Only the saved
+bot-owned previous shortcut may be removed; other messages and threads remain.

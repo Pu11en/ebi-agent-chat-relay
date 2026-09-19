@@ -384,12 +384,17 @@ class ProjectLauncherCog(commands.Cog):
         self._favorites_lock = asyncio.Lock()
         self._panel_lock = asyncio.Lock()
         self._view: LauncherView | None = None
+        self._shortcut_task: asyncio.Task[None] | None = None
 
     async def cog_load(self) -> None:
         self._view = LauncherView(self)
         self.bot.add_view(self._view)
 
     async def cog_unload(self) -> None:
+        if self._shortcut_task is not None:
+            self._shortcut_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._shortcut_task
         if self._view is not None:
             self._view.stop()
 
@@ -697,6 +702,52 @@ class ProjectLauncherCog(commands.Cog):
             await interaction.response.send_message(
                 embed=self.embed(), view=LauncherView(self), ephemeral=True
             )
+
+    @commands.Cog.listener("on_message")
+    async def keep_launcher_visible(self, message: discord.Message) -> None:
+        if message.channel.id != self.channel_id or message.type not in (
+            discord.MessageType.default,
+            discord.MessageType.reply,
+        ):
+            return
+        if self.bot.user and message.author.id == self.bot.user.id:
+            for row in message.components:
+                for component in getattr(row, "children", ()):
+                    custom_id = getattr(component, "custom_id", None)
+                    if isinstance(custom_id, str) and custom_id.startswith("ccdb:launcher:"):
+                        return
+        if self._shortcut_task is None or self._shortcut_task.done():
+            self._shortcut_task = asyncio.create_task(self._delayed_shortcut())
+
+    async def _delayed_shortcut(self) -> None:
+        await asyncio.sleep(10)
+        try:
+            await self.refresh_shortcut()
+        except Exception:
+            logger.exception("Could not refresh the launcher shortcut")
+
+    async def refresh_shortcut(self) -> None:
+        """Keep one quiet bottom shortcut; never replace the pinned anchor or history."""
+        async with self._panel_lock:
+            channel = self.bot.get_channel(self.channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                return
+            key = f"launcher.shortcut:{self.channel_id}"
+            saved = await self.settings.get(key)
+            previous = None
+            if saved and saved.isdigit():
+                with contextlib.suppress(discord.NotFound):
+                    previous = await channel.fetch_message(int(saved))
+            message = await channel.send(
+                content="**Session controls** · choose a folder or return to existing work",
+                view=self._view or LauncherView(self),
+                allowed_mentions=discord.AllowedMentions.none(),
+                silent=True,
+            )
+            await self.settings.set(key, str(message.id))
+            if previous is not None and self.bot.user and previous.author.id == self.bot.user.id:
+                with contextlib.suppress(discord.HTTPException):
+                    await previous.delete()
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:

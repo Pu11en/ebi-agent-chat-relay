@@ -32,7 +32,7 @@ def install_category_check(bot: Any) -> None:
             else:
                 await interaction.response.send_message(
                     "This bot belongs to another computer category. "
-                    "Use this category's own bot or its start-here buttons.",
+                    "Use this category's own bot or its control-center buttons.",
                     ephemeral=True,
                 )
             return False
