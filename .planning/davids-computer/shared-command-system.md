@@ -11,6 +11,7 @@
 - This corrects the earlier suggestion to collect a task before opening the thread.
 
 ## Proposed control-center commands
+- **Discussion order:** finish control-center commands before discussing thread commands; earlier thread proposals remain deferred.
 - **/new** — Favorites / Recent / Browse → choose a folder → create an idle workers thread → return its link.
 - **/sessions** — show sessions started by the requester, including older and archived threads, newest activity first, strictly within this category; offer an Everyone filter within that same category. Show project and idle/running/archived state; select one to open or manage it.
 - **/settings in control-center** — clickable/searchable settings for this category’s future-session defaults, including agent/model. Existing sessions keep their settings; do not choose and mutate another thread from this default-settings flow.
@@ -63,3 +64,11 @@
 - New in same folder uses one selected session’s folder and creates a clean idle thread, with no copied conversation, task or pending goal; the first user task message starts it.
 - The core /sessions design is agreed; implementation has not begun.
 - Parallel working-copy policy and optional background features remain unanswered and deferred while we establish the basic commands.
+
+## Skills inventory under discussion
+- Proposed **/skills** in control-center: a clickable, searchable inventory on the current category computer. This command and its initial screen are not yet agreed or implemented.
+- Show what each skill does, whether it is shared globally on that computer or project-specific, and which installed harnesses actually discover it.
+- Distinguish shared files from verified harness discovery and runtime prerequisites; do not assume identical availability just because files exist.
+- Global scope on one computer does not imply installation on David’s or iMac’s computer; unavailable remote inventory must be shown as unverified.
+- Initial-screen question: all skills, shared across harnesses, availability gaps, or search first.
+- This discussion does not authorize installing or syncing skills, changing personal instructions, or running model probes.
