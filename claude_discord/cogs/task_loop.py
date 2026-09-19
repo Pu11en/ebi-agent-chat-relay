@@ -117,6 +117,12 @@ _NOT_PICKED = "Not started: you didn't pick an AI in time. Say go work again whe
 LIMIT_WAIT_SECONDS = 30 * 60
 #: The start list's first choice: a quick AI picks the AI for each step.
 PER_STEP = "per-step"
+#: A model word meaning "the best model of this AI for each step" ("codex auto").
+_EACH_STEP_MODELS = {"auto", "per-step", "each-step"}
+_EACH_STEP_RE = re.compile(r"\b(each|every|per) step\b|\bauto\b")
+#: A family this small is offered whole to the per-step picker (Codex's list is
+#: curated); bigger ones (Claude lists every old Opus) get one model per level.
+ALL_MODELS_UP_TO = 6
 #: How long the quick step-AI picker may take before the build keeps its AI.
 PICK_AI_TIMEOUT_SECONDS = 60
 #: The build queue's morning summary posts after this hour (local time).
@@ -162,6 +168,30 @@ def parse_harness_reply(text: str, current: str | None) -> tuple[str, str | None
             continue
         rest = [w for w in words[i + 1 :] if w not in _FILLER]
         return backend, (rest[0] if rest else None)
+    return None
+
+
+def split_per_step(
+    harness: str | None, model: str | None
+) -> tuple[str | None, str | None, bool]:
+    """A pick as (harness, model) → (harness, model, per_step).
+
+    ``(PER_STEP, "codex")`` and ``("codex", "auto")`` both mean: the best Codex
+    model for each step. ``(PER_STEP, None)`` keeps the thread's own AI family.
+    """
+    if harness == PER_STEP:
+        return model, None, True
+    if harness and (model or "").lower() in _EACH_STEP_MODELS:
+        return harness, None, True
+    return harness, model, False
+
+
+def _family_named(text: str, current: str | None) -> str | None:
+    """The AI family a typed reply names, when it isn't the thread's own."""
+    for word in _WORD_RE.findall(text.lower()):
+        backend = _HARNESS_WORDS.get(word)
+        if backend in ALL_BACKENDS and backend != current:
+            return backend
     return None
 
 
@@ -246,8 +276,9 @@ _MODE_NOTES = {
 }
 
 
-_CHEAP_WORDS = ("haiku", "flash", "mini", "turbo", "nano", "fastest", "cheapest")
-_STRONG_WORDS = ("opus", "fable", "-pro", " pro", "astra", "most capable", "strongest")
+_CHEAP_WORDS = ("haiku", "flash", "mini", "turbo", "nano", "fastest", "cheapest", "affordable")
+# "pro" only as its own word: Codex's gpt-5.5 note says "Proven …", which isn't "pro".
+_STRONG_RE = re.compile(r"opus|fable|astra|most capable|strongest|(?:^|[\s-])pro\b")
 
 
 def model_tier(model: str, note: str = "") -> int:
@@ -258,7 +289,7 @@ def model_tier(model: str, note: str = "") -> int:
     text = f" {model} {note}".lower()
     if any(w in text for w in _CHEAP_WORDS):
         return 0
-    if any(w in text for w in _STRONG_WORDS):
+    if _STRONG_RE.search(text):
         return 2
     return 1
 
@@ -710,7 +741,11 @@ class TaskLoopCog(commands.Cog):
                     embed=plan_card(
                         plan_text,
                         plan.name,
-                        harness or ("the best AI per step" if per_step_ai else None),
+                        (
+                            f"the best {harness + ' ' if harness else ''}AI for each step"
+                            if per_step_ai
+                            else harness
+                        ),
                         model,
                         groups,
                         record.mode,
@@ -1636,9 +1671,7 @@ class TaskLoopCog(commands.Cog):
                         await report_to.send(_NOT_PICKED)
                     return None
                 harness, model = picked
-            per_step = harness == PER_STEP
-            if per_step:
-                harness, model = None, None
+            harness, model, per_step = split_per_step(harness, model)
             try:
                 return await self.start_loop(
                     parent,
@@ -1698,6 +1731,12 @@ class TaskLoopCog(commands.Cog):
         for i, (harness, model, note) in enumerate(options, start=2):
             tail = f" — {note}" if note else ""
             lines.append(f"**{choice_letter(i)})** {harness} · `{model}`{tail}")
+        others = sorted({h for h, _m, _n in options if h != current and h != "local"})
+        if others:
+            lines.append(
+                f"Or type e.g. `{others[0]} each step`: the bot picks the best "
+                f"{others[0]} model for each step."
+            )
         for chunk in _chunks(lines):
             await channel.send(chunk)
         for _ in range(2):
@@ -1706,8 +1745,13 @@ class TaskLoopCog(commands.Cog):
                 return None
             m = _LETTER_REPLY_RE.match(reply)
             said = reply.lower()
-            if (m is not None and m.group(1).upper() == "A") or "each step" in said:
-                return PER_STEP, None
+            family = _family_named(said, current)
+            if (
+                (m is not None and m.group(1).upper() == "A")
+                or _EACH_STEP_RE.search(said)
+                or (family and said.split()[0] == "a")
+            ):
+                return PER_STEP, family
             if m is not None and m.group(1).upper() == "B" and current:
                 return current, None
             picked = _match_ai(reply, options, current, first=2)
@@ -1767,16 +1811,20 @@ class TaskLoopCog(commands.Cog):
         if running.family is None and settings is not None:
             with contextlib.suppress(Exception):
                 running.family = await settings.current_backend(running.worker_thread_id)
+        usable = [
+            (h, m, note)
+            for h, m, note in await self._ai_choices()
+            if not (running.family and h != running.family)
+            and "vision" not in m
+            and h not in running.limited
+            and not (h == "local" and running.family != "local")
+        ]
+        if len(usable) <= ALL_MODELS_UP_TO:
+            # Every model competes for each step (Drew: "all codex models"),
+            # cheapest level first so the picker reads them in cost order.
+            return sorted(usable, key=lambda o: model_tier(o[1], o[2]))
         best: dict[int, tuple[str, str, str]] = {}
-        for h, m, note in await self._ai_choices():
-            if running.family and h != running.family:
-                continue
-            if (
-                "vision" in m
-                or h in running.limited
-                or (h == "local" and running.family != "local")
-            ):
-                continue
+        for h, m, note in usable:
             best.setdefault(model_tier(m, note), (h, m, note))
         return [best[t] for t in sorted(best)]
 
@@ -1973,15 +2021,16 @@ class TaskLoopCog(commands.Cog):
                     self._queue.take(item)
                     continue
                 parent: Any = report.parent if isinstance(report, discord.Thread) else report
+                harness, model, per_step = split_per_step(item.harness, item.model)
                 try:
                     thread = await self.start_loop(
                         parent,
                         item.plan_path,
                         report_to=report,
                         notify_user_id=item.notify_user_id,
-                        harness=item.harness,
-                        model=item.model,
-                        per_step_ai=item.harness is None,
+                        harness=harness,
+                        model=model,
+                        per_step_ai=per_step or harness is None,
                         queued=True,
                         mode=item.mode,
                         fallback_harness=item.fallback_harness,
@@ -2376,10 +2425,7 @@ class TaskLoopCog(commands.Cog):
         if picked is None:
             await interaction.followup.send(_NOT_PICKED)
             return
-        harness, model = picked
-        per_step = harness == PER_STEP
-        if per_step:
-            harness, model = None, None
+        harness, model, per_step = split_per_step(*picked)
         try:
             thread = await self.start_loop(
                 parent,
@@ -2396,7 +2442,13 @@ class TaskLoopCog(commands.Cog):
             await interaction.followup.send(f"Could not start: {exc}")
             return
         await interaction.followup.send(
-            f"Working on `{plan}` with {harness}{f' · {model}' if model else ''}. "
+            f"Working on `{plan}` with "
+            + (
+                f"the best {harness + ' ' if harness else ''}AI for each step"
+                if per_step
+                else f"{harness or 'the thread AI'}{f' · {model}' if model else ''}"
+            )
+            + ". "
             f"Worker thread: {thread.mention}"
         )
 

@@ -2159,3 +2159,64 @@ class TestAuditFixesInTheCog:
         assert calls == [False, True]
         posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
         assert "use the build's version" in posted  # it offered the way out
+
+
+class TestCodexPerStep:
+    """Drew: /gowork on Codex should use every Codex model, picked per step."""
+
+    _CODEX = [
+        ("codex", "gpt-6-astra", "Our most capable model for complex, demanding work."),
+        ("codex", "gpt-5.6-sol", "Reliable agentic workhorse for everyday tasks."),
+        ("codex", "gpt-5.6-terra", "Balanced agentic coding model for everyday work."),
+        ("codex", "gpt-5.6-luna", "Fast and affordable agentic coding model."),
+        ("codex", "gpt-5.5", "Proven previous-generation model for coding and general work."),
+    ]
+
+    def test_codex_tiers_read_from_the_live_notes(self) -> None:
+        from claude_discord.cogs.task_loop import model_tier
+
+        tiers = {m: model_tier(m, n) for _h, m, n in self._CODEX}
+        assert tiers["gpt-6-astra"] == 2
+        assert tiers["gpt-5.6-luna"] == 0  # "fast and affordable"
+        assert tiers["gpt-5.5"] == 1  # "Proven" is not "pro"
+        assert model_tier("deepseek-v4-pro") == 2 and model_tier("x", "Pro tier") == 2
+
+    def test_auto_or_per_step_means_the_best_model_of_that_ai_each_step(self) -> None:
+        from claude_discord.cogs.task_loop import PER_STEP, split_per_step
+
+        assert split_per_step("codex", "auto") == ("codex", None, True)
+        assert split_per_step(PER_STEP, "codex") == ("codex", None, True)
+        assert split_per_step(PER_STEP, None) == (None, None, True)
+        assert split_per_step("codex", "gpt-5.5") == ("codex", "gpt-5.5", False)
+
+    async def test_typing_codex_each_step_picks_the_codex_family(self) -> None:
+        from claude_discord.cogs.task_loop import PER_STEP
+
+        cog, _, _ = _cog_with_chat()
+
+        async def catalog() -> list[tuple[str, str, str]]:
+            return [("claude", "sonnet", ""), *self._CODEX]
+
+        cog._ai_choices = catalog  # type: ignore[method-assign]
+        channel = MagicMock()
+        channel.id = 9
+        channel.send = AsyncMock()
+        picker = asyncio.create_task(cog._ask_harness(channel, "claude"))
+        await _type_when_asked(cog, 9, "codex each step")
+        assert await asyncio.wait_for(picker, 5) == (PER_STEP, "codex")
+        listing = " ".join(str(c.args[0]) for c in channel.send.call_args_list)
+        assert "codex each step" in listing
+
+    async def test_every_codex_model_competes_for_each_step(self) -> None:
+        from types import SimpleNamespace
+
+        cog, _, _ = _cog_with_chat()
+
+        async def catalog() -> list[tuple[str, str, str]]:
+            return [("claude", "sonnet", ""), *self._CODEX]
+
+        cog._ai_choices = catalog  # type: ignore[method-assign]
+        running = SimpleNamespace(family="codex", limited=set(), worker_thread_id=1)
+        options = await cog._family_options(running)  # type: ignore[arg-type]
+        assert [m for _h, m, _n in options][0] == "gpt-5.6-luna"  # cheapest first
+        assert {m for _h, m, _n in options} == {m for _h, m, _n in self._CODEX}
