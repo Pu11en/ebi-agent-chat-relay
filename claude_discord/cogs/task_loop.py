@@ -171,9 +171,7 @@ def parse_harness_reply(text: str, current: str | None) -> tuple[str, str | None
     return None
 
 
-def split_per_step(
-    harness: str | None, model: str | None
-) -> tuple[str | None, str | None, bool]:
+def split_per_step(harness: str | None, model: str | None) -> tuple[str | None, str | None, bool]:
     """A pick as (harness, model) → (harness, model, per_step).
 
     ``(PER_STEP, "codex")`` and ``("codex", "auto")`` both mean: the best Codex
