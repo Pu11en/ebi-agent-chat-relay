@@ -1,0 +1,21 @@
+{
+  "command": "/sessions",
+  "status": "design_in_progress",
+  "user_selection": "D and B, most recent at top, only this category",
+  "required_arguments": [],
+  "default_owner_filter": "sessions_started_by_requester",
+  "optional_owner_filter": "everyone_authorized_in_current_category",
+  "history": "all_existing_sessions_including_archived",
+  "sort": "last_activity_descending",
+  "category_scope": "current_category_only",
+  "proposed_details": [
+    "Show thread title, working folder and running/idle/archived status.",
+    "Provide search and pagination for older sessions.",
+    "Refresh availability before opening or closing; omit deleted or inaccessible threads."
+  ],
+  "open_decisions": [
+    "Close behavior for idle versus running sessions.",
+    "Whether additional actions beyond Open and Close belong in this command."
+  ],
+  "next_question": "Close behavior; see session-close-decision.json"
+}

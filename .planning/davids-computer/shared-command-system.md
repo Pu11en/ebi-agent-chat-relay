@@ -12,7 +12,7 @@
 
 ## Proposed control-center commands
 - **/new** — Favorites / Recent / Browse → choose a folder → create an idle workers thread → return its link.
-- **/sessions** — list sessions in this category with project and idle/running/closed state; select one to open it or manage it.
+- **/sessions** — show sessions started by the requester, including older and archived threads, newest activity first, strictly within this category; offer an Everyone filter within that same category. Show project and idle/running/archived state; select one to open or manage it.
 - **/settings** — guided computer-bot defaults and personal preferences, with the scope of each change made clear.
 - **/help** — show only the relevant control-center actions and short examples.
 - No additional command is required to finish one of these flows.
