@@ -22,6 +22,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from .win_subprocess import NO_WINDOW
+
 # Transcript files are named "<uuid>.jsonl"; the uuid is the session_id.
 _SESSION_FILE_RE = re.compile(r"^[0-9a-f\-]{36}\.jsonl$")
 _SNIPPET_WIDTH = 60
@@ -160,6 +162,7 @@ async def _grep_candidate_files(
             root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            **NO_WINDOW,
         )
     except (FileNotFoundError, OSError):
         return None

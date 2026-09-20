@@ -24,6 +24,7 @@ from .types import (
     ToolCategory,
     ToolUseEvent,
 )
+from .win_subprocess import NO_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -439,6 +440,7 @@ class CodexRunner:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=env,
+                **NO_WINDOW,
                 limit=10 * 1024 * 1024,
             )
 

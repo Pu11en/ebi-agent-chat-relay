@@ -13,6 +13,8 @@ import asyncio
 import logging
 import re
 
+from claude_code_core.win_subprocess import NO_WINDOW
+
 logger = logging.getLogger(__name__)
 
 _PROMPT_TEMPLATE = """\
@@ -107,6 +109,7 @@ async def suggest_title(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            **NO_WINDOW,
         )
         try:
             stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_SECONDS)

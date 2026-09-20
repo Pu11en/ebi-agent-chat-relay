@@ -24,6 +24,7 @@ from .api_provider import detect_api_provider
 from .child_env import STRIPPED_ENV_KEYS, strip_transport_credentials
 from .parser import parse_line
 from .types import ImageData, MessageType, StreamEvent
+from .win_subprocess import NO_WINDOW
 
 # Re-export for backward compatibility
 __all__ = ["ClaudeRunner", "ImageData"]
@@ -151,6 +152,7 @@ class ClaudeRunner:
             cwd=cwd,
             env=env,
             limit=10 * 1024 * 1024,
+            **NO_WINDOW,
         )
 
         logger.info("Claude CLI started: pid=%s", self._process.pid)

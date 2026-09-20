@@ -23,6 +23,8 @@ import shlex
 import time
 from collections.abc import Awaitable, Callable
 
+from claude_code_core.win_subprocess import NO_WINDOW
+
 logger = logging.getLogger(__name__)
 
 # JSON-RPC method exposed by `codex app-server` that returns the same payload
@@ -64,6 +66,7 @@ async def fetch_codex_rate_limits(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            **NO_WINDOW,
         )
     except (OSError, ValueError):
         logger.debug("Failed to spawn codex app-server", exc_info=True)

@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from claude_code_core.win_subprocess import NO_WINDOW
+
 # aiohttp is an optional dependency ([api] extra) but is already present in the
 # dev environment and widely installed.  We import lazily so that the core
 # package still works without it — the setup wizard will surface a clear error.
@@ -132,6 +134,7 @@ def check_claude_cli() -> bool:
             capture_output=True,
             text=True,
             timeout=5,
+            **NO_WINDOW,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):

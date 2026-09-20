@@ -18,6 +18,8 @@ import asyncio
 import logging
 from typing import Literal
 
+from claude_code_core.win_subprocess import NO_WINDOW
+
 logger = logging.getLogger(__name__)
 
 ClassifyResult = Literal["waiting", "done", "ambiguous"]
@@ -60,6 +62,7 @@ async def classify(
             prompt,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **NO_WINDOW,
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_SECONDS)
