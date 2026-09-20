@@ -237,3 +237,175 @@ def test_outcomes_are_immutable() -> None:
     outcome = relay_queued_outcome()
     with pytest.raises(dataclasses.FrozenInstanceError):
         outcome.category = CapacityCategory.PERMANENT_ERROR  # type: ignore[misc]
+
+
+# --- per-backend phrase fixtures ----------------------------------------------
+#
+# Every supported harness reports the same six situations in its own words. The
+# fixtures below are the wording actually observed from each one; the point of
+# the tables is that the *category* is shared, so interactive chat and `/gowork`
+# can never disagree about what a harness just said.
+
+SUPPORTED_BACKENDS = ("claude", "codex", "dsh", "local", "agui")
+
+#: (backend, error text) pairs that must all read as temporary model saturation.
+SATURATION_FIXTURES = [
+    ("claude", "Claude's response was interrupted: model at capacity"),
+    ("claude", 'API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}'),
+    ("claude", "Opus 5 is at capacity right now — try again shortly."),
+    ("claude", "We're currently experiencing high demand. Please try again."),
+    ("codex", "stream error: the model is currently overloaded, please try again later"),
+    ("codex", "error sending request: 503 Service Unavailable"),
+    ("codex", "We're experiencing heavy load, which may cause temporary errors."),
+    ("dsh", "Error: The server is busy. Please try again later."),
+    ("dsh", "router: no capacity available for deepseek-v4-pro"),
+    ("local", "model runner is busy, retry in a moment"),
+    ("local", "ollama: server overloaded"),
+    ("agui", "upstream temporarily unavailable"),
+    ("agui", "backend is out of capacity"),
+]
+
+#: (backend, error text) pairs that must all read as provider rate limiting.
+RATE_LIMIT_FIXTURES = [
+    ("claude", 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}'),
+    ("codex", "429 Too Many Requests"),
+    ("dsh", "Rate limit reached for deepseek-v4-pro, retry after 30s"),
+    ("local", "too many concurrent requests"),
+    ("agui", "request throttled by the gateway"),
+]
+
+#: (backend, error text) pairs that must all read as a spent subscription/quota.
+QUOTA_FIXTURES = [
+    ("claude", "You've hit your 5-hour limit. Your limit resets at 3pm."),
+    ("claude", "Claude usage limit reached for this week"),
+    ("codex", "You've used up your ChatGPT Plus quota for today"),
+    ("dsh", "Error: Insufficient Balance"),
+    ("local", "monthly limit for this deployment has been reached"),
+    ("agui", "Your credit balance is too low to make this request"),
+]
+
+#: (backend, error text) pairs that must all read as a broken provider login.
+AUTH_FIXTURES = [
+    ("claude", "Invalid API key · Please run /login"),
+    ("claude", "Your session has expired, please log in again"),
+    ("codex", "401 Unauthorized: not logged in, run `codex login`"),
+    ("dsh", "Authentication Fails, Your api key is invalid"),
+    ("local", "authentication failure talking to the local gateway"),
+    ("agui", "403 Forbidden: credentials rejected"),
+]
+
+CATEGORY_FIXTURES = [
+    (CapacityCategory.MODEL_SATURATED, SATURATION_FIXTURES),
+    (CapacityCategory.PROVIDER_RATE_LIMITED, RATE_LIMIT_FIXTURES),
+    (CapacityCategory.QUOTA_EXHAUSTED, QUOTA_FIXTURES),
+    (CapacityCategory.AUTHENTICATION_FAILED, AUTH_FIXTURES),
+]
+
+ALL_PHRASE_FIXTURES = [
+    (backend, phrase, category)
+    for category, fixtures in CATEGORY_FIXTURES
+    for backend, phrase in fixtures
+]
+
+
+@pytest.mark.parametrize(
+    ("backend", "phrase", "expected"),
+    [pytest.param(*row, id=f"{row[0]}:{row[1][:40]}") for row in ALL_PHRASE_FIXTURES],
+)
+def test_observed_backend_wording_lands_on_the_expected_category(
+    backend: str, phrase: str, expected: CapacityCategory
+) -> None:
+    outcome = classify_failure(BackendFailure(error=phrase, backend=backend, model="m"))
+    assert outcome.category is expected
+
+
+def test_every_supported_harness_has_saturation_wording_covered() -> None:
+    """A harness with no fixture is a harness nobody has checked."""
+    covered = {backend for backend, _ in SATURATION_FIXTURES}
+    assert covered == set(SUPPORTED_BACKENDS)
+
+
+def test_the_same_wording_reads_the_same_way_on_every_harness() -> None:
+    """The classifier is shared, so the backend label must not change the verdict."""
+    for _, phrase, expected in ALL_PHRASE_FIXTURES:
+        categories = {
+            classify_failure(BackendFailure(error=phrase, backend=backend)).category
+            for backend in SUPPORTED_BACKENDS
+        }
+        assert categories == {expected}
+
+
+def test_saturation_fixtures_are_retryable_and_rate_limits_carry_their_hint() -> None:
+    for backend, phrase in SATURATION_FIXTURES:
+        assert classify_failure(BackendFailure(error=phrase, backend=backend)).retryable is True
+    hinted = classify_failure(
+        BackendFailure(error="Rate limit reached for deepseek-v4-pro, retry after 30s")
+    )
+    assert hinted.retry_after_seconds == 30
+
+
+def test_quota_and_auth_fixtures_never_retry_automatically() -> None:
+    for _, fixtures in CATEGORY_FIXTURES[2:]:
+        for backend, phrase in fixtures:
+            outcome = classify_failure(BackendFailure(error=phrase, backend=backend))
+            assert outcome.retryable is False
+            assert outcome.needs_user_action is True
+
+
+def test_a_structured_code_still_beats_every_phrase_fixture() -> None:
+    """Fixtures are the compatibility path; machine codes remain authoritative."""
+    outcome = classify_failure(
+        BackendFailure(
+            error="Error: The server is busy. Please try again later.",
+            error_code="insufficient_quota",
+        )
+    )
+    assert outcome.category is CapacityCategory.QUOTA_EXHAUSTED
+
+
+# --- false positives stay terminal ---------------------------------------------
+
+#: Sentences a worker really writes while doing capacity-related work. None of
+#: them is a provider failure, so all of them must stay permanent.
+FALSE_POSITIVE_REPLIES = [
+    "Wrote a fixture for the 'model at capacity' error string.",
+    "The docs say this endpoint returns 503 Service Unavailable when overloaded.",
+    "I added rate limiting to the API and wrote a test for the 429 path.",
+    "Implemented the retry path for quota exhausted responses.",
+    "Simulated a 429 in the test double to check the backoff.",
+    "The server is busy handling the migration, so the deploy waited.",
+    "queued — waiting for capacity",
+    "Capacity planning for the cluster is documented in docs/capacity.md.",
+]
+
+
+@pytest.mark.parametrize("reply", FALSE_POSITIVE_REPLIES)
+def test_a_worker_describing_capacity_work_is_not_a_capacity_failure(reply: str) -> None:
+    assert classify_failure(BackendFailure(text=reply)).category is (
+        CapacityCategory.PERMANENT_ERROR
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "FileNotFoundError: claude_code_core/capacity.py",
+        "ValueError: limit must be a positive integer",
+        "fatal: the remote end hung up unexpectedly",
+    ],
+)
+def test_ordinary_tool_errors_stay_permanent(error: str) -> None:
+    assert classify_failure(BackendFailure(error=error)).category is (
+        CapacityCategory.PERMANENT_ERROR
+    )
+
+
+def test_a_bare_try_again_later_is_not_enough_to_retry() -> None:
+    """ "Try again later" with no capacity wording could mean anything."""
+    outcome = classify_failure(BackendFailure(error="Something went wrong, try again later."))
+    assert outcome.category is CapacityCategory.PERMANENT_ERROR
+
+
+def test_real_provider_wording_in_a_reply_survives_the_false_positive_guard() -> None:
+    outcome = classify_failure(BackendFailure(text="The model is at capacity right now."))
+    assert outcome.category is CapacityCategory.MODEL_SATURATED
