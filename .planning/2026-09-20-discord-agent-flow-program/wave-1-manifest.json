@@ -1,0 +1,180 @@
+{
+  "schema": 1,
+  "run_id": "discord-agent-flow-wave-1",
+  "foundation_sha": "6c1b44dbc25845913cae0ff6f56a52f86e988e16",
+  "integration_owner": "1550757693784989707",
+  "features": [
+    {
+      "id": "discord-command-surface",
+      "change": "discord-command-surface",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "c89ec355d508216d8b2dba74498504618553f713cb04f55c557a7b5d730ca492",
+      "plan_files": [
+        "openspec/changes/discord-command-surface/.openspec.yaml",
+        "openspec/changes/discord-command-surface/design.md",
+        "openspec/changes/discord-command-surface/owner.json",
+        "openspec/changes/discord-command-surface/proposal.md",
+        "openspec/changes/discord-command-surface/specs/discord-command-surface/spec.md",
+        "openspec/changes/discord-command-surface/specs/session-lifecycle/spec.md",
+        "openspec/changes/discord-command-surface/tasks.md"
+      ]
+    },
+    {
+      "id": "trusted-agent-handoffs",
+      "change": "trusted-agent-handoffs",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "6ddc38230505d3afbe049aea72790e5c2de6a641a2cabacec4b20e5f1954be50",
+      "plan_files": [
+        "openspec/changes/trusted-agent-handoffs/.openspec.yaml",
+        "openspec/changes/trusted-agent-handoffs/design.md",
+        "openspec/changes/trusted-agent-handoffs/owner.json",
+        "openspec/changes/trusted-agent-handoffs/proposal.md",
+        "openspec/changes/trusted-agent-handoffs/specs/trusted-agent-handoffs/spec.md",
+        "openspec/changes/trusted-agent-handoffs/tasks.md"
+      ]
+    },
+    {
+      "id": "shared-project-catalog",
+      "change": "shared-project-catalog",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "0abf1fefdb62faf2686fcf19376b1e47fde85dbe1c2817023f4b97cb7e5fdf16",
+      "plan_files": [
+        "openspec/changes/shared-project-catalog/.openspec.yaml",
+        "openspec/changes/shared-project-catalog/design.md",
+        "openspec/changes/shared-project-catalog/owner.json",
+        "openspec/changes/shared-project-catalog/proposal.md",
+        "openspec/changes/shared-project-catalog/specs/shared-project-catalog/spec.md",
+        "openspec/changes/shared-project-catalog/tasks.md"
+      ]
+    },
+    {
+      "id": "discord-my-ai-setup",
+      "change": "discord-my-ai-setup",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "1bb9dd423928434e7cbece679b288a1eb6c06f37e2dfd823666e5a693867b2d4",
+      "plan_files": [
+        "openspec/changes/discord-my-ai-setup/.openspec.yaml",
+        "openspec/changes/discord-my-ai-setup/design.md",
+        "openspec/changes/discord-my-ai-setup/owner.json",
+        "openspec/changes/discord-my-ai-setup/proposal.md",
+        "openspec/changes/discord-my-ai-setup/specs/custom-ai-inventory/spec.md",
+        "openspec/changes/discord-my-ai-setup/tasks.md"
+      ]
+    },
+    {
+      "id": "professional-harness-audit",
+      "change": "professional-harness-audit",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "bf7ce5f5366a247f4561336ee8ab15d36400bf44cae8150e8c169df42ddb95ff",
+      "plan_files": [
+        "openspec/changes/professional-harness-audit/.openspec.yaml",
+        "openspec/changes/professional-harness-audit/design.md",
+        "openspec/changes/professional-harness-audit/owner.json",
+        "openspec/changes/professional-harness-audit/proposal.md",
+        "openspec/changes/professional-harness-audit/specs/harness-configuration-audit/spec.md",
+        "openspec/changes/professional-harness-audit/tasks.md"
+      ]
+    },
+    {
+      "id": "parallel-gowork",
+      "change": "parallel-gowork",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "9681c97168a40a561800efe2209bac7fbb05ff7d68a65b620a67ba94c7ef9986",
+      "plan_files": [
+        "openspec/changes/parallel-gowork/.openspec.yaml",
+        "openspec/changes/parallel-gowork/design.md",
+        "openspec/changes/parallel-gowork/owner.json",
+        "openspec/changes/parallel-gowork/proposal.md",
+        "openspec/changes/parallel-gowork/specs/parallel-task-loop/spec.md",
+        "openspec/changes/parallel-gowork/specs/planning-thread-split/spec.md",
+        "openspec/changes/parallel-gowork/tasks.md"
+      ]
+    },
+    {
+      "id": "model-capacity-resilience",
+      "change": "model-capacity-resilience",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "f01f25c0f8698372a2370c6e9e81d7a5d989966e53298677175d0b1ea31f9cf6",
+      "plan_files": [
+        "openspec/changes/model-capacity-resilience/.openspec.yaml",
+        "openspec/changes/model-capacity-resilience/design.md",
+        "openspec/changes/model-capacity-resilience/owner.json",
+        "openspec/changes/model-capacity-resilience/proposal.md",
+        "openspec/changes/model-capacity-resilience/specs/model-capacity-recovery/spec.md",
+        "openspec/changes/model-capacity-resilience/tasks.md"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "command-foundation",
+      "feature": "discord-command-surface",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_discord/command_surface.py",
+        "tests/test_command_surface.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.1 only. Use TDD: add location-classification and final-command-manifest tests, confirm the intended red state, then implement the pure coordinator types until the focused test passes. The public types must classify control center, managed session, and unsupported locations and describe the final eight-command union without Discord network calls. Do not edit setup, Cogs, other tests, or approved plan files. Run `uv run pytest tests/test_command_surface.py -q`, ruff the owned Python files, commit locally, and do not push or publish."
+    },
+    {
+      "id": "handoff-protocol",
+      "feature": "trusted-agent-handoffs",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_code_core/handoffs/",
+        "tests/test_handoff_protocol.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.1 only. Use TDD to define bounded versioned handoff task/event values, event kinds, UUID and monotonic-sequence validation, ProjectLocator, AuthorityScope, origin/reply coordinates, and safe serialization. Reject ambiguous owner language, absolute remote paths, path traversal, unsupported versions, missing fields, and oversized packets. Keep the module surface-neutral and avoid Discord or database dependencies. Run `uv run pytest tests/test_handoff_protocol.py -q`, ruff the owned Python files, commit locally, and do not push or publish."
+    },
+    {
+      "id": "catalog-domain",
+      "feature": "shared-project-catalog",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_discord/project_catalog.py",
+        "tests/test_project_catalog.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.1 only. Use TDD to add immutable approved-root, project identity, availability, query, and typed resolution-result models covering local available, local unavailable, remote owner-qualified target, ambiguous owner, and no match. Stable identity must distinguish computer and root without treating an absolute path as portable identity. Do not scan directories yet. Run `uv run pytest tests/test_project_catalog.py -q`, ruff the owned Python files, commit locally, and do not push or publish."
+    },
+    {
+      "id": "setup-inventory-domain",
+      "feature": "discord-my-ai-setup",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_discord/ai_setup_inventory.py",
+        "tests/test_ai_setup_inventory.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.1 only. Use TDD to add immutable inventory item, source, scope, availability, prerequisite, measurement, diagnostic, and snapshot types with stable identities. Cover every approved kind and scope, distinguish configured/discovered/verified-loaded/unsupported/stale/unreachable/unknown states, and keep raw content or secret values outside the model. Run `uv run pytest tests/test_ai_setup_inventory.py -q`, ruff the owned Python files, commit locally, and do not push or publish."
+    },
+    {
+      "id": "audit-evidence-contract",
+      "feature": "professional-harness-audit",
+      "depends_on": [],
+      "owned_paths": [
+        "extensions/harness_audit/models.py",
+        "tests/test_harness_audit_models.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.1 only. Use TDD to define versioned inventory, evidence-level, finding, five-way classification, machine-exception, and coverage-gap records. Serialization must round-trip deterministically and reject unknown required fields while preserving explicit unknown evidence. This is local extension tooling, not reusable relay core. Run `uv run pytest tests/test_harness_audit_models.py -q`, ruff the owned Python files, commit locally, and do not push or publish."
+    },
+    {
+      "id": "gowork-task-graph",
+      "feature": "parallel-gowork",
+      "depends_on": [],
+      "owned_paths": [
+        "extensions/feature_workflow/task_graph.py",
+        "tests/test_feature_task_graph.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.1 only. Use TDD to parse versioned task IDs, dependencies, owned relative POSIX paths, focused checks, and legacy checkbox plans. Reject unknown dependencies, cycles, absolute/traversal/protected paths, and ownership overlap among tasks that may run together; convert metadata-free legacy plans into a safe sequential graph. Run `uv run pytest tests/test_feature_task_graph.py -q`, ruff the owned Python files, commit locally, and do not push or publish."
+    },
+    {
+      "id": "capacity-outcome-contract",
+      "feature": "model-capacity-resilience",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_code_core/capacity.py",
+        "tests/test_capacity_recovery.py"
+      ],
+      "prompt": "Implement OpenSpec tasks 1.1 and 1.2 as one TDD unit so the integrated foundation stays green. First add tests for relay queueing, temporary model saturation, provider rate limiting, subscription/quota exhaustion, authentication failure, and unknown permanent errors; then implement a surface-neutral typed CapacityOutcome and conservative structured/phrase classifier. Unknown errors remain terminal, safe user detail is separated from raw diagnostics, and the observed `model at capacity` wording classifies as temporary saturation. Do not add retry orchestration yet. Run `uv run pytest tests/test_capacity_recovery.py -q`, ruff the owned Python files, commit locally, and do not push or publish."
+    }
+  ]
+}
