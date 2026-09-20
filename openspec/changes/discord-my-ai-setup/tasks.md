@@ -5,7 +5,7 @@ Try: `make dev-on`
 ## 1. Safe Inventory Domain
 
 - [x] 1.1 **Owner: inventory domain** — Add immutable item, source, scope, availability, prerequisite, measurement, diagnostic, and snapshot types in `claude_discord/ai_setup_inventory.py`; verify unit tests cover stable identities and every approved kind and scope.
-- [ ] 1.2 **Owner: redaction boundary** — Add safe metadata construction and fail-closed secret redaction in `claude_discord/ai_setup_redaction.py`; verify adversarial tests exclude tokens, passwords, private keys, environment values, connector secrets, and raw unsafe config from items and diagnostics.
+- [x] 1.2 **Owner: redaction boundary** — Add safe metadata construction and fail-closed secret redaction in `claude_discord/ai_setup_redaction.py`; verify adversarial tests exclude tokens, passwords, private keys, environment values, connector secrets, and raw unsafe config from items and diagnostics.
 - [ ] 1.3 **Depends on 1.1–1.2; owner: collector** — Add an adapter registry and collector that merges items, classifications, availability evidence, and per-source errors without aborting; verify tests distinguish custom, overridden built-in, unchanged built-in, discovered, configured, and verified-loaded states.
 
 ## 2. Harness and Setup Adapters

@@ -5,7 +5,7 @@ Try: `make dev-on`
 ## 1. Catalog Core
 
 - [x] 1.1 **Owner: catalog domain** — Add immutable root, project, availability, query, and resolution result types in `claude_discord/project_catalog.py`; verify focused unit tests distinguish local, unavailable, remote, ambiguous, and no-match results.
-- [ ] 1.2 **Owner: catalog discovery** — Implement bounded one-level discovery for approved roots in `claude_discord/project_catalog.py`; verify tests cover direct children, nested folders, duplicate names, unreadable roots, deterministic ordering, refresh, and stable identities.
+- [x] 1.2 **Owner: catalog discovery** — Implement bounded one-level discovery for approved roots in `claude_discord/project_catalog.py`; verify tests cover direct children, nested folders, duplicate names, unreadable roots, deterministic ordering, refresh, and stable identities.
 - [ ] 1.3 **Owner: owner resolver** — Add explicit computer-owner aliases and local/remote resolution without pronoun guessing; verify tests cover Drew's versus David's projects, ambiguous owners, and same-named local projects.
 
 ## 2. Persistent Personal Metadata

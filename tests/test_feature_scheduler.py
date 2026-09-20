@@ -241,7 +241,7 @@ class TestLegacyPlans:
 
 
 class TestTheLivePlan:
-    def test_the_parallel_gowork_plan_starts_four_independent_workers(self) -> None:
+    def test_the_parallel_gowork_plan_starts_every_remaining_independent_worker(self) -> None:
         from pathlib import Path
 
         from extensions.feature_workflow.task_graph import parse_task_plan
@@ -251,7 +251,7 @@ class TestTheLivePlan:
 
         ready = compute_ready_set(plan, {"1.1": "integrated"})
 
-        assert ready.worker_ids == ("1.2", "1.3", "2.3", "4.1")
+        assert ready.worker_ids == ("1.3", "2.3", "4.1")
         assert ready.kind_for("2.1") == "dependency"
         assert ready.kind_for("5.3") == "dependency"
         assert "5.2" in ready.blockers_for("5.3")

@@ -75,8 +75,8 @@ class RedactionError(ValueError):
 class RedactionReason(StrEnum):
     """Why one field could not be published."""
 
-    SECRET_NAME = "secret_name"
-    SECRET_VALUE = "secret_value"
+    SECRET_NAME = "secret_name"  # noqa: S105 - redaction reason, not a credential
+    SECRET_VALUE = "secret_value"  # noqa: S105 - redaction reason, not a credential
     PRIVATE_KEY = "private_key"
     ENVIRONMENT_VALUE = "environment_value"
     HIGH_ENTROPY = "high_entropy"

@@ -5,7 +5,7 @@ Try: `uv run python -m claude_discord.main`
 ## 1. Shared surface and lifecycle foundations
 
 - [x] 1.1 Add failing location-classification and final-command-manifest tests in `tests/test_command_surface.py`, then add the pure coordinator types in `claude_discord/command_surface.py`; owner: these two files only; depends on nothing; verify with `uv run pytest tests/test_command_surface.py -q`.
-- [ ] 1.2 Add failing session lifecycle migration/repository tests in `tests/test_session_lifecycle.py`, then add backward-compatible lifecycle, pending-close, and wrap-up fields in `claude_code_core/session_repo.py` and `claude_discord/database/models.py`; owner: those three files; depends on 1.1 only for shared state names; verify with `uv run pytest tests/test_session_lifecycle.py tests/test_repository.py -q`.
+- [x] 1.2 Add failing session lifecycle migration/repository tests in `tests/test_session_lifecycle.py`, then add backward-compatible lifecycle, pending-close, and wrap-up fields in `claude_code_core/session_repo.py` and `claude_discord/database/models.py`; owner: those three files; depends on 1.1 only for shared state names; verify with `uv run pytest tests/test_session_lifecycle.py tests/test_repository.py -q`.
 - [ ] 1.3 Add a tested close/reopen service in `claude_discord/session_lifecycle.py` that preserves records, waits for active completion, archives without locking, and enforces typed human/workflow authority; owner: the service and `tests/test_session_lifecycle.py`; depends on 1.2; verify with `uv run pytest tests/test_session_lifecycle.py -q`.
 
 ## 2. Control-center experience

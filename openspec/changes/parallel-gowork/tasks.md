@@ -1,11 +1,11 @@
-Check: `uv run pytest tests/test_feature_task_graph.py tests/test_feature_run_state.py tests/test_feature_worker_workspace.py tests/test_planning_split*.py tests/test_feature_workflow.py tests/test_task_loop.py tests/test_task_loop_cog.py -q`
+Check: `uv run pytest tests/test_feature_task_graph.py tests/test_feature_run_state.py tests/test_feature_worker_workspace.py tests/test_feature_thread_lifecycle.py tests/test_planning_split*.py tests/test_feature_workflow.py tests/test_task_loop.py tests/test_task_loop_cog.py -q`
 
 Try: `uv run python -m extensions.feature_workflow.coordinator --help`
 
 ## 1. Shared scheduling contracts
 
 - [x] 1.1 **Depends on: none; owns: `extensions/feature_workflow/task_graph.py`, `tests/test_feature_task_graph.py`.** Parse task IDs, dependencies, owned paths, checks, and legacy checkbox plans; verify unknown nodes, cycles, protected/invalid paths, and independent ownership overlap are rejected while legacy plans become sequential graphs.
-- [ ] 1.2 **Depends on: 1.1; owns: `extensions/feature_workflow/scheduler.py`, `tests/test_feature_scheduler.py`.** Compute the complete dependency-ready, non-conflicting set with no product worker cap; verify four safe tasks are all ready and unresolved/integration dependencies remain pending.
+- [x] 1.2 **Depends on: 1.1; owns: `extensions/feature_workflow/scheduler.py`, `tests/test_feature_scheduler.py`.** Compute the complete dependency-ready, non-conflicting set with no product worker cap; verify four safe tasks are all ready and unresolved/integration dependencies remain pending.
 - [ ] 1.3 **Depends on: 1.1; owns: `extensions/feature_workflow/run_state.py`, `tests/test_feature_run_state.py`.** Define atomic durable state transitions and stable correlation IDs for pending, spawning, ambiguous, dispatched, verified, integrated, queued, and blocked tasks; verify restart never converts uncertainty into duplicate dispatch.
 
 ## 2. Isolated worker evidence
@@ -20,6 +20,7 @@ Try: `uv run python -m extensions.feature_workflow.coordinator --help`
 - [ ] 3.2 **Depends on: 2.2, 3.1; owns: `extensions/feature_workflow/integration.py`, `tests/test_feature_integration.py`.** Serialize verified commits through one integration owner, require dependency-order ancestry and combined plan checks, and preserve conflicted branches; verify dependents start only from a recorded integrated foundation.
 - [ ] 3.3 **Depends on: 1.2, 1.3, 3.1, 3.2; owns: `claude_code_core/task_loop.py`, `tests/test_task_loop.py`.** Route metadata-rich plans to the deterministic ready-set lifecycle and retain sequential behavior for legacy plans; verify the fixed group slice and AI-only grouping are not used for structured plans.
 - [ ] 3.4 **Depends on: 3.3; owns: `claude_discord/cogs/task_loop.py`, `tests/test_task_loop_cog.py`.** Connect visible worker threads, queue/capacity notices, status links, stop behavior, and restart recovery to the structured scheduler; verify mixed running/queued/dependency states remain distinguishable in the parent.
+- [ ] 3.5 **Depends on: 1.3, 3.2, 3.4; owns: `extensions/feature_workflow/thread_lifecycle.py`, `tests/test_feature_thread_lifecycle.py`.** After recorded integration and a passing combined check, post one final result and request idempotent archive-without-lock for that worker thread; preserve its parent deep-link, treat already archived as success, retry after interruption, and verify failed, blocked, conflicted, ambiguous, and unintegrated workers remain open.
 
 ## 4. Linked child planning
 
@@ -30,7 +31,7 @@ Try: `uv run python -m extensions.feature_workflow.coordinator --help`
 
 ## 5. Final wiring and migration
 
-- [ ] 5.1 **Depends on: 3.4, 4.4; integration owner only; owns: `claude_discord/setup.py`, `claude_discord/ext/api_server.py`, `claude_discord/__init__.py`, `tests/test_setup.py`, `tests/test_api_server.py`.** Wire only the generic correlation/parent metadata and extension hooks needed by both flows; verify existing consumers work with defaults and the control plane remains localhost-only.
+- [ ] 5.1 **Depends on: 3.4, 3.5, 4.4; integration owner only; owns: `claude_discord/setup.py`, `claude_discord/ext/api_server.py`, `claude_discord/__init__.py`, `tests/test_setup.py`, `tests/test_api_server.py`.** Wire only the generic correlation/parent metadata, idempotent thread-archive operation, and extension hooks needed by both flows; verify existing consumers work with defaults, only the localhost control plane can request archival, and archive never locks or deletes a thread.
 - [ ] 5.2 **Depends on: 5.1; integration owner only; owns: `extensions/feature_workflow/skill/SKILL.md`, `extensions/feature_workflow/skill/references/coordinator.md`.** Update operator guidance for structured plan metadata, automatic splits, no product cap, infrastructure queueing, integration ownership, and rollback; verify documented commands match CLI help.
 - [ ] 5.3 **Depends on: 5.2; integration owner only; owns: no source files.** Run the Check command, `uv run ruff check claude_code_core claude_discord extensions/feature_workflow`, `uv run pyright claude_code_core claude_discord extensions/feature_workflow`, and the security checklist; record all passing evidence before enabling structured parallel runs.
 
@@ -39,3 +40,4 @@ Try: `uv run python -m extensions.feature_workflow.coordinator --help`
 1. Start a disposable plan with four independent owned paths and confirm four linked workers are submitted while relay-limited ones say queued rather than blocked by `/gowork`.
 2. Add a dependency and an overlapping path, then confirm the dependency waits for verified integration and the overlap is rejected before dispatch.
 3. During planning say “make this separate,” confirm one compact child thread appears, restart the bot, and confirm the parent restores the same link without a duplicate child.
+4. Let a worker pass integration and confirm its final result is posted before it disappears from the active thread list; reopen it from the parent link, then confirm a failed worker stays open.

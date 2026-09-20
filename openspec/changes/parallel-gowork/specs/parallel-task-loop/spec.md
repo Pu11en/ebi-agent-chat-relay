@@ -112,6 +112,25 @@ network response MUST NOT dispatch a duplicate worker or lose a completed result
 - **WHEN** a verified result's clean worktree no longer exists but its exact session branch and commit remain
 - **THEN** recovery validates the durable Git evidence without treating the task as lost
 
+### Requirement: Archive only successfully integrated worker threads
+After the integration owner records a worker's commit as integrated and its combined plan check
+passes, the system SHALL post the final outcome and automatically archive that worker's Discord
+thread. It MUST NOT delete or lock the thread, MUST preserve its parent-visible deep-link, and MUST
+leave failed, blocked, conflicted, ambiguous, and verified-but-not-integrated worker threads open.
+The archive operation SHALL be idempotent and recoverable after interruption.
+
+#### Scenario: Worker is verified and integrated
+- **WHEN** the worker commit is present in the recorded integration foundation and the combined check passes
+- **THEN** the final outcome is posted and the worker thread is archived without being locked or deleted
+
+#### Scenario: Worker needs attention
+- **WHEN** a worker is failed, blocked, conflicted, ambiguous, or not yet integrated
+- **THEN** its thread remains open and its attention-needed state stays visible in the parent
+
+#### Scenario: Restart after integration but before archival
+- **WHEN** recovery finds an integrated successful task whose worker thread is not archived
+- **THEN** it retries the same archive action without duplicating the result notification, and an already archived thread counts as success
+
 ### Requirement: Keep status understandable in the parent thread
 The parent thread SHALL show each task's dependency state, queue or capacity state, worker link,
 verification state, integration state, and blocker, and SHALL summarize overall progress without
@@ -120,3 +139,7 @@ requiring the user to inspect every worker thread.
 #### Scenario: Mixed task states
 - **WHEN** some tasks are running, one is queued by infrastructure, and another waits for a dependency
 - **THEN** the parent status distinguishes all three causes and links each dispatched worker
+
+#### Scenario: Integrated worker was archived
+- **WHEN** a successful worker thread is automatically archived
+- **THEN** the parent still shows its completed state and a deep-link that can reopen the thread history

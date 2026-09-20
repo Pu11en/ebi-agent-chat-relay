@@ -20,6 +20,8 @@ Discord/session transport; personal automatic planning policy stays in an extens
 - Make dependency and ownership metadata—not an AI guess—the authority for parallel safety.
 - Submit every safe ready task while leaving actual execution backpressure to the relay/providers.
 - Keep each worker isolated, fresh, visible, recoverable, and independently verifiable.
+- Remove successfully integrated worker threads from the active list without hiding unfinished or
+  unhealthy work and without deleting the thread history.
 - Keep planning splits compact and linked, with one parent coordinator and one plan owner per child.
 - Preserve ordinary sequential `/gowork` plans during migration.
 
@@ -84,6 +86,19 @@ released. Parallel implementation can therefore be broad while integration remai
 Alternative considered: let workers merge when done. Rejected because completion races would make
 foundations nondeterministic and let a worker modify shared state.
 
+### Archive only after verified integration
+
+Treat Discord archival as the final idempotent side effect of successful integration, never as a
+synonym for a worker merely finishing. The integration owner first records the integrated commit
+and passing combined check, posts the final outcome in the worker and parent threads, then requests
+`archived=True` without locking or deleting the thread. Failed, blocked, conflicted, ambiguous, and
+verified-but-not-integrated workers stay open. A crash between integration and archival is recovered
+by retrying the archive request with the same task/thread identity; already archived is success.
+Parent status keeps the worker deep-link so the history remains reopenable.
+
+Alternative considered: archive as soon as the worker reports success. Rejected because a worker
+can pass its focused check and still fail ownership, ancestry, merge, or combined verification.
+
 ### Store planning links separately from chat transcripts
 
 Add a small durable planning registry keyed by parent thread and split identity. A child record
@@ -132,6 +147,8 @@ Rejected because the build process would violate the same overlap rule it is int
   updates with acknowledgement rather than replaying transcripts.
 - **[Crash occurs between external side effect and local state]** → Record intent first and use
   stable correlation IDs; ambiguous operations reconcile instead of retrying.
+- **[Archival hides work that still needs attention]** → Gate it on recorded integration plus a
+  passing combined check, and leave every other terminal or attention-needed state open.
 
 ## Migration Plan
 
@@ -143,7 +160,9 @@ Rejected because the build process would violate the same overlap rule it is int
    sequential path. Keep current parallel grouping disabled for those new runs.
 4. Remove the per-run admission cap and submit ready tasks through the existing relay queue; keep
    global infrastructure capacity and stop controls unchanged.
-5. Turn on automatic child creation for clear candidates, retaining ask-on-uncertain behavior.
-6. After restart, overlap, failure, and combined-check tests pass, remove the obsolete AI grouping
+5. Enable verified-success worker archival, preserving parent deep-links and retrying idempotently
+   after a crash without closing failed, blocked, conflicted, or unintegrated threads.
+6. Turn on automatic child creation for clear candidates, retaining ask-on-uncertain behavior.
+7. After restart, overlap, failure, and combined-check tests pass, remove the obsolete AI grouping
    and side-copy path. Rollback routes all plans to the preserved sequential executor and pauses
    automatic splitting without deleting branches, state, or child links.

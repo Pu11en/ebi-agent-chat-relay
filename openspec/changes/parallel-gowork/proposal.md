@@ -18,6 +18,9 @@ safe automatic parallelism without an arbitrary product-level worker cap or shar
 - Give child planners compact structured context: goal, project, decisions, dependencies,
   restrictions, and parent link.
 - Keep the parent planning thread as the status/integration coordinator across child builds.
+- After a worker result passes its combined checks and is recorded as integrated, post its final
+  outcome and automatically archive that worker thread. Failed, blocked, conflicted, or merely
+  finished-but-unverified threads remain open; archival never deletes or locks the thread.
 
 ## Capabilities
 
@@ -34,5 +37,5 @@ None.
 ## Impact
 
 This affects the task loop, work-copy manager, loop store/API, Discord planning/session creation,
-watchers, queueing, integration, and recovery. Infrastructure capacity remains a separate safety
-mechanism and must not be described as a `/gowork` worker policy.
+watchers, queueing, integration, thread archival, and recovery. Infrastructure capacity remains a
+separate safety mechanism and must not be described as a `/gowork` worker policy.

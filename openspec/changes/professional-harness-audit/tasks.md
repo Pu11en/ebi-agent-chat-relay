@@ -5,7 +5,7 @@ Try: `uv run python -m extensions.harness_audit.cli audit --machine drewai --har
 ## 1. Evidence contracts
 
 - [x] 1.1 **Depends on: none; owns: `extensions/harness_audit/models.py`, `tests/test_harness_audit_models.py`.** Define versioned inventory, evidence-level, finding, classification, machine-exception, and coverage-gap records; verify schema round trips and rejects unknown required fields.
-- [ ] 1.2 **Depends on: 1.1; owns: `extensions/harness_audit/redaction.py`, `tests/test_harness_audit_redaction.py`.** Implement safe metadata and secret redaction rules; verify fixture credentials and private bodies never appear in serialized bundles.
+- [x] 1.2 **Depends on: 1.1; owns: `extensions/harness_audit/redaction.py`, `tests/test_harness_audit_redaction.py`.** Implement safe metadata and secret redaction rules; verify fixture credentials and private bodies never appear in serialized bundles.
 - [ ] 1.3 **Depends on: 1.1; owns: `extensions/harness_audit/sources.json`, `extensions/harness_audit/sources.py`, `tests/test_harness_audit_sources.py`.** Add pinned official Claude Code and Codex guidance records with version/date validation; verify expired, malformed, or non-official entries fail closed.
 
 ## 2. Read-only collection

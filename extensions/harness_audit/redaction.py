@@ -52,14 +52,14 @@ from extensions.harness_audit.models import (
     VendorCitation,
 )
 
-SECRET_PLACEHOLDER = "[redacted]"
+SECRET_PLACEHOLDER = "[redacted]"  # noqa: S105 - replacement marker, not a credential
 """What a removed secret value is replaced with."""
 
 WITHHELD_PLACEHOLDER = "[withheld]"
 """What a value is replaced with when even its shape is not trusted."""
 
 HASH_ALGORITHM = "sha256"
-TOKEN_ESTIMATE_METHOD = "characters/4 heuristic"
+TOKEN_ESTIMATE_METHOD = "characters/4 heuristic"  # noqa: S105 - method label
 
 
 class RedactionError(SchemaError):
