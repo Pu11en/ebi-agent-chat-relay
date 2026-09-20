@@ -18,11 +18,24 @@ CREATE TABLE IF NOT EXISTS sessions (
     origin TEXT NOT NULL DEFAULT 'discord',
     summary TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    last_used_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    last_used_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    -- Close lifecycle: 'open' | 'closing' | 'closed'. A session leaves 'open'
+    -- only through an authorized close, and 'closing' survives a restart so a
+    -- close requested during an active turn still finishes afterwards.
+    -- Closing never deletes the row: the record, its folder and its wrap-up
+    -- stay queryable so Sessions can list and reopen it.
+    lifecycle_state TEXT NOT NULL DEFAULT 'open',
+    close_requested_at TEXT,
+    close_authority TEXT,      -- which authority source asked (never model intent)
+    wrap_up TEXT,              -- summary written once, at the moment of closing
+    closed_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_last_used ON sessions(last_used_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id);
+-- idx_sessions_lifecycle lives in _MIGRATIONS instead: this script also runs
+-- against databases whose sessions table predates lifecycle_state, and an index
+-- on a missing column is a hard error here rather than a suppressed one there.
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -180,6 +193,15 @@ _MIGRATIONS = [
         "expires_at TEXT NOT NULL)"
     ),
     "CREATE INDEX IF NOT EXISTS idx_resource_claims_thread ON resource_claims(thread_id)",
+    # Session close lifecycle added in v3.3. Existing rows adopt 'open' via the
+    # column default, so a database written before close existed keeps every
+    # session usable and nothing has to be backfilled.
+    "ALTER TABLE sessions ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'open'",
+    "ALTER TABLE sessions ADD COLUMN close_requested_at TEXT",
+    "ALTER TABLE sessions ADD COLUMN close_authority TEXT",
+    "ALTER TABLE sessions ADD COLUMN wrap_up TEXT",
+    "ALTER TABLE sessions ADD COLUMN closed_at TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_lifecycle ON sessions(lifecycle_state)",
 ]
 
 
