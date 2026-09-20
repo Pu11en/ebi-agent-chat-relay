@@ -936,7 +936,8 @@ class CatalogResolver:
             if not lookup.is_matched:
                 return self._ask_for_owner(requested, lookup.candidates)
             target = lookup.computer
-            assert target is not None  # MATCHED always carries a computer
+            if target is None:  # Defensive guard for malformed/custom registry implementations.
+                return self._ask_for_owner(requested, lookup.candidates)
             if not target.is_local:
                 return RemoteTargetResolution(
                     owner=target.owner,

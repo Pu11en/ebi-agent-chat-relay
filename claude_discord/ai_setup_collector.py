@@ -282,15 +282,11 @@ class AdapterRegistry:
 
     @property
     def kinds(self) -> frozenset[SetupKind]:
-        return frozenset(
-            kind for entry in self._registrations.values() for kind in entry.kinds
-        )
+        return frozenset(kind for entry in self._registrations.values() for kind in entry.kinds)
 
     @property
     def source_keys(self) -> frozenset[str]:
-        return frozenset(
-            key for entry in self._registrations.values() for key in entry.source_keys
-        )
+        return frozenset(key for entry in self._registrations.values() for key in entry.source_keys)
 
     def get(self, name: str) -> AdapterRegistration | None:
         return self._registrations.get(normalize_token(name, kind="adapter name"))
