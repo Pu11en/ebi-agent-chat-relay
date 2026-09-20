@@ -4,7 +4,7 @@ Try: `uv run python -m extensions.feature_workflow.coordinator --help`
 
 ## 1. Shared scheduling contracts
 
-- [ ] 1.1 **Depends on: none; owns: `extensions/feature_workflow/task_graph.py`, `tests/test_feature_task_graph.py`.** Parse task IDs, dependencies, owned paths, checks, and legacy checkbox plans; verify unknown nodes, cycles, protected/invalid paths, and independent ownership overlap are rejected while legacy plans become sequential graphs.
+- [x] 1.1 **Depends on: none; owns: `extensions/feature_workflow/task_graph.py`, `tests/test_feature_task_graph.py`.** Parse task IDs, dependencies, owned paths, checks, and legacy checkbox plans; verify unknown nodes, cycles, protected/invalid paths, and independent ownership overlap are rejected while legacy plans become sequential graphs.
 - [ ] 1.2 **Depends on: 1.1; owns: `extensions/feature_workflow/scheduler.py`, `tests/test_feature_scheduler.py`.** Compute the complete dependency-ready, non-conflicting set with no product worker cap; verify four safe tasks are all ready and unresolved/integration dependencies remain pending.
 - [ ] 1.3 **Depends on: 1.1; owns: `extensions/feature_workflow/run_state.py`, `tests/test_feature_run_state.py`.** Define atomic durable state transitions and stable correlation IDs for pending, spawning, ambiguous, dispatched, verified, integrated, queued, and blocked tasks; verify restart never converts uncertainty into duplicate dispatch.
 

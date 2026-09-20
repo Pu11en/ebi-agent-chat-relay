@@ -4,8 +4,8 @@ Try: `uv run pytest tests/test_capacity_recovery.py -q`
 
 ## 1. Outcome contract
 
-- [ ] 1.1 Add failing unit tests for structured provider saturation, rate limit, quota, authentication, relay queueing, and unknown permanent errors; verify `uv run pytest tests/test_capacity_recovery.py -q` fails for the missing classifier.
-- [ ] 1.2 Implement the surface-agnostic capacity outcome and per-backend normalization in new owned capacity modules; verify the classifier tests pass without changing runner behavior.
+- [x] 1.1 Add failing unit tests for structured provider saturation, rate limit, quota, authentication, relay queueing, and unknown permanent errors; verify `uv run pytest tests/test_capacity_recovery.py -q` fails for the missing classifier.
+- [x] 1.2 Implement the surface-agnostic capacity outcome and per-backend normalization in new owned capacity modules; verify the classifier tests pass without changing runner behavior.
 - [ ] 1.3 Add backend phrase fixtures for the observed `model at capacity` variants and false-positive sentences; verify all supported harnesses share the same categories.
 
 ## 2. Durable pending turns
