@@ -1,9 +1,10 @@
-"""Tests for the shared project catalog (OpenSpec tasks 1.1 and 1.2).
+"""Tests for the shared project catalog (OpenSpec tasks 1.1, 1.2 and 1.3).
 
 Domain-model tests (task 1.1) cover identity, availability, bounded queries and
 the five typed resolution results without touching disk.  The discovery tests
-(task 1.2) at the end of the file scan real directories, always inside pytest's
-``tmp_path``.
+(task 1.2) scan real directories, always inside pytest's ``tmp_path``.  The
+owner-resolution tests (task 1.3) at the end of the file cover explicit
+computer-owner aliases and the local-versus-remote decision.
 """
 
 from __future__ import annotations
@@ -23,16 +24,21 @@ from claude_discord.project_catalog import (
     Availability,
     CatalogProject,
     CatalogQuery,
+    CatalogResolver,
     CatalogSnapshot,
     LocalProjectResolution,
     LocalUnavailableResolution,
     NoMatchResolution,
+    OwnerLookupKind,
+    OwnerRegistry,
     ProjectDiscovery,
     ProjectIdentity,
     RemoteTargetResolution,
     ResolutionKind,
     RootStatus,
+    TrustedComputer,
     disambiguated_labels,
+    parse_owner_phrase,
 )
 
 
@@ -709,3 +715,497 @@ class TestDiscoveryRevalidation:
         returned = discovery.snapshot().projects[0]
         assert returned.identity == original.identity
         assert returned.identity.key == original.identity.key
+
+
+# ---------------------------------------------------------------------------
+# Task 1.3 — explicit computer-owner aliases and local/remote resolution.
+# Owner language is only honoured when the request says it outright; a pronoun
+# is never turned into a computer, and a remote owner never yields a local path.
+# ---------------------------------------------------------------------------
+
+
+def make_registry(*, local: str = "david") -> OwnerRegistry:
+    """Two trusted computers — David's is local here, Drew's is remote."""
+    return OwnerRegistry(
+        [
+            TrustedComputer(
+                owner="david",
+                computer="davidpc",
+                aliases=("dave-pc",),
+                is_local=local == "david",
+            ),
+            TrustedComputer(
+                owner="drew",
+                computer="drewai",
+                aliases=("drew-ai",),
+                is_local=local == "drew",
+            ),
+        ]
+    )
+
+
+def make_resolver(
+    base: Path,
+    *,
+    registry: OwnerRegistry | None = None,
+    owner: str = "david",
+    computer: str = "davidpc",
+    extra_roots: tuple[ApprovedRoot, ...] = (),
+    cache_ttl: float = 0.0,
+) -> CatalogResolver:
+    root = make_fs_root(base, owner=owner, computer=computer)
+    discovery = ProjectDiscovery((root, *extra_roots), cache_ttl=cache_ttl)
+    return CatalogResolver(discovery, registry or make_registry())
+
+
+class TestTrustedComputer:
+    """A trusted computer is explicit configuration: aliases are declared, never inferred."""
+
+    def test_normalizes_owner_computer_and_aliases(self) -> None:
+        computer = TrustedComputer(owner="  Drew ", computer="Drew AI", aliases=("Drew's Mac",))
+
+        assert computer.owner == "drew"
+        assert computer.computer == "drew-ai"
+        assert "drew-s-mac" in computer.aliases
+
+    def test_owner_and_computer_are_implicit_aliases(self) -> None:
+        computer = TrustedComputer(owner="david", computer="davidpc")
+
+        assert computer.aliases == ("david", "davidpc")
+
+    def test_duplicate_aliases_collapse_without_reordering(self) -> None:
+        computer = TrustedComputer(owner="david", computer="davidpc", aliases=("David", "dave"))
+
+        assert computer.aliases == ("david", "davidpc", "dave")
+
+    def test_qualifier_names_owner_and_computer(self) -> None:
+        assert TrustedComputer(owner="drew", computer="imac").qualifier == "drew/imac"
+
+    def test_rejects_an_alias_with_no_letters_or_digits(self) -> None:
+        with pytest.raises(ValueError):
+            TrustedComputer(owner="drew", computer="drewai", aliases=("---",))
+
+
+class TestOwnerRegistry:
+    """Alias lookup maps a phrase to at most one trusted computer, or refuses."""
+
+    def test_an_explicit_alias_matches_one_computer(self) -> None:
+        lookup = make_registry().lookup("drew-ai")
+
+        assert lookup.kind is OwnerLookupKind.MATCHED
+        assert lookup.computer is not None
+        assert lookup.computer.qualifier == "drew/drewai"
+
+    def test_the_owner_name_matches_its_computer(self) -> None:
+        assert make_registry().lookup("Drew").computer == TrustedComputer(
+            owner="drew", computer="drewai", aliases=("drew-ai",)
+        )
+
+    def test_an_unknown_phrase_is_not_guessed(self) -> None:
+        lookup = make_registry().lookup("sam")
+
+        assert lookup.kind is OwnerLookupKind.UNKNOWN
+        assert lookup.computer is None
+        assert len(lookup.candidates) == 2
+
+    def test_a_pronoun_is_refused_rather_than_resolved(self) -> None:
+        for pronoun in ("my", "his", "her", "their", "your"):
+            assert make_registry().lookup(pronoun).kind is OwnerLookupKind.PRONOUN
+
+    def test_one_owner_on_two_remote_computers_is_ambiguous(self) -> None:
+        registry = OwnerRegistry(
+            [
+                TrustedComputer(owner="david", computer="davidpc", is_local=True),
+                TrustedComputer(owner="drew", computer="drewai"),
+                TrustedComputer(owner="drew", computer="imac"),
+            ]
+        )
+
+        lookup = registry.lookup("drew")
+
+        assert lookup.kind is OwnerLookupKind.AMBIGUOUS
+        assert {entry.computer for entry in lookup.candidates} == {"drewai", "imac"}
+
+    def test_the_local_computer_wins_over_the_same_owner_elsewhere(self) -> None:
+        registry = OwnerRegistry(
+            [
+                TrustedComputer(owner="drew", computer="drewai", is_local=True),
+                TrustedComputer(owner="drew", computer="imac"),
+            ]
+        )
+
+        lookup = registry.lookup("drew")
+
+        assert lookup.kind is OwnerLookupKind.MATCHED
+        assert lookup.computer is not None
+        assert lookup.computer.computer == "drewai"
+
+    def test_rejects_two_local_computers(self) -> None:
+        with pytest.raises(ValueError):
+            OwnerRegistry(
+                [
+                    TrustedComputer(owner="drew", computer="drewai", is_local=True),
+                    TrustedComputer(owner="david", computer="davidpc", is_local=True),
+                ]
+            )
+
+    def test_rejects_the_same_computer_twice(self) -> None:
+        with pytest.raises(ValueError):
+            OwnerRegistry(
+                [
+                    TrustedComputer(owner="drew", computer="drewai"),
+                    TrustedComputer(owner="  Drew ", computer="DREWAI"),
+                ]
+            )
+
+    def test_exposes_the_local_computer_and_known_owners(self) -> None:
+        registry = make_registry()
+
+        assert registry.local is not None
+        assert registry.local.owner == "david"
+        assert registry.owners == ("david", "drew")
+
+    def test_an_empty_registry_has_no_local_computer(self) -> None:
+        registry = OwnerRegistry(())
+
+        assert registry.local is None
+        assert registry.lookup("drew").kind is OwnerLookupKind.UNKNOWN
+
+
+class TestParseOwnerPhrase:
+    """Only an outright possessive or an ``owner:`` prefix carries owner intent."""
+
+    def test_reads_a_possessive_owner_and_drops_generic_words(self) -> None:
+        phrase = parse_owner_phrase("Drew's projects")
+
+        assert phrase.owner_phrase == "Drew"
+        assert phrase.terms == ()
+        assert phrase.is_pronoun is False
+
+    def test_keeps_the_project_terms_after_the_owner(self) -> None:
+        phrase = parse_owner_phrase("David's alpha project")
+
+        assert phrase.owner_phrase == "David"
+        assert phrase.terms == ("alpha",)
+        assert phrase.text == "alpha"
+
+    def test_accepts_a_curly_apostrophe_and_a_trailing_possessive(self) -> None:
+        assert parse_owner_phrase("Drew’s alpha").owner_phrase == "Drew"
+        assert parse_owner_phrase("Drews' alpha").owner_phrase == "Drew"
+
+    def test_accepts_an_explicit_owner_prefix(self) -> None:
+        phrase = parse_owner_phrase("owner:david alpha")
+
+        assert phrase.owner_phrase == "david"
+        assert phrase.terms == ("alpha",)
+
+    def test_a_possessive_pronoun_is_recorded_but_never_becomes_an_owner(self) -> None:
+        phrase = parse_owner_phrase("my projects")
+
+        assert phrase.owner_phrase is None
+        assert phrase.is_pronoun is True
+        assert phrase.pronoun_word == "my"
+
+    def test_a_bare_pronoun_without_an_apostrophe_is_still_a_pronoun(self) -> None:
+        assert parse_owner_phrase("his alpha").is_pronoun is True
+        assert parse_owner_phrase("their projects").is_pronoun is True
+
+    def test_a_name_without_an_apostrophe_is_a_search_term_not_an_owner(self) -> None:
+        phrase = parse_owner_phrase("drews alpha")
+
+        assert phrase.owner_phrase is None
+        assert phrase.terms == ("drews", "alpha")
+
+    def test_an_explicit_owner_outranks_a_stray_pronoun(self) -> None:
+        phrase = parse_owner_phrase("show me Drew's alpha")
+
+        assert phrase.owner_phrase == "Drew"
+        assert phrase.is_pronoun is False
+        assert phrase.terms == ("alpha",)
+
+    def test_two_different_owners_conflict(self) -> None:
+        phrase = parse_owner_phrase("Drew's David's alpha")
+
+        assert phrase.conflicting is True
+
+    def test_the_same_owner_twice_does_not_conflict(self) -> None:
+        assert parse_owner_phrase("Drew's Drew's alpha").conflicting is False
+
+    def test_plain_text_carries_no_owner(self) -> None:
+        phrase = parse_owner_phrase("alpha")
+
+        assert phrase.owner_phrase is None
+        assert phrase.is_pronoun is False
+        assert phrase.terms == ("alpha",)
+
+    def test_empty_text_is_an_empty_phrase(self) -> None:
+        phrase = parse_owner_phrase("   ")
+
+        assert phrase.owner_phrase is None
+        assert phrase.terms == ()
+        assert phrase.text == ""
+
+
+class TestRemoteOwnerResolution:
+    """A remote owner produces a handoff target — never a local folder."""
+
+    def test_davids_computer_sends_drews_project_to_drews_computer(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("Drew's alpha")
+
+        assert isinstance(result, RemoteTargetResolution)
+        assert result.kind is ResolutionKind.REMOTE_TARGET
+        assert (result.owner, result.computer) == ("drew", "drewai")
+        assert result.requested_terms == ("alpha",)
+
+    def test_a_same_named_local_project_is_never_substituted(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        local = resolver.resolve("alpha")
+        remote = resolver.resolve("Drew's alpha")
+
+        assert isinstance(local, LocalProjectResolution)
+        assert local.working_directory == PurePosixPath(tmp_path / "alpha")
+        assert remote.working_directory is None
+        assert remote.is_local_available is False
+
+    def test_a_remote_result_is_never_locally_verified(self, tmp_path: Path) -> None:
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("Drew's projects")
+
+        assert isinstance(result, RemoteTargetResolution)
+        assert result.is_locally_verified is False
+        assert result.availability is Availability.UNKNOWN
+        assert result.requested_terms == ()
+
+    def test_a_remote_owner_yields_no_local_search_results(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", "beta")
+        resolver = make_resolver(tmp_path)
+
+        snapshot = resolver.search("Drew's projects")
+
+        assert snapshot.projects == ()
+        assert len(snapshot.roots) == 1
+
+
+class TestLocalOwnerResolution:
+    """An explicit local owner stays inside that computer's approved roots."""
+
+    def test_davids_own_project_resolves_locally(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("David's alpha")
+
+        assert isinstance(result, LocalProjectResolution)
+        assert result.working_directory == PurePosixPath(tmp_path / "alpha")
+        assert result.project.identity.owner == "david"
+
+    def test_davids_projects_are_limited_to_davids_roots(self, tmp_path: Path) -> None:
+        mine = make_tree(tmp_path / "david", "alpha", "beta")
+        theirs = make_tree(tmp_path / "guest", "gamma")
+        # A deliberately mixed fixture: the scope filter must exclude a root
+        # that is attributed to another owner even though it is on this disk.
+        resolver = make_resolver(
+            mine,
+            extra_roots=(make_fs_root(theirs, key="guest", owner="drew", computer="drewai"),),
+        )
+
+        snapshot = resolver.search("David's projects")
+
+        assert [project.identity.name for project in snapshot.projects] == ["alpha", "beta"]
+        assert all(project.identity.owner == "david" for project in snapshot.projects)
+
+    def test_an_unscoped_search_still_sees_every_local_root(self, tmp_path: Path) -> None:
+        mine = make_tree(tmp_path / "david", "alpha")
+        theirs = make_tree(tmp_path / "guest", "gamma")
+        resolver = make_resolver(
+            mine,
+            extra_roots=(make_fs_root(theirs, key="guest", owner="drew", computer="drewai"),),
+        )
+
+        names = [project.identity.name for project in resolver.search().projects]
+
+        assert names == ["alpha", "gamma"]
+
+    def test_search_clamps_its_limit(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", "beta", "gamma")
+        resolver = make_resolver(tmp_path)
+
+        snapshot = resolver.search(limit=2)
+
+        assert len(snapshot.projects) == 2
+        assert snapshot.truncated is True
+
+
+class TestAmbiguousOwnerHandling:
+    """Anything the aliases cannot settle asks for an explicit owner."""
+
+    def test_an_owner_on_two_computers_asks_instead_of_choosing(self, tmp_path: Path) -> None:
+        registry = OwnerRegistry(
+            [
+                TrustedComputer(owner="david", computer="davidpc", is_local=True),
+                TrustedComputer(owner="drew", computer="drewai"),
+                TrustedComputer(owner="drew", computer="imac"),
+            ]
+        )
+        resolver = make_resolver(tmp_path, registry=registry)
+
+        result = resolver.resolve("Drew's alpha")
+
+        assert isinstance(result, AmbiguousOwnerResolution)
+        assert result.requested_owner == "drew"
+        assert result.candidate_computers == ("drewai", "imac")
+        assert result.working_directory is None
+
+    def test_an_unknown_owner_lists_the_known_ones(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("Sam's alpha")
+
+        assert isinstance(result, AmbiguousOwnerResolution)
+        assert result.requested_owner == "sam"
+        assert result.candidate_owners == ("david", "drew")
+
+    def test_a_pronoun_never_selects_a_computer(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("my alpha")
+
+        assert isinstance(result, AmbiguousOwnerResolution)
+        assert result.requested_owner == "my"
+        assert result.working_directory is None
+
+    def test_two_explicit_owners_in_one_request_are_ambiguous(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("Drew's David's alpha")
+
+        assert isinstance(result, AmbiguousOwnerResolution)
+
+    def test_an_explicit_owner_argument_bypasses_the_phrase(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("my alpha", owner="david")
+
+        assert isinstance(result, LocalProjectResolution)
+        assert result.project.identity.name == "alpha"
+
+
+class TestSameNamedLocalProjects:
+    """Two local folders with one name are reported, never silently picked."""
+
+    def test_a_duplicate_name_reports_both_identities(self, tmp_path: Path) -> None:
+        first = make_tree(tmp_path / "one", "alpha")
+        second = make_tree(tmp_path / "two", "alpha")
+        resolver = make_resolver(
+            first,
+            extra_roots=(make_fs_root(second, key="extra", owner="david", computer="davidpc"),),
+        )
+
+        result = resolver.resolve("alpha")
+
+        assert isinstance(result, AmbiguousOwnerResolution)
+        assert result.working_directory is None
+        assert {identity.root_key for identity in result.candidate_identities} == {"main", "extra"}
+
+    def test_both_duplicates_stay_selectable_with_distinct_labels(self, tmp_path: Path) -> None:
+        first = make_tree(tmp_path / "one", "alpha")
+        second = make_tree(tmp_path / "two", "alpha")
+        resolver = make_resolver(
+            first,
+            extra_roots=(make_fs_root(second, key="extra", owner="david", computer="davidpc"),),
+        )
+
+        projects = resolver.search("alpha").projects
+        labels = disambiguated_labels(projects)
+
+        assert len(projects) == 2
+        assert len(set(labels.values())) == 2
+
+    def test_a_duplicate_elsewhere_does_not_block_a_unique_name(self, tmp_path: Path) -> None:
+        first = make_tree(tmp_path / "one", "alpha", "beta")
+        second = make_tree(tmp_path / "two", "alpha")
+        resolver = make_resolver(
+            first,
+            extra_roots=(make_fs_root(second, key="extra", owner="david", computer="davidpc"),),
+        )
+
+        result = resolver.resolve("beta")
+
+        assert isinstance(result, LocalProjectResolution)
+        assert result.working_directory == PurePosixPath(first / "beta")
+
+
+class TestLocalResolutionAvailability:
+    """Local answers are revalidated, so a stale folder never becomes a path."""
+
+    def test_an_exact_name_beats_a_longer_partial_match(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", "alpha-two")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("alpha")
+
+        assert isinstance(result, LocalProjectResolution)
+        assert result.project.identity.name == "alpha"
+
+    def test_nothing_matching_reports_no_match_with_the_query(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("David's zeta")
+
+        assert isinstance(result, NoMatchResolution)
+        assert result.query.text == "zeta"
+        assert result.query.owner == "david"
+        assert result.working_directory is None
+
+    def test_a_cached_project_deleted_since_the_scan_is_unavailable(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path, cache_ttl=300.0)
+        assert resolver.resolve("alpha").is_local_available
+
+        (tmp_path / "alpha").rmdir()
+        result = resolver.resolve("alpha")
+
+        assert isinstance(result, LocalUnavailableResolution)
+        assert result.availability is Availability.MISSING
+        assert result.working_directory is None
+
+    def test_a_refreshed_query_drops_the_deleted_project_entirely(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path, cache_ttl=300.0)
+        assert resolver.resolve("alpha").is_local_available
+
+        (tmp_path / "alpha").rmdir()
+        result = resolver.resolve("alpha", refresh=True)
+
+        assert isinstance(result, NoMatchResolution)
+
+    def test_resolution_is_case_insensitive_on_the_name(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "Alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = resolver.resolve("ALPHA")
+
+        assert isinstance(result, LocalProjectResolution)
+        assert result.project.identity.name == "Alpha"
+
+    @pytest.mark.asyncio
+    async def test_the_async_resolver_returns_the_same_answer(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        resolver = make_resolver(tmp_path)
+
+        result = await resolver.resolve_async("David's alpha")
+        snapshot = await resolver.search_async("David's projects")
+
+        assert isinstance(result, LocalProjectResolution)
+        assert [project.identity.name for project in snapshot.projects] == ["alpha"]
