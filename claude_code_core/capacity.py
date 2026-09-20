@@ -148,9 +148,10 @@ _STATUS_CODES: dict[int, CapacityCategory] = {
 }
 
 _AUTH_RE = re.compile(
-    r"invalid[ _-]api[ _-]key|authentication (?:failed|error)|\bunauthorized\b|"
+    r"invalid[ _-]api[ _-]key|api[ _-]key (?:is )?(?:invalid|expired|missing)|"
+    r"authentication (?:failed|fails|failure|error)|\bunauthorized\b|\bforbidden\b|"
     r"not (?:logged in|authenticated)|please (?:run )?/?login|"
-    r"(?:oauth|access|auth) token (?:has )?expired|"
+    r"(?:oauth|access|auth|login|session) (?:token )?(?:has )?expired|"
     r"credentials (?:are )?(?:missing|invalid|expired|rejected)",
     re.IGNORECASE,
 )
@@ -159,24 +160,47 @@ _AUTH_RE = re.compile(
 _QUOTA_RE = re.compile(
     r"(?:session|usage|weekly|daily|hourly|monthly|5-hour) limit|"
     r"hit your .{0,40}limit|reached your .{0,40}limit|"
-    r"exceeded your current quota|quota (?:exceeded|exhausted)|insufficient_quota|"
-    r"out of credits|credit balance is too low|billing hard limit|"
+    r"exceeded your current quota|quota (?:exceeded|exhausted|reached)|insufficient_quota|"
+    r"(?:exceeded|exhausted|used up|out of|ran out of) (?:your )?[\w \-+]{0,30}quota|"
+    r"out of credits|credit balance is too low|insufficient balance|billing hard limit|"
     r"(?:subscription|plan) limit",
     re.IGNORECASE,
 )
-_RATE_RE = re.compile(r"rate[ _-]?limit|too many requests|\b429\b", re.IGNORECASE)
+_RATE_RE = re.compile(
+    r"rate[ _-]?limit|too many (?:concurrent |parallel |simultaneous )?requests|"
+    r"throttl(?:ed|ing)|\b429\b",
+    re.IGNORECASE,
+)
 #: "at capacity" is anchored so the relay's own "waiting for capacity" never matches.
+#: Wording here is shared by every harness — see the per-backend fixtures in
+#: tests/test_capacity_recovery.py for what each one was observed to say.
 _SATURATION_RE = re.compile(
-    r"\bat capacity\b|overloaded|capacity constraints|temporarily unavailable|"
-    r"servers? (?:are|is) (?:busy|overloaded)|service unavailable|\b529\b",
+    r"\bat capacity\b|overloaded|capacity constraints|capacity limit|"
+    r"(?:no|out of|without) capacity\b|temporarily unavailable|currently unavailable|"
+    r"(?:model|server|servers|runner|backend|upstream|gateway)s? (?:are|is) busy|"
+    r"experiencing (?:unusually )?(?:high|heavy) (?:demand|load|traffic)|"
+    r"(?:high|heavy) (?:demand|load|traffic)|"
+    r"service unavailable|\b529\b",
     re.IGNORECASE,
 )
 #: Phrases specific enough to trust inside the model's own reply, where any
 #: mention of limits is far more likely to be the worker describing its work.
 _PROVIDER_WORDING_RE = re.compile(
-    r"\bat capacity\b|overloaded|exceeded your current quota|insufficient_quota|"
+    r"\bat capacity\b|overloaded|(?:no|out of) capacity\b|"
+    r"exceeded your current quota|insufficient_quota|insufficient balance|"
     r"hit your .{0,40}limit|(?:session|usage|weekly|daily|5-hour) limit|"
-    r"invalid[ _-]api[ _-]key|authentication (?:failed|error)",
+    r"invalid[ _-]api[ _-]key|authentication (?:failed|fails|error)",
+    re.IGNORECASE,
+)
+
+#: Provider wording quoted inside a worker's own write-up. A reply that names a
+#: doc, a test, or its own edits is describing capacity handling, not suffering
+#: it, so the reply path stays silent rather than retrying a finished task.
+_DESCRIBING_WORK_RE = re.compile(
+    r"\b(?:docs?|documentation|readme|spec|comment|fixture|fixtures|test|tests|"
+    r"mock(?:ed|s)?|stub(?:bed|s)?|simulat(?:e|ed|es|ing)|handl(?:e|es|ed|ing|er)|"
+    r"implement(?:ed|s|ing)?|add(?:ed|ing)|wrote|written|refactor(?:ed|ing)?|"
+    r"plan(?:ned|ning)?|example)\b",
     re.IGNORECASE,
 )
 
@@ -255,11 +279,13 @@ def _from_phrases(text: str, *, strict: bool) -> CapacityCategory | None:
     """Ordered phrase reading; ``strict`` limits it to unmistakable provider wording.
 
     Quota is checked before rate limiting because "you've hit your usage limit"
-    also mentions a limit, and the two need opposite handling.
+    also mentions a limit, and the two need opposite handling. In ``strict`` mode
+    a reply must both use provider wording and not read as the worker writing
+    *about* capacity handling, which is the common false positive here.
     """
     if not text.strip():
         return None
-    if strict and not _PROVIDER_WORDING_RE.search(text):
+    if strict and (not _PROVIDER_WORDING_RE.search(text) or _DESCRIBING_WORK_RE.search(text)):
         return None
     for pattern, category in (
         (_AUTH_RE, CapacityCategory.AUTHENTICATION_FAILED),
