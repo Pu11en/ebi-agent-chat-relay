@@ -1,0 +1,12 @@
+{
+  "change": "professional-harness-audit",
+  "thread_id": "1550757693784989707",
+  "plan_owner": "1550757693784989707",
+  "decisions": [
+    "Audit Discord Claude and Codex on DrewAI and iMac.",
+    "Do not change reasoning effort or model quality.",
+    "Use vendor guidance and deterministic checks, not subjective grading.",
+    "Portable behavior is shared; harness-specific adapters preserve equivalent outcomes.",
+    "Quarantine first and remove only after verification."
+  ]
+}

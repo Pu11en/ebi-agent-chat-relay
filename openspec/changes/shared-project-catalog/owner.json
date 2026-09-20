@@ -1,0 +1,11 @@
+{
+  "change": "shared-project-catalog",
+  "thread_id": "1550757693784989707",
+  "plan_owner": "1550757693784989707",
+  "decisions": [
+    "Automatically discover direct children of approved main-projects roots.",
+    "Bot and local harnesses query one local catalog.",
+    "Never inject the full catalog or folder trees into every prompt.",
+    "Remote project access uses explicit owners and trusted handoffs."
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "change": "trusted-agent-handoffs",
+  "thread_id": "1550757693784989707",
+  "plan_owner": "1550757693784989707",
+  "decisions": [
+    "Handoffs are bidirectional among DrewAI, iMac, and David.",
+    "Use one shared agent-handoffs channel and one thread per job.",
+    "Send compact task packets, not full conversations.",
+    "Offline destinations queue visibly and resume automatically.",
+    "Authority follows the original task and is never broadened by handoff."
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "change": "model-capacity-resilience",
+  "thread_id": "1550757693784989707",
+  "plan_owner": "1550757693784989707",
+  "decisions": [
+    "A temporary model-at-capacity result must not dead-end the task.",
+    "Differentiate provider saturation from relay capacity and quota exhaustion.",
+    "Keep visible queued/retrying/fallback status.",
+    "Fallback only through an explicitly authorized configured chain.",
+    "Retries are bounded, durable, and idempotent."
+  ]
+}
