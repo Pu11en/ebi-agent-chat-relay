@@ -18,21 +18,40 @@ Two rules shape every type here:
   ``working_directory``, so a stale or remote answer cannot be bound to a
   session by accident.
 
-Nothing in this module touches the filesystem.
+:class:`ProjectDiscovery` is the one part that reads the disk, and it reads
+exactly one directory level per approved root: every direct child directory is a
+project, nothing deeper is, and nothing outside an approved root can become one.
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import re
+import threading
+import time
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
 DEFAULT_QUERY_LIMIT = 25
 MAX_QUERY_LIMIT = 200
+
+#: How long one scan may be reused before the disk is read again.  Short on
+#: purpose: a folder created seconds ago should show up in the next query, and
+#: session creation revalidates its chosen folder regardless.
+DEFAULT_DISCOVERY_CACHE_TTL = 2.0
+
+#: Upper bound on the projects one snapshot returns, so a root holding thousands
+#: of direct children cannot flood a caller or a Discord view.
+MAX_DISCOVERED_PROJECTS = 500
+
+#: Direct children that are build or dependency output rather than projects.
+#: Names beginning with ``.`` are skipped separately.
+IGNORED_PROJECT_NAMES = frozenset({"__pycache__", "build", "dist", "node_modules", "venv"})
 
 _TOKEN_SEPARATOR = ":"
 _INVALID_TOKEN_CHARS = re.compile(r"[^a-z0-9]+")
@@ -406,8 +425,167 @@ class CatalogSnapshot:
         return tuple(status for status in self.roots if not status.is_available)
 
 
+def _project_sort_key(project: CatalogProject) -> tuple[str, str, str, str, str]:
+    """Total order: folder name first, then the identity that disambiguates it.
+
+    Case-insensitive so ``Zeta`` does not sort before ``alpha``, with the exact
+    name as a tiebreaker so two folders differing only in case keep a stable
+    order.
+    """
+    identity = project.identity
+    return (
+        identity.name.casefold(),
+        identity.name,
+        identity.root_key,
+        identity.computer,
+        identity.owner,
+    )
+
+
+class ProjectDiscovery:
+    """Bounded one-level discovery of projects under approved roots.
+
+    One scan reads the direct children of each approved root, keeps the readable
+    directories, and returns them in a deterministic order together with each
+    root's availability.  It never recurses, never treats a file as a project and
+    never emits a path outside an approved root: a project's path is always
+    ``root.path / name``.
+
+    Scans are cheap but not free, so a snapshot is reused for
+    ``cache_ttl`` seconds.  Callers that must see the current state ask for
+    ``refresh=True``; :meth:`revalidate` re-checks a single project immediately
+    before a session binds its working directory.
+    """
+
+    def __init__(
+        self,
+        roots: Iterable[ApprovedRoot],
+        *,
+        cache_ttl: float = DEFAULT_DISCOVERY_CACHE_TTL,
+        max_projects: int = MAX_DISCOVERED_PROJECTS,
+        ignored_names: Iterable[str] = IGNORED_PROJECT_NAMES,
+        time_source: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._roots = tuple(roots)
+        self._cache_ttl = max(0.0, float(cache_ttl))
+        self._max_projects = max(1, int(max_projects))
+        self._ignored_names = frozenset(ignored_names)
+        self._now = time_source
+        self._lock = threading.Lock()
+        self._cached: CatalogSnapshot | None = None
+        self._cached_at = 0.0
+
+    @property
+    def roots(self) -> tuple[ApprovedRoot, ...]:
+        return self._roots
+
+    def snapshot(self, *, refresh: bool = False) -> CatalogSnapshot:
+        """Return the current catalog, scanning the disk unless the cache is fresh."""
+        with self._lock:
+            cached = self._cached
+            age = self._now() - self._cached_at
+            if cached is not None and not refresh and age < self._cache_ttl:
+                return cached
+            scanned = self._scan()
+            self._cached = scanned
+            self._cached_at = self._now()
+            return scanned
+
+    async def snapshot_async(self, *, refresh: bool = False) -> CatalogSnapshot:
+        """Same answer as :meth:`snapshot`, off the event loop."""
+        return await asyncio.to_thread(self.snapshot, refresh=refresh)
+
+    def invalidate(self) -> None:
+        """Drop the cached scan so the next query reads the disk."""
+        with self._lock:
+            self._cached = None
+            self._cached_at = 0.0
+
+    def revalidate(self, project: CatalogProject) -> CatalogProject:
+        """Re-check one project's folder, keeping its identity and path.
+
+        Used immediately before a session binds a working directory: a project
+        that has since been deleted or replaced comes back unavailable, and
+        :attr:`CatalogProject.working_directory` then returns ``None``.
+        """
+        return project.with_availability(self._availability_of(Path(project.path)))
+
+    def _scan(self) -> CatalogSnapshot:
+        statuses: list[RootStatus] = []
+        projects: list[CatalogProject] = []
+        for root in self._roots:
+            status, found = self._scan_root(root)
+            statuses.append(status)
+            projects.extend(found)
+
+        projects.sort(key=_project_sort_key)
+        truncated = len(projects) > self._max_projects
+        if truncated:
+            projects = projects[: self._max_projects]
+        return CatalogSnapshot(
+            roots=tuple(statuses),
+            projects=tuple(projects),
+            truncated=truncated,
+        )
+
+    def _scan_root(self, root: ApprovedRoot) -> tuple[RootStatus, list[CatalogProject]]:
+        """One directory level of one root; an unusable root is data, not an error."""
+        try:
+            with os.scandir(Path(root.path)) as entries:
+                names = [entry.name for entry in entries if self._is_project_entry(entry)]
+        except FileNotFoundError:
+            return RootStatus(root, Availability.MISSING, "The approved root does not exist"), []
+        except NotADirectoryError:
+            return (
+                RootStatus(root, Availability.UNREADABLE, "The approved root is not a directory"),
+                [],
+            )
+        except PermissionError:
+            unreadable = RootStatus(
+                root, Availability.UNREADABLE, "The approved root is not readable"
+            )
+            return unreadable, []
+        except OSError as error:
+            reason = f"The approved root could not be read: {error.strerror or error}"
+            return RootStatus(root, Availability.UNREADABLE, reason), []
+
+        found = [
+            CatalogProject(identity=root.child_identity(name), path=root.child_path(name))
+            for name in names
+        ]
+        return RootStatus(root, Availability.AVAILABLE), found
+
+    def _is_project_entry(self, entry: os.DirEntry[str]) -> bool:
+        name = entry.name
+        if name.startswith(".") or name in self._ignored_names:
+            return False
+        try:
+            validate_child_name(name)
+        except ValueError:
+            return False
+        try:
+            # Follows symlinks: a symlinked project folder is still a direct
+            # child, and its catalog path stays inside the approved root.  A
+            # dangling symlink is not a directory and is skipped.
+            return entry.is_dir()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _availability_of(path: Path) -> Availability:
+        try:
+            if path.is_dir():
+                return Availability.AVAILABLE
+            return Availability.MISSING if not path.exists() else Availability.UNREADABLE
+        except OSError:
+            return Availability.UNREADABLE
+
+
 __all__ = [
+    "DEFAULT_DISCOVERY_CACHE_TTL",
     "DEFAULT_QUERY_LIMIT",
+    "IGNORED_PROJECT_NAMES",
+    "MAX_DISCOVERED_PROJECTS",
     "MAX_QUERY_LIMIT",
     "AmbiguousOwnerResolution",
     "ApprovedRoot",
@@ -418,6 +596,7 @@ __all__ = [
     "LocalProjectResolution",
     "LocalUnavailableResolution",
     "NoMatchResolution",
+    "ProjectDiscovery",
     "ProjectIdentity",
     "RemoteTargetResolution",
     "ResolutionKind",
