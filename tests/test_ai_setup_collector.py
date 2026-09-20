@@ -357,9 +357,7 @@ def test_a_custom_item_reported_alone_stays_custom() -> None:
 
 
 def test_an_unchanged_builtin_stays_builtin_and_is_hidden_by_default() -> None:
-    result = collect(
-        adapter("claude-builtin", item("docs", classification=Classification.BUILTIN))
-    )
+    result = collect(adapter("claude-builtin", item("docs", classification=Classification.BUILTIN)))
     only = result.snapshot.items[0]
 
     assert only.classification is Classification.BUILTIN
