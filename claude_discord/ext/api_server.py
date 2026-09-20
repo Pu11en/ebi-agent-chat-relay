@@ -37,6 +37,7 @@ from aiohttp import web
 from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
+from ..agent_router import parse_agent_routes
 from ..discord_ui.file_sender import send_file_blobs
 from ..lounge import length_hint
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
@@ -289,6 +290,8 @@ class ApiServer:
         # Loop/rate brake for thread-to-thread relays. Process-local by design:
         # after a restart there are no in-flight relay chains to protect.
         self.relay_guard = RelayGuard()
+        # Friendly names for relay targets, e.g. "drewai" -> a Discord thread.
+        self.agent_directory = parse_agent_routes(os.getenv("CCDB_AGENT_ROUTES"))
         # AI Lounge Discord mirror (OPTIONAL, human-facing). When a channel is
         # configured, lounge messages are echoed there so a human can watch the
         # AI-to-AI chatter in Discord. Leave it unset to run the lounge DB-only:
@@ -338,6 +341,8 @@ class ApiServer:
         # Cross-session observability routes (requires session_repo)
         self.app.router.add_get("/api/sessions", self.list_sessions)
         self.app.router.add_get("/api/search", self.search_sessions)
+        self.app.router.add_get("/api/agents", self.list_agents)
+        self.app.router.add_post("/api/agents/{agent_id}/message", self.relay_agent_message)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
         # Session spawn route
@@ -941,6 +946,42 @@ class ApiServer:
     # Session spawn endpoint (/api/spawn)
     # ------------------------------------------------------------------
 
+    async def list_agents(self, _request: web.Request) -> web.Response:
+        """GET /api/agents — list friendly relay names this bot knows."""
+        return web.json_response(
+            {"agents": [route.to_public_dict() for route in self.agent_directory.routes]}
+        )
+
+    async def relay_agent_message(self, request: web.Request) -> web.Response:
+        """POST /api/agents/{agent_id}/message — talk to a named live session.
+
+        This is the ergonomic layer over ``/api/threads/{thread_id}/message``:
+        peer agents can say "drewai" or "imac" without knowing the destination
+        Discord thread ID.
+        """
+        raw_agent_id = request.match_info.get("agent_id", "")
+        try:
+            route = self.agent_directory.resolve(raw_agent_id)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except KeyError:
+            known = ", ".join(self.agent_directory.known_agent_ids()) or "none configured"
+            return web.json_response(
+                {"error": f"Unknown agent '{raw_agent_id}'. Known agents: {known}"},
+                status=404,
+            )
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        return await self._relay_to_thread(
+            thread_id=route.thread_id,
+            data=data,
+            response_extra={"agent_id": route.agent_id},
+        )
+
     async def relay_thread_message(self, request: web.Request) -> web.Response:
         """POST /api/threads/{thread_id}/message — talk to another live session.
 
@@ -974,6 +1015,18 @@ class ApiServer:
             data = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        return await self._relay_to_thread(thread_id=thread_id, data=data)
+
+    async def _relay_to_thread(
+        self,
+        *,
+        thread_id: int,
+        data: object,
+        response_extra: dict[str, object] | None = None,
+    ) -> web.Response:
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         text = str(data.get("text") or "").strip()
         if not text:
@@ -1056,7 +1109,13 @@ class ApiServer:
             hop,
         )
         return web.json_response(
-            {"status": "delivered", "thread_id": thread_id, "mode": mode, "hop": hop},
+            {
+                "status": "delivered",
+                **(response_extra or {}),
+                "thread_id": thread_id,
+                "mode": mode,
+                "hop": hop,
+            },
             status=202,
         )
 
