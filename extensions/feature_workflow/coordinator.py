@@ -55,6 +55,21 @@ def plan_digest(repo: Path, paths: list[str]) -> str:
     )
 
 
+def _is_test_evidence(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if not isinstance(value, dict):
+        return False
+    command = value.get("command")
+    outcome = value.get("outcome")
+    return (
+        isinstance(command, str)
+        and bool(command.strip())
+        and isinstance(outcome, str)
+        and bool(outcome.strip())
+    )
+
+
 async def _git(repo: Path, *args: str) -> str:
     process = await asyncio.create_subprocess_exec(
         "git",
@@ -352,7 +367,8 @@ class Coordinator:
             + f"Write atomic JSON result to {result}; create its parent directory if needed. "
             f"Required fields: task={task['id']!r}, approval_digest={state['approval_digest']!r}, "
             "commit=<full 40-character commit SHA>, worktree=<absolute worktree path>, "
-            "tests=<nonempty array of actual check commands and outcomes>. "
+            "tests=<nonempty array of evidence strings or objects with nonempty command and "
+            "outcome strings>. "
             "Do not mark success until checks pass. Include evidence in your final Discord reply. "
             "The external coordinator verifies Git evidence and wakes the integration owner; "
             "do not merge your work or launch extra workers."
@@ -373,7 +389,7 @@ class Coordinator:
             if (
                 not isinstance(result["tests"], list)
                 or not result["tests"]
-                or not all(isinstance(test, str) and test.strip() for test in result["tests"])
+                or not all(_is_test_evidence(test) for test in result["tests"])
             ):
                 raise WorkflowError("Result needs actual test evidence")
             expected = self.worktree_root / f"wt-{entry['thread_id']}"

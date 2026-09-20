@@ -294,6 +294,54 @@ async def test_successful_result_never_respawns_and_handoff_is_durable(setup: tu
     assert api.messages[0]["from_thread"] == "1001"
 
 
+async def test_structured_test_evidence_is_collected(setup: tuple) -> None:
+    coordinator, _, _ = setup
+    await coordinator.approve("Drew authorized trial", features=["alpha"])
+    await coordinator.tick()
+    await result(coordinator, "alpha")
+    file = coordinator.state_dir / "results/alpha.json"
+    payload = json.loads(file.read_text())
+    payload["tests"] = [
+        {
+            "command": "uv run pytest tests/test_alpha.py -q",
+            "outcome": "passed",
+            "detail": "3 passed",
+        }
+    ]
+    file.write_text(json.dumps(payload))
+
+    await coordinator.collect()
+
+    assert (await coordinator.status())["tasks"]["alpha"]["status"] == "verified"
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        [{}],
+        [{"command": "", "outcome": "passed"}],
+        [{"command": "uv run pytest", "outcome": ""}],
+        [{"command": "uv run pytest"}],
+        [{"outcome": "passed"}],
+        [42],
+    ],
+)
+async def test_incomplete_structured_test_evidence_is_rejected(
+    setup: tuple, evidence: list[object]
+) -> None:
+    coordinator, _, _ = setup
+    await coordinator.approve("Drew authorized trial", features=["alpha"])
+    await coordinator.tick()
+    await result(coordinator, "alpha")
+    file = coordinator.state_dir / "results/alpha.json"
+    payload = json.loads(file.read_text())
+    payload["tests"] = evidence
+    file.write_text(json.dumps(payload))
+
+    with pytest.raises(WorkflowError, match="test evidence"):
+        await coordinator.collect()
+
+
 @pytest.mark.parametrize("bad", ["ownership", "digest", "ancestry", "worktree", "dirty", "tests"])
 async def test_invalid_results_cannot_be_collected(setup: tuple, bad: str) -> None:
     coordinator, _, _ = setup
