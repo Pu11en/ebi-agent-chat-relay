@@ -9,7 +9,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-SCHEMA = """
+_CORE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     thread_id INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -128,6 +128,126 @@ CREATE TABLE IF NOT EXISTS frontend_threads (
 CREATE INDEX IF NOT EXISTS idx_frontend_threads_frontend ON frontend_threads(frontend);
 """
 
+# Handoff tables are defined once and used twice: appended to SCHEMA for a fresh
+# database, and replayed statement by statement in _MIGRATIONS for an existing
+# one. Keeping a single source avoids the two drifting apart.
+_HANDOFF_SCHEMA = """
+-- ---------------------------------------------------------------------------
+-- Trusted cross-computer handoffs (see openspec `trusted-agent-handoffs`).
+--
+-- Discord is an at-least-once transport: the same task packet can arrive twice,
+-- out of order, or right as the bot restarts. These five tables are what makes
+-- that survivable. The uniqueness constraints are the load-bearing part — they
+-- are what turns "two copies arrived" into one logical job without a lock, and
+-- what stops a redelivered terminal result from queueing a second delivery.
+--
+-- Every table is new and unreferenced by existing code, so a database written
+-- before handoffs existed simply gains them and keeps working.
+-- ---------------------------------------------------------------------------
+
+-- One row per logical job: the same task id addressed to two recipients is two
+-- jobs, the same task id redelivered to one recipient is one.
+CREATE TABLE IF NOT EXISTS handoff_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    sender_agent_id TEXT NOT NULL,
+    -- The validated packet, stored verbatim so a job can be replayed exactly as
+    -- it was authorized rather than as today's code would re-derive it.
+    packet_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'accepted',
+    attempt INTEGER NOT NULL DEFAULT 1,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    retryable INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    job_thread_id INTEGER,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(task_id, recipient_agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_handoff_tasks_recipient_state
+    ON handoff_tasks(recipient_agent_id, state);
+CREATE INDEX IF NOT EXISTS idx_handoff_tasks_job_thread ON handoff_tasks(job_thread_id);
+
+-- Every protocol message about a task, in its own declared order. The unique
+-- event id is the deduplication rule from the spec: a redelivered event is
+-- recognised rather than applied twice.
+CREATE TABLE IF NOT EXISTS handoff_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    sender_agent_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    packet_json TEXT,
+    created_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_handoff_events_task ON handoff_events(task_id, sequence, id);
+
+-- One row per execution attempt. Claiming an attempt is how a restarted bot
+-- tells work that is still running from work that only says it is.
+CREATE TABLE IF NOT EXISTS handoff_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    execution_ref TEXT,
+    outcome TEXT,
+    detail TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    UNIQUE(task_id, recipient_agent_id, attempt)
+);
+
+-- The terminal outcome of a logical job, written once.
+CREATE TABLE IF NOT EXISTS handoff_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
+    outcome TEXT NOT NULL,
+    summary TEXT,
+    retryable INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, recipient_agent_id)
+);
+
+-- Delivery of a terminal result back to the origin conversation. It is a
+-- separate row, written in the same transaction as the result, so an origin
+-- that was unreachable is retried later instead of rerunning the task.
+CREATE TABLE IF NOT EXISTS handoff_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    recipient_agent_id TEXT NOT NULL,
+    destination_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_handoff_outbox_due ON handoff_outbox(status, next_attempt_at);
+"""
+
+# Fresh databases get everything in one script.
+SCHEMA = _CORE_SCHEMA + _HANDOFF_SCHEMA
+
+
+def _statements(script: str) -> list[str]:
+    """Split a DDL script into individually replayable statements."""
+    return [part.strip() for part in script.split(";") if part.strip()]
+
+
 # Migrations for existing databases that lack new columns.
 _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'discord'",
@@ -202,6 +322,10 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN wrap_up TEXT",
     "ALTER TABLE sessions ADD COLUMN closed_at TEXT",
     "CREATE INDEX IF NOT EXISTS idx_sessions_lifecycle ON sessions(lifecycle_state)",
+    # Trusted agent handoffs added in v3.4. Every statement is CREATE IF NOT
+    # EXISTS, so replaying the whole handoff schema is how an older database
+    # gains the ledger without a separate hand-written migration per table.
+    *_statements(_HANDOFF_SCHEMA),
 ]
 
 
