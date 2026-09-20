@@ -40,6 +40,11 @@ from claude_code_core.transcript_search import default_transcripts_root
 from ..agent_router import AgentRoute, parse_agent_routes
 from ..discord_ui.file_sender import send_file_blobs
 from ..lounge import length_hint
+from ..project_lookup_worker import (
+    build_project_lookup_prompt,
+    project_lookup_thread_name,
+    resolve_project_lookup_root,
+)
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
@@ -343,6 +348,7 @@ class ApiServer:
         self.app.router.add_get("/api/search", self.search_sessions)
         self.app.router.add_get("/api/agents", self.list_agents)
         self.app.router.add_post("/api/agents/{agent_id}/message", self.relay_agent_message)
+        self.app.router.add_post("/api/project-lookup", self.project_lookup)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
         # Session spawn route
@@ -1360,6 +1366,96 @@ class ApiServer:
         if isinstance(registry, SessionRegistry):
             return registry.list_active()
         return []
+
+    async def project_lookup(self, request: web.Request) -> web.Response:
+        """POST /api/project-lookup — spawn a read-only worker in Drew's projects root."""
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        query = str(data.get("text") or data.get("query") or "").strip()
+        if not query:
+            return web.json_response({"error": "text or query is required"}, status=400)
+
+        try:
+            project_root = resolve_project_lookup_root(configured=self.working_dir)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+
+        raw_from_thread = data.get("from_thread")
+        from_thread: int | None = None
+        if raw_from_thread is not None:
+            try:
+                from_thread = int(raw_from_thread)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "from_thread must be an integer"}, status=400)
+
+        raw_channel_id = data.get("channel_id") or self.default_channel_id
+        if not raw_channel_id:
+            return web.json_response({"error": "No channel specified"}, status=400)
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "channel_id must be an integer"}, status=400)
+
+        from ..cogs.claude_chat import ClaudeChatCog  # avoid circular import at module level
+
+        cog: ClaudeChatCog | None = self.bot.cogs.get("ClaudeChatCog")  # type: ignore[assignment]
+        if cog is None:
+            return web.json_response({"error": "ClaudeChatCog is not loaded"}, status=503)
+
+        import discord as _discord
+
+        raw = self.bot.get_channel(channel_id)
+        if raw is None:
+            try:
+                raw = await self.bot.fetch_channel(channel_id)
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=500)
+        if not isinstance(raw, _discord.TextChannel):
+            return web.json_response(
+                {"error": "Channel must be a text channel that supports threads"},
+                status=400,
+            )
+
+        from_agent = data.get("from_agent")
+        if from_agent is not None and not isinstance(from_agent, str):
+            return web.json_response({"error": "from_agent must be a string"}, status=400)
+        thread_name = data.get("thread_name")
+        if thread_name is not None and not isinstance(thread_name, str):
+            return web.json_response({"error": "thread_name must be a string"}, status=400)
+
+        prompt = build_project_lookup_prompt(
+            query=query,
+            project_root=project_root,
+            from_agent=from_agent,
+            from_thread=from_thread,
+        )
+        try:
+            thread = await cog.spawn_session(
+                raw,
+                prompt,
+                thread_name=thread_name or project_lookup_thread_name(query),
+                auto_start=True,
+                working_dir=project_root,
+            )
+        except Exception:
+            logger.exception("project lookup spawn_session failed")
+            return web.json_response({"error": "project lookup worker could not start"}, status=500)
+
+        logger.info("Spawned project lookup worker in thread %s (%s)", thread.id, thread.name)
+        return web.json_response(
+            {
+                "status": "spawned",
+                "thread_id": str(thread.id),
+                "thread_name": thread.name,
+                "working_dir": project_root,
+            },
+            status=201,
+        )
 
     async def list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/sessions — what every other Claude session is doing.
