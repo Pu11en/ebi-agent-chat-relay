@@ -70,7 +70,9 @@ class TestStructuredPlans:
         parsed = graph(STRUCTURED)
 
         assert parsed.plan_check == "uv run pytest -q"
-        assert parsed.try_command == "uv run python -m extensions.feature_workflow.coordinator --help"
+        assert parsed.try_command == (
+            "uv run python -m extensions.feature_workflow.coordinator --help"
+        )
         assert parsed.check_for("1.2") == "uv run pytest tests/test_state.py -q"
         assert parsed.check_for("1.1") == "uv run pytest -q"
 
@@ -266,9 +268,7 @@ class TestLegacyPlans:
         parsed = graph(LEGACY)
         ids = [task.id for task in parsed.tasks]
 
-        assert all(
-            not parsed.may_run_together(a, b) for a in ids for b in ids if a != b
-        )
+        assert all(not parsed.may_run_together(a, b) for a in ids for b in ids if a != b)
 
     def test_legacy_tasks_own_nothing_and_need_no_focused_check(self) -> None:
         parsed = graph("## 1. Fixes\n\n- [ ] Fix the export button\n")
@@ -335,9 +335,8 @@ class TestPlanFiles:
         from pathlib import Path
 
         repo = Path(__file__).resolve().parent.parent
-        parsed = parse_task_plan(
-            repo / "openspec/changes/parallel-gowork/tasks.md", repo_root=repo
-        )
+        plan = repo / "openspec/changes/parallel-gowork/tasks.md"
+        parsed = parse_task_plan(plan, repo_root=repo)
 
         assert not parsed.legacy
         assert parsed["1.1"].owned_paths == (
