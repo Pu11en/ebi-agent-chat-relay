@@ -1,4 +1,4 @@
-"""Storage for the session close lifecycle.
+"""The session close lifecycle: its storage, and the service that drives it.
 
 Close is a durable transition, not a variant of stop: a session leaves `open`
 for `closing` when someone with authority asks for it, and reaches `closed`
@@ -16,9 +16,18 @@ import pytest
 from claude_code_core.session_repo import (
     CloseAuthority,
     LifecycleState,
+    SessionRecord,
     SessionRepository,
 )
 from claude_discord.database.models import init_db
+from claude_discord.session_lifecycle import (
+    CloseAuthorityError,
+    CloseAuthorization,
+    CloseState,
+    ReopenState,
+    SessionLifecycleService,
+    deterministic_wrap_up,
+)
 
 LEGACY_SCHEMA = """
 CREATE TABLE sessions (
@@ -330,3 +339,556 @@ class TestQueries:
         record = await repo.ensure_working_dir(thread_id=91, working_dir="/home/drew/new")
 
         assert record.lifecycle_state == LifecycleState.OPEN.value
+
+
+# --------------------------------------------------------------------------
+# The close/reopen service
+#
+# The service is the only thing that may decide a close. It speaks to the
+# world through three small ports so that Discord, Teams, or a workflow all
+# get identical behaviour, and so these tests can assert the two things the
+# spec actually promises: nothing is destroyed, and no close happens without
+# inherited authority.
+# --------------------------------------------------------------------------
+
+
+class FakeSurface:
+    """A conversation surface that can only archive and unarchive.
+
+    ``lock`` and ``delete`` exist purely to fail the test if the service ever
+    reaches for them: closing must leave the thread readable and reopenable.
+    """
+
+    def __init__(self) -> None:
+        self.archived: list[int] = []
+        self.unarchived: list[int] = []
+
+    async def archive(self, thread_id: int) -> bool:
+        self.archived.append(thread_id)
+        return True
+
+    async def unarchive(self, thread_id: int) -> bool:
+        self.unarchived.append(thread_id)
+        return True
+
+    async def lock(self, thread_id: int) -> bool:  # pragma: no cover - must never run
+        raise AssertionError("closing must never lock the thread")
+
+    async def delete(self, thread_id: int) -> bool:  # pragma: no cover - must never run
+        raise AssertionError("closing must never delete the thread")
+
+
+class FakeTurns:
+    """Tracks which threads have a model turn in flight."""
+
+    def __init__(self, *active: int) -> None:
+        self.active = set(active)
+        self.waited: list[int] = []
+        self.killed: list[int] = []
+
+    async def is_active(self, thread_id: int) -> bool:
+        return thread_id in self.active
+
+    async def wait_until_idle(self, thread_id: int) -> None:
+        self.waited.append(thread_id)
+        self.active.discard(thread_id)
+
+
+class FakeWriter:
+    """A wrap-up author that can succeed, come back empty, or fall over."""
+
+    def __init__(self, text: str | None = "wrapped up", error: Exception | None = None) -> None:
+        self.text = text
+        self.error = error
+        self.calls: list[int] = []
+
+    async def summarize(self, record: SessionRecord) -> str | None:
+        self.calls.append(record.thread_id)
+        if self.error is not None:
+            raise self.error
+        return self.text
+
+
+class GuardedRepository(SessionRepository):
+    """A repository that refuses to be deleted from.
+
+    The spec's hardest promise is that closing keeps the record. Asserting it
+    on the stored row only proves this one code path; forbidding the call
+    proves the service has no destructive path at all.
+    """
+
+    async def delete(self, thread_id: int) -> bool:  # pragma: no cover - must never run
+        raise AssertionError("closing must never delete the session record")
+
+
+@pytest.fixture
+async def guarded_repo(tmp_path):
+    db_path = str(tmp_path / "service.db")
+    await init_db(db_path)
+    return GuardedRepository(db_path)
+
+
+def make_service(repo, *, turns=None, writer=None, surface=None):
+    return SessionLifecycleService(
+        repo,
+        surface=surface if surface is not None else FakeSurface(),
+        turns=turns if turns is not None else FakeTurns(),
+        wrap_up_writer=writer if writer is not None else FakeWriter(),
+    )
+
+
+HUMAN = CloseAuthorization.from_interaction("user:42")
+
+
+class TestCloseAuthorization:
+    def test_a_person_pressing_close_is_human_authority(self):
+        auth = CloseAuthorization.from_interaction("user:42")
+
+        assert auth.source is CloseAuthority.DIRECT_INTERACTION
+        assert auth.is_human
+        assert not auth.is_workflow
+
+    def test_an_explicit_user_instruction_is_human_authority(self):
+        auth = CloseAuthorization.from_user_instruction("user:42")
+
+        assert auth.source is CloseAuthority.USER_INSTRUCTION
+        assert auth.is_human
+
+    def test_a_preauthorized_workflow_is_workflow_authority(self):
+        auth = CloseAuthorization.from_workflow("nightly-build", close_on_done=True)
+
+        assert auth.source is CloseAuthority.WORKFLOW_CLOSE_ON_DONE
+        assert auth.is_workflow
+        assert not auth.is_human
+        assert auth.workflow_id == "nightly-build"
+
+    def test_a_workflow_without_close_on_done_has_no_authority(self):
+        with pytest.raises(CloseAuthorityError):
+            CloseAuthorization.from_workflow("nightly-build", close_on_done=False)
+
+    def test_a_workflow_must_name_itself(self):
+        with pytest.raises(CloseAuthorityError):
+            CloseAuthorization.from_workflow("   ", close_on_done=True)
+
+    def test_a_human_authority_cannot_borrow_a_workflow_id(self):
+        with pytest.raises(CloseAuthorityError):
+            CloseAuthorization(
+                source=CloseAuthority.DIRECT_INTERACTION,
+                actor="user:42",
+                workflow_id="nightly-build",
+            )
+
+    def test_authority_must_name_an_actor(self):
+        with pytest.raises(CloseAuthorityError):
+            CloseAuthorization.from_interaction("  ")
+
+    def test_a_model_cannot_invent_its_own_authority(self):
+        # "The model decided it was done" is not a value this type accepts.
+        with pytest.raises(CloseAuthorityError):
+            CloseAuthorization(source="model_finished", actor="assistant")  # type: ignore[arg-type]
+
+
+class TestCloseAnIdleSession:
+    async def test_close_records_wrap_up_marks_closed_and_archives(self, guarded_repo):
+        await guarded_repo.save(thread_id=1, session_id="sess-1", working_dir="/home/drew/app")
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface)
+
+        outcome = await service.close(1, HUMAN)
+
+        assert outcome.state is CloseState.CLOSED
+        assert outcome.wrap_up == "wrapped up"
+        assert outcome.archived is True
+        assert surface.archived == [1]
+        assert outcome.record is not None
+        assert outcome.record.lifecycle_state == LifecycleState.CLOSED.value
+
+    async def test_close_preserves_the_record_its_folder_and_its_session_id(self, guarded_repo):
+        await guarded_repo.save(thread_id=2, session_id="sess-2", working_dir="/home/drew/app")
+        service = make_service(guarded_repo)
+
+        await service.close(2, HUMAN)
+
+        stored = await guarded_repo.get(2)
+        assert stored is not None
+        assert stored.session_id == "sess-2"
+        assert stored.working_dir == "/home/drew/app"
+        assert stored.closed_at is not None
+
+    async def test_close_stores_which_authority_allowed_it(self, guarded_repo):
+        await guarded_repo.save(thread_id=3, session_id="sess-3")
+        service = make_service(guarded_repo)
+
+        await service.close(3, CloseAuthorization.from_workflow("nightly", close_on_done=True))
+
+        stored = await guarded_repo.get(3)
+        assert stored is not None
+        assert stored.close_authority == CloseAuthority.WORKFLOW_CLOSE_ON_DONE.value
+
+    async def test_close_without_a_session_changes_nothing(self, guarded_repo):
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface)
+
+        outcome = await service.close(404, HUMAN)
+
+        assert outcome.state is CloseState.NO_SESSION
+        assert outcome.record is None
+        assert surface.archived == []
+
+    async def test_close_refuses_an_untyped_authority(self, guarded_repo):
+        await guarded_repo.save(thread_id=4, session_id="sess-4")
+        service = make_service(guarded_repo)
+
+        with pytest.raises(CloseAuthorityError):
+            await service.close(4, "because I finished")  # type: ignore[arg-type]
+
+        stored = await guarded_repo.get(4)
+        assert stored is not None
+        assert stored.is_open
+
+    async def test_close_refuses_a_missing_authority(self, guarded_repo):
+        await guarded_repo.save(thread_id=5, session_id="sess-5")
+        service = make_service(guarded_repo)
+
+        with pytest.raises(CloseAuthorityError):
+            await service.close(5, None)  # type: ignore[arg-type]
+
+        stored = await guarded_repo.get(5)
+        assert stored is not None
+        assert stored.is_open
+
+
+class TestWrapUpFallback:
+    async def test_a_failed_wrap_up_falls_back_to_a_deterministic_summary(self, guarded_repo):
+        await guarded_repo.save(thread_id=10, session_id="sess-10", working_dir="/home/drew/app")
+        writer = FakeWriter(error=RuntimeError("model unavailable"))
+        service = make_service(guarded_repo, writer=writer)
+
+        outcome = await service.close(10, HUMAN)
+
+        assert outcome.state is CloseState.CLOSED
+        assert outcome.wrap_up
+        assert "/home/drew/app" in (outcome.wrap_up or "")
+        stored = await guarded_repo.get(10)
+        assert stored is not None
+        assert stored.wrap_up == outcome.wrap_up
+
+    async def test_an_empty_wrap_up_falls_back_too(self, guarded_repo):
+        await guarded_repo.save(thread_id=11, session_id="sess-11")
+        service = make_service(guarded_repo, writer=FakeWriter(text="   "))
+
+        outcome = await service.close(11, HUMAN)
+
+        assert outcome.state is CloseState.CLOSED
+        assert (outcome.wrap_up or "").strip()
+
+    async def test_a_service_without_a_writer_still_closes(self, guarded_repo):
+        await guarded_repo.save(thread_id=12, session_id="sess-12")
+        service = SessionLifecycleService(guarded_repo, surface=FakeSurface(), turns=FakeTurns())
+
+        outcome = await service.close(12, HUMAN)
+
+        assert outcome.state is CloseState.CLOSED
+        assert (outcome.wrap_up or "").strip()
+
+    def test_the_deterministic_summary_is_never_blank(self):
+        record = SessionRecord(
+            thread_id=1,
+            session_id="",
+            working_dir=None,
+            model=None,
+            origin="discord",
+            summary=None,
+            created_at="2026-09-20 10:00:00",
+            last_used_at="2026-09-20 10:05:00",
+        )
+
+        assert deterministic_wrap_up(record).strip()
+
+
+class TestCloseDuringAnActiveTurn:
+    async def test_close_during_a_turn_is_recorded_and_left_pending(self, guarded_repo):
+        await guarded_repo.save(thread_id=20, session_id="sess-20")
+        surface = FakeSurface()
+        turns = FakeTurns(20)
+        service = make_service(guarded_repo, turns=turns, surface=surface)
+
+        outcome = await service.close(20, HUMAN)
+
+        assert outcome.state is CloseState.PENDING
+        assert outcome.wrap_up is None
+        assert surface.archived == []
+        stored = await guarded_repo.get(20)
+        assert stored is not None
+        assert stored.close_pending
+        assert stored.close_requested_at is not None
+
+    async def test_close_during_a_turn_never_kills_the_turn(self, guarded_repo):
+        await guarded_repo.save(thread_id=21, session_id="sess-21")
+        turns = FakeTurns(21)
+        service = make_service(guarded_repo, turns=turns)
+
+        await service.close(21, HUMAN)
+
+        assert turns.killed == []
+        assert await turns.is_active(21)
+
+    async def test_the_pending_close_completes_once_the_turn_ends(self, guarded_repo):
+        await guarded_repo.save(thread_id=22, session_id="sess-22")
+        surface = FakeSurface()
+        turns = FakeTurns(22)
+        service = make_service(guarded_repo, turns=turns, surface=surface)
+        await service.close(22, HUMAN)
+
+        turns.active.discard(22)
+        outcome = await service.complete_pending_close(22)
+
+        assert outcome.state is CloseState.CLOSED
+        assert surface.archived == [22]
+        stored = await guarded_repo.get(22)
+        assert stored is not None
+        assert stored.is_closed
+
+    async def test_completing_while_the_turn_still_runs_leaves_it_pending(self, guarded_repo):
+        await guarded_repo.save(thread_id=23, session_id="sess-23")
+        surface = FakeSurface()
+        turns = FakeTurns(23)
+        service = make_service(guarded_repo, turns=turns, surface=surface)
+        await service.close(23, HUMAN)
+
+        outcome = await service.complete_pending_close(23)
+
+        assert outcome.state is CloseState.PENDING
+        assert surface.archived == []
+
+    async def test_completing_a_close_nobody_asked_for_does_nothing(self, guarded_repo):
+        await guarded_repo.save(thread_id=24, session_id="sess-24")
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface)
+
+        outcome = await service.complete_pending_close(24)
+
+        assert outcome.state is CloseState.NOT_REQUESTED
+        assert surface.archived == []
+        stored = await guarded_repo.get(24)
+        assert stored is not None
+        assert stored.is_open
+
+    async def test_close_when_idle_waits_for_the_turn_then_closes(self, guarded_repo):
+        await guarded_repo.save(thread_id=25, session_id="sess-25")
+        turns = FakeTurns(25)
+        surface = FakeSurface()
+        service = make_service(guarded_repo, turns=turns, surface=surface)
+
+        outcome = await service.close_when_idle(25, HUMAN)
+
+        assert turns.waited == [25]
+        assert outcome.state is CloseState.CLOSED
+        assert surface.archived == [25]
+
+    async def test_close_when_idle_on_an_idle_session_does_not_wait(self, guarded_repo):
+        await guarded_repo.save(thread_id=26, session_id="sess-26")
+        turns = FakeTurns()
+        service = make_service(guarded_repo, turns=turns)
+
+        outcome = await service.close_when_idle(26, HUMAN)
+
+        assert turns.waited == []
+        assert outcome.state is CloseState.CLOSED
+
+    async def test_a_restart_reconciles_every_unfinished_close(self, guarded_repo):
+        await guarded_repo.save(thread_id=27, session_id="sess-27")
+        await guarded_repo.save(thread_id=28, session_id="sess-28")
+        await guarded_repo.request_close(27, CloseAuthority.DIRECT_INTERACTION)
+        await guarded_repo.request_close(28, CloseAuthority.WORKFLOW_CLOSE_ON_DONE)
+        surface = FakeSurface()
+        # After a restart nothing is running, whatever was running before.
+        service = make_service(guarded_repo, turns=FakeTurns(), surface=surface)
+
+        outcomes = await service.reconcile_pending_closes()
+
+        assert [o.state for o in outcomes] == [CloseState.CLOSED, CloseState.CLOSED]
+        assert sorted(surface.archived) == [27, 28]
+        assert await guarded_repo.list_pending_closes() == []
+
+    async def test_reconciliation_leaves_a_still_running_session_pending(self, guarded_repo):
+        await guarded_repo.save(thread_id=29, session_id="sess-29")
+        await guarded_repo.request_close(29, CloseAuthority.DIRECT_INTERACTION)
+        service = make_service(guarded_repo, turns=FakeTurns(29))
+
+        outcomes = await service.reconcile_pending_closes()
+
+        assert [o.state for o in outcomes] == [CloseState.PENDING]
+        assert len(await guarded_repo.list_pending_closes()) == 1
+
+
+class TestCloseIsIdempotent:
+    async def test_a_second_close_reports_the_state_without_rewriting_it(self, guarded_repo):
+        await guarded_repo.save(thread_id=30, session_id="sess-30")
+        surface = FakeSurface()
+        writer = FakeWriter()
+        service = make_service(guarded_repo, writer=writer, surface=surface)
+        first = await service.close(30, HUMAN)
+
+        second = await service.close(30, HUMAN)
+
+        assert second.state is CloseState.ALREADY_CLOSED
+        assert second.wrap_up == first.wrap_up
+        assert writer.calls == [30]
+        assert surface.archived == [30]
+
+    async def test_a_second_close_keeps_the_original_closed_at(self, guarded_repo):
+        await guarded_repo.save(thread_id=31, session_id="sess-31")
+        service = make_service(guarded_repo)
+        first = await service.close(31, HUMAN)
+
+        await service.close(31, CloseAuthorization.from_workflow("other", close_on_done=True))
+
+        stored = await guarded_repo.get(31)
+        assert stored is not None
+        assert first.record is not None
+        assert stored.closed_at == first.record.closed_at
+        assert stored.close_authority == CloseAuthority.DIRECT_INTERACTION.value
+
+    async def test_a_second_close_during_a_turn_keeps_the_first_request(self, guarded_repo):
+        await guarded_repo.save(thread_id=32, session_id="sess-32")
+        service = make_service(guarded_repo, turns=FakeTurns(32))
+        first = await service.close(32, HUMAN)
+
+        second = await service.close(32, CloseAuthorization.from_user_instruction("user:9"))
+
+        assert second.state is CloseState.PENDING
+        assert first.record is not None
+        assert second.record is not None
+        assert second.record.close_requested_at == first.record.close_requested_at
+        assert second.record.close_authority == CloseAuthority.DIRECT_INTERACTION.value
+
+    async def test_completing_a_finished_close_is_a_no_op(self, guarded_repo):
+        await guarded_repo.save(thread_id=33, session_id="sess-33")
+        surface = FakeSurface()
+        writer = FakeWriter()
+        service = make_service(guarded_repo, writer=writer, surface=surface)
+        await service.close(33, HUMAN)
+
+        outcome = await service.complete_pending_close(33)
+
+        assert outcome.state is CloseState.ALREADY_CLOSED
+        assert writer.calls == [33]
+        assert surface.archived == [33]
+
+
+class TestReopenService:
+    async def test_reopen_unarchives_and_marks_the_session_open(self, guarded_repo):
+        await guarded_repo.save(thread_id=40, session_id="sess-40", working_dir="/home/drew/app")
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface)
+        await service.close(40, HUMAN)
+
+        outcome = await service.reopen(40)
+
+        assert outcome.state is ReopenState.REOPENED
+        assert outcome.unarchived is True
+        assert surface.unarchived == [40]
+        assert outcome.record is not None
+        assert outcome.record.is_open
+
+    async def test_reopen_keeps_the_conversation_and_its_folder(self, guarded_repo):
+        await guarded_repo.save(thread_id=41, session_id="sess-41", working_dir="/home/drew/app")
+        service = make_service(guarded_repo)
+        await service.close(41, HUMAN)
+
+        outcome = await service.reopen(41)
+
+        assert outcome.record is not None
+        assert outcome.record.session_id == "sess-41"
+        assert outcome.record.working_dir == "/home/drew/app"
+        assert outcome.record.wrap_up == "wrapped up"
+        assert outcome.resume_session_id == "sess-41"
+        assert outcome.requires_fresh_session is False
+
+    async def test_reopening_an_open_session_changes_nothing(self, guarded_repo):
+        await guarded_repo.save(thread_id=42, session_id="sess-42")
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface)
+
+        outcome = await service.reopen(42)
+
+        assert outcome.state is ReopenState.ALREADY_OPEN
+        assert surface.unarchived == []
+
+    async def test_reopening_an_unknown_session_reports_it(self, guarded_repo):
+        service = make_service(guarded_repo)
+
+        outcome = await service.reopen(404)
+
+        assert outcome.state is ReopenState.NO_SESSION
+        assert outcome.record is None
+
+    async def test_reopen_cancels_a_close_that_never_finished(self, guarded_repo):
+        await guarded_repo.save(thread_id=43, session_id="sess-43")
+        service = make_service(guarded_repo, turns=FakeTurns(43))
+        await service.close(43, HUMAN)
+
+        outcome = await service.reopen(43)
+
+        assert outcome.state is ReopenState.REOPENED
+        stored = await guarded_repo.get(43)
+        assert stored is not None
+        assert stored.is_open
+        assert not stored.close_pending
+
+    async def test_reopen_under_the_same_backend_resumes_the_stored_session(self, guarded_repo):
+        await guarded_repo.save(thread_id=44, session_id="sess-44", backend="claude")
+        service = make_service(guarded_repo)
+        await service.close(44, HUMAN)
+
+        outcome = await service.reopen(44, backend="claude")
+
+        assert outcome.requires_fresh_session is False
+        assert outcome.resume_session_id == "sess-44"
+
+    async def test_reopen_under_another_backend_withholds_the_session_id(self, guarded_repo):
+        await guarded_repo.save(thread_id=45, session_id="sess-45", backend="codex")
+        service = make_service(guarded_repo)
+        await service.close(45, HUMAN)
+
+        outcome = await service.reopen(45, backend="claude")
+
+        assert outcome.requires_fresh_session is True
+        assert outcome.resume_session_id is None
+        assert outcome.record is not None
+        assert outcome.record.session_id == "sess-45"
+
+    async def test_a_record_without_a_stored_backend_is_assumed_compatible(self, guarded_repo):
+        await guarded_repo.save(thread_id=46, session_id="sess-46")
+        service = make_service(guarded_repo)
+        await service.close(46, HUMAN)
+
+        outcome = await service.reopen(46, backend="claude")
+
+        assert outcome.requires_fresh_session is False
+        assert outcome.resume_session_id == "sess-46"
+
+
+class TestServiceWithoutASurface:
+    """The service is frontend-neutral: no archiver is a supported wiring."""
+
+    async def test_close_and_reopen_work_with_no_surface(self, guarded_repo):
+        await guarded_repo.save(thread_id=50, session_id="sess-50")
+        service = SessionLifecycleService(guarded_repo, turns=FakeTurns())
+
+        closed = await service.close(50, HUMAN)
+        reopened = await service.reopen(50)
+
+        assert closed.state is CloseState.CLOSED
+        assert closed.archived is False
+        assert reopened.state is ReopenState.REOPENED
+        assert reopened.unarchived is False
+
+    async def test_a_service_with_no_turn_tracker_treats_sessions_as_idle(self, guarded_repo):
+        await guarded_repo.save(thread_id=51, session_id="sess-51")
+        service = SessionLifecycleService(guarded_repo)
+
+        outcome = await service.close(51, HUMAN)
+
+        assert outcome.state is CloseState.CLOSED
