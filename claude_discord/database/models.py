@@ -239,8 +239,49 @@ CREATE TABLE IF NOT EXISTS handoff_outbox (
 CREATE INDEX IF NOT EXISTS idx_handoff_outbox_due ON handoff_outbox(status, next_attempt_at);
 """
 
+_CAPACITY_RECOVERY_SCHEMA = """
+-- ---------------------------------------------------------------------------
+-- Durable model-capacity recovery pending turns.
+--
+-- This table stores one row per logical turn that is waiting for provider
+-- capacity, rate-limit recovery, or an explicitly authorized fallback. It is
+-- deliberately separate from `sessions` and handoff tables: local relay
+-- admission, cross-computer jobs, and provider recovery are three different
+-- states with different owners.
+--
+-- The uniqueness and conditional updates are the idempotency boundary. A turn
+-- is created once, a retry attempt is claimed by one worker, and the first
+-- completion wins even if a late provider result races a retry.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS capacity_pending_turns (
+    turn_key TEXT PRIMARY KEY,
+    frontend TEXT NOT NULL,
+    thread_id INTEGER NOT NULL,
+    session_id TEXT,
+    prompt_ref TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    model TEXT,
+    fallback_chain_json TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempt INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    claim_token TEXT,
+    claimed_at TEXT,
+    accepted_at TEXT,
+    accepted_result_ref TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_capacity_pending_due
+    ON capacity_pending_turns(state, next_attempt_at, expires_at);
+CREATE INDEX IF NOT EXISTS idx_capacity_pending_thread
+    ON capacity_pending_turns(frontend, thread_id);
+"""
+
 # Fresh databases get everything in one script.
-SCHEMA = _CORE_SCHEMA + _HANDOFF_SCHEMA
+SCHEMA = _CORE_SCHEMA + _HANDOFF_SCHEMA + _CAPACITY_RECOVERY_SCHEMA
 
 
 def _statements(script: str) -> list[str]:
@@ -326,6 +367,10 @@ _MIGRATIONS = [
     # EXISTS, so replaying the whole handoff schema is how an older database
     # gains the ledger without a separate hand-written migration per table.
     *_statements(_HANDOFF_SCHEMA),
+    # Model-capacity recovery pending turns added in v4.1. The table is
+    # additive and owns no foreign keys, so older session and handoff rows are
+    # preserved exactly.
+    *_statements(_CAPACITY_RECOVERY_SCHEMA),
 ]
 
 
