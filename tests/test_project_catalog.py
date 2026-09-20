@@ -1,18 +1,21 @@
-"""Domain model tests for the shared project catalog (OpenSpec task 1.1).
+"""Tests for the shared project catalog (OpenSpec tasks 1.1 and 1.2).
 
-These cover identity, availability, bounded queries, and the five typed
-resolution results.  Directory scanning belongs to task 1.2 and is absent here:
-nothing in this module touches the filesystem.
+Domain-model tests (task 1.1) cover identity, availability, bounded queries and
+the five typed resolution results without touching disk.  The discovery tests
+(task 1.2) at the end of the file scan real directories, always inside pytest's
+``tmp_path``.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
+from claude_discord import project_catalog
 from claude_discord.project_catalog import (
     MAX_QUERY_LIMIT,
     AmbiguousOwnerResolution,
@@ -24,6 +27,7 @@ from claude_discord.project_catalog import (
     LocalProjectResolution,
     LocalUnavailableResolution,
     NoMatchResolution,
+    ProjectDiscovery,
     ProjectIdentity,
     RemoteTargetResolution,
     ResolutionKind,
@@ -363,3 +367,345 @@ class TestCatalogSnapshot:
         snapshot = CatalogSnapshot(roots=(), projects=())
         with pytest.raises(FrozenInstanceError):
             snapshot.truncated = True  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Bounded one-level discovery (OpenSpec task 1.2).
+#
+# These tests do touch the filesystem, always inside pytest's ``tmp_path``.
+# ---------------------------------------------------------------------------
+
+
+def make_fs_root(
+    base: Path,
+    *,
+    key: str = "main",
+    owner: str = "drew",
+    computer: str = "drewai",
+) -> ApprovedRoot:
+    """An approved root pointing at a real directory under ``tmp_path``."""
+    return ApprovedRoot(key=key, path=PurePosixPath(base), owner=owner, computer=computer)
+
+
+def make_tree(base: Path, *names: str) -> Path:
+    for name in names:
+        (base / name).mkdir(parents=True, exist_ok=True)
+    return base
+
+
+class FakeClock:
+    """A monotonic clock the cache tests can move deliberately."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class TestDiscoveryBoundary:
+    """Approved roots are the boundary: direct child directories, nothing else."""
+
+    def test_lists_direct_child_directories_and_ignores_files(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", "beta")
+        (tmp_path / "notes.md").write_text("not a project")
+
+        snapshot = ProjectDiscovery([make_fs_root(tmp_path)]).snapshot()
+
+        assert [project.identity.name for project in snapshot.projects] == ["alpha", "beta"]
+
+    def test_nested_directories_are_not_separate_projects(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha/src/deep", "alpha/docs", "beta/.git")
+
+        snapshot = ProjectDiscovery([make_fs_root(tmp_path)]).snapshot()
+
+        assert [project.identity.name for project in snapshot.projects] == ["alpha", "beta"]
+
+    def test_project_paths_never_escape_their_approved_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "projects"
+        outside = tmp_path / "outside" / "elsewhere"
+        outside.mkdir(parents=True)
+        make_tree(root, "alpha")
+        (root / "linked").symlink_to(outside, target_is_directory=True)
+
+        snapshot = ProjectDiscovery([make_fs_root(root)]).snapshot()
+
+        assert [project.identity.name for project in snapshot.projects] == ["alpha", "linked"]
+        for project in snapshot.projects:
+            assert project.path.parent == PurePosixPath(root)
+
+    def test_hidden_and_noise_directories_are_skipped(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", ".cache", "node_modules", "__pycache__", "venv")
+
+        snapshot = ProjectDiscovery([make_fs_root(tmp_path)]).snapshot()
+
+        assert [project.identity.name for project in snapshot.projects] == ["alpha"]
+
+    def test_broken_symlinks_are_not_projects(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        (tmp_path / "dangling").symlink_to(tmp_path / "gone", target_is_directory=True)
+
+        snapshot = ProjectDiscovery([make_fs_root(tmp_path)]).snapshot()
+
+        assert [project.identity.name for project in snapshot.projects] == ["alpha"]
+
+
+class TestDiscoveryRootAvailability:
+    """An unusable root is reported as data, never as a failed catalog."""
+
+    def test_missing_root_does_not_remove_other_roots_projects(self, tmp_path: Path) -> None:
+        good = make_tree(tmp_path / "good", "alpha")
+        gone = tmp_path / "gone"
+
+        snapshot = ProjectDiscovery(
+            [make_fs_root(good, key="good"), make_fs_root(gone, key="gone")]
+        ).snapshot()
+
+        assert [project.identity.name for project in snapshot.projects] == ["alpha"]
+        statuses = {status.root.key: status for status in snapshot.roots}
+        assert statuses["good"].availability is Availability.AVAILABLE
+        assert statuses["gone"].availability is Availability.MISSING
+        assert statuses["gone"].reason
+        assert snapshot.unavailable_roots == (statuses["gone"],)
+
+    def test_root_that_is_a_file_is_unreadable(self, tmp_path: Path) -> None:
+        not_a_dir = tmp_path / "roots.txt"
+        not_a_dir.write_text("oops")
+
+        snapshot = ProjectDiscovery([make_fs_root(not_a_dir)]).snapshot()
+
+        assert snapshot.projects == ()
+        assert snapshot.roots[0].availability is Availability.UNREADABLE
+
+    def test_unreadable_root_is_reported_with_a_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        good = make_tree(tmp_path / "good", "alpha")
+        locked = make_tree(tmp_path / "locked", "beta")
+        real_scandir = os.scandir
+
+        def deny_locked(path: object):
+            if str(path) == str(locked):
+                raise PermissionError(13, "Permission denied")
+            return real_scandir(path)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(project_catalog.os, "scandir", deny_locked)
+
+        snapshot = ProjectDiscovery(
+            [make_fs_root(good, key="good"), make_fs_root(locked, key="locked")]
+        ).snapshot()
+
+        assert [project.identity.name for project in snapshot.projects] == ["alpha"]
+        statuses = {status.root.key: status for status in snapshot.roots}
+        assert statuses["locked"].availability is Availability.UNREADABLE
+        assert statuses["locked"].reason
+
+    def test_every_configured_root_is_reported_in_configured_order(self, tmp_path: Path) -> None:
+        first = make_tree(tmp_path / "first", "alpha")
+        second = make_tree(tmp_path / "second", "beta")
+
+        snapshot = ProjectDiscovery(
+            [make_fs_root(second, key="second"), make_fs_root(first, key="first")]
+        ).snapshot()
+
+        assert [status.root.key for status in snapshot.roots] == ["second", "first"]
+
+
+class TestDiscoveryOrderingAndIdentity:
+    """Ordering is deterministic and identities survive a rescan."""
+
+    def test_projects_are_sorted_case_insensitively_by_name(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "Zeta", "alpha", "Beta", "gamma")
+
+        snapshot = ProjectDiscovery([make_fs_root(tmp_path)]).snapshot()
+
+        assert [project.identity.name for project in snapshot.projects] == [
+            "alpha",
+            "Beta",
+            "gamma",
+            "Zeta",
+        ]
+
+    def test_same_name_in_two_roots_keeps_distinct_identities(self, tmp_path: Path) -> None:
+        work = make_tree(tmp_path / "work", "relay")
+        personal = make_tree(tmp_path / "personal", "relay")
+
+        snapshot = ProjectDiscovery(
+            [make_fs_root(work, key="work"), make_fs_root(personal, key="personal")]
+        ).snapshot()
+
+        identities = [project.identity for project in snapshot.projects]
+        assert len(identities) == 2
+        assert len({identity.key for identity in identities}) == 2
+        assert [identity.root_key for identity in identities] == ["personal", "work"]
+        labels = disambiguated_labels(snapshot.projects)
+        assert set(labels.values()) == {"relay (personal)", "relay (work)"}
+
+    def test_identity_is_stable_across_repeated_discovery(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", "beta")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)], cache_ttl=0.0)
+
+        first = discovery.snapshot()
+        second = discovery.snapshot(refresh=True)
+
+        assert [project.identity for project in first.projects] == [
+            project.identity for project in second.projects
+        ]
+
+    def test_discovered_projects_are_available_with_a_working_directory(
+        self, tmp_path: Path
+    ) -> None:
+        make_tree(tmp_path, "alpha")
+
+        project = ProjectDiscovery([make_fs_root(tmp_path)]).snapshot().projects[0]
+
+        assert project.availability is Availability.AVAILABLE
+        assert project.working_directory == PurePosixPath(tmp_path / "alpha")
+
+
+class TestDiscoveryBounds:
+    """A huge root is truncated deterministically instead of flooding a caller."""
+
+    def test_results_are_capped_and_marked_truncated(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, *[f"p{index:03d}" for index in range(10)])
+
+        snapshot = ProjectDiscovery([make_fs_root(tmp_path)], max_projects=4).snapshot()
+
+        assert snapshot.truncated is True
+        assert [project.identity.name for project in snapshot.projects] == [
+            "p000",
+            "p001",
+            "p002",
+            "p003",
+        ]
+
+    def test_an_exactly_full_result_is_not_truncated(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", "beta")
+
+        snapshot = ProjectDiscovery([make_fs_root(tmp_path)], max_projects=2).snapshot()
+
+        assert snapshot.truncated is False
+        assert len(snapshot.projects) == 2
+
+
+class TestDiscoveryRefresh:
+    """New and removed folders appear without any registration step."""
+
+    def test_a_new_folder_appears_on_refresh(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)], cache_ttl=0.0)
+        assert [p.identity.name for p in discovery.snapshot().projects] == ["alpha"]
+
+        make_tree(tmp_path, "beta")
+
+        assert [p.identity.name for p in discovery.snapshot().projects] == ["alpha", "beta"]
+
+    def test_a_removed_folder_leaves_the_available_results(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", "beta")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)], cache_ttl=0.0)
+        discovery.snapshot()
+
+        (tmp_path / "beta").rmdir()
+
+        names = [project.identity.name for project in discovery.snapshot().available_projects]
+        assert names == ["alpha"]
+
+    def test_cached_snapshot_is_reused_until_the_ttl_expires(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        clock = FakeClock()
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)], cache_ttl=30.0, time_source=clock)
+        discovery.snapshot()
+
+        make_tree(tmp_path, "beta")
+        clock.advance(29.0)
+        assert [p.identity.name for p in discovery.snapshot().projects] == ["alpha"]
+
+        clock.advance(2.0)
+        assert [p.identity.name for p in discovery.snapshot().projects] == ["alpha", "beta"]
+
+    def test_refresh_bypasses_the_cache(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        clock = FakeClock()
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)], cache_ttl=3600.0, time_source=clock)
+        discovery.snapshot()
+
+        make_tree(tmp_path, "beta")
+
+        assert [p.identity.name for p in discovery.snapshot(refresh=True).projects] == [
+            "alpha",
+            "beta",
+        ]
+
+    def test_invalidate_forces_the_next_query_to_rescan(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        clock = FakeClock()
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)], cache_ttl=3600.0, time_source=clock)
+        discovery.snapshot()
+
+        make_tree(tmp_path, "beta")
+        discovery.invalidate()
+
+        assert [p.identity.name for p in discovery.snapshot().projects] == ["alpha", "beta"]
+
+    async def test_async_snapshot_matches_the_synchronous_scan(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha", "beta")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)], cache_ttl=0.0)
+
+        assert await discovery.snapshot_async() == discovery.snapshot()
+
+
+class TestDiscoveryRevalidation:
+    """Pre-launch revalidation refuses to hand out a stale working directory."""
+
+    def test_an_existing_project_stays_available(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)])
+        project = discovery.snapshot().projects[0]
+
+        checked = discovery.revalidate(project)
+
+        assert checked.is_available
+        assert checked.identity == project.identity
+        assert checked.working_directory == project.path
+
+    def test_a_deleted_project_becomes_missing_without_a_working_directory(
+        self, tmp_path: Path
+    ) -> None:
+        make_tree(tmp_path, "alpha")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)])
+        project = discovery.snapshot().projects[0]
+
+        (tmp_path / "alpha").rmdir()
+        checked = discovery.revalidate(project)
+
+        assert checked.availability is Availability.MISSING
+        assert checked.working_directory is None
+        assert checked.identity == project.identity
+
+    def test_a_project_replaced_by_a_file_is_unreadable(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)])
+        project = discovery.snapshot().projects[0]
+
+        (tmp_path / "alpha").rmdir()
+        (tmp_path / "alpha").write_text("now a file")
+        checked = discovery.revalidate(project)
+
+        assert checked.availability is Availability.UNREADABLE
+        assert checked.working_directory is None
+
+    def test_a_returning_project_keeps_its_original_identity(self, tmp_path: Path) -> None:
+        make_tree(tmp_path, "alpha")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)], cache_ttl=0.0)
+        original = discovery.snapshot().projects[0]
+
+        (tmp_path / "alpha").rmdir()
+        assert discovery.snapshot().projects == ()
+        make_tree(tmp_path, "alpha")
+
+        returned = discovery.snapshot().projects[0]
+        assert returned.identity == original.identity
+        assert returned.identity.key == original.identity.key
