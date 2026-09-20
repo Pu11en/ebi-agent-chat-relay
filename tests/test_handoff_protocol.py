@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -20,9 +21,7 @@ EVENT_ID = "0f2a5c31-9b7e-4d2a-8c11-77aa3e5b1d42"
 
 
 def _origin() -> p.ConversationCoordinate:
-    return p.ConversationCoordinate(
-        guild_id=111, channel_id=222, thread_id=333, message_id=444
-    )
+    return p.ConversationCoordinate(guild_id=111, channel_id=222, thread_id=333, message_id=444)
 
 
 def _task(**overrides: object) -> p.HandoffTask:
@@ -62,8 +61,7 @@ def _event(**overrides: object) -> p.HandoffEvent:
 
 class TestSurfaceNeutrality:
     def test_module_does_not_import_discord_or_database(self) -> None:
-        source = p.__file__
-        text = open(source, encoding="utf-8").read()
+        text = Path(str(p.__file__)).read_text(encoding="utf-8")
         assert "import discord" not in text
         assert "aiosqlite" not in text
         assert "claude_discord" not in text
