@@ -32,12 +32,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from aiohttp import web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
-from ..agent_router import parse_agent_routes
+from ..agent_router import AgentRoute, parse_agent_routes
 from ..discord_ui.file_sender import send_file_blobs
 from ..lounge import length_hint
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
@@ -976,11 +976,56 @@ class ApiServer:
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
+        if route.remote_url is not None:
+            return await self._relay_to_remote_agent(route=route, data=data)
+
+        if route.thread_id is None:
+            return web.json_response({"error": "Agent route has no thread target"}, status=500)
         return await self._relay_to_thread(
             thread_id=route.thread_id,
             data=data,
             response_extra={"agent_id": route.agent_id},
         )
+
+    async def _relay_to_remote_agent(self, *, route: AgentRoute, data: object) -> web.Response:
+        """Forward a named-agent relay to another ccdb control plane."""
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        if route.remote_url is None:
+            return web.json_response({"error": "Agent route has no remote target"}, status=500)
+
+        headers = {"Content-Type": "application/json"}
+        if route.bearer_token:
+            headers["Authorization"] = f"Bearer {route.bearer_token}"
+
+        try:
+            async with (
+                ClientSession(timeout=ClientTimeout(total=10)) as session,
+                session.post(route.remote_url, json=data, headers=headers) as resp,
+            ):
+                raw = await resp.text()
+                content_type = resp.headers.get("Content-Type", "")
+                if "application/json" in content_type:
+                    try:
+                        payload = json.loads(raw)
+                    except json.JSONDecodeError:
+                        payload = {"status": "remote_error", "body": raw}
+                else:
+                    payload = {"status": "remote_response", "body": raw}
+                if isinstance(payload, dict):
+                    payload.setdefault("agent_id", route.agent_id)
+                    payload.setdefault("target", "remote")
+                return web.json_response(payload, status=resp.status)
+        except TimeoutError:
+            return web.json_response(
+                {"error": f"Remote agent '{route.agent_id}' timed out"},
+                status=504,
+            )
+        except ClientError:
+            return web.json_response(
+                {"error": f"Remote agent '{route.agent_id}' could not be reached"},
+                status=502,
+            )
 
     async def relay_thread_message(self, request: web.Request) -> web.Response:
         """POST /api/threads/{thread_id}/message — talk to another live session.

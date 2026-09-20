@@ -9,9 +9,11 @@ configuration-driven.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
@@ -21,16 +23,30 @@ class AgentRoute:
     """One configured agent destination."""
 
     agent_id: str
-    thread_id: int
+    thread_id: int | None = None
+    remote_url: str | None = None
+    bearer_token: str | None = None
     aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        local = self.thread_id is not None
+        remote = self.remote_url is not None
+        if local == remote:
+            raise ValueError("agent route needs exactly one of thread_id or url")
 
     def to_public_dict(self) -> dict[str, object]:
         """Return the safe listing shape for API callers."""
-        return {
+        result: dict[str, object] = {
             "agent_id": self.agent_id,
-            "thread_id": self.thread_id,
             "aliases": list(self.aliases),
+            "target": "remote" if self.remote_url else "local",
         }
+        if self.thread_id is not None:
+            result["thread_id"] = self.thread_id
+        if self.remote_url is not None:
+            parsed = urlsplit(self.remote_url)
+            result["remote_origin"] = f"{parsed.scheme}://{parsed.netloc}"
+        return result
 
 
 class AgentDirectory:
@@ -78,8 +94,12 @@ def parse_agent_routes(raw: str | None) -> AgentDirectory:
     Accepted shapes:
 
     - ``drewai=1550757693784989707|drew,drew ai;imac=222``
+    - ``drewai=https://drew.example/api/agents/drewai/message|drew``
     - ``drewai:1550757693784989707``
-    - JSON object: ``{"drewai": 155, "imac": {"thread_id": 222, "aliases": ["mac"]}}``
+    - JSON object: ``{"imac": {"thread_id": 222, "aliases": ["mac"]}}``
+    - Remote JSON object:
+      ``{"drewai": {"url": "https://.../api/agents/drewai/message",
+      "secret_env": "DREWAI_SECRET"}}``
     """
     if raw is None or not raw.strip():
         return AgentDirectory([])
@@ -102,9 +122,9 @@ def _parse_text_routes(raw: str) -> list[AgentRoute]:
         thread_text, _, aliases_text = rest.partition("|")
         aliases = tuple(alias.strip() for alias in aliases_text.split(",") if alias.strip())
         routes.append(
-            AgentRoute(
+            _route_from_target(
                 agent_id=normalize_agent_id(name.strip()),
-                thread_id=_parse_thread_id(thread_text),
+                target=thread_text,
                 aliases=aliases,
             )
         )
@@ -123,9 +143,9 @@ def _parse_json_routes(raw: str) -> list[AgentRoute]:
     for name, spec in data.items():
         if isinstance(spec, int | str):
             routes.append(
-                AgentRoute(
+                _route_from_target(
                     agent_id=normalize_agent_id(str(name)),
-                    thread_id=_parse_thread_id(spec),
+                    target=spec,
                     aliases=(),
                 )
             )
@@ -133,7 +153,18 @@ def _parse_json_routes(raw: str) -> list[AgentRoute]:
         if not isinstance(spec, dict):
             raise ValueError("agent route values must be thread ids or objects")
         thread_id = spec.get("thread_id")
+        remote_url = spec.get("url")
         aliases = _parse_aliases(spec.get("aliases", ()))
+        if remote_url is not None:
+            routes.append(
+                AgentRoute(
+                    agent_id=normalize_agent_id(str(name)),
+                    remote_url=_parse_remote_url(remote_url),
+                    bearer_token=_parse_secret(spec),
+                    aliases=aliases,
+                )
+            )
+            continue
         routes.append(
             AgentRoute(
                 agent_id=normalize_agent_id(str(name)),
@@ -159,6 +190,14 @@ def _parse_aliases(value: Any) -> tuple[str, ...]:
     return tuple(aliases)
 
 
+def _route_from_target(agent_id: str, target: object, aliases: tuple[str, ...]) -> AgentRoute:
+    """Build either a local or remote route from a compact target value."""
+    text = str(target).strip()
+    if text.startswith(("http://", "https://")):
+        return AgentRoute(agent_id=agent_id, remote_url=_parse_remote_url(text), aliases=aliases)
+    return AgentRoute(agent_id=agent_id, thread_id=_parse_thread_id(target), aliases=aliases)
+
+
 def _parse_thread_id(value: object) -> int:
     try:
         thread_id = int(str(value).strip())
@@ -167,6 +206,34 @@ def _parse_thread_id(value: object) -> int:
     if thread_id <= 0:
         raise ValueError("agent route thread_id must be positive")
     return thread_id
+
+
+def _parse_remote_url(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("agent route url must be a non-empty string")
+    parsed = urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("agent route url must be an http(s) URL")
+    return value.strip()
+
+
+def _parse_secret(spec: dict[str, object]) -> str | None:
+    direct = spec.get("secret")
+    env_name = spec.get("secret_env")
+    if direct is not None and env_name is not None:
+        raise ValueError("agent route uses either secret or secret_env, not both")
+    if direct is not None:
+        if not isinstance(direct, str) or not direct:
+            raise ValueError("agent route secret must be a non-empty string")
+        return direct
+    if env_name is None:
+        return None
+    if not isinstance(env_name, str) or not env_name.strip():
+        raise ValueError("agent route secret_env must be a non-empty string")
+    secret = os.getenv(env_name.strip())
+    if not secret:
+        raise ValueError(f"agent route secret_env {env_name.strip()} is not set")
+    return secret
 
 
 __all__ = ["AgentDirectory", "AgentRoute", "normalize_agent_id", "parse_agent_routes"]
