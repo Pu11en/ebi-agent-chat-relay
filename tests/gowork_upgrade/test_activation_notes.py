@@ -77,7 +77,8 @@ def test_the_notes_state_the_live_boundary_and_the_saved_results() -> None:
         "uv run python scripts/check_gowork_upgrade.py",
         "bash scripts/test-clean-env.sh",
         "uv run python -m claude_discord.gowork_demo",
-        "uv run python -m claude_code_core.gowork_contracts tests/gowork_upgrade/fixtures/contracts",
+        "uv run python -m claude_code_core.gowork_contracts "
+        "tests/gowork_upgrade/fixtures/contracts",
         "uv run ruff check claude_discord/ claude_code_core/ extensions/ scripts/",
         "uv run pyright claude_discord/ claude_code_core/",
         "python -m claude_code_core.gowork_guidance plan --home",

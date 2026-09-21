@@ -21,7 +21,7 @@ from claude_code_core.task_loop import (
     parallel_prompt,
     parse_groups,
 )
-from tests.test_task_loop import _Fake, _done, _git
+from tests.test_task_loop import _done, _Fake, _git
 
 PLAN = """# Rename the service
 

@@ -173,7 +173,7 @@ def test_the_command_fails_on_a_regression_and_passes_on_the_saved_cases(
 
 
 @pytest.mark.parametrize(
-    "case_id", ["../escape", "sub/dir", "back\slash", "..", ".", "has space", "", "a:b"]
+    "case_id", ["../escape", "sub/dir", r"back\slash", "..", ".", "has space", "", "a:b"]
 )
 def test_a_case_id_that_is_not_a_plain_name_never_names_an_output_file(
     tmp_path: Path, case_id: str
