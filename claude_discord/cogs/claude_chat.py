@@ -54,6 +54,7 @@ from .run_config import RunConfig
 
 if TYPE_CHECKING:
     from ..bot import ClaudeDiscordBot
+    from ..database.handoff_repo import HandoffRepository
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ class ClaudeChatCog(commands.Cog):
         lounge_repo: LoungeRepository | None = None,
         resume_repo: PendingResumeRepository | None = None,
         settings_repo: SettingsRepository | None = None,
+        handoff_repo: HandoffRepository | None = None,
         channel_ids: set[int] | None = None,
         mention_only_channel_ids: set[int] | None = None,
         inline_reply_channel_ids: set[int] | None = None,
@@ -193,6 +195,7 @@ class ClaudeChatCog(commands.Cog):
         self._resume_repo = resume_repo or getattr(bot, "resume_repo", None)
         # Settings repo for dynamic model lookup (optional — falls back to runner.model)
         self._settings_repo = settings_repo or getattr(bot, "settings_repo", None)
+        self._handoff_repo = handoff_repo or getattr(bot, "handoff_repo", None)
         # When True, rename the thread after creation using a claude -p title suggestion
         self._auto_rename_threads = auto_rename_threads
         # Users auto-joined to every thread ccdb creates or works in, so a
@@ -366,8 +369,9 @@ class ClaudeChatCog(commands.Cog):
         if str(message.channel.id) == os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip():
             return
 
-        # Ignore bot messages
         if message.author.bot:
+            if await self._try_receive_handoff_message(message):
+                return
             return
 
         # Ignore Discord system messages (thread renames, pins, call events, etc.)
@@ -460,6 +464,26 @@ class ClaudeChatCog(commands.Cog):
         with contextlib.suppress(Exception):
             await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}")
         return True
+
+    async def _try_receive_handoff_message(self, message: discord.Message) -> bool:
+        """Receive a trusted handoff packet from another Discord bot."""
+        if self._handoff_repo is None:
+            return False
+        from ..handoff_inbox import handle_handoff_message
+
+        local_agent_id = os.getenv("CCDB_AGENT_ID", "").strip() or "ccdb"
+        try:
+            return (
+                await handle_handoff_message(
+                    message,
+                    repo=self._handoff_repo,
+                    local_agent_id=local_agent_id,
+                )
+                is not None
+            )
+        except Exception:
+            logger.warning("Could not receive handoff message", exc_info=True)
+            return True
 
     def _is_no_mention_scope(self, channel: discord.abc.MessageableChannel) -> bool:
         """Return whether *channel* is one ccdb was invited to speak in freely.

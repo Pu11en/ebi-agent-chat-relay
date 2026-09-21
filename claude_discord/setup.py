@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .database.ask_repo import PendingAskRepository
     from .database.claims_repo import ClaimRepository
     from .database.frontend_thread_repo import FrontendThreadRepository
+    from .database.handoff_repo import HandoffRepository
     from .database.ingest_repo import IngestResultRepository
     from .database.lounge_repo import LoungeRepository
     from .database.notification_repo import NotificationRepository
@@ -69,6 +70,7 @@ class BridgeComponents:
     settings_repo: SettingsRepository | None = None
     ask_repo: PendingAskRepository | None = None
     usage_repo: UsageStatsRepository | None = None
+    handoff_repo: HandoffRepository | None = None
     #: The scheduled-notification store the API server writes through, exposed
     #: so a custom Cog scheduling a reminder lands in the same database the
     #: dispatcher reads.  A Cog that opens its own file writes into a void.
@@ -423,11 +425,13 @@ async def setup_bridge(
     usage_repo = stores.usage
     ingest_repo = stores.ingest
     summary_repo = stores.summaries
+    handoff_repo = stores.handoffs
 
     # Attach repos to bot so generic cogs (e.g. AutoUpgradeCog) can discover them
     # without a hard import dependency on ccdb internals.
     bot.session_repo = session_repo  # type: ignore[attr-defined]
     bot.resume_repo = resume_repo  # type: ignore[attr-defined]
+    bot.handoff_repo = handoff_repo  # type: ignore[attr-defined]
 
     # --- Thread inbox (optional — THREAD_INBOX_ENABLED=true) ---
     if enable_thread_inbox:
@@ -467,6 +471,7 @@ async def setup_bridge(
         lounge_repo=lounge_repo,
         resume_repo=resume_repo,
         settings_repo=settings_repo,
+        handoff_repo=handoff_repo,
         channel_ids=_all_channel_ids or None,
         mention_only_channel_ids=mention_only_channel_ids or None,
         inline_reply_channel_ids=inline_reply_channel_ids or None,
@@ -629,6 +634,7 @@ async def setup_bridge(
         settings_repo=settings_repo,
         ask_repo=ask_repo,
         usage_repo=usage_repo,
+        handoff_repo=handoff_repo,
     )
 
     # Auto-wire repos to ApiServer and set runner.api_port if provided
