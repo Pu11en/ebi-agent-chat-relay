@@ -103,3 +103,43 @@ Proof:
 - `uv run pyright claude_discord/`: `0 errors, 0 warnings`.
 
 Commit: `6041c77`.
+
+## 4: CodeQL high alerts — triage and fix
+
+Pulled the live alert set for PR #22 from the merge-ref analysis
+(`refs/pull/22/merge`, 12 alerts: 3 high + 9 medium) and the default-branch set
+(9 open). The three PR-only highs map to the plan's files. Verified each
+data-flow path in the analysis SARIF before changing anything. Local CodeQL
+re-runs were attempted (gh-codeql CLI downloaded into the workspace) but its
+Java host cannot spawn helper processes under this sandbox, so verification is
+by the exact SARIF flows plus the full local gate.
+
+What changed:
+
+- `claude_discord/cogs/task_loop.py` (`_trusted_copy`): the "ignoring untrusted
+  remembered copy" warning no longer logs the ledger-sourced repo key (CodeQL
+  taints the whole build-state JSON document); it logs only the validation
+  outcome ("not a gowork branch" / "outside the work-copy area").
+- `claude_discord/setup.py`: the legacy-handoff startup log now reports the
+  count of trusted bot accounts instead of the env-sourced bot-ID list.
+- `tests/test_teams_surface.py`: the prompt-URL assertion is an exact-line
+  match (`splitlines()`) instead of a substring check.
+
+Verdict for `tests/harness_audit_fixtures.py:30` (alert #10): keep and dismiss
+as "used in tests" — the fake numeric password is the point of the fixture
+(the tests prove the harness audit redacts it); no code change.
+
+Proof:
+
+- `uv run pytest tests/test_teams_surface.py tests/test_task_loop_cog.py -q`
+  → `149 passed`.
+- `scripts/pr22-gate.sh` → `386 passed`, `All checks passed!` (ruff),
+  `528 files already formatted`, exit 0.
+- `uv run pyright claude_discord/` → 0 errors.
+
+Left open: `tests/test_setup.py` has 2 pre-existing failures
+(`test_setup_bridge_merges_channel_ids`,
+`test_setup_bridge_skips_skill_cog_without_channel_id`, MagicMock await) that
+fail identically with this task's changes stashed — not introduced here; task
+6's full gate will need to look at them. Alert #10 needs Drew's yes before it
+is dismissed on GitHub (per the build rules).

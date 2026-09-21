@@ -2741,7 +2741,16 @@ class TaskLoopCog(commands.Cog):
         path = Path(remembered.get("path", ""))
         branch = remembered.get("branch", "")
         if not is_gowork_branch(branch) or not is_under_work_root(path, self._work_area):
-            logger.warning("gowork: ignoring untrusted remembered copy for %s", top)
+            # The ledger is local data, but its keys are arbitrary strings a hand-edited
+            # build state could set; only the validation outcome is logged, never the
+            # raw entry, so no ledger-sourced text can reach the log (CodeQL: clear-text
+            # logging of sensitive data).
+            reason = (
+                "not a gowork branch"
+                if not is_gowork_branch(branch)
+                else "outside the work-copy area"
+            )
+            logger.warning("gowork: ignoring untrusted remembered copy (%s)", reason)
             return None
         if not path.is_dir():
             return None

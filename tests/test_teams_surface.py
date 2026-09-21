@@ -356,7 +356,9 @@ class TestPromptsPostAnAnswerableCard:
         connector = RecordingConnector()
         s = build(connector)
         assert await s.prompt_url("Log in", "https://example.com") is False
-        assert "https://example.com" in connector.texts[0]
+        # Exact-line match: a substring check would let an attacker-controlled URL
+        # such as "https://example.com.evil.test" pass the assertion.
+        assert "https://example.com" in connector.texts[0].splitlines()
 
 
 class TestInterrupt:

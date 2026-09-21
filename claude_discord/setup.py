@@ -623,9 +623,9 @@ async def setup_bridge(
         legacy_agent = os.getenv("CCDB_AGENT_ID", "").strip()
         if legacy_bots and legacy_agent:
             logger.info(
-                "Legacy handoff intake enabled for agent %s from bots %s",
+                "Legacy handoff intake enabled for agent %s from %d trusted bot account(s)",
                 legacy_agent,
-                ", ".join(str(bot_id) for bot_id in sorted(legacy_bots)),
+                len(legacy_bots),
             )
         else:
             # Said once, here, so the receive path can stay quiet per message.

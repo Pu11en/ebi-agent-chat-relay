@@ -39,12 +39,27 @@ and only after Drew says yes (GitHub is always last).
   question-wait for that first. Add a test that
   fails under 3.12 before the fix. Full suite under 3.12 must finish with no timeout.
 
-- [ ] 4. CodeQL high alerts — triage and fix. `claude_discord/cogs/task_loop.py:2718` and
+- [x] 4. CodeQL high alerts — triage and fix. `claude_discord/cogs/task_loop.py:2718` and
   `claude_discord/setup.py:628` (clear-text logging of sensitive data): if a token/secret can
   reach the log line, redact it; if not, restructure so CodeQL can see it is safe.
   `tests/harness_audit_fixtures.py:30` and `tests/test_teams_surface.py:359` are test code:
   change the test to avoid the pattern (e.g. parse the URL instead of substring check) or note
   them for dismissal as "used in tests". Write a one-line verdict per alert below.
+
+  Verdicts (CodeQL alerts on the PR merge analysis):
+  - #12 `task_loop.py` clear-text logging — FIXED: the "ignoring untrusted remembered copy"
+    warning no longer logs the ledger-sourced repo key; it logs only the validation outcome
+    (branch/work-area reason). No ledger-sourced text can reach the log.
+  - #11 `setup.py:628` clear-text logging — FIXED: the legacy-handoff startup line now logs
+    the *count* of trusted bot accounts instead of the env-sourced bot-ID list.
+  - #10 `tests/harness_audit_fixtures.py:30` clear-text storage — KEEP, dismiss as
+    "used in tests": `FAKE_NUMERIC_PASSWORD = "48213907"` is a synthetic fixture deliberately
+    written into a tmp_path fixture home so the tests can prove the harness audit finds it and
+    never serializes it (`assert FAKE_NUMERIC_PASSWORD not in serialized`). Not a credential.
+  - #1 `tests/test_teams_surface.py:359` incomplete URL substring — FIXED: the assertion is
+    now an exact-line match (`in connector.texts[0].splitlines()`), not a substring check.
+  Note: #1 was the only high open on the default-branch analysis; #10–#12 appear on the
+  PR merge analysis (all three confirmed via the SARIF data-flow paths).
 
 - [ ] 5. CodeQL medium alerts — log injection and redirects. Log-injection at
   `claude_discord/ext/api_server.py:942,1376,1476,3433,3434` and
