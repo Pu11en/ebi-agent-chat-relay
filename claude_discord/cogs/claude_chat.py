@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import discord
+from aiohttp import ClientError, ClientSession, ClientTimeout
 from discord import app_commands
 from discord.ext import commands
 
@@ -426,7 +427,7 @@ class ClaudeChatCog(commands.Cog):
             return False
 
     async def _try_send_drewai_lookup_handoff(self, message: discord.Message) -> bool:
-        """Send a natural DrewAI lookup request to its configured Discord route."""
+        """Send a natural DrewAI lookup request to its configured route."""
         trigger = parse_drewai_lookup_trigger(getattr(message, "content", ""))
         if trigger is None:
             return False
@@ -436,11 +437,17 @@ class ClaudeChatCog(commands.Cog):
         except (KeyError, ValueError):
             return False
 
-        if route.thread_id is None:
-            logger.info(
-                "DrewAI lookup trigger ignored because %s is not a Discord thread route",
-                trigger.agent_id,
+        sender_agent_id = os.getenv("CCDB_AGENT_ID", "").strip() or "ccdb"
+        if route.remote_url is not None:
+            return await self._send_remote_drewai_project_lookup(
+                message=message,
+                trigger=trigger,
+                remote_url=route.remote_url,
+                bearer_token=route.bearer_token,
+                sender_agent_id=sender_agent_id,
             )
+
+        if route.thread_id is None:
             return False
 
         destination = self.bot.get_channel(route.thread_id)
@@ -454,7 +461,6 @@ class ClaudeChatCog(commands.Cog):
             logger.warning("DrewAI handoff route %s cannot receive messages", route.thread_id)
             return False
 
-        sender_agent_id = os.getenv("CCDB_AGENT_ID", "").strip() or "ccdb"
         destination_sender: Any = destination
         await send_project_lookup_handoff(
             trigger,
@@ -464,6 +470,48 @@ class ClaudeChatCog(commands.Cog):
         )
         with contextlib.suppress(Exception):
             await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}")
+        return True
+
+    async def _send_remote_drewai_project_lookup(
+        self,
+        *,
+        message: discord.Message,
+        trigger: Any,
+        remote_url: str,
+        bearer_token: str | None,
+        sender_agent_id: str,
+    ) -> bool:
+        """Ask a remote ccdb bot to start a Drew project lookup worker."""
+        channel = message.channel
+        parent_id = getattr(channel, "parent_id", None)
+        payload: dict[str, object] = {
+            "text": trigger.query,
+            "from_agent": sender_agent_id,
+            "channel_id": int(parent_id if parent_id is not None else channel.id),
+        }
+        if parent_id is not None:
+            payload["from_thread"] = int(channel.id)
+        headers = {"Content-Type": "application/json"}
+        if bearer_token:
+            headers["Authorization"] = f"Bearer {bearer_token}"
+
+        try:
+            async with (
+                ClientSession(timeout=ClientTimeout(total=10)) as session,
+                session.post(remote_url, json=payload, headers=headers) as resp,
+            ):
+                body = await resp.json(content_type=None)
+                if resp.status >= 400:
+                    logger.warning("Remote DrewAI project lookup failed: %s %s", resp.status, body)
+                    return False
+        except (ClientError, TimeoutError, ValueError):
+            logger.warning("Could not reach remote DrewAI project lookup route", exc_info=True)
+            return False
+
+        thread_id = body.get("thread_id") if isinstance(body, dict) else None
+        suffix = f" — worker thread {thread_id}" if thread_id else ""
+        with contextlib.suppress(Exception):
+            await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}{suffix}")
         return True
 
     async def _try_receive_handoff_message(self, message: discord.Message) -> bool:

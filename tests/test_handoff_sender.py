@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
 from claude_code_core.handoffs import protocol as p
 from claude_discord.cogs.claude_chat import ClaudeChatCog
@@ -155,6 +157,64 @@ async def test_chat_cog_sends_natural_drewai_lookup_to_configured_agent_route(
     assert "Pinterest visual picker process" in parsed.task.goal
     message.channel.send.assert_awaited_once()
     assert "DrewAI" in message.channel.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_chat_cog_sends_natural_drewai_lookup_to_remote_project_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def remote_handler(request: web.Request) -> web.Response:
+        seen["auth"] = request.headers.get("Authorization")
+        seen["body"] = await request.json()
+        return web.json_response(
+            {
+                "status": "spawned",
+                "agent_id": "drewai",
+                "thread_id": "999",
+                "thread_name": "🔎 Project lookup · Pinterest",
+            },
+            status=201,
+        )
+
+    remote_app = web.Application()
+    remote_app.router.add_post("/api/project-lookup", remote_handler)
+    remote_server = TestServer(remote_app)
+    remote_client = TestClient(remote_server)
+    await remote_client.start_server()
+
+    try:
+        monkeypatch.setenv("DREWAI_RELAY_SECRET", "secret-value")
+        monkeypatch.setenv("CCDB_AGENT_ID", "david")
+        monkeypatch.setenv(
+            "CCDB_AGENT_ROUTES",
+            (
+                '{"drewai": {"url": "'
+                f"{remote_client.make_url('/api/project-lookup')}"
+                '", "secret_env": "DREWAI_RELAY_SECRET", "aliases": ["drew"]}}'
+            ),
+        )
+        bot = MagicMock()
+        bot.get_channel.return_value = None
+        cog = ClaudeChatCog(bot=bot, repo=MagicMock(), runner=MagicMock())
+        message = _thread_message()
+
+        handled = await cog._try_send_drewai_lookup_handoff(message)
+
+        assert handled is True
+        assert seen["auth"] == "Bearer secret-value"
+        assert seen["body"] == {
+            "text": "the Pinterest visual picker process",
+            "from_agent": "david",
+            "from_thread": 333,
+            "channel_id": 222,
+        }
+        message.channel.send.assert_awaited_once()
+        assert "DrewAI" in message.channel.send.await_args.args[0]
+        assert "999" in message.channel.send.await_args.args[0]
+    finally:
+        await remote_client.close()
 
 
 @pytest.mark.asyncio
