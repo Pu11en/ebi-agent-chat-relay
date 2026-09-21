@@ -80,6 +80,7 @@ from .gowork_plan import (
     parse_plan_tree,
     render_plan_manifest,
 )
+from .gowork_prompts import COMMUNICATION_RULES, PLANNER_RULES, planning_prompt
 from .gowork_report import render_blocker_question, render_completion, render_progress
 from .gowork_resources import (
     HostProbe,
@@ -214,6 +215,9 @@ __all__ = [
     "open_build_state",
     "ReadyTask",
     "HostProbe",
+    "COMMUNICATION_RULES",
+    "PLANNER_RULES",
+    "planning_prompt",
     "render_blocker_question",
     "render_completion",
     "render_progress",

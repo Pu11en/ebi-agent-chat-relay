@@ -41,6 +41,7 @@ from claude_code_core.gowork_friction import (
     read_friction,
 )
 from claude_code_core.gowork_plan import PlanValidationError, has_manifest, load_plan_tree
+from claude_code_core.gowork_prompts import COMMUNICATION_RULES
 from claude_code_core.gowork_report import render_completion, render_progress
 from claude_code_core.gowork_schedule import ReadyTask, ready_tasks
 from claude_code_core.gowork_state import (
@@ -1143,6 +1144,9 @@ def goal_interview_prompt(
         "lines — `Goal: …`, `Done when: …`, then `DONE` — and the bot writes them into "
         "the plan.",
         "Otherwise end with: ASK: <your question with its lettered choices>",
+        "",
+        "How to write to the person:",
+        COMMUNICATION_RULES.rstrip(),
     ]
     if history:
         parts += ["", "The conversation so far:"]
