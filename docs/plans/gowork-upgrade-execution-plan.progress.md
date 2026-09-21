@@ -526,3 +526,24 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `78693fb`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (443 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T22 — Report concise context-rich outcomes
+
+- New `claude_code_core/gowork_report.py`: `render_progress` (project — goal; N of M done;
+  ✅ done / ⏳ being built / 🛑 stuck with why / ⬜ waiting, each by its outcome text),
+  `render_completion` (🏁 "All N tasks are done and checked", one bullet per task with what it
+  delivers and how it was checked — a review reads as "a second AI approved it" — plus a
+  "Worth knowing" list of repairs and reworks; with stuck tasks it lists issues, done-so-far
+  and what waits, never success), `render_blocker_question` (one decision: what is stuck,
+  why, and reply retry / skip / what to change). No commit hashes, no bare task ids.
+- Core: the loop reports progress after every saved result, names started tasks by outcome,
+  and a stuck outcome carries the outcome-worded reasons; `TaskLoop.manifest_summary()` and
+  `project_name`.
+- Cog: the blocker question uses the renderer; a manifest build's finished message carries
+  the ledger summary (the legacy card keeps the bot's own check results).
+- Tests: `tests/gowork_upgrade/test_report.py` (4 fixtures readable without chat history:
+  progress, completion with checks/limitations, all-blocked lists issues, blocker question);
+  earlier tests updated where they looked for task ids in messages.
+- Implementation commit: `0f007c7`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (447 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).

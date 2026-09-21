@@ -217,7 +217,7 @@ new code merely because this build edits it. Report that boundary honestly.
   resolved, unknown and unauthorized references cannot dispatch work; resolving an answer
   resumes only eligible affected tasks under normal checks and capacity.
 
-- [ ] T22: Execution spine, only after T21: report concise context-rich outcomes.
+- [x] T22: Execution spine, only after T21: report concise context-rich outcomes.
   Scope: progress/blocker/completion rendering from saved evidence. Name project/goal,
   what changed or failed and why it matters; short what-and-why completion bullets plus
   checks, workarounds and limitations. One actionable decision per blocker message.
