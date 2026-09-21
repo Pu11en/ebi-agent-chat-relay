@@ -818,6 +818,99 @@ class TestParseCodexLine:
         assert event.is_complete is True
 
 
+class TestContextWindowFromTokenCount:
+    """D10a: the start-fresh nudge needs the window and the used tokens on Codex.
+
+    Codex reports ``model_context_window`` on its ``token_count`` event, not on
+    ``turn.completed``. The runner carries the last one seen into the terminal
+    event so the event processor persists ``context_window``/``context_used``
+    exactly as it does for Claude.
+    """
+
+    TOKEN_COUNT = {
+        "type": "token_count",
+        "info": {
+            "total_token_usage": {
+                "input_tokens": 9000,
+                "cached_input_tokens": 4000,
+                "output_tokens": 800,
+            },
+            "last_token_usage": {
+                "input_tokens": 6000,
+                "cached_input_tokens": 4000,
+                "output_tokens": 300,
+            },
+            "model_context_window": 258400,
+        },
+    }
+
+    def test_token_count_line_parses_into_a_silent_system_event(self) -> None:
+        event = parse_codex_line(json.dumps(self.TOKEN_COUNT))
+        assert event is not None
+        assert event.message_type is MessageType.SYSTEM
+        assert event.is_complete is False
+        assert event.text is None
+        assert event.context_window == 258400
+        assert event.input_tokens == 6000
+
+    def test_token_count_without_info_is_ignored(self) -> None:
+        assert parse_codex_line(json.dumps({"type": "token_count"})) is None
+
+    @pytest.mark.asyncio
+    async def test_turn_completed_carries_the_window_and_used_tokens(self, monkeypatch) -> None:
+        lines = [
+            json.dumps({"type": "thread.started", "thread_id": "t-1"}).encode(),
+            json.dumps(self.TOKEN_COUNT).encode(),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 6000,
+                        "cached_input_tokens": 4000,
+                        "output_tokens": 300,
+                    },
+                }
+            ).encode(),
+        ]
+        process = _FakeProcess(stdout_lines=lines)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        runner = CodexRunner(command="codex")
+
+        events = [event async for event in runner.run("hello")]
+
+        done = [e for e in events if e.is_complete]
+        assert len(done) == 1
+        assert done[0].context_window == 258400
+        # Codex counts cached tokens inside input; Claude does not. The
+        # processor adds input + cache_read, so the fold makes them disjoint:
+        # 2000 fresh + 4000 cached = the 6000 tokens the model actually held.
+        assert done[0].input_tokens == 2000
+        assert done[0].cache_read_tokens == 4000
+        assert done[0].output_tokens == 300
+
+    @pytest.mark.asyncio
+    async def test_turn_completed_without_a_token_count_has_no_window(self, monkeypatch) -> None:
+        lines = [json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10}}).encode()]
+        process = _FakeProcess(stdout_lines=lines)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        events = [event async for event in CodexRunner(command="codex").run("hello")]
+        assert events[-1].context_window is None
+
+
 class TestCodexRunnerArgvStructure:
     """Strict structural tests — verify args match codex CLI's actual grammar.
 

@@ -111,6 +111,24 @@ def _file_change_input(item: dict) -> dict:
     return tool_input
 
 
+def _fold_token_count(completed: StreamEvent, token_count: StreamEvent) -> None:
+    """Carry the window and, if missing, the usage from token_count onto turn.completed.
+
+    Codex's ``input_tokens`` already includes the cached part, while Claude's
+    excludes it; the processor sums input + cache_read for the context figure.
+    So once a window is known the cached tokens are taken out of ``input``:
+    the sum stays the true context size and the cache line stays visible.
+    """
+    if completed.context_window is None:
+        completed.context_window = token_count.context_window
+    if completed.input_tokens is None:
+        completed.input_tokens = token_count.input_tokens
+        completed.output_tokens = token_count.output_tokens
+        completed.cache_read_tokens = token_count.cache_read_tokens
+    if completed.context_window is not None and completed.cache_read_tokens:
+        completed.input_tokens = max(0, (completed.input_tokens or 0) - completed.cache_read_tokens)
+
+
 def parse_codex_line(line: str) -> StreamEvent | None:
     """Parse a single Codex JSONL line into a StreamEvent."""
     line = line.strip()
@@ -143,6 +161,25 @@ def parse_codex_line(line: str) -> StreamEvent | None:
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
             cache_read_tokens=usage.get("cached_input_tokens"),
+        )
+
+    if event_type == "token_count":
+        # Codex reports the model's window here, never on turn.completed. The
+        # event is silent (SYSTEM, no text); the runner folds it into the
+        # terminal event so the start-fresh nudge sees Codex like Claude.
+        info = data.get("info")
+        if not isinstance(info, dict):
+            return None
+        last = info.get("last_token_usage")
+        last = last if isinstance(last, dict) else {}
+        window = info.get("model_context_window")
+        return StreamEvent(
+            raw=data,
+            message_type=MessageType.SYSTEM,
+            context_window=window if isinstance(window, int) and window > 0 else None,
+            input_tokens=last.get("input_tokens"),
+            output_tokens=last.get("output_tokens"),
+            cache_read_tokens=last.get("cached_input_tokens"),
         )
 
     if event_type == "error":
@@ -634,6 +671,10 @@ class CodexRunner:
         if self._process is None or self._process.stdout is None:
             raise RuntimeError("Process not started")
 
+        # The last token_count seen this turn: its window (and, when the
+        # terminal event has no usage of its own, its token counts) go onto
+        # turn.completed, which is the event the processor persists.
+        last_token_count: StreamEvent | None = None
         while True:
             line = await asyncio.wait_for(
                 self._process.stdout.readline(), timeout=self.timeout_seconds or None
@@ -643,6 +684,11 @@ class CodexRunner:
             decoded = line.decode("utf-8", errors="replace")
             event = parse_codex_line(decoded)
             if event:
+                if event.raw.get("type") == "token_count":
+                    last_token_count = event
+                    continue
+                if event.is_complete and last_token_count is not None:
+                    _fold_token_count(event, last_token_count)
                 yield event
                 # ``turn.completed`` can arrive before the CLI process exits.
                 # Keep draining stdout so ``wait()`` below observes the natural

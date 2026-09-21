@@ -1194,6 +1194,39 @@ class TestContextStatsPersistence:
         # Session saved but context stats not written
         assert record is None or record.context_window is None
 
+    @pytest.mark.asyncio
+    async def test_a_codex_turn_completed_persists_the_window_it_carries(
+        self, thread: MagicMock, runner: MagicMock, tmp_path
+    ) -> None:
+        """D10a: the Codex runner folds token_count into turn.completed; the
+        processor then persists it exactly like a Claude result event."""
+        from claude_code_core.codex_runner import parse_codex_line
+        from claude_discord.database.models import init_db
+        from claude_discord.database.repository import SessionRepository
+
+        db_path = str(tmp_path / "sessions.db")
+        await init_db(db_path)
+        repo = SessionRepository(db_path)
+        await repo.save(thread_id=thread.id, session_id="codex-1")
+        runner.working_dir = None  # a Codex terminal event is SYSTEM: the row is re-saved
+        config = _make_config(thread, runner, repo=repo)
+        p = EventProcessor(config)
+
+        done = parse_codex_line(
+            '{"type": "turn.completed", "usage": {"input_tokens": 6000, '
+            '"cached_input_tokens": 4000, "output_tokens": 300}}'
+        )
+        assert done is not None
+        done.session_id = "codex-1"
+        done.context_window = 258400
+        done.input_tokens = 2000  # what the runner's fold leaves after removing the cache
+        await p.process(done)
+
+        record = await repo.get(thread.id)
+        assert record is not None
+        assert record.context_window == 258400
+        assert record.context_used == 6000
+
 
 class TestContextStatsUsesPerTurnUsage:
     """Context stats must use per-turn (last assistant) usage, not cumulative RESULT usage.
