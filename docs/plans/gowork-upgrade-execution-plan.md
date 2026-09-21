@@ -244,7 +244,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: fixture yields repeatable counts, no invented token/cost totals, and suggested
   improvements never silently rewrite the user's planning instructions.
 
-- [ ] T26: Execution spine, only after T25: refine existing planning prompts without replacing the flow.
+- [x] T26: Execution spine, only after T25: refine existing planning prompts without replacing the flow.
   Scope: focused repo-owned prompt/template resources, using prompt-refinement.md.
   Preserve known answers, technical fact gathering and detailed internal plans; short
   useful multiple-choice questions until required user answers are resolved, concrete

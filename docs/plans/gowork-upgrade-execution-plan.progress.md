@@ -620,3 +620,27 @@ T11 is complete (T11a–T11c).
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (459 passed),
   `tests/test_setup.py` + `tests/test_run_helper.py` (94 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T26 — Refine existing planning prompts without replacing the flow
+
+- New `claude_code_core/gowork_prompts.py`: `PLANNER_RULES` and `COMMUNICATION_RULES` — the
+  two instruction blocks from `.planning/gowork-flow/prompt-refinement.md`, as repo-owned text
+  (not installed anywhere; the test checks the user's global instruction files do not carry
+  them). `planning_prompt(plan_text, plan_path=, known_answers=, project_facts=, unclear=)`
+  continues the existing conversation: the plan stays on disk and is not pasted back, facts
+  already gathered and settled answers are listed as "never ask again", one question with
+  lettered choices and a recommendation-with-consequence, and — only when the person found the
+  last explanation unclear — one concrete example from the project, labelled hypothetical.
+- `goal_interview_prompt` (the existing One Question flow) now ends with the same
+  communication rules; its look-first / one-question / five-question / approval structure is
+  unchanged.
+- Static examples (`tests/gowork_upgrade/test_planning_prompts.py`, 5): the report plan
+  keeps its six-task chain and its dependency wording with no promise of parallelism; the
+  multi-project business plan keeps product/website/marketing scope and asks one question with
+  the settled answer preserved; a resumed answer (capacity is automatic) is not asked again and
+  the unclear case asks for one labelled example; the goal interview carries the rules; the
+  rules are repo text only. These examples show what the prompt preserves — they do not
+  measure live model behaviour.
+- Implementation commit: `60fd630`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (464 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).
