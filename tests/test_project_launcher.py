@@ -639,3 +639,99 @@ async def test_control_buttons_open_the_three_flows(cog):
     cog.show_new_session.assert_awaited_once()
     cog.show_sessions.assert_awaited_once()
     cog.show_settings.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.2: New session offers Favorites, Recent, Browse
+# ---------------------------------------------------------------------------
+
+
+def _buttons(view) -> dict[str, discord.ui.Button]:
+    return {c.label: c for c in view.children if isinstance(c, discord.ui.Button)}
+
+
+def _selects(view) -> list[discord.ui.Select]:
+    return [c for c in view.children if isinstance(c, discord.ui.Select)]
+
+
+async def test_new_session_menu_offers_favorites_recent_and_browse(cog):
+    event = interaction()
+    await cog.show_new_session(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    assert event.followup.send.call_args.kwargs["ephemeral"] is True
+    assert {"Favorites", "Recent", "Browse"} <= set(_buttons(view))
+    assert not await view.interaction_check(interaction(43))
+
+
+async def test_choosing_a_favorite_creates_an_idle_thread_and_records_recency(cog, tmp_path):
+    await cog.change_favorite(10, 42, str(tmp_path), add=True)
+    event = interaction()
+    await cog.show_new_session(event)
+    await _buttons(event.followup.send.call_args.kwargs["view"])["Favorites"].callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    select = _selects(view)[0]
+    assert [o.description for o in select.options] == [str(tmp_path)[-100:]]
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.mention = "<#333>"
+    thread.add_user = AsyncMock()
+    thread.send = AsyncMock()
+    event.channel.create_thread = AsyncMock(return_value=thread)
+    cog.chat.spawn_session = AsyncMock()
+    cog.chat._run_claude = AsyncMock()
+    select._values = ["0"]
+    await select.callback(event)
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(tmp_path))
+    cog.chat.spawn_session.assert_not_awaited()
+    cog.chat._run_claude.assert_not_awaited()
+    assert await cog.recents(10, 42) == [str(tmp_path)]
+
+
+async def test_choosing_a_recent_folder_creates_an_idle_thread(cog, tmp_path):
+    await cog.remember_folder(10, 42, str(tmp_path))
+    event = interaction()
+    await cog.show_new_session(event)
+    await _buttons(event.followup.send.call_args.kwargs["view"])["Recent"].callback(event)
+    select = _selects(event.edit_original_response.call_args.kwargs["view"])[0]
+    cog.new_session = AsyncMock()
+    select._values = ["0"]
+    await select.callback(event)
+    await select.callback(event)
+    cog.new_session.assert_awaited_once_with(event, str(tmp_path))
+
+
+async def test_recent_pick_skips_folders_that_no_longer_exist(cog, tmp_path):
+    await cog.remember_folder(10, 42, str(tmp_path / "gone"))
+    event = interaction()
+    await cog.show_new_session(event)
+    await _buttons(event.followup.send.call_args.kwargs["view"])["Recent"].callback(event)
+    assert "No recent" in event.edit_original_response.call_args.kwargs["content"]
+
+
+async def test_browse_choice_opens_the_folder_browser(cog, tmp_path):
+    event = interaction()
+    await cog.show_new_session(event)
+    cog.show_browser = AsyncMock()
+    await _buttons(event.followup.send.call_args.kwargs["view"])["Browse"].callback(event)
+    cog.show_browser.assert_awaited_once()
+
+
+async def test_new_thread_notice_names_folder_and_default_model_without_a_turn(cog, tmp_path):
+    cog.backend_settings = SimpleNamespace(
+        current_backend=AsyncMock(return_value="claude"),
+        current_model=AsyncMock(return_value="claude-opus-4-1"),
+    )
+    event = interaction()
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.mention = "<#333>"
+    thread.add_user = AsyncMock()
+    thread.send = AsyncMock()
+    event.channel.create_thread = AsyncMock(return_value=thread)
+    cog.chat.spawn_session = AsyncMock()
+    await cog.new_session(event, str(tmp_path))
+    notice = thread.send.call_args.args[0]
+    assert str(tmp_path) in notice
+    assert "claude-opus-4-1" in notice
+    cog.chat.spawn_session.assert_not_awaited()
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(tmp_path))

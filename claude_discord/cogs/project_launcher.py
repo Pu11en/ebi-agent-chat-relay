@@ -272,6 +272,66 @@ class FolderMenu(PersonalView):
         self.add_item(add)
 
 
+class NewSessionMenu(PersonalView):
+    """The New session choices: Favorites, Recent, Browse (Create and Clone join in 2.3).
+
+    Every choice ends in :meth:`ProjectLauncherCog.new_session`, which binds a
+    folder and posts a notice — it never starts a model turn.
+    """
+
+    def __init__(self, cog: ProjectLauncherCog, user_id: int) -> None:
+        super().__init__(cog, user_id)
+        choices: list[tuple[str, discord.ButtonStyle, Any]] = [
+            ("Favorites", discord.ButtonStyle.primary, cog.show_favorite_pick),
+            ("Recent", discord.ButtonStyle.secondary, cog.show_recent_pick),
+            ("Browse", discord.ButtonStyle.secondary, cog.show_browse_choice),
+        ]
+        for label, style, opener in choices:
+            button: discord.ui.Button[NewSessionMenu] = discord.ui.Button(label=label, style=style)
+            button.callback = opener
+            self.add_item(button)
+
+
+class FolderPick(PersonalView):
+    """One select over known folders; choosing one creates the idle thread."""
+
+    def __init__(
+        self, cog: ProjectLauncherCog, user_id: int, folders: list[str], *, placeholder: str
+    ) -> None:
+        super().__init__(cog, user_id)
+        self.used = False
+        select = discord.ui.Select(
+            placeholder=placeholder,
+            options=[
+                discord.SelectOption(
+                    label=(Path(path).name or path)[:100],
+                    description=path[-100:],
+                    value=str(index),
+                )
+                for index, path in enumerate(folders[:_LIMIT])
+            ],
+        )
+
+        async def choose(interaction: discord.Interaction) -> None:
+            if self.used:
+                await interaction.response.send_message(
+                    "This menu was already used. Open New session again.", ephemeral=True
+                )
+                return
+            self.used = True
+            await cog.new_session(interaction, folders[int(select.values[0])])
+
+        select.callback = choose
+        self.add_item(select)
+        back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
+
+        async def go_back(interaction: discord.Interaction) -> None:
+            await cog.show_new_session(interaction, edit=True)
+
+        back.callback = go_back
+        self.add_item(back)
+
+
 class FolderBrowser(PersonalView):
     """Navigate a real directory tree; only Start here creates a thread."""
 
@@ -493,9 +553,60 @@ class ProjectLauncherCog(commands.Cog):
             "**Settings** shows what this computer supports"
         )
 
-    async def show_new_session(self, interaction: discord.Interaction) -> None:
-        """New session: the same personal folder flow the launcher already has."""
-        await self.show_folders(interaction)
+    async def show_new_session(
+        self, interaction: discord.Interaction, *, edit: bool = False
+    ) -> None:
+        """New session: Favorites, Recent, or Browse — each ends in an idle thread."""
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        _, model = await self.default_model()
+        starts_on = f"`{model}`" if model else "this computer's default model"
+        text = (
+            f"**New session** — choose where it works. It starts on {starts_on} "
+            "and nothing runs until you send the first task."
+        )
+        view = NewSessionMenu(self, interaction.user.id)
+        if edit:
+            await interaction.edit_original_response(content=text, view=view)
+        else:
+            await interaction.followup.send(text, view=view, ephemeral=True)
+
+    async def show_favorite_pick(self, interaction: discord.Interaction) -> None:
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        folders = await self.favorites(interaction.guild_id or 0, interaction.user.id)
+        if not folders:
+            await interaction.edit_original_response(
+                content="No favorites saved yet. Use **Browse** and press **Save favorite**.",
+                view=NewSessionMenu(self, interaction.user.id),
+            )
+            return
+        await interaction.edit_original_response(
+            content="Choose a favorite folder; the session thread is created at once.",
+            view=FolderPick(self, interaction.user.id, folders, placeholder="Favorite folders"),
+        )
+
+    async def show_recent_pick(self, interaction: discord.Interaction) -> None:
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        recent = await self.recents(interaction.guild_id or 0, interaction.user.id)
+        recent = await asyncio.to_thread(lambda: [p for p in recent if Path(p).is_dir()])
+        if not recent:
+            await interaction.edit_original_response(
+                content="No recent folders on this computer yet. Use **Favorites** or **Browse**.",
+                view=NewSessionMenu(self, interaction.user.id),
+            )
+            return
+        await interaction.edit_original_response(
+            content="Choose a recent folder; the session thread is created at once.",
+            view=FolderPick(self, interaction.user.id, recent, placeholder="Recent folders"),
+        )
+
+    async def show_browse_choice(self, interaction: discord.Interaction) -> None:
+        await self.show_browser(interaction, edit=True)
 
     async def show_sessions(self, interaction: discord.Interaction) -> None:
         """Sessions: find a session to continue (the browser lands in task 2.4)."""
@@ -747,8 +858,11 @@ class ProjectLauncherCog(commands.Cog):
         join = getattr(self.chat, "_ensure_thread_members", None)
         if join is not None:
             await join(thread)
+        # The notice is the whole start: no model turn is spent until the first task.
+        _, model = await self.default_model()
+        model_line = f"🤖 Default model: `{model}`\n" if model else ""
         await thread.send(
-            f"📂 Working folder: `{path}`\n"
+            f"📂 Working folder: `{path}`\n{model_line}"
             "Send your task here to begin; replies continue this session.",
             allowed_mentions=discord.AllowedMentions.none(),
         )
