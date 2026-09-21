@@ -363,3 +363,27 @@ T11 is complete (T11a–T11c).
   `ruff format --check`, `pyright` (0 errors).
 - Open: a worker that crashes before reporting leaves its thread unarchived and its attempt
   running; T17 reconciles interrupted work.
+
+## T15 — Serialize task-result combination in review copies
+
+- `work_copy.py`: `merge_side_copy(..., keep_on_clash=True)` aborts a clashing merge, leaves
+  the build's copy exactly as it was and keeps the worker's branch + worktree for repair;
+  `side_is_merged()` (`git merge-base --is-ancestor`) recognises a merge that landed before
+  a crash so it is reconciled, never repeated.
+- Cog `_run_manifest_task`: under the build's git lock — reconcile-or-merge, then
+  `_combined_checks()` runs the task's acceptance check (argv via shlex, no shell, in the
+  task's project folder) and the plan's `Check:` line (in the copy) on the *combined* copy;
+  the check's own file changes are discarded. A clash names the kept branch; a failed combined
+  check names the failing command and its last line.
+- Core `_record_manifest_result`: a result with a commit is always `submit_result`-ed (the
+  evidence is kept), and accepted only when `ok`; otherwise blocked — dependents stay held.
+- Tests: `tests/test_work_copy.py` (+2: clash keeps both versions; already-merged side is
+  recognised and not merged twice), `test_rolling_workers.py` (+1: failed combined check is
+  saved but not accepted), `test_manifest_build_cog.py` (+2: one task's acceptance check fails
+  after merging → blocked with its commit, dependent pending, siblings accepted; two workers
+  edit the same unowned file → the later one clashes, its branch survives, the copy is clean).
+  The cog fixtures now use acceptance checks that pass on any machine (`python -c pass`)
+  because the checks really run now.
+- Implementation commit: `09a9709`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (421 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).

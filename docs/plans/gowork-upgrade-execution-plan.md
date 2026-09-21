@@ -172,7 +172,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: result-save precedes archive; archive failure retains work and releases process
   capacity; restart retries archive without rerunning completed work or deleting messages.
 
-- [ ] T15: Execution spine, only after T14: serialize task-result combination in review copies.
+- [x] T15: Execution spine, only after T14: serialize task-result combination in review copies.
   Scope: work_copy integration and durable integration state. Combine commits per project
   in controlled order; run combined checks before accepting results for downstream tasks.
   Proof: concurrent results serialize, combined failure blocks dependents, conflict keeps
