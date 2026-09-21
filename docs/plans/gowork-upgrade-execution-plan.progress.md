@@ -173,3 +173,40 @@
   `ruff format --check`, `pyright claude_code_core/gowork_capacity.py` (0 errors).
 - Open: T10 wires HostProbe → CapacityPolicy → AdmissionController.set_capacity into the
   real process starts (`_run_helper.py`, setup defaults, the task-loop cap).
+
+## T10 — Connect adaptive capacity to actual process starts
+
+- `RunConfig.slot_kind` (`chat` | `task` | `review`), `slot_build_id`, `slot_unblocks`.
+  `ClaudeChatCog.run_fresh_turn(..., slot_kind=, slot_build_id=)` passes them through;
+  the Go Work cog marks worker rounds and side-thread workers `task` and the build's own
+  check/review sessions `review`, with the build id for fair admission.
+- `_run_helper.py`: `configure_adaptive_limit(controller=, policy=, probe=)`,
+  `tick_capacity()` (sample → `CapacityPolicy.decide(held=…)` → `set_capacity`),
+  `run_capacity_ticks()`, `session_limit()` now reports the live adaptive capacity, and
+  `parallel_limit()` replaces the loop's fixed ten. `run_claude_with_config` checks the explicit
+  semaphore first (unchanged behaviour when `MAX_CONCURRENT_SESSIONS` / `max_concurrent` is
+  set), otherwise reserves one admission slot per run and releases it in `finally`
+  (cancellation while queued leaves nothing behind; the same run never reserves twice — the
+  compact rerun reserves again only after its first reservation was released).
+- `claude_code_core/task_loop.py`: `TaskLoop(max_parallel=callable)`; default still ten.
+- `setup.py`: an explicit number → fixed semaphore (logged as "fixed"); otherwise
+  `CapacityPolicy()` + `AdmissionController(<gowork state dir>/gowork-admission.json,
+  review_reserve=1)` + `HostProbe()`; `TaskLoopCog.cog_load` starts the 15 s tick loop and
+  `cog_unload` cancels it.
+- Fixed a same-tick race in the controller: a waiter cancelled in the tick a slot frees up
+  still sat in the line with a cancelled future; `_wake` now prunes done futures first.
+- Tests: `tests/gowork_upgrade/test_adaptive_starts.py` (6): fake process integration
+  passes ten workers only after healthy ticks admitted it; critical pressure pauses new
+  starts and recovery admits them; a cancelled queued worker clears the registry and the
+  line; chat starts while workers wait; reviews use the reserved slot; an explicit limit keeps
+  the fixed semaphore. 16 `run_fresh_turn` fakes in `tests/test_task_loop_cog.py` accept the
+  slot keywords. `tests/test_feature_scheduler.py` read the live parallel-gowork plan, whose
+  C1 ticks changed its ready set — expectation updated.
+- Implementation commit: `9e29f16`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (387 passed), full suite
+  `scripts/test-clean-env.sh` (4588 passed, 35 skipped after the scheduler fix), `ruff check`,
+  `ruff format --check`, `pyright` on every touched file (0 errors). Security audit of the
+  touched run path: no new subprocess or shell use; `slot_kind` is normalised to the three
+  known values; the admission file path derives from `CCDB_GOWORK_STATE` like the loop store.
+- Open: `_worker_peaks` is not yet fed from real worker RSS (T13/T22 can observe peaks when
+  workers finish); until then sizing uses the 1500 MB default.

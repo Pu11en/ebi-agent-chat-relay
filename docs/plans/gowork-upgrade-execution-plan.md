@@ -120,7 +120,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: simulated healthy capacity admits more than ten useful workers; pressure pauses
   starts, recovery avoids oscillation, and configured external limits still apply.
 
-- [ ] T10: Execution spine, only after T09: connect adaptive capacity to actual process starts.
+- [x] T10: Execution spine, only after T09: connect adaptive capacity to actual process starts.
   Scope: `_run_helper.py`, setup defaults and task-loop cap integration. Replace both
   fixed bottlenecks on the adaptive path; all relevant task/review/chat starts participate
   without acquiring the same reservation twice. Preserve explicit existing overrides.
