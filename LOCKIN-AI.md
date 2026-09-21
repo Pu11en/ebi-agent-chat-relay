@@ -29,7 +29,7 @@ named `ebi-agent-chat-relay`. It still targets the correct Lockin AI project.
 | Part | Where it lives |
 | --- | --- |
 | Bot code and upstream documentation | This repository; `claude_discord/` and `docs/` |
-| Local project-picker extension | `extensions/project_picker/` |
+| Folder / session launcher (favorites, browse, new session) | `claude_discord/cogs/project_launcher.py`, `docs/project-launcher.md` |
 | Local deployment settings and credentials | `.env` in the real repository; never post its contents or commit it |
 | Session-to-project mappings and runtime state | `data/sessions.db` |
 | Cheat sheet and setup/research notes | `docs/` |
