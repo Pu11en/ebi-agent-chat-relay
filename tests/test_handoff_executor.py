@@ -517,7 +517,7 @@ async def test_deterministic_operation_needs_no_model(
 ) -> None:
     await _store(handoff_repo, _general_task(goal="List the folders"))
     chat = FakeChat()
-    origin = SimpleNamespace(id=333, send=AsyncMock())
+    origin = SimpleNamespace(id=333, send=AsyncMock(), guild=SimpleNamespace(id=111))
     chat.bot.get_channel.return_value = origin
 
     class ListFolders:

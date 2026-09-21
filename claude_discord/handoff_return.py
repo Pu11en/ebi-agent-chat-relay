@@ -20,6 +20,7 @@ from claude_code_core.handoffs.protocol import (
 from claude_code_core.handoffs.state import HandoffTrigger, Transition, apply
 
 from .database.handoff_repo import HandoffRepository
+from .handoff_discord import channel_in_guild
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,15 @@ async def _resolve_destination(bot: Any, destination: ConversationCoordinate) ->
         target = await bot.fetch_channel(target_id)
     if not hasattr(target, "send"):
         raise ValueError(f"handoff destination {target_id} cannot receive messages")
+    # The coordinate came from the peer; the guild on the resolved channel is
+    # Discord's. They must agree, or the "origin" is somewhere the peer chose.
+    if not channel_in_guild(target, destination.guild_id):
+        logger.warning(
+            "refusing handoff delivery to %s: not in reply guild %s",
+            target_id,
+            destination.guild_id,
+        )
+        raise ValueError(f"handoff destination {target_id} is not in guild {destination.guild_id}")
     return target
 
 

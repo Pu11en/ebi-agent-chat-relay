@@ -31,7 +31,7 @@ from claude_code_core.handoffs.protocol import (
 from claude_code_core.handoffs.state import HandoffState, HandoffTrigger, Transition
 
 from .database.handoff_repo import HandoffRepository
-from .handoff_discord import render_event_message, short_task_id
+from .handoff_discord import channel_in_guild, render_event_message, short_task_id
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,14 @@ class HandoffProgressPoster:
         origin = await self._lookup(target_id)
         if origin is None:
             logger.warning("handoff %s origin %s unreachable for blocker", task.task_id, target_id)
+            return
+        if not channel_in_guild(origin, task.reply_to.guild_id):
+            logger.warning(
+                "handoff %s: refusing to post the blocker to %s, not in reply guild %s",
+                task.task_id,
+                target_id,
+                task.reply_to.guild_id,
+            )
             return
         note = " ".join((transition.note or "needs your authority").split())[:MAX_ORIGIN_NOTE_CHARS]
         text = f"⛔ Handoff `{short_task_id(task.task_id)}` to {self._agent} is blocked: {note}"

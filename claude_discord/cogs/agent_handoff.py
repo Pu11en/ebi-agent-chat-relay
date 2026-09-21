@@ -33,6 +33,7 @@ from claude_code_core.handoffs.state import HandoffJob, HandoffStateError, apply
 
 from ..handoff_config import HandoffConfig, HandoffTrustError
 from ..handoff_discord import (
+    channel_in_guild,
     ensure_job_thread,
     parse_event_message,
     post_task_starter,
@@ -266,9 +267,23 @@ class AgentHandoffCog(commands.Cog):
             )
         else:
             return
-        target = await self.lookup_channel(task.reply_to.thread_id or task.reply_to.channel_id)
+        target_id = task.reply_to.thread_id or task.reply_to.channel_id
+        target = await self.lookup_channel(target_id)
         if target is None or not hasattr(target, "send"):
             logger.warning("handoff %s origin is unreachable for %s", task.task_id, event.kind)
+            return
+        # The resolved channel must be in the reply guild *and* the configured
+        # one; an id the bot can see elsewhere is not the origin conversation.
+        if not (
+            channel_in_guild(target, task.reply_to.guild_id)
+            and channel_in_guild(target, self._config.guild_id)
+        ):
+            logger.warning(
+                "handoff %s: refusing to post %s to %s, not in the handoff guild",
+                task.task_id,
+                event.kind.value,
+                target_id,
+            )
             return
         try:
             await target.send(text)

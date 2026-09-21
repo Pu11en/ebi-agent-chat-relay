@@ -175,6 +175,7 @@ class FakeThread:
         self.name = name
         self.archived = archived
         self.parent_id = CHANNEL
+        self.guild = SimpleNamespace(id=GUILD)
         self.sent: list[str] = []
         self.edits: list[dict[str, object]] = []
 
@@ -965,6 +966,22 @@ class TestOriginSide:
         assert len(origin.sent) == 1
         assert "drewai" in origin.sent[0] and "6d9f6ad0" in origin.sent[0]
         assert parse_event_message(origin.sent[0]) is None
+
+    @pytest.mark.asyncio
+    async def test_an_ack_is_not_posted_to_an_origin_outside_the_configured_guild(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        """A channel id the bot can see in another guild is not the origin conversation."""
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        _event, thread = await _sent_task(repo, channel, cog)
+        channel.threads[6006].guild = SimpleNamespace(id=GUILD + 1)
+        ack = _remote_event(p.HandoffEventKind.ACK, payload={"note": "accepted"})
+
+        receipt = await cog.handle_message(_in_thread(channel, thread, ack, DREWAI_BOT), now=NOW)
+
+        assert receipt is not None
+        assert channel.threads[6006].sent == []
 
     @pytest.mark.asyncio
     async def test_blocked_and_result_are_mirrored_into_the_origin_ledger(
