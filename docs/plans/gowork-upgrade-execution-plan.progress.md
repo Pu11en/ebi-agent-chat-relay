@@ -644,3 +644,38 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `60fd630`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (464 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T27 — Export validated plans supported by the installed runner
+
+- New `claude_code_core/gowork_export.py`: `export_plan(tree, PlanHeader, runtime=)` renders
+  one plan document — `Goal:`/`Done when:`/`Check:`/`Try:` lines, `## Decisions` (read back
+  by T12's `plan_decisions`), `## Agreed outcomes`, the `gowork-plan` manifest
+  (`render_plan_manifest`) and `## Tasks` checkbox lines in `dependency_order()` with
+  indented `Task:` / `Depends on:` / `Inputs:` / `Files:` / `Resources:` / `Result:` /
+  `Verify:` / `Outcome:` lines — and parses it back through `parse_plan_tree` before
+  returning; a mismatch is an `ExportError` and nothing is written. `write_plan` is atomic
+  and refuses to overwrite without `overwrite=True`.
+- Compatibility: `RuntimeSupport(manifest_dispatch)` — `installed_runtime()` inspects
+  `TaskLoop.__init__` for `manifest_worker` (T11b) rather than assuming; `RuntimeSupport.LEGACY`
+  is a checkbox-only runner. For it, a single-project tree exports as a sequential checklist
+  without the fence (note: "tasks run one at a time … no parallel safety claimed"); a
+  multi-project tree is refused naming every project and suggesting an upgrade or one plan per
+  project. `check_plan(text, source_path=, runtime=)` judges a hand-written plan the same way:
+  format, parser problems (a cycle, an unsafe path), the legacy-runner problems (manifest
+  ignored, several projects, checkbox lines out of dependency order), tasks ready now.
+- `plan_tree_from_manifest(raw, base_dir=)` validates manifest data through the same parser;
+  `plan_template()` is the planner-facing example and validates as written (the T29 guidance
+  points at it). CLI: `python -m claude_code_core.gowork_export check PLAN.md
+  [--legacy-runner]` / `template`.
+- Tests: `tests/gowork_upgrade/test_plan_export.py` (10): the multi-project fixture exports,
+  loads back equal, schedules `[API, STYLES, POST]` through `ready_tasks` and reads its
+  decisions; the old checkbox fixture checks clean on both runtimes and is never rewritten; a
+  single-project tree becomes a sequential checklist for the legacy runner with the task
+  details on each line; the multi-project tree is refused for it; a cycle and an unsafe path
+  are refused before anything is written; a hand-written cyclic manifest is reported by
+  `check_plan` and the loop stops STUCK with no worker started and no ledger created; the
+  legacy-runner check names the unsupported behaviour; the template validates; overwrite
+  protection; the installed runtime supports manifests.
+- Implementation commit: `cac8c6a`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (483 passed), `ruff check`,
+  `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors).

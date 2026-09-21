@@ -252,7 +252,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: static examples for existing report plan, multi-project business and resumed
   answer preserve scope/context; do not claim static examples measure live model behavior.
 
-- [ ] T27: Execution spine, only after T26: export validated plans supported by the installed runner.
+- [x] T27: Execution spine, only after T26: export validated plans supported by the installed runner.
   Scope: planner templates/export adapter. Complete identities, requirements coverage,
   inputs/outputs, ownership/dependencies, checks and saved decisions. Include conservative
   compatibility handling for older runtime; reject unsupported behavior clearly.
