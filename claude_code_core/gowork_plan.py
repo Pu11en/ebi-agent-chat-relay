@@ -582,6 +582,11 @@ def _legacy_tree(text: str, source_path: Path) -> PlanTree:
     return PlanTree(plans=(plan,), tasks=tuple(tasks), is_legacy=True)
 
 
+def has_manifest(text: str) -> bool:
+    """Whether a plan document carries a ``gowork-plan`` manifest (the multi-plan path)."""
+    return _MANIFEST_RE.search(text) is not None
+
+
 def parse_plan_tree(text: str, *, source_path: Path) -> PlanTree:
     """Parse identity metadata from a Markdown plan.
 

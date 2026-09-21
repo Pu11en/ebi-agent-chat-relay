@@ -32,6 +32,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
+from claude_code_core.gowork_plan import has_manifest
 from claude_code_core.gowork_records import (
     append_record,
     lessons_prompt,
@@ -415,6 +416,19 @@ def _fit(text: str, limit: int = 4000) -> str:
     return text[: text.rfind("\n", 0, limit - 2)] + "\n…"
 
 
+class BuildAlreadyRunningError(ValueError):
+    """The plan is already being built; here is that build, do not open another."""
+
+    def __init__(self, running: _Running) -> None:
+        super().__init__(
+            f"`{running.copy.plan_path.name if running.copy else 'this plan'}` is already "
+            f"running in {running.thread.mention if running.thread else 'its thread'}"
+        )
+        self.thread = running.thread
+        self.build_id = running.build_id
+        self.thread_id = running.worker_thread_id
+
+
 @dataclass
 class _Running:
     loop: TaskLoop
@@ -539,7 +553,8 @@ class TaskLoopCog(commands.Cog):
         self._allowed_user_ids = allowed_user_ids
         #: Where each build's own copy of the project is made (None = default).
         self._work_root = work_root
-        self._running: dict[Path, _Running] = {}
+        #: Every build in flight, by build id (several may share one project).
+        self._running: dict[str, _Running] = {}
         #: Running builds on disk, so a bot restart resumes them.
         self._store = store or LoopStore()
         #: Channels/threads waiting for the person's next typed message.
@@ -557,7 +572,8 @@ class TaskLoopCog(commands.Cog):
         self._queue_reports: dict[int, Any] = {}
         self._queue_lock = asyncio.Lock()
         #: Projects whose build is being set up (copy, thread) or asking which AI to use.
-        self._starting: set[Path] = set()
+        #: (project, plan file name) pairs whose thread is being opened right now.
+        self._starting: set[tuple[Path, str]] = set()
         self._asking: set[Path] = set()
 
     def _chat(self) -> ClaudeChatCog:
@@ -569,6 +585,23 @@ class TaskLoopCog(commands.Cog):
     @property
     def running(self) -> list[_Running]:
         return list(self._running.values())
+
+    def _running_in(self, repo_dir: Path) -> list[_Running]:
+        return [r for r in self._running.values() if r.repo_dir == repo_dir]
+
+    def _running_plan(self, repo_dir: Path, plan_name: str) -> _Running | None:
+        for running in self._running_in(repo_dir):
+            if running.copy is not None and running.copy.plan_path.name == plan_name:
+                return running
+        return None
+
+    def _busy(self, repo_dir: Path, plan_name: str, *, manifest: bool) -> bool:
+        """Is a start for this plan blocked by builds already in flight?"""
+        if manifest:
+            return self._running_plan(repo_dir, plan_name) is not None or (
+                (repo_dir, plan_name) in self._starting
+            )
+        return bool(self._running_in(repo_dir)) or any(r == repo_dir for r, _ in self._starting)
 
     async def wait_for_reply(
         self, channel_id: int, *, timeout: float, accept: Any = None, release: bool = True
@@ -671,13 +704,18 @@ class TaskLoopCog(commands.Cog):
         """Open the worker thread and start the loop in the background."""
         plan = Path(plan_path).expanduser()
         repo_dir = await resolve_repo(plan)
-        if repo_dir in self._running or repo_dir in self._starting:
+        manifest = has_manifest(plan.read_text(encoding="utf-8", errors="replace"))
+        same = self._running_plan(repo_dir, plan.name)
+        if same is not None:
+            raise BuildAlreadyRunningError(same)
+        if self._busy(repo_dir, plan.name, manifest=manifest):
             raise ValueError(f"a task loop is already running in {repo_dir}")
-        self._starting.add(repo_dir)  # a queued build must not start here meanwhile
+        starting_key = (repo_dir, plan.name)
+        self._starting.add(starting_key)  # a queued build must not start here meanwhile
         try:
             chat = self._chat()
             snap = await take_snapshot(repo_dir, plan)
-            if snap.checked + snap.unchecked == 0:
+            if snap.checked + snap.unchecked == 0 and not manifest:
                 raise ValueError("the plan has no `- [ ]` tasks to work through")
 
             # The build works in its own copy: the real project is untouched until
@@ -735,7 +773,7 @@ class TaskLoopCog(commands.Cog):
             plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
             groups = await self._groups_for(open_tasks(plan_text))
             self._launch(record, thread, report_target)
-            self._running[repo_dir].groups = groups  # set before the loop's first step
+            self._running[record.build_id].groups = groups  # set before the loop's first step
             with contextlib.suppress(discord.HTTPException):
                 await report_target.send(
                     f"▶️ Started. Everything about this build happens in {thread.mention}: each "
@@ -756,7 +794,7 @@ class TaskLoopCog(commands.Cog):
                 )
             return thread
         finally:
-            self._starting.discard(repo_dir)
+            self._starting.discard(starting_key)
 
     def _quiet(self, thread_id: int) -> None:
         """Worker threads get no start-fresh nudge and no reply-needed ping."""
@@ -932,7 +970,7 @@ class TaskLoopCog(commands.Cog):
             ),
         )
         holder.append(running)
-        self._running[repo_dir] = running
+        self._running[record.build_id] = running
         self._quiet(thread.id)
         running.task = asyncio.create_task(self._drive(running, report))
         return report
@@ -943,7 +981,7 @@ class TaskLoopCog(commands.Cog):
         self._store.migrate()
         for record in self._store.all():
             repo_dir = Path(record.repo_dir)
-            if repo_dir in self._running:
+            if record.build_id in self._running:
                 continue
             thread: Any = self.bot.get_channel(record.worker_thread_id)
             if thread is None:
@@ -1056,7 +1094,7 @@ class TaskLoopCog(commands.Cog):
                 await running.report_target.send(f"💥 The build crashed: {exc}")
             raise
         finally:
-            self._running.pop(running.repo_dir, None)
+            self._running.pop(running.build_id, None)
             if running.queued:
                 asyncio.get_running_loop().create_task(self._advance_queue())
 
@@ -1511,11 +1549,24 @@ class TaskLoopCog(commands.Cog):
         steps go into the project, and then the new plan starts.
         """
         with contextlib.suppress(ValueError, OSError):
-            repo_dir = await resolve_repo(Path(plan_path).expanduser())
-            existing = self._running.get(repo_dir)
+            new_plan = Path(plan_path).expanduser()
+            repo_dir = await resolve_repo(new_plan)
+            if has_manifest(new_plan.read_text(encoding="utf-8", errors="replace")):
+                return  # manifest plans run beside other builds; nothing to close
+            existing = next(
+                (
+                    r
+                    for r in self._running_in(repo_dir)
+                    if r.copy is not None
+                    and not has_manifest(
+                        r.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+                    )
+                ),
+                None,
+            )
             if existing is None or existing.copy is None:
                 return
-            if existing.copy.plan_path.name == Path(plan_path).name and not existing.in_review:
+            if existing.copy.plan_path.name == new_plan.name and not existing.in_review:
                 return  # the same plan is already running; start_loop will say so
             old = existing.copy.plan_path.name
             with contextlib.suppress(discord.HTTPException):
@@ -2048,7 +2099,11 @@ class TaskLoopCog(commands.Cog):
                 except ValueError:
                     self._queue.take(item)
                     continue
-                if repo in self._running or repo in self._starting or repo in self._asking:
+                if (
+                    self._running_in(repo)
+                    or any(r == repo for r, _ in self._starting)
+                    or repo in self._asking
+                ):
                     continue  # that project already has a build open; try the next one
                 report = await self._queue_report(item.report_id)
                 if report is None:
