@@ -1,0 +1,23 @@
+{
+  "change": "adopt-native-multi-backend-runtime",
+  "thread_id": "codex-desktop-2026-09-07",
+  "plan_owner": "current Codex Desktop planning session",
+  "decisions": [
+    {
+      "decision": "Preserve the existing Discord experience while allowing substantial replacement of Ebi internals.",
+      "reason": "Drew accepts internal replacement but does not accept a worse or more complicated Discord workflow."
+    },
+    {
+      "decision": "Keep the runtime backend-neutral with Codex and Claude Code as peer adapters.",
+      "reason": "Drew expects a friend to add Claude Code and wants future harnesses to remain possible."
+    },
+    {
+      "decision": "Use external harness projects as design references, not additional live orchestrators.",
+      "reason": "Drew wants an effective, token-conscious system without unused or overlapping machinery."
+    },
+    {
+      "decision": "Diagnostics and cleanup remain on demand.",
+      "reason": "Drew explicitly does not want a harness review or monitor continuously running."
+    }
+  ]
+}
