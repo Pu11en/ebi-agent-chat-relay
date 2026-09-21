@@ -403,7 +403,8 @@ _TEMPLATE_NOTE = (
 def plan_template() -> str:
     """The planner-facing example of a complete plan; it validates as written."""
     with tempfile.TemporaryDirectory() as folder:
-        tree = plan_tree_from_manifest(_TEMPLATE_RAW, base_dir=Path(folder))
+        base = Path(folder) / "shop"  # a stable project name, whatever the temp folder is
+        tree = plan_tree_from_manifest(_TEMPLATE_RAW, base_dir=base)
         header = PlanHeader(
             title="Build name",
             goal="A concrete outcome the person asked for",
@@ -416,7 +417,7 @@ def plan_template() -> str:
             tree,
             header,
             runtime=RuntimeSupport(manifest_dispatch=True),
-            relative_to=Path(folder),
+            relative_to=base,
         )
     lines = export.text.split("\n", 1)
     return lines[0] + "\n\n" + _TEMPLATE_NOTE + "\n" + lines[1]
