@@ -36,7 +36,8 @@
 - Created prompt-refinement.md with planner/executor instruction drafts and a walkthrough of the existing six-step report plan; no live prompt installation, worker launch or model evaluation.
 - Interaction answered: detailed plans, short multiple-choice questions with good options until required answers are complete. Keep Go Work name and evolve existing loops.
 - Explained recommended lifecycle: coordinator continues, independent lanes advance through tasks, and each task worker finishes and closes. Existing Go Work already has parallel groups.
-- Next useful decision: how an individual stuck task affects other workers; do not reopen settled naming, plan detail or question-format choices.
+- Drew chose A for stuck tasks: independent work continues while Go Work attempts bounded repairs; dependent tasks wait. Saved this policy in the plan and prompt draft; runtime unchanged.
+- Next dependent decision: repair allowance before bringing an unresolved blocker back to Drew; do not reopen settled failure policy, naming, plan detail or question format.
 - One documentation patch used out-of-order contexts and did not apply; reapplied the same changes in file order successfully.
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.

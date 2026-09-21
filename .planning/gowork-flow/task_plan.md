@@ -23,6 +23,7 @@ Done when: A local practice run proves dependencies, automatic worker sizing und
 - Use a protective ceiling when needed, based on measured conditions; ten is the current implementation limit, not the desired permanent maximum.
 - A finished worker must stop consuming a session even if Drew has not tried the result yet.
 - Keep building the agreed work until it is finished or there is a real blocker.
+- **Failure policy settled:** when a task gets stuck, continue independent work and attempt bounded repairs. Keep its dependent tasks waiting until a repaired result passes the required checks; repairs share the same capacity limits. The repair limit remains to be chosen.
 - Drew can try the combined result after the work is finished; publishing is a separate step.
 - **Already changed locally:** the parallel-step cap and default session capacity were raised from 3 to 10.
 - **Observed during planning:** the live session API reports a capacity of 10; the shared execution helper uses a configured semaphore. Automatic resource-based sizing is proposed, not implemented.
@@ -89,7 +90,7 @@ The Check command above is the existing baseline; every implementation task also
 ### Recovery and Changes
 
 - [ ] **T11: Recover after interruption without duplicate work.** Reconcile saved attempts with actual worker and commit state at startup. Needs: T08, T09. Proof: interruptions before dispatch, after result save and after combination resume correctly.
-- [ ] **T12: Limit repairs and isolate blockers.** Apply the chosen retry and failure policy, while keeping unaffected work eligible where allowed. Needs: T10, T11 and failure-policy decision. Proof: repeated failure reaches a clear bounded state instead of running forever.
+- [ ] **T12: Limit repairs and isolate blockers.** Continue unaffected work while attempting bounded repairs on a stuck task; keep dependent tasks blocked until a checked result is accepted. Needs: T10, T11 and repair-limit decision. Proof: independent tasks progress during repair, dependent tasks wait, repairs respect shared capacity, and repeated failure reaches a clear bounded state instead of running forever.
 - [ ] **T13: Handle edits to plans already running.** Save plan versions, update unstarted work and detect results based on superseded requirements. Needs: T04, T05 and change-policy decision. Proof: an older result cannot silently satisfy a changed task.
 
 ### Drew's View and Proof
@@ -116,7 +117,7 @@ Ask one question at a time and record the answer before moving to dependent ques
 - **Planning interaction settled:** detailed plans built through short multiple-choice questions until required user decisions are filled in; retain the Go Work name and existing loop concept.
 - **Q2, still open:** which ready work gets capacity first when builds compete? Recommended: tasks that unblock other tasks, with aging so other builds still progress; alternatives are equal sharing, finishing the oldest build first or explicit project priority.
 - **Engineering follow-through:** determine headroom thresholds, sampling, fallback and ceiling from read-only measurements and simulated tests during implementation; do not ask Drew to guess technical numbers or promise a safe count from one idle snapshot.
-- **Failure policy:** when a product task is stuck, should independent website or marketing work continue, and how much automatic repair is allowed?
+- **Failure policy settled:** independent work continues while Go Work attempts limited repairs; dependent work waits. Next dependent decision: how much repair effort before returning the blocker to Drew.
 - **Completion and retention:** execution must end without waiting for Drew; decide whether finished threads are archived, deleted after results are saved, or kept as inactive history.
 - **Review strength:** retain cheap/balanced/careful behavior, or change which tasks need a separate reviewer and what happens when one is unavailable?
 - **Changes during a build:** apply new directions only to unstarted tasks, stop affected workers, or finish their current attempts and then replace stale work?
