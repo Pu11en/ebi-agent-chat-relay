@@ -56,7 +56,10 @@ class SetupRoot:
 
     ``ownership`` is the internal class the collector reasons with; the user
     only ever sees the :class:`EffectiveScope` :meth:`scope_for` derives from
-    it.  ``home`` is the directory shown as ``~`` in locators.
+    it.  ``home`` is the directory shown as ``~`` in locators.  ``companions``
+    are the few files that belong to this boundary but sit outside its
+    directory — ``~/.claude.json`` next to ``~/.claude`` — named one by one so
+    the boundary stays explicit.
     """
 
     key: str
@@ -68,6 +71,7 @@ class SetupRoot:
     owner: str | None = None
     project: str | None = None
     home: Path | None = None
+    companions: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", normalize_token(self.key, kind="source key"))
@@ -81,15 +85,19 @@ class SetupRoot:
             object.__setattr__(self, "project", safe_text(self.project, kind="project name"))
         if self.home is not None:
             object.__setattr__(self, "home", Path(self.home))
+        object.__setattr__(self, "companions", tuple(Path(entry) for entry in self.companions))
 
     @property
     def exists(self) -> bool:
         return self.path.is_dir()
 
     def contains(self, path: Path) -> bool:
-        """True when ``path`` resolves to somewhere beneath this root."""
+        """True when ``path`` resolves beneath this root or to a declared companion."""
         try:
-            path.resolve().relative_to(self.path.resolve())
+            resolved = path.resolve()
+            if any(resolved == companion.resolve() for companion in self.companions):
+                return True
+            resolved.relative_to(self.path.resolve())
         except (ValueError, OSError):
             return False
         return True
@@ -140,7 +148,14 @@ def claude_home_root(
     home: Path | None = None,
     label: str = "Claude home",
 ) -> SetupRoot:
-    """``~/.claude`` — shared across every computer that signs in as ``owner``."""
+    """``~/.claude`` — shared across every computer that signs in as ``owner``.
+
+    Claude Code keeps its user-level config (MCP servers, OAuth account) in
+    ``~/.claude.json`` *beside* the home directory, so that one file is the
+    root's declared companion.
+    """
+    path = Path(path)
+    user_config = (Path(home) if home is not None else path.parent) / ".claude.json"
     return SetupRoot(
         key=key,
         path=path,
@@ -150,6 +165,7 @@ def claude_home_root(
         harness="claude",
         owner=owner,
         home=home,
+        companions=(user_config,),
     )
 
 

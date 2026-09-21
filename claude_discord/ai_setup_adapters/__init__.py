@@ -24,12 +24,33 @@ from ._files import (
     project_root,
     read_file_facts,
 )
+from .harness import (
+    ALL_HARNESSES,
+    DSH_ROUTES,
+    HARNESS_KINDS,
+    ClaudeHarnessAdapter,
+    CodexHarnessAdapter,
+    DeliberateException,
+    DshHarnessAdapter,
+    HarnessProfile,
+    LoaderEvidence,
+    load_exceptions,
+)
 from .shared import KNOWN_HARNESSES, SharedSetupAdapter, availability_for
 
 __all__ = [
+    "ALL_HARNESSES",
+    "DSH_ROUTES",
+    "HARNESS_KINDS",
     "KNOWN_HARNESSES",
+    "ClaudeHarnessAdapter",
+    "CodexHarnessAdapter",
+    "DeliberateException",
+    "DshHarnessAdapter",
     "FileFacts",
     "HarnessLayout",
+    "HarnessProfile",
+    "LoaderEvidence",
     "SetupRoot",
     "SharedSetupAdapter",
     "SourceError",
@@ -37,6 +58,7 @@ __all__ = [
     "claude_home_root",
     "codex_home_root",
     "dsh_config_root",
+    "load_exceptions",
     "project_root",
     "read_file_facts",
 ]

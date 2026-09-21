@@ -133,6 +133,20 @@ class TestSetupRoot:
         root = claude_home_root(claude_home, owner="drew", home=tmp_path / "home")
         assert root.locator_for(claude_home / "CLAUDE.md") == "~/.claude/CLAUDE.md"
 
+    def test_claude_home_declares_its_user_config_companion(
+        self, claude_home: Path, tmp_path: Path
+    ):
+        """``~/.claude.json`` sits next to the home, not inside it, yet belongs to it."""
+        root = claude_home_root(claude_home, owner="drew", home=tmp_path / "home")
+        companion = tmp_path / "home" / ".claude.json"
+        assert root.companions == (companion,)
+        assert root.contains(companion)
+        assert not root.contains(tmp_path / "home" / ".codex" / "config.toml")
+        assert root.locator_for(companion) == "~/.claude.json"
+        # Without an explicit home the companion is the parent's ``.claude.json``.
+        implicit = claude_home_root(claude_home, owner="drew")
+        assert implicit.companions == (claude_home.parent / ".claude.json",)
+
 
 # ---------------------------------------------------------------------------
 # Instructions, memory and skills from each declared root
