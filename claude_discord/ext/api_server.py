@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from ..database.notification_repo import NotificationRepository
     from ..database.repository import SessionRepository
     from ..database.resume_repo import PendingResumeRepository
+    from ..database.settings_repo import SettingsRepository
     from ..database.summary_repo import ThreadSummaryRepository
     from ..database.task_repo import TaskRepository
 
@@ -128,6 +129,44 @@ def _serialize_thread_message(message: Any) -> dict[str, object]:
 _DEFAULT_MAX_BODY_BYTES = _MAX_INGEST_TOTAL_BYTES * 4 // 3 + 1024 * 1024
 # Characters allowed in a saved attachment filename; everything else → "_".
 _UNSAFE_FILENAME_RE = re.compile(r"[^\w.\-]+")
+
+# /api/spawn correlation/parent metadata. A caller that records "spawning"
+# before the request and then loses the answer must be able to ask whether a
+# spawn with *this* identity happened, instead of spawning again. The identity
+# is the caller's (a run-state correlation id, a split key such as
+# "<parent-thread>:<slug>"), so the shape is loose but bounded and path-safe.
+_CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,119}$")
+_THREAD_META_KEY = "thread_meta:{thread_id}"
+_CORRELATION_KEY = "thread_correlation:{correlation_id}"
+
+
+def _parse_spawn_metadata(
+    data: dict[str, Any],
+) -> tuple[int | None, str | None, str | None]:
+    """Validate the optional ``parent_thread_id`` / ``correlation_id`` spawn fields.
+
+    Returns ``(parent_thread_id, correlation_id, error)``; a non-empty *error* is
+    the 400 message and the other two are then meaningless.
+    """
+    parent: int | None = None
+    raw_parent = data.get("parent_thread_id")
+    if raw_parent is not None:
+        try:
+            parent = int(raw_parent) if not isinstance(raw_parent, bool | float) else 0
+        except (TypeError, ValueError):
+            parent = 0
+        if parent <= 0:
+            return None, None, "parent_thread_id must be a positive integer"
+    correlation = data.get("correlation_id")
+    if correlation is not None and (
+        not isinstance(correlation, str) or not _CORRELATION_ID_RE.fullmatch(correlation)
+    ):
+        return (
+            None,
+            None,
+            "correlation_id must be 1-120 characters of letters, digits, '.', '_', ':' or '-'",
+        )
+    return parent, correlation, None
 
 
 def _safe_attachment_name(raw: object, index: int) -> str:
@@ -275,6 +314,10 @@ class ApiServer:
         self.summary_repo = summary_repo
         self.claims_repo = claims_repo
         self.handoff_repo: HandoffRepository | None = None
+        # Key-value store for the generic spawn metadata (parent thread and
+        # correlation id); wired by BridgeComponents.apply_to_api_server.
+        # Without it the fields are validated and echoed but not persisted.
+        self.settings_repo: SettingsRepository | None = None
         # Where Claude Code transcripts live, for /api/search?body=1. Falls back
         # to the standard ~/.claude/projects location so body search is
         # Zero-Config wherever Claude Code has run.
@@ -359,6 +402,12 @@ class ApiServer:
         self.app.router.add_post("/api/project-lookup", self.project_lookup)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
+        # Generic spawn metadata: which parent a thread belongs to and the
+        # caller's correlation id, so a lost spawn answer can be reconciled.
+        self.app.router.add_get("/api/threads/{thread_id}/metadata", self.get_thread_metadata)
+        self.app.router.add_get(
+            "/api/correlations/{correlation_id}", self.get_thread_by_correlation
+        )
         # Session spawn route
         self.app.router.add_post("/api/spawn", self.spawn)
         # Sequential task loop (fresh session per plan task)
@@ -1900,6 +1949,16 @@ class ApiServer:
         if att_err is not None:
             return att_err
 
+        parent_thread_id, correlation_id, meta_err = _parse_spawn_metadata(data)
+        if meta_err is not None:
+            return web.json_response({"error": meta_err}, status=400)
+        if correlation_id is not None:
+            # The same identity again is the same spawn: answer with the thread
+            # that already exists rather than opening a duplicate.
+            existing = await self._thread_for_correlation(correlation_id)
+            if existing is not None:
+                return web.json_response({"status": "existing", **existing}, status=200)
+
         try:
             thread = await cog.spawn_session(
                 raw,
@@ -1915,14 +1974,96 @@ class ApiServer:
             return web.json_response({"error": str(exc)}, status=500)
 
         logger.info("Spawned new Claude session in thread %s (%s)", thread.id, thread.name)
+        await self._record_thread_metadata(thread.id, parent_thread_id, correlation_id)
         return web.json_response(
             {
                 "status": "spawned",
                 "thread_id": str(thread.id),
                 "thread_name": thread.name,
+                "parent_thread_id": None if parent_thread_id is None else str(parent_thread_id),
+                "correlation_id": correlation_id,
             },
             status=201,
         )
+
+    async def _record_thread_metadata(
+        self, thread_id: int, parent_thread_id: int | None, correlation_id: str | None
+    ) -> None:
+        """Persist the spawn's parent/correlation metadata, if there is a store for it."""
+        if parent_thread_id is None and correlation_id is None:
+            return
+        if self.settings_repo is None:
+            logger.warning(
+                "spawn metadata for thread %s not persisted: no settings repository", thread_id
+            )
+            return
+        record = {
+            "thread_id": str(thread_id),
+            "parent_thread_id": None if parent_thread_id is None else str(parent_thread_id),
+            "correlation_id": correlation_id,
+        }
+        await self.settings_repo.set(
+            _THREAD_META_KEY.format(thread_id=thread_id), json.dumps(record, sort_keys=True)
+        )
+        if correlation_id is not None:
+            await self.settings_repo.set(
+                _CORRELATION_KEY.format(correlation_id=correlation_id), str(thread_id)
+            )
+
+    async def _thread_metadata(self, thread_id: int) -> dict[str, Any] | None:
+        if self.settings_repo is None:
+            return None
+        raw = await self.settings_repo.get(_THREAD_META_KEY.format(thread_id=thread_id))
+        if not raw:
+            return None
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("unreadable spawn metadata for thread %s", thread_id)
+            return None
+        return record if isinstance(record, dict) else None
+
+    async def _thread_for_correlation(self, correlation_id: str) -> dict[str, Any] | None:
+        if self.settings_repo is None:
+            return None
+        raw = await self.settings_repo.get(_CORRELATION_KEY.format(correlation_id=correlation_id))
+        if not raw or not raw.isdigit():
+            return None
+        record = await self._thread_metadata(int(raw))
+        return record or {
+            "thread_id": raw,
+            "parent_thread_id": None,
+            "correlation_id": correlation_id,
+        }
+
+    async def get_thread_metadata(self, request: web.Request) -> web.Response:
+        """GET /api/threads/{thread_id}/metadata — parent and correlation id of a spawn."""
+        raw_thread_id = request.match_info.get("thread_id", "")
+        if not raw_thread_id.isdigit():
+            return web.json_response({"error": "thread_id must be an integer"}, status=400)
+        if self.settings_repo is None:
+            return web.json_response({"error": "thread metadata store not configured"}, status=503)
+        record = await self._thread_metadata(int(raw_thread_id))
+        if record is None:
+            return web.json_response({"error": "no metadata for this thread"}, status=404)
+        return web.json_response(record)
+
+    async def get_thread_by_correlation(self, request: web.Request) -> web.Response:
+        """GET /api/correlations/{correlation_id} — the thread a spawn identity produced.
+
+        404 means the control plane has no record of that identity (it never
+        spawned here, or was spawned without one). 503 means there is no store
+        to ask, which a caller must not read as absence.
+        """
+        correlation_id = request.match_info.get("correlation_id", "")
+        if not _CORRELATION_ID_RE.fullmatch(correlation_id):
+            return web.json_response({"error": "invalid correlation_id"}, status=400)
+        if self.settings_repo is None:
+            return web.json_response({"error": "thread metadata store not configured"}, status=503)
+        record = await self._thread_for_correlation(correlation_id)
+        if record is None:
+            return web.json_response({"error": "unknown correlation_id"}, status=404)
+        return web.json_response(record)
 
     async def start_task_loop(self, request: web.Request) -> web.Response:
         """POST /api/loops — work through a plan's ``- [ ]`` tasks, one per fresh session.

@@ -312,6 +312,40 @@ def test_apply_to_api_server_is_idempotent() -> None:
     assert api_server.lounge_repo is lounge_repo
 
 
+def test_apply_to_api_server_wires_settings_repo_for_thread_metadata() -> None:
+    """The spawn correlation/parent metadata persists through the settings store.
+
+    Without this wiring /api/spawn would accept the fields and forget them, and
+    a coordinator recovering from a lost spawn answer could never look its
+    thread up again (parallel-gowork 5.1).
+    """
+    from claude_discord.database.repository import SessionRepository
+    from claude_discord.database.settings_repo import SettingsRepository
+
+    session_repo = MagicMock(spec=SessionRepository)
+    settings_repo = MagicMock(spec=SettingsRepository)
+    components = BridgeComponents(session_repo=session_repo, settings_repo=settings_repo)
+    api_server = _make_api_server()
+    api_server.settings_repo = None
+
+    components.apply_to_api_server(api_server)
+
+    assert api_server.settings_repo is settings_repo
+
+
+def test_apply_to_api_server_keeps_an_existing_settings_repo_when_none_given() -> None:
+    from claude_discord.database.repository import SessionRepository
+
+    components = BridgeComponents(session_repo=MagicMock(spec=SessionRepository))
+    api_server = _make_api_server()
+    existing = MagicMock()
+    api_server.settings_repo = existing
+
+    components.apply_to_api_server(api_server)
+
+    assert api_server.settings_repo is existing
+
+
 @pytest.mark.asyncio
 async def test_setup_bridge_auto_wires_api_server(tmp_path: object) -> None:
     """setup_bridge(api_server=...) should auto-wire repos and set runner.api_port."""
