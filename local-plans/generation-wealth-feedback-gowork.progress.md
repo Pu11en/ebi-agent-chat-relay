@@ -103,3 +103,20 @@
 - Work commit: `390f818`; this completion record is committed separately.
 - Open note: the next task still needs the full PDF review, `review-notes.md`, and the
   Discord attachment entry; those were intentionally not started here.
+
+## Task 6 — Review the PDF and prepare the Discord-ready summary
+
+- Completed: 2026-09-20 CDT
+- What changed: reviewed all 10 PDF pages visually and through text extraction, found
+  no missing pages, clipping, broken characters, overlap, or unreadable formatting,
+  and confirmed that each of the eight top asks has a dated source and draft reply.
+- Outputs: wrote `review-notes.md`, marked `status.json` complete with six artifacts,
+  and queued the PDF plus review card in the requested Discord attachment manifest.
+- PDF check: US Letter, 10 pages, embedded Unicode fonts, no encryption, zero text
+  replacement characters, eight source/date labels, and eight ready-to-send replies.
+- Plan check: `check_progress.py` passed with all six listed artifacts.
+- Project tests: all 3,456 tests passed with 15 warnings and 84% coverage after
+  removing live bot deployment settings from the test environment.
+- Work commit: `39634ca`; this completion record is committed separately.
+- Open note: Drew only needs to taste-check the reply tone and ask priority; the PDF
+  already satisfies the agreed build goal and needs no correction to send.
