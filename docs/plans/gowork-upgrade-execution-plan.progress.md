@@ -679,3 +679,40 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `cac8c6a`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (483 passed), `ruff check`,
   `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors).
+
+## T28 — Pass full task context to grouping and worker prompts
+
+- Core (`claude_code_core/task_loop.py`): `TaskContext` (label, `task_id`, `depends_on`,
+  `inputs`, `files`, `resources`, `result`, `verify`, raw `details`) and
+  `open_task_contexts(plan_text)` — every open checkbox task with the indented lines under
+  it, read through the existing `_task_blocks`; the keys are the ones T27 exports and the
+  plan template asks for (`Depends on`/`Needs`, `Inputs`, `Files`/`Owns`, `Resources`,
+  `Result`/`Output`, `Verify`, `Task`). `group_prompt(steps, contexts)` shows each step's
+  lines, so two "Update the config" steps are told apart by what they own;
+  `parallel_prompt(plan, step, context)` briefs the worker with its prerequisites, inputs,
+  owned files, expected result and check inline. `contexts_for_steps` matches by label and
+  occurrence so same-titled steps never share one context.
+- Enforcement: `constrain_groups(groups, contexts)` — the suggestion is advisory. A step joins
+  a group only when every declared prerequisite sits in an earlier group and it owns nothing
+  in common with the steps already there (`gowork_plan.owned_paths_overlap`, the manifest's
+  own containment rule, plus shared resources); once any step declares ownership, a step
+  that declares none has unknown ownership and runs alone; with no details anywhere the
+  suggestion stands as before. Duplicates and unknown names are dropped, missing steps
+  appended alone — the same steps come out, once each. `TaskLoop._parallel_group` applies
+  it against the steps open right now and refuses a group that skips the first open step
+  (that step runs alone); the capacity cut (`max_parallel`) stays after it. On the manifest
+  path there is no model grouping at all — `ready_tasks()` decides — so nothing to bypass.
+- Cog (`claude_discord/cogs/task_loop.py`, minimal): `_groups_for(steps, contexts)` asks with
+  context and constrains the parsed answer; `_contexts(running)` reads the build copy's plan;
+  `_run_group` briefs each worker with its own context.
+- Tests: `tests/gowork_upgrade/test_task_context.py` (8): same-title different-ownership
+  contexts, prompt and briefings; declared ownership/prerequisites split a suggested group;
+  a step without ownership runs alone when others declare theirs (bare plans unchanged);
+  malformed/incomplete/duplicate suggestions fall back with every step kept; the loop holds
+  the dependent step whatever the suggestion says (real git repo); a suggestion without the
+  first open step runs it alone; context lines; the cog briefs two same-titled workers with
+  their own files and the quick AI saw both ownerships while the dependent step waited.
+- Implementation commit: `33be1e9`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (491 passed), `ruff check`,
+  `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors). Security: the cog
+  edit builds prompts only; no new subprocess, shell or env use.

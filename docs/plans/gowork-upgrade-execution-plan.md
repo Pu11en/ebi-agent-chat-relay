@@ -259,7 +259,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: old checkbox plan works; new multi-project plan validates and schedules through
   the implemented parser; impossible ownership/dependency plan cannot start by accident.
 
-- [ ] T28: Execution spine, only after T27: pass full task context to grouping and worker prompts.
+- [x] T28: Execution spine, only after T27: pass full task context to grouping and worker prompts.
   Scope: task block extraction and existing grouping integration, not labels alone.
   Include inputs/outputs/ownership/prerequisites and respect code-enforced readiness;
   group suggestions are advisory and cannot bypass dependency or capacity checks.
