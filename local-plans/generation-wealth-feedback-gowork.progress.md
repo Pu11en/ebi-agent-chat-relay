@@ -62,3 +62,22 @@
 - Open note: no transcript evidence yet proves that Henry used the finished package or
   that any proposed price has real customer support; the report should preserve those
   limits rather than turn the speakers' hypotheses into facts.
+
+## Task 4 — Draft the long feedback report
+
+- Completed: 2026-09-20 CDT
+- What changed: wrote a 3,000-word report draft led by a short list of eight asks. Every
+  ask includes a source transcript path, a September 18–20 date, supporting passage IDs,
+  and a ready-to-send reply; the report also covers source confidence, answerable items,
+  outreach templates, pricing limits, unanswered gaps, and recommended next actions.
+- Output: `report-draft.md` in the requested Generation Wealth feedback folder;
+  `status.json` now lists four completed artifacts and points to the first PDF next.
+- Citation check: all 41 distinct passage IDs in the report exist in the exhaustive quote
+  extraction and fall on the stated September 18–20 source dates.
+- Plan check: `check_progress.py` passed with four listed artifacts.
+- Project tests: all 3,456 tests passed with 15 warnings and 84% coverage after removing
+  live bot deployment settings from the test environment.
+- Work commit: `983f863`; this completion record is committed separately.
+- Open note: this task intentionally created only the report source. The next task will
+  lay it out as `Generation-Wealth-feedback.pdf` and should preserve the compact top-asks
+  section at the front.
