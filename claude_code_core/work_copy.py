@@ -21,6 +21,7 @@ import contextlib
 import datetime
 import os
 import re
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -289,15 +290,21 @@ async def side_is_merged(copy: WorkCopy, side: SideCopy, *, base: str | None = N
 # Automatic local integration (T23)
 # ---------------------------------------------------------------------------
 
-_integration_locks: dict[Path, asyncio.Lock] = {}
+# Locks live per event loop. An ``asyncio.Lock`` binds to the loop that first
+# waits on it; a process-wide cache handed the same lock to a later loop (every
+# test runs its own), and on Python 3.12 a waiter cancelled at that loop's
+# teardown never resolved, so the loop could not close.
+_integration_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[Path, asyncio.Lock]]
+_integration_locks = weakref.WeakKeyDictionary()
 
 
 def integration_lock(repo: Path) -> asyncio.Lock:
     """One lock per project: builds for the same repository integrate one at a time."""
     key = repo.resolve()
-    lock = _integration_locks.get(key)
+    locks = _integration_locks.setdefault(asyncio.get_running_loop(), {})
+    lock = locks.get(key)
     if lock is None:
-        lock = _integration_locks[key] = asyncio.Lock()
+        lock = locks[key] = asyncio.Lock()
     return lock
 
 

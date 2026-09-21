@@ -269,3 +269,25 @@ async def test_a_failing_combined_check_blocks_before_the_project_changes(
     assert not (repo / "a.txt").exists()  # the project never saw the result
     assert copy.path.exists()
     assert not list((tmp_path / "copies").glob("*-integrate-*"))  # scratch cleaned up
+
+
+class TestIntegrationLockPerLoop:
+    async def test_the_lock_for_a_repo_is_shared_within_one_loop(self, tmp_path: Path) -> None:
+        from claude_code_core.work_copy import integration_lock
+
+        assert integration_lock(tmp_path) is integration_lock(tmp_path)
+
+    def test_a_new_event_loop_gets_its_own_lock(self, tmp_path: Path) -> None:
+        # An asyncio.Lock binds to the loop that first waits on it; handing a
+        # later loop the same lock hung teardown on Python 3.12 (CI on Linux).
+        import asyncio
+
+        from claude_code_core.work_copy import integration_lock
+
+        first = asyncio.run(_lock_id(integration_lock, tmp_path))
+        second = asyncio.run(_lock_id(integration_lock, tmp_path))
+        assert first != second
+
+
+async def _lock_id(integration_lock, repo: Path) -> int:  # noqa: ANN001
+    return id(integration_lock(repo))
