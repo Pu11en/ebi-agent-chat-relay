@@ -45,6 +45,7 @@ from ..discord_ui.thread_context import DEFAULT_DAYS, build_recent_transcript
 from ..discord_ui.thread_dashboard import ThreadState, ThreadStatusDashboard
 from ..discord_ui.thread_renamer import suggest_title
 from ..discord_ui.views import RewindSelectView, StopView
+from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
 from ..handoff_sender import send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
@@ -515,32 +516,33 @@ class ClaudeChatCog(commands.Cog):
         return True
 
     @staticmethod
+    def _handoff_config() -> HandoffConfig | None:
+        """The strict per-instance handoff configuration, or None when incomplete."""
+        try:
+            return HandoffConfig.from_env()
+        except ValueError:
+            logger.warning("Ignoring malformed handoff configuration", exc_info=True)
+            return None
+
+    @staticmethod
     def _handoff_sender_trusted(message: Any) -> bool:
         """Only a trusted bot account may hand a job to this bot.
 
-        A packet spawns a worker and delivers results wherever the packet says, so
-        the sender matters more than the packet. ``CCDB_HANDOFF_TRUSTED_BOT_IDS`` lists
-        the bot accounts allowed to send one; without it, a bot that is a member of
-        this server may, but a webhook or a bot from elsewhere never can.
+        The rule lives in :func:`claude_discord.handoff_config.legacy_sender_trusted`;
+        an instance with a complete ``HandoffConfig`` receives packets through
+        ``AgentHandoffCog`` instead, which verifies guild, channel and identity.
         """
-        if getattr(message, "webhook_id", None) is not None:
-            return False
-        author_id = getattr(getattr(message, "author", None), "id", None)
-        if not isinstance(author_id, int):
-            return False
-        allowed = {
-            int(part)
-            for part in os.getenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", "").split(",")
-            if part.strip().isdigit()
-        }
-        if allowed:
-            return author_id in allowed
-        guild = getattr(message, "guild", None)
-        return guild is not None and guild.get_member(author_id) is not None
+        return legacy_sender_trusted(message)
 
     async def _try_receive_handoff_message(self, message: discord.Message) -> bool:
         """Receive a trusted handoff packet from another Discord bot."""
         if self._handoff_repo is None:
+            return False
+        # A complete handoff configuration hands the dedicated channel to
+        # AgentHandoffCog, whose checks are stricter; this path keeps the
+        # narrow project-lookup route working everywhere else.
+        config = ClaudeChatCog._handoff_config()
+        if config is not None and config.in_handoff_scope(message.channel):
             return False
         if not ClaudeChatCog._handoff_sender_trusted(message):
             return False
