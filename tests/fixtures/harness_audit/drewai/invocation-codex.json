@@ -1,0 +1,24 @@
+{
+  "harness": "codex",
+  "cwd": "__HOME__/projects/relay",
+  "argv": [
+    "exec",
+    "--json",
+    "--sandbox",
+    "workspace-write",
+    "-c",
+    "model_reasoning_effort=medium",
+    "-c",
+    "sandbox_workspace_write.network_access=true",
+    "-c",
+    "developer_instructions=You are EbiBot. Private operator prompt that must stay local.",
+    "--",
+    "hello"
+  ],
+  "environment_names": [
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "PATH"
+  ],
+  "cli_version": "0.147.0"
+}

@@ -164,10 +164,9 @@ class _Rule:
 
 
 def _is_safe_value(value: str) -> bool:
-    normalized = value.strip().strip(_STRIP).lower()
-    if normalized in _SAFE_VALUES:
-        return True
-    return bool(re.fullmatch(r"-?\d+(?:\.\d+)?", normalized))
+    # A number is not safe by shape: ``DB_PASSWORD=48213907`` is a password.
+    # The audit's own numeric fields are protected by name in _SAFE_KEYS.
+    return value.strip().strip(_STRIP).lower() in _SAFE_VALUES
 
 
 # Order matters: the widest rules run first so a narrower one cannot leave a
@@ -183,9 +182,13 @@ _RULES: tuple[_Rule, ...] = (
     ),
     _Rule(
         "credential-header",
+        # The value runs to the end of the line.  Inside serialized JSON that
+        # line ends at a *literal* ``\n``/``\r`` escape, so the pattern stops
+        # there too; otherwise the re-scan would read ``[redacted]\nHost: x``
+        # as one unsafe value and refuse the redactor's own output.
         re.compile(
             r"(?i)\b(?:authorization|proxy-authorization|(?:set-)?cookie)"
-            r"[\"']?\s*[:=]\s*[\"']?(?P<value>[^\n\"]+)"
+            r"[\"']?\s*[:=]\s*[\"']?(?P<value>(?:[^\n\r\"\\]|\\(?![nr]))+)"
         ),
     ),
     _Rule(

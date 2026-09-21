@@ -1,0 +1,1 @@
+{"permissions": {"allow": ["Bash(git:*)"], "deny": ["Read(.env)"]}, "env": {"ANTHROPIC_API_KEY": "sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKE0000", "EDITOR": "vim"}, "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "lint"}]}]}, "model": "opus"}

@@ -1,0 +1,25 @@
+{
+  "machine": "imac",
+  "exceptions": [
+    {
+      "exception_id": "imac-subscription",
+      "kind": "subscription",
+      "description": "the iMac subscription cannot use the larger models",
+      "preserved_outcome": "the same rules, skills and project guidance load",
+      "covers": [
+        "setting:model",
+        "setting:model_reasoning_effort"
+      ]
+    },
+    {
+      "exception_id": "imac-no-github-mcp",
+      "kind": "installed-tool",
+      "harness": "claude",
+      "description": "gh-mcp is not configured for Claude on the iMac",
+      "preserved_outcome": "GitHub work is done through the gh CLI there",
+      "covers": [
+        "connector:github"
+      ]
+    }
+  ]
+}

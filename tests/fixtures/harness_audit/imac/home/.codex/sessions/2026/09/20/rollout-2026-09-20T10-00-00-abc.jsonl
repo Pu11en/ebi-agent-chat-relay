@@ -1,0 +1,2 @@
+{"timestamp": "2026-09-20T10:00:00.000Z", "type": "session_meta", "payload": {"id": "abc", "cwd": "__HOME__/projects/relay", "cli_version": "0.147.0", "originator": "codex_cli_rs", "instructions": "# Global rules\n\nAlways run the tests.\n"}}
+{"timestamp": "2026-09-20T10:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Skills available: <skill name='release'/>, <skill name='deploy'/>"}]}}

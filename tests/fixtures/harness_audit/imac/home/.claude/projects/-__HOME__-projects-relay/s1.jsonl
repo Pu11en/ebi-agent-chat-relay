@@ -1,0 +1,2 @@
+{"type": "user", "cwd": "__HOME__/projects/relay", "sessionId": "s1", "version": "2.0.5", "message": {"role": "user", "content": "private prompt text"}}
+{"type": "assistant", "cwd": "__HOME__/projects/relay", "sessionId": "s1", "version": "2.0.5", "message": {"role": "assistant", "content": "private answer text"}}
