@@ -303,6 +303,11 @@ def _version(invocation: ClaudeInvocation | None, proof: SessionObservation | No
     return ""
 
 
+def _name(path: str) -> str:
+    """A transcript's file name: its directory encodes an absolute path."""
+    return path.rsplit("/", 1)[-1]
+
+
 def _item_id(kind: SourceKind, reference: str) -> str:
     return f"claude/{kind.value}/{reference}"
 
@@ -348,8 +353,9 @@ def _start_evidence(entry: DiscoveredFile, ctx: _Context, what: str) -> Evidence
         return evidence(
             EvidenceLevel.LOADED,
             "session-transcript+invocation",
-            f"transcript {ctx.proof.path} shows claude {ctx.proof.version or ctx.version} ran in"
-            f" the invocation cwd with the {scope_name} scope enabled",
+            f"transcript {_name(ctx.proof.path)} shows claude"
+            f" {ctx.proof.version or ctx.version} ran in the invocation cwd with the"
+            f" {scope_name} scope enabled",
             reference=entry.path,
             vendor=True,
         )

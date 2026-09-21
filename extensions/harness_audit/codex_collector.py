@@ -325,6 +325,11 @@ def _version(invocation: CodexInvocation | None, proof: SessionObservation | Non
     return ""
 
 
+def _name(path: str) -> str:
+    """A transcript's file name: its directory encodes an absolute path."""
+    return path.rsplit("/", 1)[-1]
+
+
 def _item_id(kind: SourceKind, reference: str) -> str:
     return f"codex/{kind.value}/{reference}"
 
@@ -358,7 +363,7 @@ def _start_evidence(entry: DiscoveredFile, ctx: _Context, what: str) -> Evidence
             return evidence(
                 EvidenceLevel.LOADED,
                 "rollout-instructions-hash-match",
-                f"rollout {ctx.proof.path} records instructions whose salted hash equals"
+                f"rollout {_name(ctx.proof.path)} records instructions whose salted hash equals"
                 f" the hash of {entry.resolved_path}",
                 reference=entry.path,
                 vendor=True,
@@ -366,7 +371,7 @@ def _start_evidence(entry: DiscoveredFile, ctx: _Context, what: str) -> Evidence
         return evidence(
             EvidenceLevel.LOADED,
             "rollout+invocation",
-            f"rollout {ctx.proof.path} shows codex {ctx.proof.version or ctx.version} ran in"
+            f"rollout {_name(ctx.proof.path)} shows codex {ctx.proof.version or ctx.version} ran in"
             f" the invocation cwd, where {what} is read",
             reference=entry.path,
             vendor=True,
@@ -460,7 +465,7 @@ def _skill_item(entry: DiscoveredFile, ctx: _Context) -> InventoryItem:
         record = evidence(
             EvidenceLevel.LOADED,
             "rollout-skill-index",
-            f"rollout {ctx.proof.path} names skill {name} in the developer turn",
+            f"rollout {_name(ctx.proof.path)} names skill {name} in the developer turn",
             reference=entry.path,
             vendor=True,
         )
@@ -470,8 +475,8 @@ def _skill_item(entry: DiscoveredFile, ctx: _Context) -> InventoryItem:
         record = evidence(
             EvidenceLevel.CONFIGURED,
             "rollout-skill-index",
-            f"rollout {ctx.proof.path} does not name skill {name}; the directory is one Codex"
-            " scans, but this run did not show it",
+            f"rollout {_name(ctx.proof.path)} does not name skill {name}; the directory is"
+            " one Codex scans, but this run did not show it",
             reference=entry.path,
             vendor=True,
         )
