@@ -25,6 +25,7 @@ from .database.handoff_repo import HandoffRepository
 from .database.ingest_repo import IngestResultRepository
 from .database.lounge_repo import LoungeRepository
 from .database.models import init_db
+from .database.project_catalog_repo import ProjectCatalogRepository
 from .database.repository import SessionRepository, UsageStatsRepository
 from .database.resume_repo import PendingResumeRepository
 from .database.settings_repo import SettingsRepository
@@ -53,6 +54,8 @@ class SessionStores:
     handoffs: HandoffRepository
     #: Turns kept alive across model-capacity retries and restarts.
     capacity: CapacityRecoveryRepository
+    #: Personal Favorite / Hide / recency for shared-catalog projects.
+    catalog_metadata: ProjectCatalogRepository | None = None
 
 
 async def build_session_stores(session_db_path: str) -> SessionStores:
@@ -94,4 +97,5 @@ async def build_session_stores(session_db_path: str) -> SessionStores:
         frontend_threads=frontend_threads,
         handoffs=HandoffRepository(session_db_path),
         capacity=CapacityRecoveryRepository(session_db_path),
+        catalog_metadata=ProjectCatalogRepository(session_db_path),
     )

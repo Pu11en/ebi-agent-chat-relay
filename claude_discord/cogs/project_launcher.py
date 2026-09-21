@@ -14,6 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from ..catalog_service import CatalogEntry, ProjectCatalogService
 from ..category_scope import category_allowed
 from ..command_surface import CONTROL_CENTER_BUTTONS, retirement_enabled
 from ..database.repository import SessionRepository
@@ -25,6 +26,7 @@ from ..discord_ui.session_browser import (
     browser_text,
 )
 from ..discord_ui.settings_home import SettingsHome, SupportedFeatures
+from ..project_catalog import ProjectIdentity
 from ..project_creation import (
     ProjectCreationError,
     ProjectRoots,
@@ -337,10 +339,13 @@ class CloneProjectModal(discord.ui.Modal, title="Clone a repository"):
 
 
 class NewSessionMenu(PersonalView):
-    """The New session choices: Favorites, Recent, Browse, Create, Clone.
+    """The New session choices: Projects, Favorites, Recent, Browse, Create, Clone.
 
-    Every choice ends in :meth:`ProjectLauncherCog.new_session`, which binds a
-    folder and posts a notice — it never starts a model turn.
+    Every choice ends in :meth:`ProjectLauncherCog.new_session` (or its
+    catalog twin, :meth:`ProjectLauncherCog.start_catalog_session`), which
+    binds a folder and posts a notice — it never starts a model turn.
+    **Projects** is the shared catalog's normal view and exists only when a
+    catalog is wired; **Browse** stays the unrestricted local-path action.
     """
 
     def __init__(self, cog: ProjectLauncherCog, user_id: int) -> None:
@@ -352,8 +357,19 @@ class NewSessionMenu(PersonalView):
         async def clone(interaction: discord.Interaction) -> None:
             await interaction.response.send_modal(CloneProjectModal(cog, user_id))
 
-        choices: list[tuple[str, discord.ButtonStyle, Any]] = [
-            ("Favorites", discord.ButtonStyle.primary, cog.show_favorite_pick),
+        async def projects(interaction: discord.Interaction) -> None:
+            await cog.show_project_pick(interaction)
+
+        catalog = cog.catalog is not None
+        choices: list[tuple[str, discord.ButtonStyle, Any]] = []
+        if catalog:
+            choices.append(("Projects", discord.ButtonStyle.primary, projects))
+        choices += [
+            (
+                "Favorites",
+                discord.ButtonStyle.secondary if catalog else discord.ButtonStyle.primary,
+                cog.show_favorite_pick,
+            ),
             ("Recent", discord.ButtonStyle.secondary, cog.show_recent_pick),
             ("Browse", discord.ButtonStyle.secondary, cog.show_browse_choice),
             ("Create", discord.ButtonStyle.secondary, create),
@@ -363,6 +379,116 @@ class NewSessionMenu(PersonalView):
             button: discord.ui.Button[NewSessionMenu] = discord.ui.Button(label=label, style=style)
             button.callback = opener
             self.add_item(button)
+
+
+class CatalogSearchModal(discord.ui.Modal, title="Find a project"):
+    query = discord.ui.TextInput(label="Project name (part of it is enough)", max_length=100)
+
+    def __init__(self, cog: ProjectLauncherCog, user_id: int, *, source: str) -> None:
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+        self.source = source
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.cog.show_project_pick(interaction, query=self.query.value, source=self.source)
+
+
+class CatalogPick(PersonalView):
+    """One select over catalog projects.
+
+    In ``start`` mode a choice binds the project's canonical path to a fresh
+    idle thread (after the catalog revalidates it); in ``favorite`` / ``hide``
+    mode a choice only flips that operator's metadata and re-renders. Options
+    carry the catalog *identity*, never a path, so the folder is looked up —
+    and checked to lie inside its approved root — at the moment it is used.
+    """
+
+    def __init__(
+        self,
+        cog: ProjectLauncherCog,
+        user_id: int,
+        entries: list[CatalogEntry],
+        *,
+        mode: str = "start",
+        query: str = "",
+        source: str = "projects",
+    ) -> None:
+        super().__init__(cog, user_id)
+        self.used = False
+        self._keys: dict[str, str] = {}
+        options: list[discord.SelectOption] = []
+        for index, entry in enumerate(entries[:_LIMIT]):
+            value = entry.key if len(entry.key) <= 100 else f"#{index}"
+            self._keys[value] = entry.key
+            prefix = "⭐ " if entry.favorite else ("🙈 " if entry.hidden else "")
+            options.append(
+                discord.SelectOption(
+                    label=f"{prefix}{entry.label}"[:100],
+                    description=entry.path[-100:],
+                    value=value,
+                )
+            )
+        placeholders = {
+            "start": "Start a session in…",
+            "favorite": "Mark or unmark a favorite",
+            "hide": "Hide or unhide a project",
+        }
+        if options:
+            select: discord.ui.Select[CatalogPick] = discord.ui.Select(
+                placeholder=placeholders.get(mode, placeholders["start"]), options=options, row=0
+            )
+
+            async def choose(interaction: discord.Interaction) -> None:
+                key = self._keys.get(select.values[0], select.values[0])
+                if mode == "start":
+                    if self.used:
+                        await interaction.response.send_message(
+                            "This menu was already used. Open New session again.",
+                            ephemeral=True,
+                        )
+                        return
+                    self.used = True
+                    await cog.start_catalog_session(interaction, key, query=query, source=source)
+                    return
+                await cog.toggle_catalog_flag(interaction, key, mode, query=query, source=source)
+
+            select.callback = choose
+            self.add_item(select)
+
+        def switch(label: str, target_mode: str, *, style: discord.ButtonStyle) -> None:
+            button: discord.ui.Button[CatalogPick] = discord.ui.Button(
+                label=label, style=style, row=1
+            )
+
+            async def go(interaction: discord.Interaction) -> None:
+                await cog.show_project_pick(
+                    interaction, query=query, mode=target_mode, source=source
+                )
+
+            button.callback = go
+            self.add_item(button)
+
+        if mode != "start":
+            switch("Start", "start", style=discord.ButtonStyle.primary)
+        search: discord.ui.Button[CatalogPick] = discord.ui.Button(label="Search", row=1)
+
+        async def open_search(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(CatalogSearchModal(cog, user_id, source=source))
+
+        search.callback = open_search
+        self.add_item(search)
+        if mode != "favorite":
+            switch("Favorite", "favorite", style=discord.ButtonStyle.secondary)
+        if mode != "hide":
+            switch("Hide", "hide", style=discord.ButtonStyle.secondary)
+        back: discord.ui.Button[CatalogPick] = discord.ui.Button(label="Back", row=1)
+
+        async def go_back(interaction: discord.Interaction) -> None:
+            await cog.show_new_session(interaction, edit=True)
+
+        back.callback = go_back
+        self.add_item(back)
 
 
 class FolderPick(PersonalView):
@@ -549,6 +675,7 @@ class ProjectLauncherCog(commands.Cog):
         backend_factory: Any | None = None,
         lifecycle: SessionLifecycleService | None = None,
         settings_home: SettingsHome | None = None,
+        catalog: ProjectCatalogService | None = None,
     ) -> None:
         self.bot = bot
         self.repo = repo
@@ -566,6 +693,9 @@ class ProjectLauncherCog(commands.Cog):
         # Open only unarchives — it never falls back to deleting anything.
         self.lifecycle = lifecycle
         self._settings_home = settings_home
+        # The shared project catalog (task 4.1 feeds the New session menus
+        # from it). Absent, the launcher keeps its raw-path favorites.
+        self.catalog = catalog
         self._favorites_lock = asyncio.Lock()
         self._panel_lock = asyncio.Lock()
         self._view: LauncherView | None = None
@@ -661,7 +791,160 @@ class ProjectLauncherCog(commands.Cog):
         else:
             await interaction.followup.send(text, view=view, ephemeral=True)
 
+    # ------------------------------------------------------------------
+    # The shared project catalog: Projects / Favorites / Recent read it
+    # ------------------------------------------------------------------
+
+    async def _catalog_entries(
+        self, guild_id: int, user_id: int, *, source: str, query: str
+    ) -> list[CatalogEntry]:
+        assert self.catalog is not None
+        if source == "favorites" and not query:
+            return await self.catalog.favorites(guild_id, user_id)
+        if source == "recents" and not query:
+            return await self.catalog.recents(guild_id, user_id, limit=_LIMIT)
+        listing = await self.catalog.list_projects(
+            guild_id, user_id, query=query, limit=_LIMIT, refresh=True
+        )
+        return list(listing.entries)
+
+    async def show_project_pick(
+        self,
+        interaction: discord.Interaction,
+        *,
+        query: str = "",
+        mode: str = "start",
+        source: str = "projects",
+    ) -> None:
+        """The catalog's normal project view: favorites first, hidden omitted, search finds all."""
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        if self.catalog is None:
+            await interaction.edit_original_response(
+                content="No project catalog is configured on this computer. Use **Browse**.",
+                view=NewSessionMenu(self, interaction.user.id),
+            )
+            return
+        query = query.strip()[:100]
+        guild_id, user_id = interaction.guild_id or 0, interaction.user.id
+        entries = await self._catalog_entries(guild_id, user_id, source=source, query=query)
+        if not entries:
+            empty = {
+                "favorites": "No favorites yet. Open **Projects**, press **Favorite**, pick one.",
+                "recents": "No recent projects here yet. Try **Projects** or **Browse**.",
+            }
+            text = empty.get(source, "No project matches that name on this computer.")
+            if query:
+                text = f"No project matching **{discord.utils.escape_markdown(query)}** here."
+            await interaction.edit_original_response(
+                content=text, view=NewSessionMenu(self, interaction.user.id)
+            )
+            return
+        reason = self.catalog.config.unavailable_reason("session")
+        if reason is not None:
+            await interaction.edit_original_response(
+                content=f"Sessions are not offered on this computer: {reason}",
+                view=NewSessionMenu(self, interaction.user.id),
+            )
+            return
+        heading = {
+            "favorites": "Your favorite projects",
+            "recents": "Recently opened projects",
+        }.get(source, "Projects on this computer")
+        text = f"**{heading}**"
+        if query:
+            text += f" matching **{discord.utils.escape_markdown(query)}**"
+        text += {
+            "start": " — choose one; the session thread is created at once.",
+            "favorite": " — choose one to mark or unmark it as a favorite.",
+            "hide": " — choose one to hide it from (or return it to) your list.",
+        }.get(mode, "")
+        await interaction.edit_original_response(
+            content=text,
+            view=CatalogPick(self, user_id, entries, mode=mode, query=query, source=source),
+        )
+
+    async def toggle_catalog_flag(
+        self,
+        interaction: discord.Interaction,
+        key: str,
+        flag: str,
+        *,
+        query: str = "",
+        source: str = "projects",
+    ) -> None:
+        """Flip favorite/hidden for one project and show the list again — starts nothing."""
+        if not await self.authorize(interaction) or self.catalog is None:
+            return
+        await interaction.response.defer(ephemeral=True)
+        guild_id, user_id = interaction.guild_id or 0, interaction.user.id
+        metadata = self.catalog.metadata
+        current = None
+        if metadata is not None:
+            try:
+                current = await metadata.get(guild_id, user_id, ProjectIdentity.from_key(key))
+            except ValueError:
+                current = None
+        if flag == "favorite":
+            await self.catalog.set_favorite(
+                guild_id, user_id, key, not (current is not None and current.favorite)
+            )
+        else:
+            await self.catalog.set_hidden(
+                guild_id, user_id, key, not (current is not None and current.hidden)
+            )
+        await self._render_project_pick(interaction, query=query, mode=flag, source=source)
+
+    async def _render_project_pick(
+        self, interaction: discord.Interaction, *, query: str, mode: str, source: str
+    ) -> None:
+        """Re-render the pick on an interaction that is already deferred."""
+        assert self.catalog is not None
+        guild_id, user_id = interaction.guild_id or 0, interaction.user.id
+        entries = await self._catalog_entries(guild_id, user_id, source=source, query=query)
+        await interaction.edit_original_response(
+            view=CatalogPick(self, user_id, entries, mode=mode, query=query, source=source)
+        )
+
+    async def start_catalog_session(
+        self,
+        interaction: discord.Interaction,
+        key: str,
+        *,
+        query: str = "",
+        source: str = "projects",
+    ) -> None:
+        """Bind the project behind ``key`` — revalidated right now — to a fresh idle thread."""
+        if not await self.authorize(interaction) or self.catalog is None:
+            return
+        await interaction.response.defer(ephemeral=True)
+        project = await self.catalog.find(key)
+        directory_path = project.working_directory if project is not None else None
+        if project is None or directory_path is None:
+            name = project.identity.name if project is not None else "That project"
+            await interaction.edit_original_response(
+                content=(
+                    f"**{discord.utils.escape_markdown(name)}** is no longer available on this "
+                    "computer. Refresh the list or choose another project."
+                ),
+                view=CatalogPick(
+                    self,
+                    interaction.user.id,
+                    await self._catalog_entries(
+                        interaction.guild_id or 0, interaction.user.id, source=source, query=query
+                    ),
+                    query=query,
+                    source=source,
+                ),
+            )
+            return
+        await self._start_idle_thread(interaction, str(directory_path))
+
     async def show_favorite_pick(self, interaction: discord.Interaction) -> None:
+        if self.catalog is not None:
+            await self.show_project_pick(interaction, source="favorites")
+            return
         if not await self.authorize(interaction):
             return
         await interaction.response.defer(ephemeral=True)
@@ -678,6 +961,9 @@ class ProjectLauncherCog(commands.Cog):
         )
 
     async def show_recent_pick(self, interaction: discord.Interaction) -> None:
+        if self.catalog is not None:
+            await self.show_project_pick(interaction, source="recents")
+            return
         if not await self.authorize(interaction):
             return
         await interaction.response.defer(ephemeral=True)
@@ -862,6 +1148,13 @@ class ProjectLauncherCog(commands.Cog):
                 f"launcher.recents:{guild_id}:{user_id}", json.dumps(latest[:_LIMIT])
             )
 
+    async def _project_suggestions(self, guild_id: int, user_id: int) -> list[str]:
+        """Folders to offer as projects: the shared catalog when wired, else a raw scan."""
+        if self.catalog is not None:
+            listing = await self.catalog.list_projects(guild_id, user_id, limit=_LIMIT)
+            return [entry.path for entry in listing.entries if entry.project.is_available]
+        return await asyncio.to_thread(self._suggestions)
+
     def _suggestions(self) -> list[str]:
         roots = os.environ.get("CCDB_PROJECT_ROOTS", "").split(",")
         roots = [root.strip() for root in roots if root.strip()]
@@ -915,7 +1208,11 @@ class ProjectLauncherCog(commands.Cog):
         primary_label = "Favorite folders"
         if manage:
             suggestions = [
-                path for path in await asyncio.to_thread(self._suggestions) if path not in folders
+                path
+                for path in await self._project_suggestions(
+                    interaction.guild_id or 0, interaction.user.id
+                )
+                if path not in folders
             ]
         if not manage:
             recent_folders = [
@@ -927,7 +1224,9 @@ class ProjectLauncherCog(commands.Cog):
                 lambda: [path for path in recent_folders if Path(path).is_dir()]
             )
             if not folders and not recent_folders:
-                folders = await asyncio.to_thread(self._suggestions)
+                folders = await self._project_suggestions(
+                    interaction.guild_id or 0, interaction.user.id
+                )
                 primary_label = "Project folders"
         text = "Your favorite folders: select one to remove, or add a folder."
         if not manage:
@@ -1065,6 +1364,9 @@ class ProjectLauncherCog(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
         await self.remember_folder(interaction.guild_id or 0, interaction.user.id, path)
+        if self.catalog is not None:
+            # By identity, so Recent survives a moved root; outside every root it is a no-op.
+            await self.catalog.remember_path(interaction.guild_id or 0, interaction.user.id, path)
         await interaction.followup.send(
             f"New session ready: {thread.mention}",
             ephemeral=True,

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
     from .backend_factory import BackendFactory
     from .backend_settings import BackendSettings
+    from .catalog_service import ProjectCatalogService
     from .database.ask_repo import PendingAskRepository
     from .database.claims_repo import ClaimRepository
     from .database.frontend_thread_repo import FrontendThreadRepository
@@ -80,6 +81,10 @@ class BridgeComponents:
     #: entry with ``components.settings_home.add(SettingsEntry(...))`` — no
     #: subclassing, no wiring. None when no channel is configured.
     settings_home: SettingsHome | None = None
+    #: The one project catalog this computer runs: discovery under the approved
+    #: roots, owner-aware resolution and personal favorites. The launcher, the
+    #: REST control plane and custom Cogs all read this same instance.
+    project_catalog: ProjectCatalogService | None = None
 
     def apply_to_api_server(self, api_server: ApiServer) -> None:
         """Wire all optional repos to an ApiServer instance.
@@ -108,6 +113,8 @@ class BridgeComponents:
             # Persists the generic spawn metadata (parent thread, correlation id)
             # behind /api/spawn and /api/correlations/{id}.
             api_server.settings_repo = self.settings_repo
+        if self.project_catalog is not None:
+            api_server.project_catalog = self.project_catalog
         api_server.session_repo = self.session_repo
 
 
@@ -463,6 +470,23 @@ async def setup_bridge(
     summary_repo = stores.summaries
     handoff_repo = stores.handoffs
 
+    # --- Shared project catalog (auto-enabled) ---
+    # One instance for every consumer. Roots come from CCDB_PROJECT_ROOTS (the
+    # runner's working directory when nothing is configured); a malformed
+    # profile file is a configuration error and is reported, not hidden.
+    from .catalog_config import CatalogConfig
+    from .catalog_service import ProjectCatalogService
+
+    project_catalog: ProjectCatalogService | None = None
+    try:
+        project_catalog = ProjectCatalogService(
+            CatalogConfig.from_env(fallback_root=runner.working_dir),
+            stores.catalog_metadata,
+            settings=settings_repo,
+        )
+    except ValueError:
+        logger.exception("Project catalog configuration is malformed; catalog disabled")
+
     # Attach repos to bot so generic cogs (e.g. AutoUpgradeCog) can discover them
     # without a hard import dependency on ccdb internals.
     bot.session_repo = session_repo  # type: ignore[attr-defined]
@@ -568,6 +592,15 @@ async def setup_bridge(
         logger.exception("Handoff configuration is malformed; trusted handoffs stay disabled")
         handoff_config = None
     if handoff_config is not None:
+        # With a catalog, an inbound locator resolves through the same approved
+        # roots New session uses (plus the env-configured owner roots and pins).
+        project_resolver = None
+        if project_catalog is not None:
+            from .catalog_handoff import catalog_project_resolver
+
+            project_resolver = catalog_project_resolver(
+                project_catalog, fallback_lookup_root=runner.working_dir
+            )
         await bot.add_cog(
             AgentHandoffCog(
                 bot,
@@ -575,6 +608,7 @@ async def setup_bridge(
                 config=handoff_config,
                 chat=chat_cog,
                 fallback_lookup_root=runner.working_dir,
+                project_resolver=project_resolver,
             )
         )
         logger.info(
@@ -630,6 +664,7 @@ async def setup_bridge(
             backend_settings=backend_settings,
             backend_factory=backend_factory,
             lifecycle=lifecycle,
+            catalog=project_catalog,
         )
         await bot.add_cog(launcher_cog)
         # /new, /sessions and /settings are the launcher's flows spelled as
@@ -754,6 +789,7 @@ async def setup_bridge(
         usage_repo=usage_repo,
         handoff_repo=handoff_repo,
         settings_home=launcher_cog.settings_home if launcher_cog is not None else None,
+        project_catalog=project_catalog,
     )
 
     # Auto-wire repos to ApiServer and set runner.api_port if provided

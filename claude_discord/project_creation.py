@@ -53,6 +53,25 @@ _HTTPS_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::\d+)?/[A-Za-z0-9_./-]+")
 CloneRunner = Callable[[Sequence[str], Path], Awaitable[int]]
 
 
+def configured_root_list(
+    env: Mapping[str, str] | None = None, *, fallback: str | None = None
+) -> list[str]:
+    """The raw ``CCDB_PROJECT_ROOTS`` entries (comma, newline or path-separator list).
+
+    The one parser for every consumer of the setting — Create/Clone, the
+    shared catalog and the lookup root — so they cannot disagree about what
+    was configured.  Entries are returned as written; callers decide whether a
+    missing folder is dropped (Create) or reported (the catalog).
+    """
+    source = os.environ if env is None else env
+    raw = source.get("CCDB_PROJECT_ROOTS", "")
+    separators = r"[,\n]|" + re.escape(os.pathsep)
+    candidates = [part.strip() for part in re.split(separators, raw) if part.strip()]
+    if not candidates and fallback:
+        candidates = [fallback]
+    return candidates
+
+
 class ProjectCreationError(ValueError):
     """A creation request was refused or failed; the message is safe to show."""
 
@@ -89,12 +108,7 @@ class ProjectRoots:
         cls, env: Mapping[str, str] | None = None, *, fallback: str | None = None
     ) -> ProjectRoots:
         """Read ``CCDB_PROJECT_ROOTS`` (comma or path-separator list), else ``fallback``."""
-        source = os.environ if env is None else env
-        raw = source.get("CCDB_PROJECT_ROOTS", "")
-        candidates = [part for part in re.split(r"[,\n]|" + re.escape(os.pathsep), raw) if part]
-        if not any(part.strip() for part in candidates) and fallback:
-            candidates = [fallback]
-        return cls.from_paths(candidates)
+        return cls.from_paths(configured_root_list(env, fallback=fallback))
 
     def choose(self, root: str | Path | None) -> Path:
         """The approved root a request names, or the first one when it names none."""

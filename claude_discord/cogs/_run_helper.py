@@ -47,6 +47,7 @@ from ..capacity_recovery import (
     TurnResult,
     TurnSubmission,
 )
+from ..catalog_query import build_catalog_hint
 from ..discord_ui.ask_handler import collect_ask_answers
 from ..discord_ui.embeds import error_embed, timeout_embed
 from ..lounge import build_lounge_prompt
@@ -348,6 +349,13 @@ async def _build_system_context(config: RunConfig) -> str | None:
             "chat reply (the cards appear right after it) gives a short summary "
             "and asks the next question."
         )
+
+    # Project catalog: only the invocation hint, never the projects. The hint
+    # points at the control plane, so it is worth injecting only when one is
+    # reachable; a slim (gowork) briefing works in its own fixed copy and has
+    # no project to choose.
+    if not config.slim_context and getattr(config.runner, "api_port", None) is not None:
+        parts.append(build_catalog_hint())
 
     # Post-compact guardrail: prevent auto-execution of "pending tasks" from summary.
     if config.post_compact_rerun:
