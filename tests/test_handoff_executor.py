@@ -447,6 +447,8 @@ async def test_missing_project_folder_blocks(
     assert job is not None
     assert job.state is HandoffState.BLOCKED
     assert job.note and "does not exist" in job.note
+    root = str(Path(project_root).parent)
+    assert root not in job.note, "the blocker note leaves this machine; no local paths"
 
 
 @pytest.mark.asyncio

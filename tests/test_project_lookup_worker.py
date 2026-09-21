@@ -93,6 +93,46 @@ async def test_project_lookup_endpoint_spawns_worker_in_projects_root(
 
 
 @pytest.mark.asyncio
+async def test_project_lookup_endpoint_never_echoes_local_paths_or_discord_errors(
+    repo: NotificationRepository, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The API caller is remote: a missing root or a Discord failure is a fixed string."""
+    missing_root = tmp_path / "nowhere"
+    monkeypatch.setenv("CCDB_PROJECT_LOOKUP_ROOT", str(missing_root))
+    cog = MagicMock()
+    cog.spawn_session = AsyncMock()
+    bot = MagicMock()
+    bot.cogs = {"ClaudeChatCog": cog}
+    bot.get_channel.return_value = None
+    bot.fetch_channel = AsyncMock(side_effect=RuntimeError("Forbidden: /srv/secret token=abc"))
+
+    api = ApiServer(repo=repo, bot=bot, default_channel_id=12345)
+    server = TestServer(api.app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        resp = await client.post("/api/project-lookup", json={"text": "anything"})
+        assert resp.status == 503
+        body = await resp.json()
+        assert str(tmp_path) not in body["error"]
+        assert "nowhere" not in body["error"]
+
+        monkeypatch.setenv("CCDB_PROJECT_LOOKUP_ROOT", str(tmp_path))
+        resp = await client.post("/api/project-lookup", json={"text": "anything"})
+        assert resp.status == 500
+        body = await resp.json()
+        assert "token=abc" not in body["error"] and "/srv/secret" not in body["error"]
+
+        resp = await client.post("/api/spawn", json={"prompt": "hi"})
+        assert resp.status == 500
+        body = await resp.json()
+        assert "token=abc" not in body["error"] and "/srv/secret" not in body["error"]
+        cog.spawn_session.assert_not_awaited()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_project_lookup_endpoint_returns_worker_result_to_requesting_thread(
     repo: NotificationRepository, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
