@@ -56,7 +56,7 @@ Expected final files:
   - Flag unclear speaker attribution instead of pretending it is certain.
   - Write `generation-wealth-quotes.md` and update `status.json`.
 
-- [ ] Turn the quotes into answerable themes.
+- [x] Turn the quotes into answerable themes.
   - Group what Generation Wealth said into practical categories Drew can respond to from his computer.
   - For each category, list the user need, likely question, what Drew can answer, what local evidence is needed, and what should not be overclaimed.
   - Keep the language plain and useful, not academic.
