@@ -27,6 +27,7 @@
 - git check-ignore returned 1 because the planned files are not ignored; this is expected.
 - A guessed session_capacity.py path did not exist; located the actual capacity implementation in cogs/_run_helper.py.
 - A guessed unsuffixed skill-creator path was absent; read the catalog's synced skill-creator location instead. One-question's symlink target was read successfully.
+- Initial quick_validate lacked PyYAML in the project environment; reran with uv run --with pyyaml in an isolated tool environment and received "Skill is valid!" without changing project dependencies.
 
 ## Next Turn
 
