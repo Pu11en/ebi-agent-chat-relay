@@ -8,7 +8,7 @@ after `tests/test_task_loop_cog.py::TestSwitchWhileWaiting`), `test (3.13)` fail
 (`tests/test_work_copy.py::TestIntegrationLockPerLoop::test_a_new_event_loop_gets_its_own_lock`,
 `id()` reused after garbage collection), and CodeQL reporting 12 open alerts (3 high).
 
-Check: scripts/test-clean-env.sh tests/test_work_copy.py tests/test_task_loop_cog.py tests/gowork_upgrade/ -q -p no:randomly && uv run ruff check claude_discord/ claude_code_core/ tests/ && uv run ruff format --check claude_discord/ claude_code_core/ tests/
+Check: scripts/pr22-gate.sh
 Try: gh pr checks 22
 Open: https://github.com/Pu11en/ebi-agent-chat-relay/pull/22
 
