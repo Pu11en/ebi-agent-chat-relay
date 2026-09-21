@@ -570,5 +570,5 @@ T11 is complete (T11a–T11c).
   notes intact and no remote; a project check that fails on the combined result keeps the
   build and tells the person).
 - Implementation commit: `5c8f4fe`.
-- Checked with `uv run python scripts/check_gowork_upgrade.py` (449 passed), `ruff check`,
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (454 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
