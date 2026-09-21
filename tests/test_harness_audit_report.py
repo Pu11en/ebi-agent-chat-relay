@@ -52,6 +52,7 @@ def collect_machine(roots: DiscoveryRoots, machine: Machine) -> list[CollectionR
         invocation=ClaudeInvocation.from_dict(claude_invocation(roots.project_dir)),
         manifest=manifest(),
         collected_at=COLLECTED_AT,
+        salt="shared",
     )
     codex = collect_codex(
         discovery,

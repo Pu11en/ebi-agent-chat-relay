@@ -3,8 +3,10 @@
 `ai_setup_inventory` guarantees *shape*: a label is one bounded line, an item
 has no field for file content.  This module guarantees *value*: nothing that
 looks like a token, a password, a private key, an environment value, a
-connector credential or a raw config blob may become an inventory item, a
-diagnostic, a Discord label or a Setup Agent packet.
+connector credential, a credential passed on a command line (``--token X``,
+``--api-key=X``, ``-u user:pass``, ``user:pass@host``) or a raw config blob may
+become an inventory item, a diagnostic, a Discord label or a Setup Agent
+packet.
 
 It is deliberately the pessimistic half of the pair, because the cost of the
 two mistakes is not symmetric — an over-redacted description is a cosmetic
@@ -223,6 +225,34 @@ _ASSIGNMENT = re.compile(
 # be handled before the generic pass, whose ``scheme:`` match would otherwise
 # swallow the whole URL as one harmless value.
 _URL_PARAMETER = re.compile(r"(?P<lead>[?&#])(?P<name>[A-Za-z0-9_.\-]+)=(?P<value>[^&#\s\"']*)")
+# A shell line passes credentials as flags — ``--token X``, ``--api-key=X``,
+# ``-u user:pass`` — which are neither assignments nor URLs.  The flag's own
+# words decide (``--auth-token`` and ``--ssh-key`` are caught by tokenizing,
+# exactly as field names are) plus the short spellings shells actually use.
+# ``-p`` is deliberately absent: ``mkdir -p`` is far more common than
+# ``mysql -p``, and a value-less ``-p`` is harmless anyway.
+_FLAG_ONLY_TOKENS: frozenset[str] = frozenset({"u", "user", "username", "login", "pass"})
+_FLAG_VALUE = re.compile(
+    r"""(?P<flag>(?<![\w\-/.])--?(?P<name>[A-Za-z][A-Za-z0-9_\-]*))(?P<gap>=|[ \t]+)"""
+    r"""(?P<value>"[^"\n]*"|'[^'\n]*'|[^\s"']+)""",
+)
+# ``user:pass@host`` without a scheme — ``psql admin:pw@db`` — is still a
+# credential; :data:`_CREDENTIAL_URL` only sees the ``://`` form.
+_BARE_CREDENTIAL_HOST = re.compile(
+    r"(?<![\w@:/.\-])(?P<user>[A-Za-z0-9._\-]+):(?P<secret>[^\s/@:]+)@(?=[A-Za-z0-9\[])"
+)
+
+
+def _is_credential_flag(name: str) -> bool:
+    tokens = name_tokens(name)
+    return any(token in SECRET_NAME_TOKENS or token in _FLAG_ONLY_TOKENS for token in tokens)
+
+
+def _flag_carries_secret(match: re.Match[str]) -> bool:
+    """A credential flag whose value is still there — ``--token [redacted]`` is clean."""
+    return _is_credential_flag(match.group("name")) and match.group("value") != REDACTED
+
+
 # Random-looking candidates only: no path separators, so a long directory name
 # is never mistaken for a credential.
 _ENTROPY_CANDIDATE = re.compile(r"[A-Za-z0-9+_=\-]{28,}")
@@ -274,6 +304,10 @@ def secret_reason(value: str) -> RedactionReason | None:
         return RedactionReason.SECRET_VALUE
     if _JWT.search(text) or _BEARER.search(text):
         return RedactionReason.SECRET_VALUE
+    if _BARE_CREDENTIAL_HOST.search(text):
+        return RedactionReason.SECRET_VALUE
+    if any(_flag_carries_secret(match) for match in _FLAG_VALUE.finditer(text)):
+        return RedactionReason.SECRET_VALUE
     if any(_looks_random(match.group(0)) for match in _ENTROPY_CANDIDATE.finditer(text)):
         return RedactionReason.HIGH_ENTROPY
     return None
@@ -298,6 +332,16 @@ def _redact_url_parameter(match: re.Match[str]) -> str:
     return match.group(0)
 
 
+def _redact_flag_value(match: re.Match[str]) -> str:
+    if _flag_carries_secret(match):
+        return f"{match.group('flag')}{match.group('gap')}{REDACTED}"
+    return match.group(0)
+
+
+def _redact_bare_credential(match: re.Match[str]) -> str:
+    return f"{match.group('user')}:{REDACTED}@"
+
+
 def _redact_entropy(match: re.Match[str]) -> str:
     return REDACTED if _looks_random(match.group(0)) else match.group(0)
 
@@ -315,6 +359,8 @@ def redact_text(value: str) -> str:
     text = _PROVIDER_TOKEN.sub(REDACTED, text)
     text = _JWT.sub(REDACTED, text)
     text = _BEARER.sub(REDACTED, text)
+    text = _BARE_CREDENTIAL_HOST.sub(_redact_bare_credential, text)
+    text = _FLAG_VALUE.sub(_redact_flag_value, text)
     text = _URL_PARAMETER.sub(_redact_url_parameter, text)
     text = _ASSIGNMENT.sub(_redact_assignment, text)
     return _ENTROPY_CANDIDATE.sub(_redact_entropy, text)

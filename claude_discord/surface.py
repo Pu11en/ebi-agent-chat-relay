@@ -39,7 +39,8 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
+from typing import Any
 
 import discord
 
@@ -70,7 +71,7 @@ from .discord_ui.embeds import (
     tool_result_preview_embed,
 )
 from .discord_ui.file_sender import send_file_blobs, send_files
-from .discord_ui.prompt_views import ChoiceView, FormModal
+from .discord_ui.prompt_views import ChoiceView, FormModal, check_allowed
 from .discord_ui.status import StatusManager
 from .discord_ui.streaming_manager import StreamingMessageManager
 from .discord_ui.tool_timer import TOOL_TIMER_INTERVAL
@@ -88,6 +89,51 @@ _NOTICE_COLOR: dict[NoticeLevel, int] = {
 
 # Tool categories map to the icons already used in embeds.py.
 _ACTIVITY_ICON = "\U0001f527"  # 🔧
+
+
+def _as_allowlist(value: object) -> frozenset[int] | None:
+    """A real allowlist or nothing.
+
+    Only a concrete container of ints counts. A mock iterates as empty, and
+    an empty allowlist refuses everyone — so a test double must read as "no
+    allowlist", not as "nobody".
+    """
+    if not isinstance(value, set | frozenset | list | tuple):
+        return None
+    ids: list[int] = []
+    for item in value:  # pyright: ignore[reportUnknownVariableType]
+        if not isinstance(item, int):
+            return None
+        ids.append(item)
+    return frozenset(ids)
+
+
+def discover_allowed_user_ids(
+    thread: discord.Thread | discord.TextChannel,
+) -> frozenset[int] | None:
+    """The chat cog's allowlist, found through the thread's own client.
+
+    The surface is constructed in several places — ``RunConfig``,
+    ``DiscordFrontend``, the context nudge — and a prompt must be bound to
+    the allowlist no matter which of them built it. Rather than asking every
+    site to remember, the surface walks ``thread → client → ClaudeChatCog``
+    once. Anything missing on that path (a channel with no client, a bot
+    without the chat cog, a test double) yields ``None``: no allowlist, the
+    behaviour before this gate existed.
+    """
+    state: Any = getattr(thread, "_state", None)
+    get_client = getattr(state, "_get_client", None)
+    if not callable(get_client):
+        return None
+    try:
+        client: Any = get_client()
+    except Exception:  # a client that is not up yet
+        return None
+    get_cog = getattr(client, "get_cog", None)
+    if not callable(get_cog):
+        return None
+    chat: Any = get_cog("ClaudeChatCog")
+    return _as_allowlist(getattr(chat, "_allowed_user_ids", None))
 
 
 class DiscordActivity:
@@ -221,6 +267,10 @@ class DiscordSurface:
         interrupt_runner: The backend the Stop button interrupts. Without it,
             ``offer_interrupt`` still returns a working handle so callers need
             no special case; it simply has no button behind it.
+        allowed_user_ids: Who may answer the prompts this surface posts.
+            Omitted, it is discovered from the chat cog through the thread's
+            client (see :func:`discover_allowed_user_ids`); ``None`` there too
+            means anyone may answer.
     """
 
     frontend = "discord"
@@ -235,9 +285,15 @@ class DiscordSurface:
         working_dir: str | None = None,
         interrupt_runner: object | None = None,
         interrupt_view: StopView | None = None,
+        allowed_user_ids: Collection[int] | None = None,
     ) -> None:
         self._thread = thread
         self._status_message = status_message
+        self._allowed_user_ids = (
+            _as_allowlist(allowed_user_ids)
+            if allowed_user_ids is not None
+            else discover_allowed_user_ids(thread)
+        )
         self._model = model
         self.working_dir = working_dir
         self._interrupt_runner = interrupt_runner
@@ -270,6 +326,11 @@ class DiscordSurface:
     @property
     def capabilities(self) -> SurfaceCapabilities:
         return DISCORD_CAPABILITIES
+
+    @property
+    def allowed_user_ids(self) -> frozenset[int] | None:
+        """Who may answer this surface's prompts; ``None`` means anyone."""
+        return self._allowed_user_ids
 
     @property
     def thread(self) -> discord.Thread | discord.TextChannel:
@@ -381,7 +442,7 @@ class DiscordSurface:
 
     # -- interaction -------------------------------------------------------
     async def prompt_choice(self, prompt: ChoicePrompt) -> tuple[str, ...] | None:
-        view = ChoiceView(prompt)
+        view = ChoiceView(prompt, allowed_user_ids=self._allowed_user_ids)
         embed = discord.Embed(
             title=(prompt.header or "Question")[:256],
             description=prompt.question[:4096],
@@ -400,7 +461,7 @@ class DiscordSurface:
     async def prompt_form(self, prompt: FormPrompt) -> dict[str, str] | None:
         """Discord modals can only open from an interaction, so the form is
         offered behind a button rather than appearing unprompted."""
-        view = FormLauncher(prompt)
+        view = FormLauncher(prompt, allowed_user_ids=self._allowed_user_ids)
         embed = discord.Embed(
             title=prompt.title[:256],
             description=(prompt.description or "")[:4096] or None,
@@ -459,9 +520,12 @@ class FormLauncher(discord.ui.View):
     view that never gets dispatched cannot hang the session.
     """
 
-    def __init__(self, prompt: FormPrompt) -> None:
+    def __init__(
+        self, prompt: FormPrompt, *, allowed_user_ids: frozenset[int] | None = None
+    ) -> None:
         super().__init__(timeout=prompt.timeout_seconds)
         self._prompt = prompt
+        self.allowed_user_ids = allowed_user_ids
         self._answer: asyncio.Future[dict[str, str] | None] = (
             asyncio.get_running_loop().create_future()
         )
@@ -471,8 +535,11 @@ class FormLauncher(discord.ui.View):
         button.callback = self._open  # type: ignore[method-assign]
         self.add_item(button)
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await check_allowed(interaction, self.allowed_user_ids)
+
     async def _open(self, interaction: discord.Interaction) -> None:
-        modal = FormModal(self._prompt)
+        modal = FormModal(self._prompt, allowed_user_ids=self.allowed_user_ids)
         await interaction.response.send_modal(modal)
         answers = await modal.wait_for_answer(self._prompt.timeout_seconds)
         if not self._answer.done():

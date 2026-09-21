@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -78,6 +79,7 @@ def collect_both(roots: DiscoveryRoots) -> list[CollectionResult]:
             invocation=ClaudeInvocation.from_dict(claude_invocation(roots.project_dir)),
             manifest=manifest(),
             collected_at=NOW,
+            salt="t",
         ),
         collect_codex(
             discovery,
@@ -189,7 +191,7 @@ def test_planning_writes_nothing(tmp_path: Path) -> None:
 def test_apply_moves_files_reversibly_and_never_deletes(tmp_path: Path) -> None:
     roots, plan, _ = planned(tmp_path)
     before = tree(tmp_path)
-    applied = apply_quarantine(plan, now=LATER)
+    applied = apply_quarantine(plan, now=LATER, roots=roots)
     after = tree(tmp_path)
     assert applied.applied_at == LATER
     assert sorted(before.values()) == sorted(after.values()), "every byte is still on disk"
@@ -205,23 +207,23 @@ def test_hash_mismatch_aborts_before_anything_moves(tmp_path: Path) -> None:
     write(roots.project_dir / "CLAUDE.md", "# edited after planning\n")
     before = tree(tmp_path)
     with pytest.raises(QuarantineError, match="hash"):
-        apply_quarantine(plan, now=LATER)
+        apply_quarantine(plan, now=LATER, roots=roots)
     assert tree(tmp_path) == before
     assert not (tmp_path / "quarantine").exists()
 
 
 def test_apply_refuses_a_manifest_that_was_already_applied(tmp_path: Path) -> None:
-    _, plan, _ = planned(tmp_path)
-    applied = apply_quarantine(plan, now=LATER)
+    roots, plan, _ = planned(tmp_path)
+    applied = apply_quarantine(plan, now=LATER, roots=roots)
     with pytest.raises(QuarantineError, match="already applied"):
-        apply_quarantine(applied, now=LATER)
+        apply_quarantine(applied, now=LATER, roots=roots)
 
 
 def test_rollback_restores_every_fixture_by_hash(tmp_path: Path) -> None:
-    _, plan, _ = planned(tmp_path)
+    roots, plan, _ = planned(tmp_path)
     before = tree(tmp_path)
-    applied = apply_quarantine(plan, now=LATER)
-    restored = rollback_quarantine(applied, now=LATER)
+    applied = apply_quarantine(plan, now=LATER, roots=roots)
+    restored = rollback_quarantine(applied, now=LATER, roots=roots)
     assert tree(tmp_path) == before
     assert restored.rolled_back_at == LATER
     for entry in restored.entries:
@@ -230,13 +232,116 @@ def test_rollback_restores_every_fixture_by_hash(tmp_path: Path) -> None:
 
 
 def test_rollback_refuses_to_overwrite_a_changed_original(tmp_path: Path) -> None:
-    _, plan, _ = planned(tmp_path)
-    applied = apply_quarantine(plan, now=LATER)
+    roots, plan, _ = planned(tmp_path)
+    applied = apply_quarantine(plan, now=LATER, roots=roots)
     first = applied.entries[0]
     Path(first.original_path).write_text("someone recreated this\n", encoding="utf-8")
     with pytest.raises(QuarantineError, match="exists"):
-        rollback_quarantine(applied, now=LATER)
+        rollback_quarantine(applied, now=LATER, roots=roots)
     assert Path(first.disabled_location).exists()
+
+
+# --------------------------------------------------------------------------- #
+# The manifest is data, not authority
+# --------------------------------------------------------------------------- #
+
+
+def test_plan_refuses_a_display_path_that_escapes_the_quarantine_dir(tmp_path: Path) -> None:
+    """A bundle's source_reference decides the disabled location; ``..`` in it
+    would plan a move to anywhere on disk."""
+    roots = fake_home(tmp_path)
+    victim = write(roots.claude_home / "skills" / "x" / "SKILL.md", "# x\n")
+    record = remove_record("claude/skill/~/.claude/skills/x/SKILL.md", "~/../../escape/SKILL.md")
+    with pytest.raises(QuarantineError, match="quarantine directory"):
+        plan_quarantine(
+            [record],
+            {record.item_id: victim},
+            quarantine_dir=tmp_path / "quarantine",
+            machine=Machine.DREWAI,
+            created_at=NOW,
+        )
+
+
+def test_apply_refuses_an_original_outside_the_audited_roots(tmp_path: Path) -> None:
+    """An edited manifest must not be able to move ~/.ssh/id_rsa."""
+    roots, plan, _ = planned(tmp_path)
+    secret = write(tmp_path / "elsewhere" / "id_rsa", "PRIVATE\n")
+    first = plan.entries[0]
+    hijacked = replace(
+        plan,
+        entries=(
+            replace(
+                first,
+                original_path=str(secret),
+                content_hash="sha256:" + hashlib.sha256(secret.read_bytes()).hexdigest(),
+                byte_size=secret.stat().st_size,
+            ),
+            *plan.entries[1:],
+        ),
+    )
+    before = tree(tmp_path)
+    with pytest.raises(QuarantineError, match="outside"):
+        apply_quarantine(hijacked, now=LATER, roots=roots)
+    assert tree(tmp_path) == before
+    assert secret.is_file()
+
+
+def test_apply_refuses_a_disabled_location_outside_the_manifest_dir(tmp_path: Path) -> None:
+    roots, plan, _ = planned(tmp_path)
+    first = plan.entries[0]
+    hijacked = replace(
+        plan,
+        entries=(
+            replace(first, disabled_location=str(tmp_path / "elsewhere" / "dropped")),
+            *plan.entries[1:],
+        ),
+    )
+    before = tree(tmp_path)
+    with pytest.raises(QuarantineError, match="quarantine directory"):
+        apply_quarantine(hijacked, now=LATER, roots=roots)
+    assert tree(tmp_path) == before
+
+
+def test_rollback_refuses_to_restore_into_an_unaudited_path(tmp_path: Path) -> None:
+    """After apply, an edited original_path would let rollback plant a file anywhere."""
+    roots, plan, _ = planned(tmp_path)
+    applied = apply_quarantine(plan, now=LATER, roots=roots)
+    first = applied.entries[0]
+    hijacked = replace(
+        applied,
+        entries=(
+            replace(first, original_path=str(tmp_path / "elsewhere" / "planted.md")),
+            *applied.entries[1:],
+        ),
+    )
+    before = tree(tmp_path)
+    with pytest.raises(QuarantineError, match="outside"):
+        rollback_quarantine(hijacked, now=LATER, roots=roots)
+    assert tree(tmp_path) == before
+
+
+def test_rollback_refuses_a_quarantined_copy_outside_the_manifest_dir(tmp_path: Path) -> None:
+    roots, plan, _ = planned(tmp_path)
+    applied = apply_quarantine(plan, now=LATER, roots=roots)
+    first = applied.entries[0]
+    hijacked = replace(
+        applied,
+        entries=(
+            replace(first, disabled_location=str(roots.home / "AGENTS.md")),
+            *applied.entries[1:],
+        ),
+    )
+    before = tree(tmp_path)
+    with pytest.raises(QuarantineError, match="quarantine directory"):
+        rollback_quarantine(hijacked, now=LATER, roots=roots)
+    assert tree(tmp_path) == before
+
+
+@pytest.mark.parametrize("manifest_id", ["..", ".", "a/b", "..\\b", ""])
+def test_a_manifest_id_is_one_plain_path_segment(tmp_path: Path, manifest_id: str) -> None:
+    roots, plan, _ = planned(tmp_path)
+    with pytest.raises(QuarantineError, match="manifest_id"):
+        apply_quarantine(replace(plan, manifest_id=manifest_id), now=LATER, roots=roots)
 
 
 # --------------------------------------------------------------------------- #
@@ -262,7 +367,7 @@ def test_remove_is_ineligible_until_every_affected_target_passes(tmp_path: Path)
     before = removal_eligibility(plan, {DREWAI_CLAUDE: True, DREWAI_CODEX: True})
     assert before[0].eligible is False and "not applied" in before[0].reason
 
-    applied = apply_quarantine(plan, now=LATER)
+    applied = apply_quarantine(plan, now=LATER, roots=roots)
     partial = removal_eligibility(applied, {DREWAI_CLAUDE: True})
     assert partial[0].eligible is False and "drewai/codex" in partial[0].reason
     failing = removal_eligibility(applied, {DREWAI_CLAUDE: True, DREWAI_CODEX: False})
@@ -271,7 +376,7 @@ def test_remove_is_ineligible_until_every_affected_target_passes(tmp_path: Path)
     assert passing[0].eligible is True
     assert passing[0].rollback_reference == applied.manifest_id
 
-    restored = rollback_quarantine(applied, now=LATER)
+    restored = rollback_quarantine(applied, now=LATER, roots=roots)
     assert (
         removal_eligibility(restored, {DREWAI_CLAUDE: True, DREWAI_CODEX: True})[0].eligible
         is False
@@ -279,8 +384,8 @@ def test_remove_is_ineligible_until_every_affected_target_passes(tmp_path: Path)
 
 
 def test_non_remove_entries_are_never_removal_eligible(tmp_path: Path) -> None:
-    _, plan, _ = planned(tmp_path)
-    applied = apply_quarantine(plan, now=LATER)
+    roots, plan, _ = planned(tmp_path)
+    applied = apply_quarantine(plan, now=LATER, roots=roots)
     verdicts = removal_eligibility(applied, {DREWAI_CLAUDE: True, DREWAI_CODEX: True})
     assert verdicts and all(v.eligible is False for v in verdicts)
     assert all("not classified Remove" in v.reason for v in verdicts)

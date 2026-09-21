@@ -13,6 +13,7 @@ adapter to report as a diagnostic, not an exception that aborts the run.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -275,21 +276,40 @@ def read_file_facts(root: SetupRoot, path: Path) -> FileFacts:
     if not path.is_file():
         raise SourceError(f"{locator} is not a readable file")
     try:
-        data = path.read_bytes()
+        # Size before bytes: a stray multi-gigabyte file must not be loaded
+        # to find out that it is too big to decode.
+        byte_size = path.stat().st_size
         modified_at = modified_time(path)
+        if byte_size > MAX_DECODED_BYTES:
+            return FileFacts(
+                fingerprint=_streamed_fingerprint(path),
+                measurement=Measurement(byte_size=byte_size),
+                modified_at=modified_at,
+            )
+        data = path.read_bytes()
     except OSError as error:
         raise SourceError(f"{locator} could not be read ({type(error).__name__})") from error
-    fingerprint = safe_fingerprint(data)
-    if len(data) > MAX_DECODED_BYTES:
-        measurement = Measurement(byte_size=len(data))
-    else:
-        characters = len(data.decode("utf-8", errors="replace"))
-        measurement = Measurement.estimated(
-            byte_size=len(data),
-            character_count=characters,
-            token_count=math.ceil(characters / ESTIMATED_CHARS_PER_TOKEN),
-        )
-    return FileFacts(fingerprint=fingerprint, measurement=measurement, modified_at=modified_at)
+    characters = len(data.decode("utf-8", errors="replace"))
+    measurement = Measurement.estimated(
+        byte_size=len(data),
+        character_count=characters,
+        token_count=math.ceil(characters / ESTIMATED_CHARS_PER_TOKEN),
+    )
+    return FileFacts(
+        fingerprint=safe_fingerprint(data), measurement=measurement, modified_at=modified_at
+    )
+
+
+_FINGERPRINT_CHUNK = 1024 * 1024
+
+
+def _streamed_fingerprint(path: Path) -> ContentFingerprint:
+    """The same digest :func:`safe_fingerprint` gives, in bounded memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_FINGERPRINT_CHUNK), b""):
+            digest.update(chunk)
+    return ContentFingerprint(digest=digest.hexdigest())
 
 
 def read_text_bounded(root: SetupRoot, path: Path, *, limit: int = MAX_DECODED_BYTES) -> str:
@@ -299,12 +319,14 @@ def read_text_bounded(root: SetupRoot, path: Path, *, limit: int = MAX_DECODED_B
             f"{root.locator_for(path)} points outside the {root.label} root and was not read"
         )
     try:
+        if path.stat().st_size > limit:
+            raise SourceError(f"{root.locator_for(path)} is too large to parse safely")
         data = path.read_bytes()
     except OSError as error:
         raise SourceError(
             f"{root.locator_for(path)} could not be read ({type(error).__name__})"
         ) from error
-    if len(data) > limit:
+    if len(data) > limit:  # grew between stat and read
         raise SourceError(f"{root.locator_for(path)} is too large to parse safely")
     return data.decode("utf-8", errors="replace")
 

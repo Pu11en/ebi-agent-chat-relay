@@ -76,6 +76,16 @@ class TestCheck:
             await nudger._check(_thread())
         assert surface_cls.call_count == 1
 
+    async def test_the_nudge_is_bound_to_the_chat_allowlist(self, tmp_path: Path) -> None:
+        """ "Yes, start fresh" runs a model turn and opens a thread: only the
+        people allowed to talk to the bot may press it."""
+        chat = _chat(tmp_path)
+        chat._allowed_user_ids = {11, 22}
+        nudger = ContextNudger(chat)
+        with _answer("no") as surface_cls:
+            await nudger._check(_thread())
+        assert surface_cls.call_args.kwargs["allowed_user_ids"] == {11, 22}
+
     async def test_yes_writes_handoff_then_opens_the_next_part(self, tmp_path: Path) -> None:
         chat = _chat(tmp_path)
 

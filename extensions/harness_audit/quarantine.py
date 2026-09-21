@@ -21,12 +21,22 @@ directory, and every write is paired with the record that undoes it:
 
 The manifest stays on the machine it describes: it carries absolute paths,
 which are local facts, and it is not part of the redacted bundle.
+
+The manifest is data, not authority.  It is a JSON file anyone can edit, so
+the paths it names are checked against what the operator actually approved
+before a single byte moves: every ``original_path`` must resolve inside the
+discovery roots given on the command line, every ``disabled_location`` must
+resolve inside ``<quarantine_dir>/<manifest_id>``, and the manifest id must be
+one plain path segment.  Planning applies the same rule to the disabled
+location it derives from a bundle's display path — a ``..`` there would plan
+a move to anywhere on disk.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
@@ -62,6 +72,57 @@ class QuarantineError(SchemaError):
 
 def file_hash(path: Path) -> str:
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# Path boundaries
+# --------------------------------------------------------------------------- #
+
+_MANIFEST_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """True when *path* resolves to *root* or somewhere beneath it."""
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _is_audited(path: Path, roots: DiscoveryRoots) -> bool:
+    resolved = Path(path).resolve()
+    if any(resolved == approved.resolve() for approved in roots.approved_files):
+        return True
+    return any(_is_within(resolved, root) for root in roots.approved_roots)
+
+
+def manifest_base(manifest: QuarantineManifest) -> Path:
+    """``<quarantine_dir>/<manifest_id>`` — the only place a quarantined copy may live."""
+    if manifest.manifest_id in {".", ".."} or not _MANIFEST_ID.match(manifest.manifest_id):
+        raise QuarantineError(
+            f"manifest_id {manifest.manifest_id!r} is not a plain path segment; refusing"
+        )
+    return Path(manifest.quarantine_dir) / manifest.manifest_id
+
+
+def entry_boundary_problems(
+    manifest: QuarantineManifest, entry: QuarantineEntry, roots: DiscoveryRoots
+) -> list[str]:
+    """Why this entry's paths may not be moved, or an empty list."""
+    problems: list[str] = []
+    base = manifest_base(manifest)
+    if not _is_audited(Path(entry.original_path), roots):
+        problems.append(
+            f"{entry.display_path}: original path {entry.original_path} is outside the"
+            " audited roots"
+        )
+    if not _is_within(Path(entry.disabled_location), base):
+        problems.append(
+            f"{entry.display_path}: disabled location {entry.disabled_location} is outside"
+            f" the quarantine directory {base}"
+        )
+    return problems
 
 
 # --------------------------------------------------------------------------- #
@@ -321,6 +382,11 @@ def plan_quarantine(
         display = record.evidence[0].source_reference or path.as_posix()
         relative = display[2:] if display.startswith("~/") else path.name
         disabled = base / relative
+        if not _is_within(disabled, base):
+            raise QuarantineError(
+                f"{record.item_id}: display path {display!r} would place the quarantined copy"
+                f" outside the quarantine directory {base}; refusing to plan"
+            )
         entries.append(
             QuarantineEntry(
                 item_id=record.item_id,
@@ -352,11 +418,22 @@ def plan_quarantine(
 # --------------------------------------------------------------------------- #
 
 
-def apply_quarantine(manifest: QuarantineManifest, *, now: datetime) -> QuarantineManifest:
-    """Verify every hash, then move every file.  Aborts before the first move."""
+def apply_quarantine(
+    manifest: QuarantineManifest, *, now: datetime, roots: DiscoveryRoots
+) -> QuarantineManifest:
+    """Verify every path boundary and hash, then move every file.
+
+    Aborts before the first move.  *roots* is what the operator approved on
+    the command line; the manifest's own paths are checked against it, never
+    trusted.
+    """
     if manifest.applied_at is not None and manifest.rolled_back_at is None:
         raise QuarantineError(f"manifest {manifest.manifest_id} is already applied")
     problems: list[str] = []
+    for entry in manifest.entries:
+        problems.extend(entry_boundary_problems(manifest, entry, roots))
+    if problems:
+        raise QuarantineError("refusing to apply; nothing was moved: " + "; ".join(problems))
     for entry in manifest.entries:
         original = Path(entry.original_path)
         if not original.is_file():
@@ -395,11 +472,22 @@ def apply_quarantine(manifest: QuarantineManifest, *, now: datetime) -> Quaranti
     )
 
 
-def rollback_quarantine(manifest: QuarantineManifest, *, now: datetime) -> QuarantineManifest:
-    """Put every quarantined file back where it was, verifying its hash."""
+def rollback_quarantine(
+    manifest: QuarantineManifest, *, now: datetime, roots: DiscoveryRoots
+) -> QuarantineManifest:
+    """Put every quarantined file back where it was, verifying its hash.
+
+    The same boundaries as :func:`apply_quarantine`: a copy may only come
+    from ``<quarantine_dir>/<manifest_id>`` and may only go back inside the
+    audited roots.
+    """
     if manifest.applied_at is None or manifest.rolled_back_at is not None:
         raise QuarantineError(f"manifest {manifest.manifest_id} is not currently applied")
     problems: list[str] = []
+    for entry in manifest.entries:
+        problems.extend(entry_boundary_problems(manifest, entry, roots))
+    if problems:
+        raise QuarantineError("refusing to roll back; nothing was moved: " + "; ".join(problems))
     for entry in manifest.entries:
         disabled = Path(entry.disabled_location)
         if not disabled.is_file():
@@ -422,7 +510,7 @@ def rollback_quarantine(manifest: QuarantineManifest, *, now: datetime) -> Quara
         for entry in reversed(restored):
             shutil.move(entry.original_path, entry.disabled_location)
         raise QuarantineError(f"rollback failed and was undone: {error}") from error
-    _prune_empty(Path(manifest.quarantine_dir) / manifest.manifest_id)
+    _prune_empty(manifest_base(manifest))
 
     return replace(
         manifest,

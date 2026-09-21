@@ -182,8 +182,14 @@ def collect_claude(
     invocation: ClaudeInvocation | None,
     manifest: SourceManifest,
     collected_at: datetime,
+    salt: str = "",
 ) -> CollectionResult:
-    """Build the Claude inventory for one machine from local evidence only."""
+    """Build the Claude inventory for one machine from local evidence only.
+
+    *salt* must be the one discovery ran with: a withheld body's hash is
+    compared across machines like every file hash, and an unsalted one would
+    let anyone with a guess at the prompt confirm it.
+    """
     target = AuditTarget(machine, Harness.CLAUDE)
     files = discovery.for_harness(Harness.CLAUDE)
     by_path = {entry.path: entry for entry in discovery.files}
@@ -213,6 +219,7 @@ def collect_claude(
         version=version,
         covered=covered,
         by_path=by_path,
+        salt=salt,
     )
     items: list[InventoryItem] = []
     signals: dict[str, ContentSignals] = {}
@@ -276,6 +283,7 @@ class _Context:
     version: str
     covered: bool | None
     by_path: Mapping[str, DiscoveredFile]
+    salt: str = ""
 
     @property
     def can_prove_loaded(self) -> bool:
@@ -648,7 +656,7 @@ def _invocation_items(
         if text is None:
             continue
         field = f"claude/bot-addition/{flag}"
-        body = withhold_body(text, field=field)
+        body = withhold_body(text, field=field, salt=ctx.salt)
         private_bodies.append(body)
         record = evidence(
             EvidenceLevel.LOADED,

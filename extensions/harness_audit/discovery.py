@@ -76,6 +76,12 @@ _FRONTMATTER_NAME = re.compile(r"^name:\s*(?P<name>[\w.\-]+)\s*$", re.MULTILINE)
 _IMPORT = re.compile(r"(?m)^\s*@[\w./~\\-]+")
 
 
+# A config file larger than this is described by its size alone.  The limit is
+# checked with ``stat`` before any read, so a stray multi-gigabyte file inside
+# a harness directory is never loaded to be refused.
+MAX_CONFIG_BYTES = 4 * 1024 * 1024
+
+
 class DiscoveryError(SchemaError):
     """The roots are unusable, or a record is malformed."""
 
@@ -530,9 +536,7 @@ def _describe(
         excluded.append(ExcludedPath(display, "link target is not a regular file"))
         return None
 
-    try:
-        raw = resolved.read_bytes()
-    except OSError as error:
+    def withheld(byte_size: int, read_error: str) -> DiscoveredFile:
         return DiscoveredFile(
             path=display,
             resolved_path=roots.display(resolved),
@@ -541,12 +545,23 @@ def _describe(
             scope=entry.scope,
             is_symlink=is_link,
             permissions=_permissions(resolved, roots),
-            size=SizeMeasurement(0, 0),
+            size=SizeMeasurement(byte_size, 0),
             content_hash="",
             redaction=RedactionStatus.WITHHELD,
             signals=ContentSignals(),
-            read_error=f"{type(error).__name__}: could not read",
+            read_error=read_error,
         )
+
+    try:
+        byte_size = resolved.stat().st_size
+        if byte_size > MAX_CONFIG_BYTES:
+            return withheld(
+                byte_size,
+                f"too large: {byte_size} bytes exceeds the {MAX_CONFIG_BYTES}-byte limit; not read",
+            )
+        raw = resolved.read_bytes()
+    except OSError as error:
+        return withheld(0, f"{type(error).__name__}: could not read")
 
     text = raw.decode("utf-8", errors="replace")
     notes = scan(text)

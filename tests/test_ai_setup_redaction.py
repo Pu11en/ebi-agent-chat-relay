@@ -231,6 +231,68 @@ def test_redact_text_drops_url_credentials_but_keeps_the_host() -> None:
     assert "db.internal" in scrubbed
 
 
+# A hook command is a shell line, and shell lines pass credentials as flags:
+# ``--token X``, ``--api-key=X``, ``-u user:pass``.  None of these are
+# ``name=value`` assignments, URLs or provider-shaped tokens, so before this
+# table they walked straight into an item summary.
+FLAG_CREDENTIALS = [
+    ("curl --token hunter2Secret99 https://api.internal", "hunter2Secret99"),
+    ("notify.sh --api-key Ab12cd34Ef56", "Ab12cd34Ef56"),
+    ("curl -u admin:Passw0rd! https://api.internal", "Passw0rd!"),
+    ("curl --user admin:Passw0rd! https://api.internal", "Passw0rd!"),
+    ("curl -U admin:Passw0rd! https://api.internal", "Passw0rd!"),
+    ("deploy --password=Sw0rdfish https://api.internal", "Sw0rdfish"),
+    ("deploy --PASSWD Sw0rdfish", "Sw0rdfish"),
+    ("deploy --pass Sw0rdfish", "Sw0rdfish"),
+    ("deploy --auth Sw0rdfish", "Sw0rdfish"),
+    ("deploy --auth-token Sw0rdfish", "Sw0rdfish"),
+    ("deploy --bearer Sw0rdfish", "Sw0rdfish"),
+    ("deploy --credential Sw0rdfish", "Sw0rdfish"),
+    ("deploy --secret   Sw0rdfish", "Sw0rdfish"),
+    ("deploy --key Sw0rdfish", "Sw0rdfish"),
+    ("psql admin:Passw0rd!@db.internal:5432/relay", "Passw0rd!"),
+]
+
+
+@pytest.mark.parametrize(("value", "secret"), FLAG_CREDENTIALS)
+def test_flag_style_credentials_are_detected(value: str, secret: str) -> None:
+    assert secret_reason(value) is RedactionReason.SECRET_VALUE
+    assert contains_secret(value)
+
+
+@pytest.mark.parametrize(("value", "secret"), FLAG_CREDENTIALS)
+def test_flag_style_credentials_are_redacted_but_the_program_survives(
+    value: str, secret: str
+) -> None:
+    scrubbed = redact_text(value)
+    assert secret not in scrubbed
+    assert REDACTED in scrubbed
+    assert scrubbed.split()[0] == value.split()[0]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "mkdir -p /tmp/build",
+        "ruff check --fix claude_discord/",
+        "pytest -q -p no:cacheprovider tests/",
+        "git commit --no-verify -m wip",
+        "docker run --rm -it app",
+    ],
+)
+def test_ordinary_flags_are_not_mistaken_for_credentials(value: str) -> None:
+    assert secret_reason(value) is None
+    assert redact_text(value) == value
+
+
+@pytest.mark.parametrize(("value", "secret"), FLAG_CREDENTIALS)
+def test_an_item_summary_with_a_flag_credential_is_rejected(value: str, secret: str) -> None:
+    item = _item(summary=value)
+    with pytest.raises(RedactionError) as error:
+        ensure_safe_item(item)
+    assert secret not in str(error.value)
+
+
 @pytest.mark.parametrize(
     "value",
     [
