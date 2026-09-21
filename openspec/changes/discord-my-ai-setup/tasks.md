@@ -12,7 +12,7 @@ Try: `make dev-on`
 
 - [x] 2.1 **Owner: shared setup adapter** — Inventory global/project instructions, shared memory, and skills only from declared source boundaries; verify fixture tests assign correct source and everywhere/profile/project scope without reading unrelated files.
 - [x] 2.2 **Owner: harness adapters** — Add isolated Claude, Codex, and DSH adapters for custom tools, commands, hooks, plugins/connectors, and harness settings; verify fixtures report actual loader availability, prerequisites, unsupported states, and deliberate computer/subscription exceptions.
-- [ ] 2.3 **Owner: Discord extension adapter** — Inventory loaded custom Cogs and user-added Discord commands through loader/runtime evidence; verify a failed or unloaded Cog is not labeled verified and built-in framework commands stay hidden by default.
+- [x] 2.3 **Owner: Discord extension adapter** — Inventory loaded custom Cogs and user-added Discord commands through loader/runtime evidence; verify a failed or unloaded Cog is not labeled verified and built-in framework commands stay hidden by default.
 
 ## 3. Snapshots and Remote Comparison
 

@@ -44,6 +44,7 @@ class HarnessLayout(StrEnum):
     CODEX_HOME = "codex_home"
     PROJECT = "project"
     DSH_CONFIG = "dsh_config"
+    COGS_DIR = "cogs_dir"
 
 
 class SourceError(Exception):
@@ -230,6 +231,25 @@ def dsh_config_root(
     )
 
 
+def cogs_dir_root(
+    path: Path,
+    *,
+    key: str = "custom-cogs",
+    home: Path | None = None,
+    label: str = "Custom Cogs",
+) -> SetupRoot:
+    """The ``CUSTOM_COGS_DIR`` this bot loads — one computer's Discord extensions."""
+    return SetupRoot(
+        key=key,
+        path=path,
+        layout=HarnessLayout.COGS_DIR,
+        ownership=OwnershipClass.MACHINE,
+        label=label,
+        harness="ccdb",
+        home=home,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FileFacts:
     """What an adapter is allowed to keep about a file's content."""
@@ -306,6 +326,7 @@ __all__ = [
     "SourceError",
     "claude_home_root",
     "codex_home_root",
+    "cogs_dir_root",
     "dsh_config_root",
     "modified_time",
     "project_root",

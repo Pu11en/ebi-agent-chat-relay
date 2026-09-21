@@ -20,9 +20,17 @@ from ._files import (
     SourceError,
     claude_home_root,
     codex_home_root,
+    cogs_dir_root,
     dsh_config_root,
     project_root,
     read_file_facts,
+)
+from .discord_ext import (
+    DISCORD_HARNESS,
+    FRAMEWORK_SOURCE_KEY,
+    CommandFact,
+    DiscordExtensionAdapter,
+    command_facts,
 )
 from .harness import (
     ALL_HARNESSES,
@@ -40,12 +48,16 @@ from .shared import KNOWN_HARNESSES, SharedSetupAdapter, availability_for
 
 __all__ = [
     "ALL_HARNESSES",
+    "DISCORD_HARNESS",
     "DSH_ROUTES",
+    "FRAMEWORK_SOURCE_KEY",
     "HARNESS_KINDS",
     "KNOWN_HARNESSES",
     "ClaudeHarnessAdapter",
     "CodexHarnessAdapter",
+    "CommandFact",
     "DeliberateException",
+    "DiscordExtensionAdapter",
     "DshHarnessAdapter",
     "FileFacts",
     "HarnessLayout",
@@ -57,6 +69,8 @@ __all__ = [
     "availability_for",
     "claude_home_root",
     "codex_home_root",
+    "cogs_dir_root",
+    "command_facts",
     "dsh_config_root",
     "load_exceptions",
     "project_root",
