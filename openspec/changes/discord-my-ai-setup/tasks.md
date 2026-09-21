@@ -29,8 +29,8 @@ Try: `make dev-on`
 
 ## 5. Verification and Safe Activation
 
-- [ ] 5.1 **Integration owner** — Run targeted tests, `uv run ruff check claude_discord/ tests/`, `uv run pyright claude_discord/`, the full test suite, and the security audit; inspect logs/database fixtures to confirm no secret or source content leaks.
-- [ ] 5.2 **Integration owner** — Activate the isolated dev worktree only after other live turns are clear; verify DrewAI local facts, a trusted iMac snapshot, a deliberate David difference, offline/stale labeling, and Setup Agent session creation without changing configuration.
+- [x] 5.1 **Integration owner** — Run targeted tests, `uv run ruff check claude_discord/ tests/`, `uv run pyright claude_discord/`, the full test suite, and the security audit; inspect logs/database fixtures to confirm no secret or source content leaks.
+- [ ] 5.2 **Integration owner** — Activate the isolated dev worktree only after other live turns are clear; verify DrewAI local facts, a trusted iMac snapshot, a deliberate David difference, offline/stale labeling, and Setup Agent session creation without changing configuration. _Deferred to the release switch-over: needs the live dev worktree, Drew in Discord, and a real iMac/David reply over the handoff transport; cannot be done offline (D7)._
 
 ## How to try it
 

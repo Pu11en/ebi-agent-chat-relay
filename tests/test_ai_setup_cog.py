@@ -454,3 +454,24 @@ class TestAskSetupAgentComparisons:
         assert "Other computers:" in prompt
         assert "- imac: Different content" in prompt  # no fingerprint on either → not parity
         assert "Is the iMac copy the same?" in prompt
+
+
+class TestLogsAndStorageStaySafe:
+    async def test_logs_and_the_database_carry_no_secret_after_an_open(
+        self, cog: MyAISetupCog, repo: AISetupRepository, caplog, tmp_path: Path
+    ):
+        import logging
+        import sqlite3
+
+        caplog.set_level(logging.DEBUG)
+        event = interaction()
+        await cog.open(event)
+        assert LEAKED not in caplog.text and HOOK_TOKEN not in caplog.text
+        connection = sqlite3.connect(repo.db_path)
+        try:
+            dump = "\n".join(connection.iterdump())
+        finally:
+            connection.close()
+        assert LEAKED not in dump and HOOK_TOKEN not in dump
+        assert "ANTHROPIC_API_KEY" not in dump
+        assert "grilling" in dump  # the safe facts did land
