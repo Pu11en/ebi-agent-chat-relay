@@ -210,7 +210,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: several blockers in one thread survive reopen; repeated posting/recovery does
   not lose actionable questions or attach them to the wrong build.
 
-- [ ] T21: Execution spine, only after T20: route actual Discord Replies to their blocker.
+- [x] T21: Execution spine, only after T20: route actual Discord Replies to their blocker.
   Scope: message listener/waiter integration, using message.reference.message_id plus
   authorized-user/channel checks. Ordinary conversation stays with normal chat.
   Proof: two replies resolve only their respective current blockers; duplicates, stale,

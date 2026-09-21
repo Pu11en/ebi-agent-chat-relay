@@ -504,3 +504,25 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `76611e9`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (442 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T21 — Route actual Discord Replies to their blocker
+
+- Cog `take_message` → `_take_blocker_reply`: `message.reference.message_id` →
+  `BlockerLedger.by_message`. Not a blocker reference → the normal rules. Unauthorized
+  author or a different channel → `False` (ordinary conversation). Already answered, build
+  gone, or the blocker's attempt no longer current → claimed with a short note, nothing
+  dispatched. Otherwise `resolve()` (once-only) and `_apply_blocker_answer`: **skip** →
+  the task stays blocked as skipped (dependents held); **retry** → `state.retry`; anything
+  else → `state.rework(task, "you said: …")` so the instruction reaches the next handoff;
+  then a parked build (`_Running.parked`) is woken through its own waiter — a running build
+  simply picks the pending task up under the normal ready-set, checks and capacity.
+- `_wait_parked`: while the build has unresolved questions, only close/finish/throw words
+  count channel-wide; retry/skip must be replies to one specific question.
+- Tests: `test_manifest_build_cog.py` (+1: two failing tasks → two questions; a non-reply,
+  an unknown reference and an unauthorized reply dispatch nothing; "skip" and "retry" replies
+  move only their tasks (attempt 3 for the retried one, "skipped" for the other, the accepted
+  sibling untouched); a duplicate reply to an answered question does nothing; the retried
+  task's next failure asks again).
+- Implementation commit: `78693fb`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (443 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).
