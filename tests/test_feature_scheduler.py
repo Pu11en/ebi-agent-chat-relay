@@ -247,7 +247,7 @@ class TestTheLivePlan:
         from extensions.feature_workflow.task_graph import parse_task_plan
 
         repo = Path(__file__).resolve().parent.parent
-        plan = parse_task_plan(repo / "openspec/changes/parallel-gowork/tasks.md", repo_root=repo)
+        plan = parse_task_plan(repo / "openspec/changes/archive/2026-09-21-parallel-gowork/tasks.md", repo_root=repo)
 
         ready = compute_ready_set(plan, {"1.1": "integrated"})
 
@@ -261,7 +261,7 @@ class TestTheLivePlan:
         from pathlib import Path
 
         repo = Path(__file__).resolve().parent.parent
-        plan_path = "openspec/changes/parallel-gowork/tasks.md"
+        plan_path = "openspec/changes/archive/2026-09-21-parallel-gowork/tasks.md"
         text = (repo / plan_path).read_text(encoding="utf-8")
         reopened = text.replace("- [x] 2.2 ", "- [ ] 2.2 ").replace("- [x] 3.1 ", "- [ ] 3.1 ")
         assert reopened != text

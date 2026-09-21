@@ -6,11 +6,13 @@ independently buildable features, preserve exact approved scope, and dispatch ve
 without losing unrelated user changes.
 
 ## Next Step
-After Drew's next explicit build instruction, dispatch the seven validated OpenSpec changes through
-separate visible workers, respecting their dependency and file-ownership boundaries.
+Phase 5: Drew reviews PR "Release v4.1.0" (`release/v4.1.0` → `main`), runs the live checks
+the release notes list (`docs/plans/v4.1.0-release-notes.md`), then switches the Lenovo bot
+over. The four boxes left open in the OpenSpec changes (command-surface 4.3/4.4, catalog 5.2,
+my-ai-setup 5.2) are those live checks.
 
 ## Current Phase
-Phase 3
+Phase 5
 
 ## Phases
 
@@ -28,16 +30,23 @@ Phase 3
 - **Status:** complete
 
 ### Phase 3: Implementation
-- [ ] Commit the approved planning foundation
-- [ ] Dispatch independent tasks through visible Discord workers
-- [ ] Integrate verified worker branches in dependency order
-- **Status:** pending
+- [x] Commit the approved planning foundation (`handoff/v4.1.0-base`)
+- [x] Dispatch independent tasks through visible Discord workers — built on David's machine
+  (2026-09-21) as seven isolated worktree builders plus the Go Work upgrade T03–T32, one
+  commit per task; proof per task in `docs/plans/v4.1.0-finish-all-builds.progress.md`
+- [x] Integrate verified worker branches in dependency order (merged with `--no-ff` into
+  `release/v4.1.0`; conflicts confined to the plan docs and three wiring files)
+- **Status:** complete
 
 ### Phase 4: Testing & Verification
-- [ ] Run focused checks for each feature
-- [ ] Run combined lint, type, test, and security checks
-- [ ] Verify the Discord flows locally before publication
-- **Status:** pending
+- [x] Run focused checks for each feature (each change's `Check:` line green; all seven
+  validate `--strict`; four archived under `openspec/changes/archive/2026-09-21-*`)
+- [x] Run combined lint, type, test, and security checks (E1: 5607 passed; E2: three
+  security audits, 16 findings fixed with tests → 5781 passed; E3: Go Work Check 555 +
+  practice demo exit 0)
+- [ ] Verify the Discord flows locally before publication — needs a live bot; carried into
+  the release PR's checklist (E5) and the three `tasks.md` boxes that stay open
+- **Status:** verification complete offline; live Discord checks pending
 
 ### Phase 5: Delivery
 - [ ] Give Drew worker links and live status

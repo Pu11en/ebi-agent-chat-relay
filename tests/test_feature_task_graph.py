@@ -335,7 +335,7 @@ class TestPlanFiles:
         from pathlib import Path
 
         repo = Path(__file__).resolve().parent.parent
-        plan = repo / "openspec/changes/parallel-gowork/tasks.md"
+        plan = repo / "openspec/changes/archive/2026-09-21-parallel-gowork/tasks.md"
         parsed = parse_task_plan(plan, repo_root=repo)
 
         assert not parsed.legacy

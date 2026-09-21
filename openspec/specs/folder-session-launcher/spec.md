@@ -1,7 +1,7 @@
 # folder-session-launcher Specification
 
 ## Purpose
-TBD - created by archiving change folder-session-launcher. Update Purpose after archive.
+Give each computer's control channel a pinned, computer-labelled launcher so a person can start or resume a Claude session in a known project folder from Discord alone — favourite folders, a new-session shortcut and resume — without typing paths or remembering commands.
 
 ## Requirements
 
