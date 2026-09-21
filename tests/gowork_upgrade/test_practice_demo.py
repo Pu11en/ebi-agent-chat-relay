@@ -9,6 +9,7 @@ named otherwise.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -54,6 +55,14 @@ async def test_a_regression_makes_the_demo_fail_and_name_it(
     output = "\n".join(lines)
     assert code == 1
     assert "✗ dependency wait" in output
+    # A failed run leaves nothing behind: every build driver is cancelled before the
+    # demo returns, so the loop that ran it can close (CI on Linux 3.12 hung here).
+    leftovers = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and not t.done() and "_drive" in repr(t)
+    ]
+    assert leftovers == []
 
 
 def test_the_try_line_names_the_demo_command() -> None:

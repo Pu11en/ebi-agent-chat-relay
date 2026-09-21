@@ -463,6 +463,20 @@ class _Demo:
     def status(self, build_id: str, task_id: str) -> str:
         return self.ledger(build_id)[task_id]["status"]
 
+    async def shutdown(self) -> None:
+        """Cancel every build the demo still has running.
+
+        A failed check leaves the fake workers mid-build; their driver tasks
+        must not outlive the demo, or the event loop that ran it (CI on Linux
+        3.12) waits for them forever at close.
+        """
+        drivers = [r.task for r in self.cog.running if r.task is not None]
+        for driver in drivers:
+            driver.cancel()
+        if drivers:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.gather(*drivers, return_exceptions=True), 10)
+
     async def until(self, what: str, condition: Callable[[], bool]) -> None:
         deadline = time.monotonic() + _TIMEOUT
         while not condition():
@@ -705,8 +719,10 @@ async def run_demo(root: Path | None = None, *, say: Callable[[str], None] = pri
     say(f"Go Work practice run in {root} (nothing outside it is touched)")
     started = time.monotonic()
     code = 0
+    demo: _Demo | None = None
     try:
-        await _Demo(root, say).run()
+        demo = _Demo(root, say)
+        await demo.run()
     except DemoError as exc:
         say(f"✗ {exc}")
         code = 1
@@ -714,6 +730,8 @@ async def run_demo(root: Path | None = None, *, say: Callable[[str], None] = pri
         say(f"✗ the demo itself failed: {type(exc).__name__}: {exc}")
         code = 1
     finally:
+        if demo is not None:
+            await demo.shutdown()
         helper.configure_adaptive_limit(controller=None, policy=None, probe=None)
     say(
         f"{'All behaviours observed' if code == 0 else 'Stopped at the first failure'} "
