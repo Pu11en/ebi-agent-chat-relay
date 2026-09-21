@@ -76,6 +76,7 @@ def _loop(plan: Path, tmp_path: Path, worker: FakeWorker) -> TaskLoop:
         state_path=tmp_path / "state" / "build.json",
         build_id="thread-1",
         after_manifest_result=getattr(worker, "after", None),
+        reconcile=None,
     )
 
 
@@ -200,3 +201,36 @@ async def test_a_result_whose_combined_check_failed_is_saved_but_not_accepted(
     assert state[API].result_commit == "c-api" and state[API].checks == ("pytest: 2 failed",)
     assert state[PAGE].status is TaskStatus.PENDING
     assert state.accepted_tasks() == (STYLES, POST)
+
+
+async def test_attempts_left_running_by_a_crash_are_reconciled_not_reassigned(
+    plan: Path, tmp_path: Path
+) -> None:
+    """T17: a running attempt found at startup is salvaged by the adapter or blocked — never
+    silently given to a new worker."""
+    state = _state(plan, tmp_path)
+    state.begin(API)  # the bot died while this worker ran
+    state.begin(POST)
+
+    salvaged: list[str] = []
+
+    async def reconcile(ledger) -> None:  # noqa: ANN001
+        # the adapter found API's side copy merged: save it
+        attempt = ledger[API].attempt_id
+        ledger.submit_result(API, attempt, commit="c-salvaged", checks=("found merged",))
+        ledger.accept(API, attempt)
+        salvaged.append(API)
+
+    worker = FakeWorker({})
+    loop = _loop(plan, tmp_path, worker)
+    loop._reconcile = reconcile
+    outcome = await loop.run()
+
+    assert salvaged == [API]
+    assert API not in worker.started  # never rerun
+    state = _state(plan, tmp_path)
+    assert state[API].accepted and state[API].result_commit == "c-salvaged"
+    assert state[POST].status is TaskStatus.BLOCKED and "restart" in (state[POST].reason or "")
+    assert POST not in worker.started  # uncertain ownership is not reassigned
+    assert state[PAGE].accepted and state[STYLES].accepted  # the rest carried on
+    assert outcome.status is Status.STUCK

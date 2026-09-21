@@ -503,6 +503,7 @@ class TaskLoop:
         max_parallel: Callable[[], int] | None = None,
         manifest_worker: ManifestWorker | None = None,
         after_manifest_result: Callable[[ManifestResult], Awaitable[None]] | None = None,
+        reconcile: Callable[[BuildState], Awaitable[None]] | None = None,
         state_path: Path | None = None,
         build_id: str = "",
     ) -> None:
@@ -537,6 +538,9 @@ class TaskLoop:
         self._manifest_worker = manifest_worker
         #: Runs after a worker's result is on disk (T14: archive its thread, never before).
         self._after_manifest_result = after_manifest_result
+        #: Salvages attempts a crash left running (T17); anything still running after
+        #: it is blocked, never handed to a new worker.
+        self._reconcile = reconcile
         self.state_path = state_path
         self.build_id = build_id
 
@@ -550,6 +554,7 @@ class TaskLoop:
         assert self._manifest_worker is not None and self.state_path is not None
         rounds = 0
         in_flight: dict[str, asyncio.Task[ManifestResult]] = {}
+        reconciled = False
         try:
             while True:
                 if self._before_round is not None and not in_flight:
@@ -564,6 +569,9 @@ class TaskLoop:
                     await self._report(f"🛑 The plan can't be built as written: {exc}")
                     return LoopOutcome(Status.STUCK, str(exc), rounds)
 
+                if not reconciled:
+                    reconciled = True
+                    await self._reconcile_interrupted(state)
                 if not in_flight:
                     if self._stop:
                         await self._report("⏹️ Loop stopped.")
@@ -615,6 +623,36 @@ class TaskLoop:
                 pending.cancel()
             await asyncio.gather(*in_flight.values(), return_exceptions=True)
             raise
+
+    async def _reconcile_interrupted(self, state: BuildState) -> None:
+        """Attempts still 'running' when the loop starts belong to a crashed bot (T17)."""
+        stale = [r.task_id for r in state.records if r.status is TaskStatus.RUNNING]
+        if not stale:
+            return
+        if self._reconcile is not None:
+            try:
+                await self._reconcile(state)
+            except Exception:
+                logger.warning("gowork: reconciling interrupted work failed", exc_info=True)
+        left = [r for r in state.records if r.status is TaskStatus.RUNNING]
+        for record in left:
+            state.block(
+                record.task_id,
+                f"interrupted by a restart before its work was saved (attempt "
+                f"{record.attempt}); it was not restarted on its own — say so to run it again",
+            )
+        salvaged = [t for t in stale if state[t].accepted]
+        if salvaged or left:
+            await self._report(
+                "🔁 After the restart: "
+                + (f"kept finished work for {', '.join(salvaged)}; " if salvaged else "")
+                + (
+                    f"{len(left)} interrupted task(s) wait for you: "
+                    + ", ".join(r.task_id for r in left)
+                    if left
+                    else "nothing was lost"
+                )
+            )
 
     async def _record_manifest_result(self, state: BuildState, result: ManifestResult) -> None:
         """Persist one worker's outcome the moment it is known (T13)."""

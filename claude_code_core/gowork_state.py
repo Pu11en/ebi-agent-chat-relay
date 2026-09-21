@@ -90,6 +90,8 @@ class TaskAttempt:
     #: The worker thread this attempt ran in, and whether it was archived after the save.
     thread_id: int | None = None
     archived: bool = False
+    #: The commit the attempt's side copy started from (to tell saved work from none).
+    base_commit: str | None = None
 
     def to_json(self) -> dict:
         return {
@@ -110,6 +112,7 @@ class TaskAttempt:
             "updated_at": self.updated_at,
             "thread_id": self.thread_id,
             "archived": self.archived,
+            "base_commit": self.base_commit,
         }
 
     @classmethod
@@ -133,6 +136,7 @@ class TaskAttempt:
                 updated_at=str(value.get("updated_at", "")),
                 thread_id=int(value["thread_id"]) if value.get("thread_id") is not None else None,
                 archived=bool(value.get("archived", False)),
+                base_commit=value.get("base_commit"),
             )
         except (KeyError, ValueError, TypeError) as exc:
             raise StaleAttemptError(f"unreadable task attempt in the build state: {value}") from exc
@@ -298,11 +302,20 @@ class BuildState:
         self.block(task_id, reason)
         return self.retry(task_id)
 
-    def note_thread(self, task_id: str, attempt: str, *, thread_id: int) -> TaskAttempt:
-        """Remember which worker thread the current attempt runs in."""
+    def note_thread(
+        self, task_id: str, attempt: str, *, thread_id: int, base_commit: str | None = None
+    ) -> TaskAttempt:
+        """Remember which worker thread the current attempt runs in (and where it started)."""
         record = self._current(task_id, attempt)
         return self._apply(
-            task_id, replace(record, thread_id=int(thread_id), archived=False), "thread"
+            task_id,
+            replace(
+                record,
+                thread_id=int(thread_id),
+                archived=False,
+                base_commit=base_commit or record.base_commit,
+            ),
+            "thread",
         )
 
     def mark_archived(self, task_id: str) -> TaskAttempt:

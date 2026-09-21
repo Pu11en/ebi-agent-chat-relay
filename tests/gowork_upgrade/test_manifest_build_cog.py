@@ -381,3 +381,101 @@ async def test_a_task_without_a_runnable_check_is_not_accepted(repo: Path) -> No
     _worker, ledger = await _run_until_settled(cog, _channel(), repo / "PLAN.md")
     api = ledger["tasks"]["product.catalog-api"]
     assert api["status"] == "blocked" and "no runnable check" in api["reason"]
+
+
+async def test_a_restart_keeps_finished_work_and_never_reruns_or_reassigns(repo: Path) -> None:
+    """T17: restart after merge, after a worker's commit, and mid-work: nothing lost, nothing
+    rerun, the uncertain one waits for a person."""
+    from claude_code_core.gowork_plan import load_plan_tree
+    from claude_code_core.gowork_state import open_build_state
+    from claude_code_core.loop_store import LoopRecord
+    from claude_code_core.work_copy import create_side_copy, create_work_copy, side_copy_for
+
+    cog, chat, threads, _worked = _cog()
+    cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    copy = await create_work_copy(repo, repo / "PLAN.md", root=cog._work_root)
+    build_id = "thread-9000"
+    state = open_build_state(
+        cog._store.path.with_name("builds") / f"{build_id}.json",
+        load_plan_tree(copy.plan_path),
+        build_id=build_id,
+    )
+    base = _git(copy.path, "rev-parse", "HEAD").strip()
+    # 1. product: merged into the copy, then the bot died before the ledger was written
+    state.begin("product.catalog-api")
+    state.note_thread(
+        "product.catalog-api",
+        state["product.catalog-api"].attempt_id,
+        thread_id=1,
+        base_commit=base,
+    )
+    side = await create_side_copy(copy, "product.catalog-api")
+    (side.path / "product" / "work-merged.txt").write_text("done\n")
+    _git(side.path, "add", ".")
+    _git(side.path, "commit", "-qm", "product work")
+    _git(copy.path, "merge", "--no-edit", side.branch)
+    # 2. marketing: the worker committed, the merge never happened
+    state.begin("marketing.launch-post")
+    side2 = await create_side_copy(copy, "marketing.launch-post")
+    state.note_thread(
+        "marketing.launch-post",
+        state["marketing.launch-post"].attempt_id,
+        thread_id=2,
+        base_commit=_git(side2.path, "rev-parse", "HEAD").strip(),
+    )
+    (side2.path / "marketing" / "work-committed.txt").write_text("done\n")
+    _git(side2.path, "add", ".")
+    _git(side2.path, "commit", "-qm", "marketing work")
+    # 3. styles: the worker was mid-flight with nothing saved
+    state.begin("website.page-styles")
+    side3 = await create_side_copy(copy, "website.page-styles")
+    state.note_thread(
+        "website.page-styles",
+        state["website.page-styles"].attempt_id,
+        thread_id=3,
+        base_commit=_git(side3.path, "rev-parse", "HEAD").strip(),
+    )
+
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 9000
+    thread.mention = "<#9000>"
+    thread.send = AsyncMock(return_value=MagicMock())
+    thread.delete = AsyncMock()
+    report = MagicMock()
+    report.id = 1
+    report.send = AsyncMock()
+    cog.bot.get_channel = MagicMock(side_effect=lambda cid: thread if cid == 9000 else report)
+    cog._store.save(
+        LoopRecord(
+            repo_dir=str(repo.resolve()),
+            plan_path=str(repo / "PLAN.md"),
+            copy_path=str(copy.path),
+            copy_plan=str(copy.plan_path),
+            branch=copy.branch,
+            worker_thread_id=9000,
+            report_channel_id=1,
+        )
+    )
+
+    assert await cog.resume_all() == 1
+    for _ in range(1500):
+        running = cog.running[0] if cog.running else None
+        if running and (running.in_review or running.waiting_for_person):
+            break
+        await asyncio.sleep(0.01)
+
+    ledger = json.loads((cog._store.path.with_name("builds") / f"{build_id}.json").read_text())
+    tasks = ledger["tasks"]
+    assert tasks["product.catalog-api"]["status"] == "accepted"  # salvaged, not rerun
+    assert tasks["marketing.launch-post"]["status"] == "accepted"  # merged now, not rerun
+    assert tasks["website.page-styles"]["status"] == "blocked"
+    assert "restart" in tasks["website.page-styles"]["reason"]
+    assert tasks["website.catalog-page"]["status"] == "accepted"  # the rest carried on
+    assert (copy.path / "marketing" / "work-committed.txt").exists()
+    assert not (side_copy_for(copy, "product.catalog-api").path).exists()
+    worked_prompts = [
+        c.args[2] for c in chat.run_fresh_turn.call_args_list if "Your task (" in c.args[2]
+    ]
+    assert (
+        len(worked_prompts) == 1 and "website.catalog-page" in worked_prompts[0]
+    )  # only the page ran

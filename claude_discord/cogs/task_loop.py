@@ -106,6 +106,7 @@ from claude_code_core.work_copy import (
     merge_side_copy,
     remove_side_copy,
     remove_work_copy,
+    side_copy_for,
     side_has_new_work,
     side_is_merged,
 )
@@ -993,6 +994,7 @@ class TaskLoopCog(commands.Cog):
             after_manifest_result=lambda result: self._archive_worker_thread(
                 holder[0], result.task_id
             ),
+            reconcile=lambda state: self._reconcile_interrupted(holder[0], state),
             state_path=self._store.path.with_name("builds") / f"{record.build_id}.json",
             build_id=record.build_id,
         )
@@ -2469,6 +2471,51 @@ class TaskLoopCog(commands.Cog):
                 await _wc_git(project_copy.path, "checkout", "--", ".")
         return passed, results
 
+    async def _reconcile_interrupted(self, running: _Running, state: Any) -> None:
+        """After a restart: keep what interrupted workers had saved, merge what they
+        committed, and leave the rest for the loop to block (T17). Never rerun work."""
+        assert running.copy is not None
+        tree = state.tree
+        for record in state.records:
+            if record.status.value != "running":
+                continue
+            assignment = tree.task(record.task_id)
+            plan = tree.get(assignment.plan_id)
+            try:
+                project_copy, rel = await self._project_copy(running, plan.project_path)
+            except Exception:
+                continue  # no copy to look in: the loop blocks it with the restart reason
+            side = side_copy_for(project_copy, record.task_id)
+            if running.git_lock is None:
+                running.git_lock = asyncio.Lock()
+            async with running.git_lock:
+                merged = await side_is_merged(project_copy, side, base=record.base_commit)
+                has_work = merged or (
+                    side.path.is_dir() and await side_has_new_work(project_copy, side)
+                )
+                if not has_work:
+                    continue
+                if merged:
+                    await remove_side_copy(project_copy, side)
+                    landed = True
+                else:
+                    landed = await merge_side_copy(project_copy, side, keep_on_clash=True)
+                if not landed:
+                    continue
+                commit = await head_commit(project_copy.path)
+                checks_ok, checks = await self._combined_checks(
+                    project_copy, assignment.acceptance_check, cwd=project_copy.path / rel
+                )
+            state.submit_result(record.task_id, record.attempt_id, commit=commit, checks=checks)
+            if checks_ok:
+                state.accept(record.task_id, record.attempt_id)
+            else:
+                state.block(
+                    record.task_id,
+                    "combined check failed after merging (saved after a restart): "
+                    + "; ".join(checks),
+                )
+
     async def _review_manifest_task(
         self, running: _Running, outcome: str, base: str | None
     ) -> tuple[str, str]:
@@ -2538,6 +2585,7 @@ class TaskLoopCog(commands.Cog):
                 running.git_lock = asyncio.Lock()
             async with running.git_lock:
                 side = await create_side_copy(project_copy, task.task_id)
+                side_base = await head_commit(side.path)
             cwd = side.path / rel
             sub: Any = await chat.spawn_session(
                 parent,
@@ -2549,7 +2597,9 @@ class TaskLoopCog(commands.Cog):
             )
             self._quiet(sub.id)
             with contextlib.suppress(Exception):  # the ledger knows where to archive later
-                state.note_thread(task.task_id, handoff.attempt_id, thread_id=sub.id)
+                state.note_thread(
+                    task.task_id, handoff.attempt_id, thread_id=sub.id, base_commit=side_base
+                )
             worker_thread_id = sub.id
             if settings is not None:
                 with contextlib.suppress(Exception):
@@ -2585,7 +2635,7 @@ class TaskLoopCog(commands.Cog):
             # results arrive, and the combined check runs before anything is accepted.
             async with running.git_lock:
                 base_commit = await head_commit(project_copy.path)
-                merged_before = ok and await side_is_merged(project_copy, side)
+                merged_before = ok and await side_is_merged(project_copy, side, base=side_base)
                 has_work = ok and (merged_before or await side_has_new_work(project_copy, side))
                 if merged_before:
                     landed = True  # a crash after the merge: reconciled, never merged twice

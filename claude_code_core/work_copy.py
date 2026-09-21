@@ -196,11 +196,18 @@ class SideCopy:
     branch: str
 
 
+def side_copy_for(copy: WorkCopy, name: str) -> SideCopy:
+    """Where *name*'s side copy lives (deterministic, so a restart can find it)."""
+    slug = _SLUG_RE.sub("-", name.lower()).strip("-")[:20] or "step"
+    return SideCopy(
+        path=copy.path.parent / f"{copy.path.name}-{slug}", branch=f"{copy.branch}-{slug}"
+    )
+
+
 async def create_side_copy(copy: WorkCopy, name: str) -> SideCopy:
     """A fresh worktree of the build's current state for one parallel step."""
-    slug = _SLUG_RE.sub("-", name.lower()).strip("-")[:20] or "step"
-    branch = f"{copy.branch}-{slug}"
-    path = copy.path.parent / f"{copy.path.name}-{slug}"
+    existing = side_copy_for(copy, name)
+    branch, path = existing.branch, existing.path
     # A restart mid-group can leave the last attempt behind; start clean.
     await remove_side_copy(copy, SideCopy(path=path, branch=branch))
     with contextlib.suppress(WorkCopyError):
@@ -241,9 +248,17 @@ async def merge_side_copy(copy: WorkCopy, side: SideCopy, *, keep_on_clash: bool
     return True
 
 
-async def side_is_merged(copy: WorkCopy, side: SideCopy) -> bool:
-    """True when the side branch is already in the build's copy (a merge that landed)."""
+async def side_is_merged(copy: WorkCopy, side: SideCopy, *, base: str | None = None) -> bool:
+    """True when the side branch's work is already in the build's copy (a merge that landed).
+
+    With *base* (the commit the side started from) an untouched side — whose tip is
+    still that base and so trivially an ancestor — is not mistaken for merged work.
+    """
     try:
+        if base is not None:
+            tip = (await _git(copy.path, "rev-parse", side.branch)).strip()
+            if tip == base:
+                return False
         await _git(copy.path, "merge-base", "--is-ancestor", side.branch, "HEAD")
         return True
     except WorkCopyError:
