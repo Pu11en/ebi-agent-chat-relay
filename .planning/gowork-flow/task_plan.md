@@ -1,6 +1,6 @@
 # Go Work: Plan Once, Build Many Things
 
-**Latest scope correction:** Drew wants to preserve his existing planning/brainstorming style. The proposed replacement master-planning skill and its stage-transition interview were not accepted. Clarify the instructions connecting existing plans to execution; T17a-T17d remain unapproved proposals, not the next implementation direction.
+**Latest direction:** improve the existing planning experience and its execution handoff using selective prompt-engineering inspiration from the three cloned projects. Drew requested a real-plan walkthrough and improvements on both sides; long card displays usually go unread. The wholesale replacement skill remains unaccepted and uninstalled; prompt-refinement.md is the current focused draft.
 
 Check: uv run pytest tests/test_task_loop.py tests/test_loop_store.py tests/test_gowork_records.py tests/test_gowork_ending.py tests/test_work_copy.py -q
 Try: uv run pytest tests/test_task_loop.py -q
@@ -10,7 +10,7 @@ Done when: A local practice run proves dependencies, automatic worker sizing und
 ## 1. What Is Settled
 
 - **Draft for discussion, not a build launch.** Drew requested a research-backed plan followed by grilling.
-- **Planner requirement:** everyday brainstorming, question-answering and task-writing sessions should know this workflow automatically through shared instructions and a reusable skill.
+- **Planner requirement:** existing brainstorming, question-answering and task-writing should understand execution requirements through shared instructions or a focused supporting skill; preserve useful existing behavior and reduce reading burden.
 - Keep one master planning conversation, with separate small build tasks beneath it.
 - A business can have website, product and marketing plans; each can have smaller plans of its own.
 - Plan in detail before building; later small changes remain possible.
@@ -94,9 +94,9 @@ The Check command above is the existing baseline; every implementation task also
 - [ ] **T14: Show one master status in Discord.** Summarize running, waiting, blocked and ready-for-Drew tasks with the next relevant action. Needs: T04, T08, T10. Proof: mixed task states display accurately without requiring worker-thread reading.
 - [ ] **T15: Separate finished workers from Drew's review.** Keep results available after execution ends, using the chosen archive/retention policy and a local test handoff. Needs: T14 and retention decision. Proof: all workers are closed while the parent still says ready for Drew.
 - [ ] **T16: Report repeated workflow friction.** Extend existing run records with wait time, repair attempts, review outcomes and repeated owner questions. Needs: T04, T12. Proof: a saved sample produces reproducible counts; unavailable cost data stays unknown.
-- [ ] **T17a: Refine the master-planning skill.** Connect brainstorming, saved answers, one-question grilling and detailed task-writing; adapt the inspected OSS patterns to Drew's workflow. Needs: planning-stage transition decision. Proof: a reviewed skill draft covers each stage without repeating settled questions; initial draft already exists but is not installed.
+- [ ] **T17a: Refine existing planner prompts.** Preserve the current conversation style and saved answers while showing short, concrete examples instead of routine full-plan cards; add clear worker-task preparation using selected OSS patterns. Needs: preferred short interaction format. Proof: real-plan examples remain complete internally, readable in chat and free of repeated settled questions; focused draft exists in prompt-refinement.md.
 - [ ] **T17b: Define compatible planning templates.** Capture the master record, decisions, ownership, dependencies and completion evidence; export only formats the installed runner actually supports. Needs: T17a. Proof: business examples have full requirement coverage and unsupported dependency behavior is clearly rejected or serialized through a verified supported path.
-- [ ] **T17c: Route planning sessions to the shared skill.** Install once in the shared skills directory and add a short canonical global rule; reconcile conflicting question-format instructions and preserve small-fix behavior. Needs: T17a, T17b. Proof: all three harnesses discover the same skill; no duplicate global configuration or new hooks.
+- [ ] **T17c: Connect planner instructions and execution context.** Put the agreed execution guidance in the existing shared instructions or a small supporting skill; pass complete task inputs/outputs/ownership to the grouping helper, not just titles. Needs: T17a, T17b. Proof: all three harnesses use the same guidance and grouping receives relevant task details; runtime dependency enforcement remains code-backed.
 - [ ] **T17d: Evaluate planner behavior.** Check the proposed scenarios for new plans, resumed answers, ownership conflicts and tiny changes; compare live behavior only within separately authorized evaluation scope. Needs: T17b, T17c and T03 for executable dependency checks. Proof: saved evidence distinguishes static validation from actual model behavior and records any failures.
 - [ ] **T18: Provide a local practice run.** Use simulated workers and machine readings to demonstrate more than ten ready tasks, automatic growth and backoff, dependent tasks, two competing plans, a failure, a restart and a plan edit. Needs: T06a-T06c, T07-T16 and T17a-T17d. Proof: no paid model calls or real stress test, all assertions pass, and final results remain available for review.
 

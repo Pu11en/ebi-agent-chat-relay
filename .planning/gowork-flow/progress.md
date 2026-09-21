@@ -31,8 +31,10 @@
 
 ## Next Turn
 
-- Preserve Drew's existing planning style. He rejected the new generic planning-workflow direction; do not ask the stage-transition question again or install the draft.
-- Clarify whether the wanted execution connection belongs in existing planner instructions, the executor, or both, using a real existing plan as evidence.
+- Drew now wants improvements to the existing planning experience, selective prompt inspiration from all three clones, a real-plan walkthrough, and improvements to both planner and executor. Do not treat that as acceptance of the wholesale replacement skill.
+- Long card displays usually go unread. Keep detailed artifacts internal by default in this discussion and show only the current short example or decision.
+- Created prompt-refinement.md with planner/executor instruction drafts and a walkthrough of the existing six-step report plan; no live prompt installation, worker launch or model evaluation.
+- Current next question: which short interaction format helps most; capacity priority and execution policies remain open.
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.
 - Keep alternatives open until answered; do not launch the draft as a build plan.
