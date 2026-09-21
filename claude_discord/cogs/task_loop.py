@@ -1211,6 +1211,7 @@ class TaskLoopCog(commands.Cog):
                     lessons,
                 ),
             )
+        await self._archive_finished_worker_thread(running)
 
         def is_verdict(text: str) -> bool:
             """Keep, throw away or a bare "fix". Anything else is a normal chat."""
@@ -1308,6 +1309,11 @@ class TaskLoopCog(commands.Cog):
                 return "kept"
         finally:
             running.in_review = False
+
+    async def _archive_finished_worker_thread(self, running: _Running) -> None:
+        """Hide a finished worker thread once its result card is in the main thread."""
+        with contextlib.suppress(Exception):
+            await running.thread.edit(archived=True, reason="go-work finished")
 
     async def _park(self, running: _Running, outcome: LoopOutcome) -> str:
         """A build that stopped short waits for the person. Returns "again" or "gone"."""

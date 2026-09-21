@@ -417,6 +417,25 @@ class TestEnding:
         thread.delete.assert_awaited()
         assert cog._store.all() == []
 
+    async def test_finished_worker_archives_before_waiting_for_verdict(self, repo: Path) -> None:
+        cog, _chat, thread = _cog_with_chat()
+        thread.edit = AsyncMock()
+        thread.delete = AsyncMock()
+        channel = self._channel()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        for _ in range(500):
+            if cog.running and cog.running[0].finished:
+                break
+            await asyncio.sleep(0.01)
+
+        assert cog.running and cog.running[0].finished
+        thread.edit.assert_awaited_with(archived=True, reason="go-work finished")
+        thread.delete.assert_not_awaited()
+
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+
     async def test_after_the_build_the_thread_is_a_normal_chat(self, repo: Path) -> None:
         cog, chat, thread = _cog_with_chat()
         thread.delete = AsyncMock()
