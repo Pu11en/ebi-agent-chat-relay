@@ -38,9 +38,11 @@ from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
 from ..agent_router import AgentRoute, parse_agent_routes
+from ..catalog_service import entry_to_dict, project_to_dict, resolution_to_dict
 from ..discord_ui.file_sender import send_file_blobs
 from ..handoff_status import load_handoff_status, render_handoff_status
 from ..lounge import length_hint
+from ..project_catalog import DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, RootStatus, normalize_token
 from ..project_lookup_worker import (
     build_project_lookup_prompt,
     project_lookup_harness,
@@ -104,6 +106,84 @@ _MAX_THREAD_MESSAGE_CHARS = 2000
 # Cap on a relayed message. A relay is a short coordination note ("I started at
 # 13:02 on branch X, stand down"), not a payload channel.
 _MAX_RELAY_TEXT_CHARS = 4000
+# Bounds on what a catalog query may carry: a folder name or an owner phrase,
+# never a document. Anything larger is refused before the catalog is asked.
+_CATALOG_TEXT_MAX = 200
+_CATALOG_OWNER_MAX = 64
+_CATALOG_KEY_MAX = 512
+
+
+def _catalog_text(value: object, *, field: str, required: bool) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    text = value.strip()
+    if required and not text:
+        raise ValueError(f"{field} is required")
+    if len(text) > _CATALOG_TEXT_MAX:
+        raise ValueError(f"{field} must be at most {_CATALOG_TEXT_MAX} characters")
+    if any(ch < " " for ch in text):
+        raise ValueError(f"{field} must not contain control characters")
+    return text
+
+
+def _catalog_owner(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("owner must be a string")
+    owner = value.strip()
+    if not owner:
+        return None
+    if len(owner) > _CATALOG_OWNER_MAX:
+        raise ValueError(f"owner must be at most {_CATALOG_OWNER_MAX} characters")
+    # Same rule the identity uses: at least one letter or digit.
+    normalize_token(owner, kind="owner")
+    return owner
+
+
+def _catalog_limit(value: str | None) -> int:
+    if value is None or not value.strip():
+        return DEFAULT_QUERY_LIMIT
+    try:
+        limit = int(value)
+    except ValueError:
+        raise ValueError("limit must be an integer") from None
+    if not 1 <= limit <= MAX_QUERY_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_QUERY_LIMIT}")
+    return limit
+
+
+def _catalog_flag(value: str | None, *, field: str) -> bool:
+    if value is None:
+        return False
+    lowered = value.strip().lower()
+    if lowered in ("1", "true", "yes"):
+        return True
+    if lowered in ("", "0", "false", "no"):
+        return False
+    raise ValueError(f"{field} must be 1 or 0")
+
+
+def _catalog_user(guild: str | None, user: str | None) -> tuple[int | None, int | None]:
+    if guild is None and user is None:
+        return None, None
+    if guild is None or user is None:
+        raise ValueError("guild_id and user_id must be given together")
+    try:
+        return int(guild), int(user)
+    except ValueError:
+        raise ValueError("guild_id and user_id must be integers") from None
+
+
+def _root_status_to_dict(status: RootStatus) -> dict[str, Any]:
+    return {
+        "key": status.root.key,
+        "label": status.root.label,
+        "availability": status.availability.value,
+        "reason": status.reason,
+    }
 
 
 def _serialize_thread_message(message: Any) -> dict[str, object]:
@@ -405,6 +485,11 @@ class ApiServer:
             "/api/agents/{agent_id}/project-lookup", self.relay_agent_project_lookup
         )
         self.app.router.add_post("/api/project-lookup", self.project_lookup)
+        # Shared project catalog (requires project_catalog): bounded metadata
+        # only, never a folder's contents. Local app only — never external.
+        self.app.router.add_get("/api/projects", self.list_projects)
+        self.app.router.add_post("/api/projects/resolve", self.resolve_project)
+        self.app.router.add_get("/api/projects/{key}", self.get_project)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
         # Generic spawn metadata: which parent a thread belongs to and the
@@ -1498,6 +1583,94 @@ class ApiServer:
         if isinstance(registry, SessionRegistry):
             return registry.list_active()
         return []
+
+    # ------------------------------------------------------------------
+    # Shared project catalog — the one query surface every harness uses
+    # ------------------------------------------------------------------
+
+    async def list_projects(self, request: web.Request) -> web.Response:
+        """GET /api/projects — bounded list/search of this computer's catalog.
+
+        Query: ``q`` (name substring, may carry an owner phrase), ``owner``,
+        ``limit`` (1..MAX_QUERY_LIMIT), ``refresh`` (``1``/``0``) and, for a
+        personal view, both ``guild_id`` and ``user_id``. Answers with project
+        metadata (identity, label, availability, actions) plus root
+        availability. A remote or unknown owner yields no projects — reaching
+        another computer is the handoff subsystem's job, not a directory
+        listing's.
+        """
+        catalog = self.project_catalog
+        if catalog is None:
+            return web.json_response({"error": "project catalog is not configured"}, status=503)
+        params = request.query
+        try:
+            text = _catalog_text(params.get("q", ""), field="q", required=False)
+            owner = _catalog_owner(params.get("owner"))
+            limit = _catalog_limit(params.get("limit"))
+            refresh = _catalog_flag(params.get("refresh"), field="refresh")
+            guild_id, user_id = _catalog_user(params.get("guild_id"), params.get("user_id"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        listing = await catalog.list_projects(
+            guild_id, user_id, query=text, owner=owner, limit=limit, refresh=refresh
+        )
+        return web.json_response(
+            {
+                "computer": catalog.local_qualifier,
+                "projects": [entry_to_dict(entry) for entry in listing.entries],
+                "roots": [_root_status_to_dict(status) for status in listing.roots],
+                "truncated": listing.truncated,
+            }
+        )
+
+    async def resolve_project(self, request: web.Request) -> web.Response:
+        """POST /api/projects/resolve — one typed resolution for one request.
+
+        Body: ``{"text": "...", "owner": "..."}`` (owner optional). The answer
+        is one of ``local_available`` (with the canonical path),
+        ``local_unavailable``, ``remote_target`` (owner-qualified, deliberately
+        path-free), ``ambiguous_owner`` (ask, never guess) or ``no_match``.
+        """
+        catalog = self.project_catalog
+        if catalog is None:
+            return web.json_response({"error": "project catalog is not configured"}, status=503)
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        try:
+            text = _catalog_text(data.get("text"), field="text", required=True)
+            owner = _catalog_owner(data.get("owner"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        result = await catalog.resolve(text, owner=owner)
+        return web.json_response(resolution_to_dict(result))
+
+    async def get_project(self, request: web.Request) -> web.Response:
+        """GET /api/projects/{key} — revalidate one identity this computer issued.
+
+        404 for a key this computer never issued (another computer, an unknown
+        root, a malformed key). A known project whose folder is gone or which
+        resolves outside its root is answered with its availability and
+        ``working_directory: null`` — a caller cannot bind what is not there.
+        """
+        catalog = self.project_catalog
+        if catalog is None:
+            return web.json_response({"error": "project catalog is not configured"}, status=503)
+        key = request.match_info.get("key", "")
+        if len(key) > _CATALOG_KEY_MAX:
+            return web.json_response({"error": "key is too long"}, status=400)
+        project = await catalog.find(key)
+        if project is None:
+            return web.json_response({"error": "unknown catalog project"}, status=404)
+        payload = project_to_dict(project)
+        directory = project.working_directory
+        payload["working_directory"] = str(directory) if directory is not None else None
+        payload["locally_verified"] = True
+        return web.json_response(payload)
 
     async def project_lookup(self, request: web.Request) -> web.Response:
         """POST /api/project-lookup — spawn a read-only worker in Drew's projects root."""

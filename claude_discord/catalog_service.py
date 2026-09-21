@@ -247,9 +247,9 @@ class ProjectCatalogService:
     # -- personal metadata ---------------------------------------------------
 
     async def _user_metadata(
-        self, guild_id: int, user_id: int
+        self, guild_id: int | None, user_id: int | None
     ) -> Mapping[ProjectIdentity, ProjectMetadata]:
-        if self._metadata is None:
+        if self._metadata is None or guild_id is None or user_id is None:
             return {}
         await self.ensure_migrated(guild_id, user_id)
         return await self._metadata.list_for_user(guild_id, user_id)
@@ -337,10 +337,11 @@ class ProjectCatalogService:
 
     async def list_projects(
         self,
-        guild_id: int,
-        user_id: int,
+        guild_id: int | None = None,
+        user_id: int | None = None,
         *,
         query: str = "",
+        owner: str | None = None,
         include_hidden: bool = False,
         limit: int = DEFAULT_QUERY_LIMIT,
         refresh: bool = False,
@@ -348,9 +349,11 @@ class ProjectCatalogService:
         """Every available project for this user: favorites first, then by name.
 
         Hidden projects are omitted from a browse (empty ``query``) and shown,
-        flagged, when the user searched for them or asked for them.
+        flagged, when the user searched for them or asked for them.  Without a
+        user (the control plane asked on its own behalf) the listing carries no
+        personal metadata at all.
         """
-        snapshot = await self.search(query, limit=max(limit, 1), refresh=refresh)
+        snapshot = await self.search(query, owner=owner, limit=max(limit, 1), refresh=refresh)
         metadata = await self._user_metadata(guild_id, user_id)
         entries = self._entries(snapshot.projects, metadata)
         if not include_hidden and not query.strip():
