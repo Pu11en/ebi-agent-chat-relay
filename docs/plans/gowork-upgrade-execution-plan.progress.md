@@ -862,3 +862,42 @@ T11 is complete (T11a–T11c).
   `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors). Security: the demo
   runs `git` and the acceptance checks as argv lists (no shell); the only file it writes are
   under its own temporary root; `_quick_ai` is stubbed so no `claude -p` is spawned.
+
+## T32 — Verify compatibility and document local activation
+
+- Final cross-module regression, all on this branch, results copied into
+  `docs/gowork-upgrade-activation.md` ("Saved verification commands and results"):
+  Check 512 passed (~110 s); full suite `bash scripts/test-clean-env.sh tests/ -q -p
+  no:cacheprovider` 5606 passed, 37 skipped (3 min 40 s); `ruff check` clean; `ruff format
+  --check` 278 files formatted; `pyright claude_discord/ claude_code_core/` 0 errors (6
+  pre-existing warnings); `python -m claude_discord.gowork_demo` 11 × ✓ in 7 s, exit 0;
+  `python -m claude_code_core.gowork_contracts …/contracts` 8 cases, 0 failed. The only
+  regressions this pass surfaced were the two archive gaps already fixed under T31; nothing
+  else failed and nothing was skipped to get there (the 37 skips are the suite's existing
+  platform/optional-dependency skips).
+- New `docs/gowork-upgrade-activation.md`: what is implemented and checked versus not yet
+  live (the running bot on `main`, the real instruction files, live model behaviour, the
+  live host's readings, the planning-thread → manifest-copy edit route); the saved commands
+  and numbers; a requirement → test map with one row per ticked task (T01–T32, T11a–c)
+  naming existing test files/functions and a status that is never "live"; backup and
+  migration of the state directory (`gowork-loops.json`, `builds/`, `gowork-admission.json`,
+  `gowork-blockers.json`, `gowork-friction.jsonl`, `CCDB_GOWORK_STATE`/`CCDB_GOWORK_ROOT`,
+  `LoopStore.migrate()` on first resume, no schema change); shared-host coordination (one
+  controller per process, neighbours seen through measured readings, `MAX_CONCURRENT_SESSIONS`
+  as the fixed ceiling, separate state dirs for two bots, drain counts sessions not parked
+  builds); instruction install via `gowork_guidance plan/stage/check --home ~`; live
+  activation steps (PR merge, backup, the bot's own restart path or `make dev-on`, the log
+  line to look for, one small template plan to watch); rollback (code revert, state
+  restore, `MAX_CONCURRENT_SESSIONS=10`, `gowork_guidance rollback --home ~`).
+- Tests: `tests/gowork_upgrade/test_activation_notes.py` (3): every ticked task in the plan
+  has a row whose tests exist (files and `::function` names are checked on disk) and whose
+  status is one of the two defined ones; the required sections, the real commands, numeric
+  results and every state file name are present, and "not deployed" / "no bot was
+  restarted" are stated; the "Not yet live" list is a list and never says something is
+  deployed, activated or installed on the live host.
+- Boundary, stated plainly: nothing was deployed, no bot was restarted, no instruction file
+  outside temporary homes was touched, nothing was pushed. T32 is ticked for the
+  verification and the notes; live activation is the operator's step and is not claimed.
+- Implementation commit: see the T32 line in `git log`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (512 passed), the full suite
+  (5606 passed, 37 skipped), `ruff check`, `ruff format`, `pyright` (0 errors).

@@ -290,7 +290,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: deterministic exit status/assertions fail if behavior regresses; short output names
   what/why and pending limitations. Update Try below to the actual standalone demo command.
 
-- [ ] T32: Execution spine, only after T31: verify compatibility and document local activation.
+- [x] T32: Execution spine, only after T31: verify compatibility and document local activation.
   Scope: final cross-module regression and deployment/rollback notes, not deployment.
   Run Check, broader tests affected by integration, lint/format/type checks and the demo;
   resolve actual regressions within this task or explicit small follow-ups, never hide
