@@ -99,6 +99,10 @@ class BridgeComponents:
             api_server.summary_repo = self.summary_repo
         if self.handoff_repo is not None:
             api_server.handoff_repo = self.handoff_repo
+        if self.settings_repo is not None:
+            # Persists the generic spawn metadata (parent thread, correlation id)
+            # behind /api/spawn and /api/correlations/{id}.
+            api_server.settings_repo = self.settings_repo
         api_server.session_repo = self.session_repo
 
 
