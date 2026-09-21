@@ -178,7 +178,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: concurrent results serialize, combined failure blocks dependents, conflict keeps
   both versions for repair, and crash after merge can be reconciled without merging twice.
 
-- [ ] T16: Execution spine, only after T15: require real check and review evidence.
+- [x] T16: Execution spine, only after T15: require real check and review evidence.
   Scope: existing verification/reviewer adapters. Every task has tests/checks; balanced
   adds independent AI review for difficult changes; retain explicit cheap/careful modes.
   Missing/unavailable/failed required review is pending or blocked, never approval.

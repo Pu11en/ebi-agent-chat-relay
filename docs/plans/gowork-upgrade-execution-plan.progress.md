@@ -387,3 +387,22 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `09a9709`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (421 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T16 — Require real check and review evidence
+
+- Core: `parse_review_verdict(text)` → ("approve" | "changes" | "none", detail); the legacy
+  `parse_review` (silence = approve) stays for checkbox builds.
+- Cog: `_combined_checks` returns "no runnable check" (not accepted) when neither the task's
+  acceptance check nor a plan `Check:` line can run. `_review_manifest_task` keeps the modes:
+  cheap → no review; balanced → review only when `_is_hard` says so; careful → every task.
+  A required review with no reviewer AI, a run failure, or no verdict is "none"; APPROVE
+  accepts; CHANGES blocks with the reviewer's reason. The verdict is appended to the task's
+  check evidence in the ledger. The reviewer runs in the build thread on a "review" slot
+  (T08 reserve) and the thread's harness/model are restored afterwards.
+- Tests: `test_manifest_build_cog.py` (+4): ordinary balanced task accepted with no review
+  call; a hard task with no reviewer configured is blocked with its commit kept; in careful
+  mode CHANGES blocks, APPROVE accepts and a crashed review blocks; a task whose acceptance
+  check is "none" is blocked with "no runnable check".
+- Implementation commit: `176d6ab`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (425 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).
