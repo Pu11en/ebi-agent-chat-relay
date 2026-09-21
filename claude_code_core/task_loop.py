@@ -876,7 +876,7 @@ def parse_pick(reply: str | None, count: int) -> int | None:
 
 
 #: At most this many steps of a build run at the same time.
-MAX_PARALLEL = 3
+MAX_PARALLEL = 10
 
 
 def group_prompt(open_steps: list[str]) -> str:
