@@ -73,3 +73,9 @@
   ordered tasks and the Check command, with no accidental owner-action task labels.
 - The old report worker's Discord channel is no longer available (API returned Unknown
   Channel); its historical session row is not evidence of an active conflicting build.
+- Launch submitted to POST /api/loops with this planning thread, balanced mode, and no
+  selected harness/model. Receipt: HTTP 202, status starting. The existing runner closed
+  its previous same-repo build and posted the AI picker in this thread, message
+  1551482009631719516. This is awaiting Drew's AI choice, NOT evidence workers started.
+- Execution source committed at 31c884f. Do not submit a duplicate build request on
+  the next preference reply; the bot's current picker owns the model selection.
