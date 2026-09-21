@@ -64,6 +64,7 @@ from .frontend import (
     ThreadKey,
     derive_thread_key,
 )
+from .gowork_admission import AdmissionController, AdmissionSnapshot, Reservation
 from .gowork_plan import (
     OwnershipConflict,
     PlanIdentity,
@@ -200,6 +201,9 @@ __all__ = [
     "open_build_state",
     "ReadyTask",
     "HostProbe",
+    "AdmissionController",
+    "AdmissionSnapshot",
+    "Reservation",
     "Pressure",
     "ResourceSnapshot",
     "WorkerPeaks",
