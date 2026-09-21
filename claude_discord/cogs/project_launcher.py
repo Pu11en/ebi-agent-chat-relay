@@ -14,6 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from ..catalog_service import ProjectCatalogService
 from ..category_scope import category_allowed
 from ..command_surface import CONTROL_CENTER_BUTTONS, retirement_enabled
 from ..database.repository import SessionRepository
@@ -549,6 +550,7 @@ class ProjectLauncherCog(commands.Cog):
         backend_factory: Any | None = None,
         lifecycle: SessionLifecycleService | None = None,
         settings_home: SettingsHome | None = None,
+        catalog: ProjectCatalogService | None = None,
     ) -> None:
         self.bot = bot
         self.repo = repo
@@ -566,6 +568,9 @@ class ProjectLauncherCog(commands.Cog):
         # Open only unarchives — it never falls back to deleting anything.
         self.lifecycle = lifecycle
         self._settings_home = settings_home
+        # The shared project catalog (task 4.1 feeds the New session menus
+        # from it). Absent, the launcher keeps its raw-path favorites.
+        self.catalog = catalog
         self._favorites_lock = asyncio.Lock()
         self._panel_lock = asyncio.Lock()
         self._view: LauncherView | None = None

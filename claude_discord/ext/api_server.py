@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     import discord
     from discord.ext.commands import Bot
 
+    from ..catalog_service import ProjectCatalogService
     from ..database.claims_repo import ClaimRepository
     from ..database.handoff_repo import HandoffRepository
     from ..database.ingest_repo import IngestResultRepository
@@ -318,6 +319,10 @@ class ApiServer:
         # correlation id); wired by BridgeComponents.apply_to_api_server.
         # Without it the fields are validated and echoed but not persisted.
         self.settings_repo: SettingsRepository | None = None
+        # The shared project catalog behind /api/projects; wired by
+        # BridgeComponents.apply_to_api_server. Without it the catalog
+        # endpoints answer 503 rather than scanning anything on their own.
+        self.project_catalog: ProjectCatalogService | None = None
         # Where Claude Code transcripts live, for /api/search?body=1. Falls back
         # to the standard ~/.claude/projects location so body search is
         # Zero-Config wherever Claude Code has run.

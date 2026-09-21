@@ -718,3 +718,53 @@ async def test_launcher_home_and_workers_are_separate(tmp_path, monkeypatch):
     assert launcher.channel_id == 500
     assert launcher.session_channel_id == 600
     assert cogs["ClaudeChatCog"]._channel_ids == {100, 600}
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_shares_one_project_catalog_with_every_consumer(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built-in cogs, the API server and custom Cogs all see the same catalog instance."""
+    from claude_discord.catalog_service import ProjectCatalogService
+    from claude_discord.cogs.project_launcher import ProjectLauncherCog
+
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
+    bot = _make_bot()
+    runner = _make_runner()
+    runner.working_dir = str(tmp_path)
+    runner.api_port = None
+    api_server = MagicMock()
+    api_server.port = 8080
+    api_server.api_secret = None
+
+    components = await setup_bridge(
+        bot,
+        runner,
+        api_server=api_server,
+        session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+        claude_channel_id=12345,
+        enable_scheduler=False,
+    )
+
+    catalog = components.project_catalog
+    assert isinstance(catalog, ProjectCatalogService)
+    launcher = next(
+        call.args[0]
+        for call in bot.add_cog.call_args_list
+        if isinstance(call.args[0], ProjectLauncherCog)
+    )
+    assert launcher.catalog is catalog
+    assert api_server.project_catalog is catalog
+    assert [str(root.path) for root in catalog.roots] == [str(tmp_path)]
+    assert catalog.metadata is not None
+
+
+def test_apply_to_api_server_wires_the_project_catalog() -> None:
+    from claude_discord.catalog_config import CatalogConfig
+    from claude_discord.catalog_service import ProjectCatalogService
+
+    catalog = ProjectCatalogService(CatalogConfig.from_env({}, fallback_root="/tmp"), None)
+    components = BridgeComponents(session_repo=MagicMock(), project_catalog=catalog)
+    api_server = MagicMock()
+    components.apply_to_api_server(api_server)
+    assert api_server.project_catalog is catalog
