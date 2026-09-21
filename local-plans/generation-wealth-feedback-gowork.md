@@ -75,7 +75,7 @@ Expected final files:
   - Avoid tiny dense text.
   - Write `Generation-Wealth-feedback.pdf` and update `status.json`.
 
-- [ ] Review the PDF and prepare the Discord-ready summary.
+- [x] Review the PDF and prepare the Discord-ready summary.
   - Inspect the PDF for missing pages, unreadable formatting, broken characters, awkward spacing, and whether the report answers Drew's actual request.
   - Write `review-notes.md` with what changed, what is strong, what still needs Drew's taste check, and any transcript gaps.
   - Append the final PDF path to `/home/drewp/main-projects/automate 247/.ccdb-attachments-1551392809292931072`.

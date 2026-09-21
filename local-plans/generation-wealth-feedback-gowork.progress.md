@@ -81,3 +81,25 @@
 - Open note: this task intentionally created only the report source. The next task will
   lay it out as `Generation-Wealth-feedback.pdf` and should preserve the compact top-asks
   section at the front.
+
+## Task 5 — Create the first PDF
+
+- Completed: 2026-09-20 CDT
+- What changed: converted the report draft into a polished 10-page US Letter PDF with
+  readable margins, clear heading hierarchy, highlighted reply boxes, running headers,
+  and page numbers. The compact list of eight asks begins on page 2.
+- Output: `Generation-Wealth-feedback.pdf` in the requested Generation Wealth feedback
+  folder; `status.json` now lists five completed artifacts and points to the PDF review
+  notes next.
+- Content check: the PDF contains all eight numbered asks, eight `Source and date`
+  entries, eight ready-to-send replies, and the September 18–20 source dates. Visual
+  spot-checks of pages 1, 2, 4, and 10 found no clipping or broken layout.
+- PDF details: 10 pages, 45,037 bytes, SHA-256
+  `3b8a068ed8334cd7c895df34645ab9bb32270a537c60a0d3348302a36b90f3b7`.
+- Plan check: `check_progress.py` passed with five listed artifacts.
+- Project tests: all 3,456 tests passed with 15 warnings and 84% coverage after removing
+  live bot deployment settings from the test environment. The initial inherited-environment
+  run reproduced the same 28 unrelated configuration-dependent failures recorded earlier.
+- Work commit: `390f818`; this completion record is committed separately.
+- Open note: the next task still needs the full PDF review, `review-notes.md`, and the
+  Discord attachment entry; those were intentionally not started here.
