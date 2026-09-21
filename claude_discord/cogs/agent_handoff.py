@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from discord.ext.commands import Bot
 
     from ..database.handoff_repo import HandoffRepository
+    from ..handoff_projects import ProjectResolver
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ class AgentHandoffCog(commands.Cog):
         chat: Any | None = None,
         fallback_lookup_root: str | None = None,
         start_loops: bool = True,
+        project_resolver: ProjectResolver | None = None,
     ) -> None:
         self.bot = bot
         self._repo = repo
@@ -104,6 +106,7 @@ class AgentHandoffCog(commands.Cog):
             fallback_lookup_root=fallback_lookup_root,
             thread_lookup=self.lookup_channel,
             on_transition=self._poster,
+            resolver=project_resolver,
         )
         if self._executor.on_transition is None:
             # An injected executor still reports through this Cog's poster,

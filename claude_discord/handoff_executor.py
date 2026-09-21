@@ -466,12 +466,17 @@ def build_handoff_executor(
     on_transition: TransitionHook | None = None,
     session_selector: SessionSelector | None = None,
     deterministic: Sequence[DeterministicOperation] = (),
+    resolver: ProjectResolver | None = None,
 ) -> HandoffExecutor:
-    """The executor an instance runs with, configured from its environment."""
+    """The executor an instance runs with, configured from its environment.
+
+    ``resolver`` overrides the environment-built one — the shared project
+    catalog supplies its own so an inbound locator resolves as New session would.
+    """
     return HandoffExecutor(
         repo=repo,
         local_agent_id=local_agent_id,
-        resolver=build_project_resolver(fallback_lookup_root=fallback_lookup_root),
+        resolver=resolver or build_project_resolver(fallback_lookup_root=fallback_lookup_root),
         policy=RecipientPolicy.from_env(),
         thread_lookup=thread_lookup,
         on_transition=on_transition,

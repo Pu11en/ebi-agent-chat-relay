@@ -22,7 +22,7 @@ Try: `make dev-on`
 ## 4. Discord and Handoff Integration
 
 - [x] 4.1 **Depends on 1.2, 2.1, and 3.1; owner: launcher adapter** — Replace `ProjectLauncherCog`'s normal project suggestions with catalog list/search results while preserving explicit Browse, session binding, and pre-launch path validation; verify launcher tests cover favorite, hidden, recent, stale, duplicate-name, and no-model-call behavior.
-- [ ] 4.2 **Depends on trusted-agent-handoffs interface; owner: remote adapter** — Convert remote resolution results into compact owner-qualified handoff requests and ingest timestamped remote catalog replies; verify contract tests never return a remote path as locally usable and surface offline queue state.
+- [x] 4.2 **Depends on trusted-agent-handoffs interface; owner: remote adapter** — Convert remote resolution results into compact owner-qualified handoff requests and ingest timestamped remote catalog replies; verify contract tests never return a remote path as locally usable and surface offline queue state.
 - [x] 4.3 **Owner: machine profile integration** — Load shared profile aliases separately from machine roots/capabilities and filter unsupported actions; verify configuration tests show DrewAI and iMac share behavior while keeping distinct paths and exceptions.
 
 ## 5. Verification and Safe Activation

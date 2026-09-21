@@ -592,6 +592,15 @@ async def setup_bridge(
         logger.exception("Handoff configuration is malformed; trusted handoffs stay disabled")
         handoff_config = None
     if handoff_config is not None:
+        # With a catalog, an inbound locator resolves through the same approved
+        # roots New session uses (plus the env-configured owner roots and pins).
+        project_resolver = None
+        if project_catalog is not None:
+            from .catalog_handoff import catalog_project_resolver
+
+            project_resolver = catalog_project_resolver(
+                project_catalog, fallback_lookup_root=runner.working_dir
+            )
         await bot.add_cog(
             AgentHandoffCog(
                 bot,
@@ -599,6 +608,7 @@ async def setup_bridge(
                 config=handoff_config,
                 chat=chat_cog,
                 fallback_lookup_root=runner.working_dir,
+                project_resolver=project_resolver,
             )
         )
         logger.info(
