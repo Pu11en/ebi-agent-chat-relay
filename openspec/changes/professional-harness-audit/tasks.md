@@ -17,7 +17,7 @@ Try: `uv run python -m extensions.harness_audit.cli audit --machine drewai --har
 ## 3. Deterministic findings
 
 - [x] 3.1 **Depends on: 1.1, 1.3, 2.2, 2.3; owns: `extensions/harness_audit/rules.py`, `tests/test_harness_audit_rules.py`.** Implement checks for duplicate content, wrong scope, exact size/token-estimate labels, permissions, precedence/loading, dead configuration, and project-specific global content; verify every fixture finding cites local evidence and official guidance when required.
-- [ ] 3.2 **Depends on: 3.1; owns: `extensions/harness_audit/classify.py`, `tests/test_harness_audit_classify.py`.** Assign exactly one Keep/Fix/Move to project/Load only when needed/Remove verdict with fixed precedence and safe unknown handling; verify incomplete evidence can never produce Remove.
+- [x] 3.2 **Depends on: 3.1; owns: `extensions/harness_audit/classify.py`, `tests/test_harness_audit_classify.py`.** Assign exactly one Keep/Fix/Move to project/Load only when needed/Remove verdict with fixed precedence and safe unknown handling; verify incomplete evidence can never produce Remove.
 - [ ] 3.3 **Depends on: 2.2, 2.3, 3.2; owns: `extensions/harness_audit/parity.py`, `tests/test_harness_audit_parity.py`.** Compare canonical portable behavior and named harness/machine adapters across DrewAI and iMac; verify unsupported subscription/model/tool differences are exceptions rather than false parity failures.
 
 ## 4. Reports and reversible cleanup

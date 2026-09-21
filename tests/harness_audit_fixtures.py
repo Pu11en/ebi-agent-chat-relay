@@ -89,7 +89,11 @@ def fake_home(tmp_path: Path, *, with_transcripts: bool = False) -> DiscoveryRoo
             home / ".claude" / "CLAUDE.md": home / "AGENTS.md",
             home / ".codex" / "AGENTS.md": home / "AGENTS.md",
         },
-        modes={home / ".claude" / "settings.json": 0o600, home / "AGENTS.md": 0o644},
+        modes={
+            home / ".claude" / "settings.json": 0o600,
+            home / ".codex" / "config.toml": 0o600,
+            home / "AGENTS.md": 0o644,
+        },
     )
 
 
