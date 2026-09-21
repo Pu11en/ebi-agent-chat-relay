@@ -284,10 +284,18 @@ class TestIntegrationLockPerLoop:
 
         from claude_code_core.work_copy import integration_lock
 
-        first = asyncio.run(_lock_id(integration_lock, tmp_path))
-        second = asyncio.run(_lock_id(integration_lock, tmp_path))
-        assert first != second
+        first = asyncio.run(_usable_lock(integration_lock, tmp_path))
+        second = asyncio.run(_usable_lock(integration_lock, tmp_path))
+        # Compare the objects, not id(): the first loop's lock can be freed
+        # and its address reused, which made an id() comparison flaky on 3.13.
+        assert first is not second
+        # _usable_lock also acquired and released each lock in its own loop,
+        # proving the second loop's lock works without hanging.
 
 
-async def _lock_id(integration_lock, repo: Path) -> int:  # noqa: ANN001
-    return id(integration_lock(repo))
+async def _usable_lock(integration_lock, repo: Path):  # noqa: ANN001, ANN201
+    """Return the repo's integration lock after acquiring/releasing it here."""
+    lock = integration_lock(repo)
+    await lock.acquire()
+    lock.release()
+    return lock
