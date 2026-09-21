@@ -211,3 +211,8 @@ recorded in the plan) — waits for Drew's yes. The harness-audit test failure a
 sandbox-only; if it ever fails in CI it is a real finding about the runner's `~/.claude`.
 
 Commit: (this commit)
+
+## Next time (from how this build went)
+- Task 3 (the deep debugging fix) should have been split into smaller checkpoints — 111 minutes to find a process-wide asyncio issue is a lot of time in one step, and breaking it into "reproduce," "identify root cause," and "implement fix" would have made progress visible sooner.
+- The read-only git in the sandbox (task 1) should have been caught in setup, not discovered after the actual fix was done — it blocked a completed task from being recorded.
+- Tasks 4 and the retry on task 1 suggest success criteria or intermediate milestones weren't always clear enough upfront, leading to restarts when progress reporting broke down.
