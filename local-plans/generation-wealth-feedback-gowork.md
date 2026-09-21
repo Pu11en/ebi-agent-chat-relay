@@ -69,7 +69,7 @@ Expected final files:
   - Use a stronger model only here if cheap drafting produces weak synthesis.
   - Write `report-draft.md` and update `status.json`.
 
-- [ ] Create the first PDF.
+- [x] Create the first PDF.
   - Convert `report-draft.md` into a polished PDF using local tooling such as ReportLab, WeasyPrint, Pandoc, or another installed converter.
   - Use readable margins, clear headings, page numbers if practical, and enough whitespace for review.
   - Avoid tiny dense text.
