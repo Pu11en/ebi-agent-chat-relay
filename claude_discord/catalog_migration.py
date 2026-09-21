@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
+from types import ModuleType
 from typing import Protocol
 
 from .database.project_catalog_repo import ProjectCatalogRepository
@@ -66,9 +68,22 @@ class MigrationReport:
     skipped: bool = False
 
 
+def _flavour(path: str) -> ModuleType:
+    """``ntpath`` for a Windows-looking path, else this host's ``os.path``.
+
+    A legacy favorite written on Windows must still map when the migration runs
+    on Linux (and in CI): ``posixpath`` would treat a drive-letter path as one opaque
+    segment. The choice is per string so mixed lists work.
+    """
+    if "\\" in path or (len(path) > 1 and path[1] == ":" and path[0].isalpha()):
+        return ntpath
+    return os.path
+
+
 def _normalize(path: str, *, case_insensitive: bool) -> str:
-    text = os.path.normpath(path.strip())
-    return os.path.normcase(text) if case_insensitive else text
+    flavour = _flavour(path)
+    text = flavour.normpath(path.strip())
+    return flavour.normcase(text) if case_insensitive else text
 
 
 def map_legacy_path(
@@ -87,11 +102,12 @@ def map_legacy_path(
     if not path or not path.strip():
         return None
     folded = os.name == "nt" if case_insensitive is None else case_insensitive
-    raw = os.path.normpath(path.strip())
+    flavour = _flavour(path)
+    raw = flavour.normpath(path.strip())
     if not PurePath(raw).is_absolute() and not (len(raw) > 1 and raw[1] == ":"):
         return None
-    parent = os.path.dirname(raw)
-    name = os.path.basename(raw)
+    parent = flavour.dirname(raw)
+    name = flavour.basename(raw)
     if not name or not parent:
         return None
     parent_key = _normalize(parent, case_insensitive=folded)
