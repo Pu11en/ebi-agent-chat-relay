@@ -57,7 +57,7 @@ and only after Drew says yes (GitHub is always last).
   full suite again under 3.12 (`.venv312`). Update the HANDOFF section of
   `docs/plans/v4.1.0-finish-all-builds.progress.md` with what changed and what is left.
 
-- [ ] 7. (Only after Drew says yes) Push to `release/v4.1.0`, watch `gh pr checks 22` until
+After the build (not a build task — only after Drew says yes): 7. Push to `release/v4.1.0`, watch `gh pr checks 22` until
   done, and dismiss any remaining test-only CodeQL alerts with the reason from task 4/5.
 
 ## How to try it
