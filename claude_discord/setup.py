@@ -97,6 +97,8 @@ class BridgeComponents:
             api_server.ingest_repo = self.ingest_repo
         if self.summary_repo is not None:
             api_server.summary_repo = self.summary_repo
+        if self.handoff_repo is not None:
+            api_server.handoff_repo = self.handoff_repo
         api_server.session_repo = self.session_repo
 
 

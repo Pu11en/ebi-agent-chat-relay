@@ -39,6 +39,7 @@ from claude_code_core.transcript_search import default_transcripts_root
 
 from ..agent_router import AgentRoute, parse_agent_routes
 from ..discord_ui.file_sender import send_file_blobs
+from ..handoff_status import load_handoff_status, render_handoff_status
 from ..lounge import length_hint
 from ..project_lookup_worker import (
     build_project_lookup_prompt,
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     from discord.ext.commands import Bot
 
     from ..database.claims_repo import ClaimRepository
+    from ..database.handoff_repo import HandoffRepository
     from ..database.ingest_repo import IngestResultRepository
     from ..database.lounge_repo import LoungeRepository
     from ..database.notification_repo import NotificationRepository
@@ -271,6 +273,7 @@ class ApiServer:
         self.ingest_repo = ingest_repo
         self.summary_repo = summary_repo
         self.claims_repo = claims_repo
+        self.handoff_repo: HandoffRepository | None = None
         # Where Claude Code transcripts live, for /api/search?body=1. Falls back
         # to the standard ~/.claude/projects location so body search is
         # Zero-Config wherever Claude Code has run.
@@ -347,6 +350,7 @@ class ApiServer:
         self.app.router.add_get("/api/sessions", self.list_sessions)
         self.app.router.add_get("/api/search", self.search_sessions)
         self.app.router.add_get("/api/agents", self.list_agents)
+        self.app.router.add_get("/api/handoffs/status", self.handoff_status)
         self.app.router.add_post("/api/agents/{agent_id}/message", self.relay_agent_message)
         self.app.router.add_post(
             "/api/agents/{agent_id}/project-lookup", self.relay_agent_project_lookup
@@ -541,6 +545,33 @@ class ApiServer:
                 "status": "degraded" if overdue else "ok",
                 "overdue_notifications": overdue,
                 "timestamp": datetime.now().isoformat(),
+            }
+        )
+
+    async def handoff_status(self, request: web.Request) -> web.Response:
+        """GET /api/handoffs/status — compact view of handoff jobs."""
+        if self.handoff_repo is None:
+            return web.json_response(
+                {"error": "Handoff ledger not configured (handoff_repo is None)"},
+                status=503,
+            )
+
+        recipient = request.rel_url.query.get("recipient")
+        try:
+            limit = int(request.rel_url.query.get("limit", "20"))
+        except ValueError:
+            return web.json_response({"error": "limit must be an integer"}, status=400)
+
+        summary = await load_handoff_status(
+            self.handoff_repo,
+            recipient=recipient.strip().lower() if recipient else None,
+            limit=limit,
+        )
+        return web.json_response(
+            {
+                "counts": summary.counts,
+                "items": [item.to_dict() for item in summary.items],
+                "text": render_handoff_status(summary),
             }
         )
 
