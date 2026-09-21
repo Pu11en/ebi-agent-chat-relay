@@ -44,3 +44,6 @@ htmlcov/
 # Logs (bot-generated, e.g. the optional rotating file log handler)
 logs/
 .uvcache/
+.uvbin/
+.venv312/
+.uvpython/
