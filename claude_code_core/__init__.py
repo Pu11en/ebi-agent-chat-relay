@@ -75,6 +75,7 @@ from .gowork_plan import (
     parse_plan_tree,
     render_plan_manifest,
 )
+from .gowork_schedule import ReadyTask, ready_tasks
 from .gowork_state import (
     BuildState,
     StaleAttemptError,
@@ -189,6 +190,8 @@ __all__ = [
     "TaskAttempt",
     "GoworkTaskStatus",
     "open_build_state",
+    "ReadyTask",
+    "ready_tasks",
     "Requirement",
     "TaskAssignment",
     "load_plan_tree",
