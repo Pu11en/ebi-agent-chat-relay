@@ -23,7 +23,7 @@ Try: `uv run python -m extensions.harness_audit.cli audit --machine drewai --har
 ## 4. Reports and reversible cleanup
 
 - [x] 4.1 **Depends on: 3.2, 3.3; owns: `extensions/harness_audit/report.py`, `tests/test_harness_audit_report.py`.** Render machine-readable and plain-language inventories, coverage gaps, evidence, verdicts, and token-impact measurements; verify a four-target fixture is complete and a missing target is plainly marked partial.
-- [ ] 4.2 **Depends on: 3.2; owns: `extensions/harness_audit/quarantine.py`, `tests/test_harness_audit_quarantine.py`.** Generate/apply/rollback quarantine manifests without permanent deletion; verify hash mismatch aborts, rollback restores fixtures, and Remove remains ineligible until affected target checks pass.
+- [x] 4.2 **Depends on: 3.2; owns: `extensions/harness_audit/quarantine.py`, `tests/test_harness_audit_quarantine.py`.** Generate/apply/rollback quarantine manifests without permanent deletion; verify hash mismatch aborts, rollback restores fixtures, and Remove remains ineligible until affected target checks pass.
 - [ ] 4.3 **Depends on: 4.1, 4.2; owns: `extensions/harness_audit/cli.py`, `extensions/harness_audit/__init__.py`, `tests/test_harness_audit_cli.py`.** Wire local audit, redacted export/import, compare, quarantine, verify, and rollback commands; verify default audit is read-only and no command changes effort, model, routing, or subscription settings.
 
 ## 5. Integrated verification
