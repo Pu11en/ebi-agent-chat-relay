@@ -24,6 +24,7 @@ from claude_discord.ai_setup_inventory import (
     EffectiveScope,
     HarnessAvailability,
     InventoryItem,
+    InventorySnapshot,
     InventorySource,
     ItemIdentity,
     Prerequisite,
@@ -422,3 +423,34 @@ class TestSetupWiring:
         assert any(entry.key == ENTRY_KEY for entry in components.settings_home.visible())
         # No inventory was collected merely by starting the bot.
         assert await cog.repo.load_snapshot(cog.computer()) is None
+
+
+class TestAskSetupAgentComparisons:
+    async def test_the_packet_names_how_stored_remote_snapshots_compare(
+        self, cog: MyAISetupCog, chat: MagicMock, repo: AISetupRepository
+    ):
+        mine = skill_item()
+        await repo.save_snapshot(
+            InventorySnapshot(computer="drewai", owner="drew", collected_at=NOW, items=(mine,))
+        )
+        theirs = InventoryItem(
+            **{
+                **{f.name: getattr(mine, f.name) for f in mine.__dataclass_fields__.values()},
+                "source": InventorySource(
+                    key="claude-home",
+                    computer="imac",
+                    label="Claude home",
+                    locator="~/.claude/skills/grilling/SKILL.md",
+                ),
+                "availability": (),
+            }
+        )
+        await repo.save_snapshot(
+            InventorySnapshot(computer="imac", owner="drew", collected_at=NOW, items=(theirs,))
+        )
+        event = interaction()
+        await cog.ask_setup_agent(event, mine, "Is the iMac copy the same?")
+        prompt = chat.spawn_session.await_args.kwargs["prompt"]
+        assert "Other computers:" in prompt
+        assert "- imac: Different content" in prompt  # no fingerprint on either → not parity
+        assert "Is the iMac copy the same?" in prompt

@@ -31,7 +31,9 @@ from discord.ext import commands
 from ..ai_setup_agent import build_setup_agent_packet
 from ..ai_setup_collector import CollectionContext, InventoryCollector
 from ..ai_setup_inventory import InventoryItem, InventorySnapshot, normalize_token
+from ..ai_setup_queries import InventoryFilter, compare_computers
 from ..ai_setup_redaction import RedactionError
+from ..ai_setup_remote import ComputerComparison
 from ..category_scope import category_allowed
 from ..database.ai_setup_repo import AISetupRepository
 from ..discord_ui.my_ai_setup import SetupViewContext, ViewState, render
@@ -203,8 +205,13 @@ class MyAISetupCog(commands.Cog):
         if channel is None:
             await _say(interaction, "Ask Setup Agent needs a text channel to open the session in.")
             return
-        packet = build_setup_agent_packet(item, question=question, computer=self.computer_name())
         await interaction.response.defer(ephemeral=True)
+        packet = build_setup_agent_packet(
+            item,
+            question=question,
+            computer=self.computer_name(),
+            comparisons=await self._comparisons_for(item),
+        )
         try:
             thread = await self.chat.spawn_session(
                 channel,
@@ -223,6 +230,29 @@ class MyAISetupCog(commands.Cog):
             f"Opened {getattr(thread, 'mention', 'a session')} with the item's safe facts "
             "and your question. Nothing was changed.",
             ephemeral=True,
+        )
+
+    async def _comparisons_for(self, item: InventoryItem) -> tuple[ComputerComparison, ...]:
+        """How each stored trusted snapshot compares — from the repository, no collection."""
+        local = await self.repo.load_snapshot(self.computer())
+        if local is None or local.item(item.identity) is None:
+            local = InventorySnapshot(
+                computer=self.computer(),
+                owner=self.owner,
+                collected_at=self.clock(),
+                items=(item,),
+            )
+        computers = self.trusted_computers or tuple(
+            name for name in await self.repo.list_computers() if name != local.computer
+        )
+        remotes = {name: await self.repo.load_snapshot(name) for name in computers}
+        exceptions = {name: await self.repo.load_exceptions(name) for name in computers}
+        return compare_computers(
+            local,
+            remotes,
+            now=self.clock(),
+            exceptions=exceptions,
+            inventory_filter=InventoryFilter(include_builtins=True),
         )
 
 
