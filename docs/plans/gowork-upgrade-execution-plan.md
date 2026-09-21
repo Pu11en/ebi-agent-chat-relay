@@ -238,7 +238,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: completion without user reply; unrelated builds continue; duplicate finish/restart
   cannot repost completion, reintegrate or reopen workers; user stop still means stop.
 
-- [ ] T25: Execution spine, only after T24: record reproducible workflow friction.
+- [x] T25: Execution spine, only after T24: record reproducible workflow friction.
   Scope: existing gowork_records. Track queue/dependency waits, repairs, review outcomes,
   repeated owner questions and capacity decisions with task/build/version identity.
   Proof: fixture yields repeatable counts, no invented token/cost totals, and suggested

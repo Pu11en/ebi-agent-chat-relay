@@ -594,3 +594,29 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `bad8fc3`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (454 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T25 — Record reproducible workflow friction
+
+- New `claude_code_core/gowork_friction.py`: `FrictionEvent(kind, build_id, task_id,
+  attempt_id, plan_id, plan_version, detail, at)` with kinds queue_wait / dependency_wait /
+  repair / review / question / capacity / rework; `append_friction` (JSONL, never raises),
+  `read_friction` (skips a half-written line), `friction_summary` (repeatable counts plus
+  derived `review_changes` and `question_repeat`; no tokens, no cost), `friction_report`
+  (plain sentences about one build).
+- Written by: the loop (`TaskLoop(friction_path=…)`: queue waits when ready tasks find no
+  room, review verdicts from the saved checks, repairs, reworks from failed acceptance and
+  from plan edits), the cog (a "question" when a blocker is posted), and
+  `_run_helper.tick_capacity` (a host-level "capacity" line when starts are paused;
+  `configure_adaptive_limit(friction_path=…)` from `setup.py`). File:
+  `<gowork state dir>/gowork-friction.jsonl` beside the step records.
+- At the end of a build the report is appended to the plan's `.progress.md` under
+  "What slowed this build down" — the only place it is written; planning instructions
+  (CLAUDE.md, skills, the planner prompts) are never touched.
+- Tests: `tests/gowork_upgrade/test_friction.py` (4: round trip with identity; repeatable
+  counts and no cost/token keys; the report is plain sentences about one build only; broken
+  lines skipped and appends never raise), `test_rolling_workers.py` (+1: a repair and a review
+  recorded with build/task/attempt/version through the loop, and reported from the records).
+- Implementation commit: `ebc05c8`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (459 passed),
+  `tests/test_setup.py` + `tests/test_run_helper.py` (94 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).
