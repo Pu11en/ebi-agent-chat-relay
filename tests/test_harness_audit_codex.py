@@ -241,6 +241,19 @@ def test_developer_instructions_override_is_a_withheld_bot_addition(tmp_path: Pa
     assert FAKE_SYSTEM_PROMPT not in to_json(result.inventory)
 
 
+def test_a_withheld_body_hash_honours_the_salt(tmp_path: Path) -> None:
+    """Every other hash in the bundle is salted; an unsalted one would let a
+    reader with a guess at the prompt confirm it by hashing."""
+    from extensions.harness_audit.redaction import safe_hash
+
+    result = collect(
+        tmp_path, rollouts=False, extra=("-c", f"developer_instructions={FAKE_SYSTEM_PROMPT}")
+    )
+    body = result.private_bodies[0]
+    assert body.content_hash == safe_hash(FAKE_SYSTEM_PROMPT, salt="t")
+    assert body.content_hash != safe_hash(FAKE_SYSTEM_PROMPT)
+
+
 def test_unknown_override_values_are_withheld(tmp_path: Path) -> None:
     result = collect(
         tmp_path, rollouts=False, extra=("-c", "openai_api_key=sk-FAKEFAKEFAKEFAKEFAKE1")

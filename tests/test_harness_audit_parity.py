@@ -57,6 +57,7 @@ def inventories_for(
         invocation=ClaudeInvocation.from_dict(claude_args),
         manifest=manifest(),
         collected_at=COLLECTED_AT,
+        salt="shared",
     )
     codex = collect_codex(
         discovery,

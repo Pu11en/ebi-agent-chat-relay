@@ -255,6 +255,7 @@ def _collect(
                 invocation=invocation,
                 manifest=manifest,
                 collected_at=now,
+                salt=args.salt,
             )
         )
     if Harness.CODEX in harnesses:

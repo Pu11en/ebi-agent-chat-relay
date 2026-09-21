@@ -52,6 +52,7 @@ def collect_both(
         invocation=ClaudeInvocation.from_dict(claude_invocation(roots.project_dir, *claude_extra)),
         manifest=manifest(),
         collected_at=COLLECTED_AT,
+        salt="t",
     )
     codex = collect_codex(
         discovery,

@@ -79,6 +79,7 @@ def collect_both(roots: DiscoveryRoots) -> list[CollectionResult]:
             invocation=ClaudeInvocation.from_dict(claude_invocation(roots.project_dir)),
             manifest=manifest(),
             collected_at=NOW,
+            salt="t",
         ),
         collect_codex(
             discovery,

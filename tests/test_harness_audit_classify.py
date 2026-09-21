@@ -52,6 +52,7 @@ def collect_both(roots: DiscoveryRoots, *, claude_version: str = "2.0.5"):
         invocation=claude_record,
         manifest=manifest(),
         collected_at=COLLECTED_AT,
+        salt="t",
     )
     codex = collect_codex(
         discovery,

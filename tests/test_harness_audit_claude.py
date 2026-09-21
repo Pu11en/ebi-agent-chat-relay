@@ -80,6 +80,7 @@ def collect(
         invocation=record if invocation else None,
         manifest=manifest(),
         collected_at=COLLECTED_AT,
+        salt="t",
     )
 
 
@@ -200,6 +201,17 @@ def test_bot_addition_is_loaded_and_its_body_is_withheld(tmp_path: Path) -> None
     serialized = to_json(result.inventory)
     assert FAKE_SYSTEM_PROMPT not in serialized
     assert "Private operator prompt" not in serialized
+
+
+def test_a_withheld_body_hash_honours_the_salt(tmp_path: Path) -> None:
+    """Every other hash in the bundle is salted; an unsalted one would let a
+    reader with a guess at the prompt confirm it by hashing."""
+    from extensions.harness_audit.redaction import safe_hash
+
+    result = collect(tmp_path, transcripts=False)
+    body = result.private_bodies[0]
+    assert body.content_hash == safe_hash(FAKE_SYSTEM_PROMPT, salt="t")
+    assert body.content_hash != safe_hash(FAKE_SYSTEM_PROMPT)
 
 
 def test_model_and_permission_settings_are_recorded_but_marked_excluded(tmp_path: Path) -> None:

@@ -233,7 +233,12 @@ def collect_codex(
         )
 
     ctx = _Context(
-        target=target, invocation=invocation, proof=proof, version=version, covered=covered
+        target=target,
+        invocation=invocation,
+        proof=proof,
+        version=version,
+        covered=covered,
+        salt=salt,
     )
     items: list[InventoryItem] = []
     signals: dict[str, ContentSignals] = {}
@@ -298,6 +303,7 @@ class _Context:
     proof: SessionObservation | None
     version: str
     covered: bool | None
+    salt: str = ""
 
     @property
     def can_prove_loaded(self) -> bool:
@@ -632,8 +638,7 @@ def _setting_items(
 
 
 def _bot_addition(key: str, text: str, ctx: _Context) -> PrivateBody:
-    del ctx
-    return withhold_body(text, field=f"codex/bot-addition/{key}")
+    return withhold_body(text, field=f"codex/bot-addition/{key}", salt=ctx.salt)
 
 
 def _bot_items(private_bodies: Iterable[PrivateBody], ctx: _Context) -> list[InventoryItem]:
