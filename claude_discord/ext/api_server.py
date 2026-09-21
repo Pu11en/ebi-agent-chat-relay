@@ -43,6 +43,7 @@ from ..handoff_status import load_handoff_status, render_handoff_status
 from ..lounge import length_hint
 from ..project_lookup_worker import (
     build_project_lookup_prompt,
+    project_lookup_harness,
     project_lookup_thread_name,
     resolve_project_lookup_root,
 )
@@ -1511,6 +1512,7 @@ class ApiServer:
             from_agent=from_agent,
             from_thread=from_thread,
         )
+        lookup_backend, lookup_model = project_lookup_harness()
         worker_thread_holder: dict[str, Any] = {}
 
         async def _project_lookup_result_sink(
@@ -1540,6 +1542,8 @@ class ApiServer:
                 auto_start=True,
                 working_dir=project_root,
                 result_sink=_project_lookup_result_sink if from_thread is not None else None,
+                backend=lookup_backend,
+                model=lookup_model,
             )
         except Exception:
             logger.exception("project lookup spawn_session failed")

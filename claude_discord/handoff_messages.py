@@ -44,8 +44,7 @@ def format_handoff_message(
     message = f"{HANDOFF_MARKER}\n```json\n{packet}\n```"
     if len(message) > max_chars:
         raise HandoffEnvelopeError(
-            f"handoff Discord envelope is too large: {len(message)} characters "
-            f"(limit {max_chars})"
+            f"handoff Discord envelope is too large: {len(message)} characters (limit {max_chars})"
         )
     return message
 

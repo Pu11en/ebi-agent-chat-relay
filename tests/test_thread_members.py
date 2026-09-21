@@ -215,6 +215,23 @@ class TestSpawnSessionMembers:
         assert result is thread
         thread.add_user.assert_awaited_once_with(discord.Object(id=7))
 
+    @pytest.mark.asyncio
+    async def test_spawn_pins_backend_and_model_to_the_new_thread(self) -> None:
+        cog = _make_cog(member_ids=set())
+        settings = MagicMock()
+        settings.set_backend = AsyncMock()
+        settings.set_model = AsyncMock()
+        cog._backend_settings = settings  # type: ignore[attr-defined]
+        channel = MagicMock(spec=discord.TextChannel)
+        thread = _make_thread(55)
+        thread.send = AsyncMock(return_value=MagicMock())
+        channel.create_thread = AsyncMock(return_value=thread)
+
+        await cog.spawn_session(channel, "hello", auto_start=False, backend="claude", model="haiku")
+
+        settings.set_backend.assert_awaited_once_with("claude", thread_id=55)
+        settings.set_model.assert_awaited_once_with("claude", "haiku", thread_id=55)
+
 
 class TestThreadMemberBackfill:
     @pytest.mark.asyncio

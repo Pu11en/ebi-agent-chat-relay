@@ -100,6 +100,7 @@ async def test_execute_ready_handoff_tasks_starts_lookup_worker_and_records_thre
     assert chat.spawn_session.await_args.kwargs["working_dir"] == project_root
     assert chat.spawn_session.await_args.kwargs["auto_start"] is True
     assert "Project lookup" in chat.spawn_session.await_args.kwargs["thread_name"]
+    assert chat.spawn_session.await_args.kwargs["backend"] == "claude"
     assert await handoff_repo.get_job_thread(TASK_ID, "drewai") == 999
     job = await handoff_repo.get_job(TASK_ID, "drewai")
     assert job is not None

@@ -1114,6 +1114,8 @@ class ClaudeChatCog(commands.Cog):
         attachments: list[tuple[str, bytes]] | None = None,
         invite_user_id: int | None = None,
         working_dir: str | None = None,
+        backend: str | None = None,
+        model: str | None = None,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -1154,6 +1156,9 @@ class ClaudeChatCog(commands.Cog):
             working_dir: Optional project directory to bind to the new thread.
                         The binding is stored before an automatic run starts so
                         replies and restarts cannot fall back to another project.
+            backend: Optional harness to pin to the new thread before its first
+                        run (e.g. ``"claude"`` for a cheap helper worker).
+            model: Optional model for *backend*; ignored without *backend*.
 
         Returns:
             The newly created :class:`discord.Thread`.
@@ -1192,6 +1197,11 @@ class ClaudeChatCog(commands.Cog):
             await send_file_blobs(thread, attachments)
         if effective_working_dir is not None:
             await self.repo.ensure_working_dir(thread.id, effective_working_dir)
+        settings = self._backend_settings
+        if backend and settings is not None:
+            await settings.set_backend(backend, thread_id=thread.id)
+            if model:
+                await settings.set_model(backend, model, thread_id=thread.id)
         if auto_start:
             # Run Claude in the background so /api/spawn returns immediately.
             # The caller gets the thread reference without waiting for Claude to finish.

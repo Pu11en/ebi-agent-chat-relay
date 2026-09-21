@@ -138,9 +138,7 @@ async def load_handoff_status(
             recipient=str(row["recipient_agent_id"]),
             state=str(row["state"]),
             goal=_task_goal(row["packet_json"]),
-            job_thread_id=(
-                int(row["job_thread_id"]) if row["job_thread_id"] is not None else None
-            ),
+            job_thread_id=(int(row["job_thread_id"]) if row["job_thread_id"] is not None else None),
             updated_at=_parse_datetime(row["updated_at"]),
             result_outcome=(
                 str(row["result_outcome"]) if row["result_outcome"] is not None else None

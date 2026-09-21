@@ -20,6 +20,16 @@ def resolve_project_lookup_root(*, configured: str | None = None) -> str:
     return str(path)
 
 
+def project_lookup_harness() -> tuple[str, str]:
+    """Return the (backend, model) a lookup worker runs on: cheap Claude by default.
+
+    A lookup is a read-only file search, so it never needs a large model, and
+    pinning it keeps it working when another harness has run out of credits.
+    """
+    model = os.getenv("CCDB_PROJECT_LOOKUP_MODEL", "").strip() or "haiku"
+    return "claude", model
+
+
 def build_project_lookup_prompt(
     *,
     query: str,

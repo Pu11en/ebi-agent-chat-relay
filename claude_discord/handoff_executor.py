@@ -14,6 +14,7 @@ from .database.handoff_repo import HandoffRepository
 from .handoff_return import record_and_deliver_handoff_result
 from .project_lookup_worker import (
     build_project_lookup_prompt,
+    project_lookup_harness,
     project_lookup_thread_name,
     resolve_project_lookup_root,
 )
@@ -31,6 +32,8 @@ class _ChatSpawner(Protocol):
         auto_start: bool = True,
         working_dir: str | None = None,
         result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None,
+        backend: str | None = None,
+        model: str | None = None,
     ) -> Awaitable[Any]: ...
 
 
@@ -118,6 +121,7 @@ async def execute_ready_handoff_tasks(
                 error=error,
             )
 
+        lookup_backend, lookup_model = project_lookup_harness()
         worker_thread = await chat.spawn_session(
             parent_channel,
             prompt,
@@ -125,6 +129,8 @@ async def execute_ready_handoff_tasks(
             auto_start=True,
             working_dir=lookup_root,
             result_sink=_result_sink,
+            backend=lookup_backend,
+            model=lookup_model,
         )
         thread_id = int(worker_thread.id)
         await repo.set_job_thread(task.task_id, agent_id, thread_id)

@@ -85,6 +85,8 @@ async def test_project_lookup_endpoint_spawns_worker_in_projects_root(
         thread_name = cog.spawn_session.await_args.kwargs["thread_name"]
         assert thread_name.startswith("🔎 Project lookup")
         assert "Pinterest keyword" in thread_name
+        assert cog.spawn_session.await_args.kwargs["backend"] == "claude"
+        assert cog.spawn_session.await_args.kwargs["model"] == "haiku"
     finally:
         await client.close()
 
@@ -161,3 +163,12 @@ async def test_project_lookup_endpoint_rejects_missing_query(repo: NotificationR
         assert "text" in body["error"]
     finally:
         await client.close()
+
+
+def test_project_lookup_model_defaults_to_cheap_claude(monkeypatch: pytest.MonkeyPatch) -> None:
+    from claude_discord.project_lookup_worker import project_lookup_harness
+
+    monkeypatch.delenv("CCDB_PROJECT_LOOKUP_MODEL", raising=False)
+    assert project_lookup_harness() == ("claude", "haiku")
+    monkeypatch.setenv("CCDB_PROJECT_LOOKUP_MODEL", "sonnet")
+    assert project_lookup_harness() == ("claude", "sonnet")
