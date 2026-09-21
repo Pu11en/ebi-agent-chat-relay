@@ -133,6 +133,25 @@ new code merely because this build edits it. Report that boundary honestly.
   behavior for the new multi-plan path while retaining legacy single-build compatibility.
   Proof: two plans in one planning thread and two projects progress independently;
   repeated start requests cannot dispatch duplicate attempts or close an unrelated build.
+  Split (2026-09-21, David's computer) into three ordered boxes; T11 is done when all are:
+  - [ ] T11a: running identity by build. The cog keys running builds by `build_id`
+    (T04), a start for a plan that is already running returns that build instead of a
+    second one, a manifest plan may start beside another plan in the same project, and
+    the legacy "one checkbox plan per project, switch on a new start" behaviour stays for
+    checkbox plans. Proof: two manifest plans in one project run at once; a repeated start
+    returns the existing thread with no new attempt; stopping one leaves the other alone.
+  - [ ] T11b: manifest dispatch. When a plan carries a `gowork-plan` manifest, the loop
+    dispatches `ready_tasks()` from the T05 ledger instead of checkbox grouping: one work
+    copy per project, one side copy + worker thread per task, `begin` before the worker
+    starts, `submit_result` with the side copy's commit and check output, `accept` after
+    the side copy merges into its project's work copy; blocked tasks stop the build with
+    the reason; the build completes when every task is accepted. Checkbox plans are
+    untouched. Proof: with fake workers, tasks in two projects run together while a
+    dependent task waits for its prerequisite's acceptance and then runs.
+  - [ ] T11c: adapters. `/gowork` and `POST /api/loops` for a build that is already
+    running answer with that build (thread id) and dispatch nothing; stopping a build by
+    thread never touches another build. Proof: repeated POST returns the same thread and
+    the ledger shows one attempt per task.
 
 - [ ] T12: Execution spine, only after T11: issue compact persisted worker handoffs.
   Scope: existing handoff contract adapter and worker prompt. Supply only assignment,
