@@ -582,10 +582,11 @@ class ClaudeChatCog(commands.Cog):
 
     @staticmethod
     def _handoff_sender_trusted(message: Any) -> bool:
-        """Only a trusted bot account may hand a job to this bot.
+        """Only an allowlisted bot account may hand a job to this bot.
 
-        The rule lives in :func:`claude_discord.handoff_config.legacy_sender_trusted`;
-        an instance with a complete ``HandoffConfig`` receives packets through
+        The rule lives in :func:`claude_discord.handoff_config.legacy_sender_trusted`
+        and is fail-closed: no ``CCDB_HANDOFF_TRUSTED_BOT_IDS`` means no sender.
+        An instance with a complete ``HandoffConfig`` receives packets through
         ``AgentHandoffCog`` instead, which verifies guild, channel and identity.
         """
         return legacy_sender_trusted(message)
@@ -604,7 +605,13 @@ class ClaudeChatCog(commands.Cog):
             return False
         from ..handoff_inbox import handle_handoff_message
 
-        local_agent_id = os.getenv("CCDB_AGENT_ID", "").strip() or "ccdb"
+        # Never guess who we are: a default recipient id is one every peer
+        # (and every attacker) knows. setup_bridge() logs once at startup
+        # when this leaves the legacy path disabled.
+        local_agent_id = os.getenv("CCDB_AGENT_ID", "").strip()
+        if not local_agent_id:
+            logger.debug("Ignoring handoff packet: CCDB_AGENT_ID is not set")
+            return False
         try:
             result = await handle_handoff_message(
                 message,

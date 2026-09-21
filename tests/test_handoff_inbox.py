@@ -86,8 +86,50 @@ async def test_handle_handoff_message_records_task_event_and_acknowledges(
     assert await handoff_repo.get_task(TASK_ID, "drewai") == event.task
     assert await handoff_repo.has_event(EVENT_ID)
     message.channel.send.assert_awaited_once()
-    assert "accepted" in message.channel.send.await_args.args[0].lower()
-    assert "Pinterest visual picker process" in message.channel.send.await_args.args[0]
+    ack = message.channel.send.await_args.args[0]
+    assert "accepted" in ack.lower()
+    assert TASK_ID[:8] in ack
+    # The ack names the job, never the sender's text: a peer must not be able
+    # to make this bot post arbitrary prose in a channel it is trusted in.
+    assert "Pinterest visual picker process" not in ack
+
+
+@pytest.mark.asyncio
+async def test_handle_handoff_message_refuses_a_packet_from_another_guild(
+    handoff_repo: HandoffRepository,
+) -> None:
+    """The packet's origin guild must be the guild the packet was posted in."""
+    message = _inbox_message(format_handoff_message(_handoff_event()))
+    message.guild = SimpleNamespace(id=999)  # origin says 111
+
+    result = await handle_handoff_message(
+        message,
+        repo=handoff_repo,
+        local_agent_id="drewai",
+        now=NOW,
+    )
+
+    assert result is None
+    assert await handoff_repo.count_tasks() == 0
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_handoff_message_refuses_a_packet_outside_any_guild(
+    handoff_repo: HandoffRepository,
+) -> None:
+    message = _inbox_message(format_handoff_message(_handoff_event()))
+    message.guild = None
+
+    result = await handle_handoff_message(
+        message,
+        repo=handoff_repo,
+        local_agent_id="drewai",
+        now=NOW,
+    )
+
+    assert result is None
+    assert await handoff_repo.count_tasks() == 0
 
 
 @pytest.mark.asyncio
@@ -191,7 +233,7 @@ async def test_setup_bridge_attaches_handoff_repo(tmp_path) -> None:
         ("111,222", 111, None, True, True),  # listed bot
         ("111,222", 333, None, True, False),  # bot not on the list
         ("111", 111, 999, True, False),  # a webhook impersonating a listed bot
-        ("", 444, None, True, True),  # no list: a bot member of this server
+        ("", 444, None, True, False),  # no list: nobody, not even a bot member of this server
         ("", 444, 999, True, False),  # no list: webhooks never
         ("", 444, None, False, False),  # no list: a bot from another server never
     ],
@@ -204,7 +246,7 @@ def test_only_trusted_bots_may_hand_off(
     member: bool,
     expected: bool,
 ) -> None:
-    """A handoff packet spawns a worker, so only trusted bot accounts may send one."""
+    """A handoff packet spawns a worker, so only allowlisted bot accounts may send one."""
     from claude_discord.cogs.claude_chat import ClaudeChatCog
 
     monkeypatch.setenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", env)
@@ -213,5 +255,112 @@ def test_only_trusted_bots_may_hand_off(
     message.author.bot = True
     message.webhook_id = webhook
     message.guild = MagicMock()
+    message.guild.id = 111
     message.guild.get_member = MagicMock(return_value=MagicMock() if member else None)
     assert ClaudeChatCog._handoff_sender_trusted(message) is expected
+
+
+def _packet_from_bot(bot_id: int, *, guild_id: int | None = 111) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=999,
+        content=format_handoff_message(_handoff_event()),
+        channel=SimpleNamespace(id=777, parent=None, send=AsyncMock()),
+        author=SimpleNamespace(id=bot_id, bot=True),
+        webhook_id=None,
+        guild=SimpleNamespace(id=guild_id) if guild_id is not None else None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_intake_is_off_without_an_allowlist(
+    handoff_repo: HandoffRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No CCDB_HANDOFF_TRUSTED_BOT_IDS and no HandoffConfig: no packet is accepted."""
+    for name in (
+        "CCDB_HANDOFF_TRUSTED_BOT_IDS",
+        "CCDB_HANDOFF_GUILD_ID",
+        "CCDB_HANDOFF_CHANNEL_ID",
+        "CCDB_HANDOFF_AGENTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CCDB_AGENT_ID", "drewai")
+    cog = SimpleNamespace(_handoff_repo=handoff_repo, _handoff_worker_parent_channel=lambda m: None)
+    message = _packet_from_bot(4242)
+
+    handled = await ClaudeChatCog._try_receive_handoff_message(cog, message)
+
+    assert handled is False
+    assert await handoff_repo.count_tasks() == 0
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_intake_needs_an_explicit_agent_id(
+    handoff_repo: HandoffRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recipient id is never guessed: without CCDB_AGENT_ID nothing is addressed to us."""
+    monkeypatch.setenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", "4242")
+    monkeypatch.delenv("CCDB_AGENT_ID", raising=False)
+    monkeypatch.delenv("CCDB_HANDOFF_AGENTS", raising=False)
+    cog = SimpleNamespace(_handoff_repo=handoff_repo, _handoff_worker_parent_channel=lambda m: None)
+    message = _packet_from_bot(4242)
+
+    handled = await ClaudeChatCog._try_receive_handoff_message(cog, message)
+
+    assert handled is False
+    assert await handoff_repo.count_tasks() == 0
+
+
+@pytest.mark.asyncio
+async def test_legacy_intake_refuses_an_allowlisted_bot_from_another_guild(
+    handoff_repo: HandoffRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", "4242")
+    monkeypatch.setenv("CCDB_AGENT_ID", "drewai")
+    monkeypatch.delenv("CCDB_HANDOFF_AGENTS", raising=False)
+    cog = SimpleNamespace(_handoff_repo=handoff_repo, _handoff_worker_parent_channel=lambda m: None)
+    message = _packet_from_bot(4242, guild_id=999)  # packet origin says guild 111
+
+    handled = await ClaudeChatCog._try_receive_handoff_message(cog, message)
+
+    assert handled is False
+    assert await handoff_repo.count_tasks() == 0
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_says_once_that_handoffs_are_disabled(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    from claude_discord.setup import setup_bridge
+
+    for name in (
+        "CCDB_HANDOFF_TRUSTED_BOT_IDS",
+        "CCDB_HANDOFF_GUILD_ID",
+        "CCDB_HANDOFF_CHANNEL_ID",
+        "CCDB_HANDOFF_AGENTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    bot = MagicMock()
+    bot.channel_id = 123
+    bot.add_cog = AsyncMock()
+    bot.cogs = {}
+    bot.wait_until_ready = AsyncMock()
+    runner = MagicMock()
+    runner.model = "sonnet"
+    runner.working_dir = str(tmp_path)
+    runner.api_port = None
+
+    with caplog.at_level(logging.INFO, logger="claude_discord.setup"):
+        await setup_bridge(
+            bot,
+            runner,
+            session_db_path=str(tmp_path / "sessions.db"),
+            enable_scheduler=False,
+            worktree_base_dir=str(tmp_path / "worktrees"),
+        )
+
+    disabled = [r for r in caplog.records if "handoffs disabled" in r.getMessage().lower()]
+    assert len(disabled) == 1
+    assert "CCDB_HANDOFF_TRUSTED_BOT_IDS" in disabled[0].getMessage()

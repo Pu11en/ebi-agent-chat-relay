@@ -13,6 +13,7 @@ from claude_discord.handoff_config import (
     HandoffConfigError,
     HandoffTrustError,
     legacy_sender_trusted,
+    legacy_trusted_bot_ids,
 )
 
 NOW = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
@@ -220,7 +221,8 @@ class TestLegacySenderTrusted:
             ("111,222", 111, None, True, True),
             ("111,222", 333, None, True, False),
             ("111", 111, 999, True, False),
-            ("", 444, None, True, True),
+            # No allowlist means the legacy path is off: a guild member is not enough.
+            ("", 444, None, True, False),
             ("", 444, 999, True, False),
             ("", 444, None, False, False),
         ],
@@ -228,8 +230,30 @@ class TestLegacySenderTrusted:
     def test_matches_the_review_helper(
         self, env: str, author_id: int, webhook: int | None, member: bool, expected: bool
     ) -> None:
-        guild = SimpleNamespace(get_member=lambda _id: object() if member else None)
+        guild = SimpleNamespace(id=GUILD, get_member=lambda _id: object() if member else None)
         message = SimpleNamespace(
             author=SimpleNamespace(id=author_id, bot=True), webhook_id=webhook, guild=guild
         )
         assert legacy_sender_trusted(message, trusted_ids=env) is expected
+
+    def test_a_human_account_on_the_list_is_still_refused(self) -> None:
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=111, bot=False),
+            webhook_id=None,
+            guild=SimpleNamespace(id=GUILD),
+        )
+        assert legacy_sender_trusted(message, trusted_ids="111") is False
+
+    def test_a_listed_bot_outside_any_guild_is_refused(self) -> None:
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=111, bot=True), webhook_id=None, guild=None
+        )
+        assert legacy_sender_trusted(message, trusted_ids="111") is False
+
+    def test_trusted_ids_parse_from_the_env_and_ignore_junk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", " 111, abc ;222 ")
+        assert legacy_trusted_bot_ids() == frozenset({111, 222})
+        monkeypatch.delenv("CCDB_HANDOFF_TRUSTED_BOT_IDS")
+        assert legacy_trusted_bot_ids() == frozenset()

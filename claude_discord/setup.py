@@ -617,7 +617,22 @@ async def setup_bridge(
             ", ".join(handoff_config.peers),
         )
     else:
-        logger.debug("Trusted handoffs disabled: CCDB_HANDOFF_* configuration is incomplete")
+        from .handoff_config import legacy_trusted_bot_ids
+
+        legacy_bots = legacy_trusted_bot_ids()
+        legacy_agent = os.getenv("CCDB_AGENT_ID", "").strip()
+        if legacy_bots and legacy_agent:
+            logger.info(
+                "Legacy handoff intake enabled for agent %s from bots %s",
+                legacy_agent,
+                ", ".join(str(bot_id) for bot_id in sorted(legacy_bots)),
+            )
+        else:
+            # Said once, here, so the receive path can stay quiet per message.
+            logger.info(
+                "Handoffs disabled: set CCDB_HANDOFF_TRUSTED_BOT_IDS and CCDB_AGENT_ID, "
+                "or a complete CCDB_HANDOFF_* configuration, to accept handoff packets"
+            )
 
     # --- TaskLoopCog (auto-enabled; idle until /gowork or POST /api/loops) ---
     from .cogs.task_loop import TaskLoopCog

@@ -210,25 +210,39 @@ class HandoffConfig:
         return sender
 
 
+def legacy_trusted_bot_ids(raw: str | None = None) -> frozenset[int]:
+    """The bot accounts ``CCDB_HANDOFF_TRUSTED_BOT_IDS`` names; empty means off."""
+    text = os.getenv(ENV_LEGACY_TRUSTED_BOT_IDS, "") if raw is None else raw
+    return frozenset(
+        int(part) for part in text.replace(";", ",").split(",") if part.strip().isdigit()
+    )
+
+
 def legacy_sender_trusted(message: Any, *, trusted_ids: str | None = None) -> bool:
     """The pre-configuration trust rule for the narrow project-lookup slice.
 
-    ``CCDB_HANDOFF_TRUSTED_BOT_IDS`` lists the bot accounts allowed to hand a
-    job over; without it, a bot that is a member of this server may, but a
-    webhook or a bot from elsewhere never can. Instances with a complete
+    ``CCDB_HANDOFF_TRUSTED_BOT_IDS`` is the whole trust set: a bot account it
+    lists, posting as itself (not through a webhook) inside a guild, may hand
+    a job over. Without the list nothing is trusted — "any bot that happens
+    to be a member of this server" is not an allowlist, it is every bot the
+    server admins ever invited. Instances with a complete
     :class:`HandoffConfig` use :meth:`HandoffConfig.verify_inbound` instead.
     """
+    allowed = legacy_trusted_bot_ids(trusted_ids)
+    if not allowed:
+        return False
     if getattr(message, "webhook_id", None) is not None:
         return False
-    author_id = getattr(getattr(message, "author", None), "id", None)
+    author = getattr(message, "author", None)
+    if not getattr(author, "bot", False):
+        return False
+    author_id = getattr(author, "id", None)
     if not isinstance(author_id, int):
         return False
-    raw = os.getenv(ENV_LEGACY_TRUSTED_BOT_IDS, "") if trusted_ids is None else trusted_ids
-    allowed = {int(part) for part in raw.split(",") if part.strip().isdigit()}
-    if allowed:
-        return author_id in allowed
-    guild = getattr(message, "guild", None)
-    return guild is not None and guild.get_member(author_id) is not None
+    guild_id = getattr(getattr(message, "guild", None), "id", None)
+    if not isinstance(guild_id, int):
+        return False
+    return author_id in allowed
 
 
 __all__ = [
@@ -243,4 +257,5 @@ __all__ = [
     "HandoffConfigError",
     "HandoffTrustError",
     "legacy_sender_trusted",
+    "legacy_trusted_bot_ids",
 ]
