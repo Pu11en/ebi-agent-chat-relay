@@ -10,7 +10,7 @@ Try: `uv run python -m extensions.feature_workflow.coordinator --help`
 
 ## 2. Isolated worker evidence
 
-- [ ] 2.1 **Depends on: 1.1, 1.3; owns: `extensions/feature_workflow/worker_workspace.py`, `tests/test_feature_worker_workspace.py`.** Create/recover one approved-foundation branch and `.worktrees/wt-<thread-id>` checkout per task; verify branch ancestry, repository identity, clean-state protection, and durable-branch recovery after checkout cleanup.
+- [x] 2.1 **Depends on: 1.1, 1.3; owns: `extensions/feature_workflow/worker_workspace.py`, `tests/test_feature_worker_workspace.py`.** Create/recover one approved-foundation branch and `.worktrees/wt-<thread-id>` checkout per task; verify branch ancestry, repository identity, clean-state protection, and durable-branch recovery after checkout cleanup.
 - [ ] 2.2 **Depends on: 1.1, 1.3; owns: `extensions/feature_workflow/result_verifier.py`, `tests/test_feature_result_verifier.py`.** Validate task identity, approval revision, foundation ancestry, owned changed paths, clean commit, and nonempty focused check evidence; verify each invalid evidence class is rejected before integration.
 - [x] 2.3 **Depends on: 1.1; owns: `extensions/feature_workflow/briefing.py`, `tests/test_feature_briefing.py`.** Build the compact fresh-session task brief with goal, decision subset, dependencies, ownership, restrictions, checks, and result destination; verify it excludes the parent transcript and forbids merging or worker spawning.
 
