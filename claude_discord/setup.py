@@ -553,6 +553,8 @@ async def setup_bridge(
                 working_dir=runner.working_dir,
                 home_channel_id=_launcher_home_id,
                 session_channel_id=_launcher_session_id,
+                backend_settings=backend_settings,
+                backend_factory=backend_factory,
             )
         )
         skill_cog = SkillCommandCog(

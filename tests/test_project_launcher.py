@@ -227,10 +227,13 @@ async def test_reconnect_updates_one_panel(cog):
     channel.fetch_message = AsyncMock(return_value=message)
     cog.bot.get_channel.return_value = channel
     await cog.on_ready()
+    # First connect: the pinned panel plus one control row. Second connect: both
+    # are found and edited in place — nothing new is sent.
+    assert channel.send.await_count == 2
     await cog.on_ready()
-    channel.send.assert_awaited_once()
-    message.edit.assert_awaited_once()
-    assert "Test computer" in channel.send.call_args.kwargs["embed"].title
+    assert channel.send.await_count == 2
+    assert message.edit.await_count == 2
+    assert "Test computer" in channel.send.call_args_list[0].kwargs["embed"].title
 
 
 async def test_deleted_panel_is_recreated(cog):
@@ -509,3 +512,130 @@ async def test_shortcut_coalesces_messages_and_cancels_on_unload(cog):
     assert cog._shortcut_task is first
     await cog.cog_unload()
     assert first.cancelled()
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.1: the control row (status + New session / Sessions / Settings)
+# ---------------------------------------------------------------------------
+
+
+async def test_control_row_is_persistent_with_the_three_control_buttons(cog):
+    from claude_discord.cogs.project_launcher import ControlRowView
+
+    row = ControlRowView(cog)
+    assert row.is_persistent()
+    assert [button.label for button in row.children] == ["New session", "Sessions", "Settings"]
+    assert all(button.custom_id.startswith("ccdb:control:") for button in row.children)
+    assert await row.interaction_check(interaction())
+    assert not await row.interaction_check(interaction(99))
+
+
+async def test_status_block_names_the_computer_and_active_sessions(cog, monkeypatch):
+    monkeypatch.setenv("CCDB_COMPUTER_NAME", "Lenovo")
+    cog.chat.active_session_count = 2
+    text = await cog.status_block()
+    assert "Lenovo" in text
+    assert "2 active" in text
+
+
+async def test_bottom_control_row_carries_status_and_replaces_previous(cog, monkeypatch):
+    monkeypatch.setenv("CCDB_COMPUTER_NAME", "Lenovo")
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    previous = MagicMock(spec=discord.Message)
+    previous.id = 777
+    previous.author.id = cog.bot.user.id
+    previous.delete = AsyncMock()
+    channel.fetch_message = AsyncMock(return_value=previous)
+    current = MagicMock(spec=discord.Message)
+    current.id = 778
+    channel.send = AsyncMock(return_value=current)
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.shortcut:100", "777")
+    await cog.refresh_shortcut()
+    # The new id is saved before the old row is deleted, so a failed delete loses nothing.
+    assert await cog.settings.get("launcher.shortcut:100") == "778"
+    previous.delete.assert_awaited_once()
+    kwargs = channel.send.call_args.kwargs
+    assert "Lenovo" in kwargs["content"]
+    assert [b.label for b in kwargs["view"].children] == ["New session", "Sessions", "Settings"]
+
+
+async def test_control_row_ignores_its_own_control_message(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    event = SimpleNamespace(
+        channel=channel,
+        type=discord.MessageType.default,
+        author=SimpleNamespace(id=cog.bot.user.id),
+        components=[SimpleNamespace(children=[SimpleNamespace(custom_id="ccdb:control:new:v1")])],
+    )
+    await cog.keep_launcher_visible(event)
+    assert cog._shortcut_task is None
+
+
+async def test_restart_restores_the_saved_control_row_instead_of_adding_one(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    panel = MagicMock(spec=discord.Message)
+    panel.id = 555
+    panel.author.id = cog.bot.user.id
+    panel.pinned = True
+    panel.edit = AsyncMock()
+    row = MagicMock(spec=discord.Message)
+    row.id = 777
+    row.author.id = cog.bot.user.id
+    row.edit = AsyncMock()
+    channel.fetch_message = AsyncMock(side_effect=lambda mid: {555: panel, 777: row}[mid])
+    channel.send = AsyncMock()
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.panel:100", "555")
+    await cog.settings.set("launcher.shortcut:100", "777")
+    await cog.on_ready()
+    channel.send.assert_not_awaited()
+    row.edit.assert_awaited_once()
+    assert [b.label for b in row.edit.call_args.kwargs["view"].children] == [
+        "New session",
+        "Sessions",
+        "Settings",
+    ]
+
+
+async def test_restart_replaces_a_missing_control_row(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    panel = MagicMock(spec=discord.Message)
+    panel.id = 555
+    panel.author.id = cog.bot.user.id
+    panel.pinned = True
+    panel.edit = AsyncMock()
+
+    async def fetch(mid: int):
+        if mid == 555:
+            return panel
+        raise discord.NotFound(MagicMock(status=404), "deleted")
+
+    channel.fetch_message = AsyncMock(side_effect=fetch)
+    fresh = MagicMock(spec=discord.Message)
+    fresh.id = 778
+    channel.send = AsyncMock(return_value=fresh)
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.panel:100", "555")
+    await cog.settings.set("launcher.shortcut:100", "777")
+    await cog.on_ready()
+    channel.send.assert_awaited_once()
+    assert await cog.settings.get("launcher.shortcut:100") == "778"
+
+
+async def test_control_buttons_open_the_three_flows(cog):
+    from claude_discord.cogs.project_launcher import ControlRowView
+
+    cog.show_new_session = AsyncMock()
+    cog.show_sessions = AsyncMock()
+    cog.show_settings = AsyncMock()
+    row = ControlRowView(cog)
+    for button in row.children:
+        await button.callback(interaction())
+    cog.show_new_session.assert_awaited_once()
+    cog.show_sessions.assert_awaited_once()
+    cog.show_settings.assert_awaited_once()

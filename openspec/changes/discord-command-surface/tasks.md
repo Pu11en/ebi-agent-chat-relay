@@ -1,4 +1,4 @@
-Check: `uv run pytest tests/test_command_surface.py tests/test_session_lifecycle.py tests/test_project_launcher.py tests/test_backend_command.py tests/test_claude_chat.py tests/test_session_manage.py -q`
+Check: `uv run pytest tests/test_command_surface.py tests/test_session_lifecycle.py tests/test_project_launcher.py tests/test_switch_command.py tests/test_claude_chat.py tests/test_session_manage.py -q`
 
 Try: `uv run python -m claude_discord.main`
 
@@ -10,7 +10,7 @@ Try: `uv run python -m claude_discord.main`
 
 ## 2. Control-center experience
 
-- [ ] 2.1 Replace the launcher persistent/bottom views with the status plus New session, Sessions, and Settings control row, including debounced replace-and-delete repair behavior; owner: `claude_discord/cogs/project_launcher.py` and `tests/test_project_launcher.py`; depends on 1.1; verify with `uv run pytest tests/test_project_launcher.py -q`.
+- [x] 2.1 Replace the launcher persistent/bottom views with the status plus New session, Sessions, and Settings control row, including debounced replace-and-delete repair behavior; owner: `claude_discord/cogs/project_launcher.py` and `tests/test_project_launcher.py`; depends on 1.1; verify with `uv run pytest tests/test_project_launcher.py -q`.
 - [ ] 2.2 Extend the New session flow with separate Favorites, Recent, and Browse choices while keeping thread creation idle on the default model; owner: launcher view code and its tests only; depends on 2.1; verify tests assert no runner/model turn starts before the first task.
 - [ ] 2.3 Add safe Create and Clone destination flows under approved roots, using argument-vector subprocess execution and attempt-owned failure cleanup; owner: a new `claude_discord/project_creation.py` plus `tests/test_project_creation.py`, with only thin launcher calls; depends on 2.2; verify traversal, collision, failed clone, and success tests pass.
 - [ ] 2.4 Build the newest-first searchable Sessions view with Open, New in same folder, and Close backed by accessible durable records; owner: a new `claude_discord/discord_ui/session_browser.py`, its tests, and minimal repository query additions; depends on 1.3; verify closed/archived, inaccessible, search, and ordering tests pass.
@@ -20,7 +20,7 @@ Try: `uv run python -m claude_discord.main`
 
 - [ ] 3.1 Refactor stop, fork, rewind, compact, clear, context, and goal into callable services while retaining existing command behavior; owner: `claude_discord/cogs/claude_chat.py`, `claude_discord/cogs/session_manage.py`, and their existing tests; depends on 1.1; verify existing focused suites remain green before adding `/session`.
 - [ ] 3.2 Add `/session` and its ephemeral Fork, Rewind, Compact, Clear, Context, and Goal view with confirmations where state is discarded; owner: a new `claude_discord/discord_ui/session_actions.py`, `tests/test_session_actions.py`, and thin command registration; depends on 3.1; verify every button calls exactly one shared service.
-- [x] 3.3 Normalize discovered models into model-plus-harness choices and change `/switch` to direct selection with current marker, recency ordering, availability filtering, and typed search; owner: `claude_discord/model_catalog.py`, `claude_discord/cogs/backend_command.py`, and focused tests; depends on 1.1; verify `uv run pytest tests/test_model_catalog.py tests/test_backend_command.py -q`.
+- [x] 3.3 Normalize discovered models into model-plus-harness choices and change `/switch` to direct selection with current marker, recency ordering, availability filtering, and typed search; owner: `claude_discord/model_catalog.py`, `claude_discord/cogs/backend_command.py`, and focused tests; depends on 1.1; verify `uv run pytest tests/test_model_catalog.py tests/test_switch_command.py -q`.
 - [ ] 3.4 Wire `/close` and Sessions Open/Close to the lifecycle service, including persisted pending-close completion and restart reconciliation; owner: thin adapters in the chat cog/setup plus lifecycle tests; depends on 1.3 and 2.4; verify active, idle, duplicate, restart, and reopen scenarios pass.
 
 ## 4. Registration, migration, and verification
