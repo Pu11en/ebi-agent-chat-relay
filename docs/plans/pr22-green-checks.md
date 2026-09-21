@@ -30,7 +30,7 @@ and only after Drew says yes (GitHub is always last).
   `asyncio.all_tasks()` at teardown). Write findings into the progress section below. No fix yet
   unless it is one line.
 
-- [ ] 3. Fix the 3.12 hang at its cause. Based on task 2, find the process-wide asyncio object
+- [x] 3. Fix the 3.12 hang at its cause. Based on task 2, find the process-wide asyncio object
   (lock, event, queue, future or module-level task) that outlives its event loop, or the task
   the test leaves running, and make it per-loop or cancel/await it in cleanup. Research lead
   (pytest-asyncio issues #222/#235): its teardown cancels leftover tasks like `asyncio.run`
