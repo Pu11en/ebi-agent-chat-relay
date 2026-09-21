@@ -65,6 +65,7 @@ MAX_RETRY_BACKOFF_SECONDS = 60 * 60
 MAX_DELIVERY_ATTEMPTS = 6
 
 MAX_ERROR_CHARS = 500
+INTERRUPTED_OUTCOME = "interrupted"
 
 
 class OutboxStatus(Enum):
@@ -360,6 +361,16 @@ class HandoffRepository:
                 continue
             transition = apply(job, HandoffTrigger.RESTART_RECONCILE, now=now, note=RESTART_NOTE)
             if await self.save_transition(transition):
+                # The claim that process held is closed as interrupted so the
+                # same attempt number can be reclaimed — resumed, not retried.
+                await self.finish_attempt(
+                    job.task_id,
+                    recipient,
+                    attempt=job.attempt,
+                    outcome=INTERRUPTED_OUTCOME,
+                    detail=RESTART_NOTE,
+                    now=now,
+                )
                 requeued.append(transition.job)
         return requeued
 
@@ -471,6 +482,43 @@ class HandoffRepository:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def reclaim_interrupted_attempt(
+        self,
+        task_id: str,
+        recipient: str,
+        *,
+        attempt: int,
+        execution_ref: str | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """Re-open an attempt a restart interrupted, so the job resumes under it.
+
+        Only an attempt closed as ``interrupted`` qualifies — a failed or
+        completed attempt stays closed — and the compare-and-set on that
+        outcome means two resuming processes cannot both win.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                """
+                UPDATE handoff_attempts
+                   SET outcome = NULL, detail = NULL, finished_at = NULL,
+                       execution_ref = ?, started_at = ?
+                 WHERE task_id = ? AND recipient_agent_id = ? AND attempt = ?
+                   AND finished_at IS NOT NULL AND outcome = ?
+                """,
+                (
+                    execution_ref,
+                    _iso(now or datetime.now(UTC)),
+                    task_id,
+                    recipient,
+                    int(attempt),
+                    INTERRUPTED_OUTCOME,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def finish_attempt(
         self,
         task_id: str,
@@ -481,13 +529,14 @@ class HandoffRepository:
         detail: str | None = None,
         now: datetime | None = None,
     ) -> bool:
-        """Close an attempt with its outcome."""
+        """Close an attempt with its outcome (only an open attempt can be closed)."""
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
                 """
                 UPDATE handoff_attempts
                    SET outcome = ?, detail = ?, finished_at = ?
                  WHERE task_id = ? AND recipient_agent_id = ? AND attempt = ?
+                   AND finished_at IS NULL
                 """,
                 (
                     outcome,

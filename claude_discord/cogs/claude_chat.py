@@ -591,6 +591,55 @@ class ClaudeChatCog(commands.Cog):
             return channel
         return None
 
+    def handoff_capacity_available(self) -> bool:
+        """Whether a handoff may start a turn now; otherwise it stays queued."""
+        return self.active_session_count < self._max_concurrent
+
+    async def run_handoff_turn(
+        self,
+        thread: Any,
+        prompt: str,
+        *,
+        working_dir: str | None,
+        result_sink: Callable[[str | None, str | None], Awaitable[None]],
+        resume: bool = False,
+        backend: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Run one handoff turn inside an existing thread, without waiting for it.
+
+        The job thread already shows the packet, so the turn runs there rather
+        than in a new session thread. ``resume`` continues the thread's stored
+        session (an explicitly selected existing session); otherwise the turn
+        starts fresh. The working directory and harness are pinned before the
+        run so a restart cannot fall back to another project or model.
+        """
+        seed_message = await thread.send(f"🤝 Handoff turn ({'resume' if resume else 'fresh'})")
+        if working_dir is not None:
+            await self.repo.ensure_working_dir(int(thread.id), working_dir)
+        settings = self._backend_settings
+        if backend and settings is not None:
+            await settings.set_backend(backend, thread_id=int(thread.id))
+            if model:
+                await settings.set_model(backend, model, thread_id=int(thread.id))
+        session_id: str | None = None
+        if resume:
+            record = await self.repo.get(int(thread.id))
+            session_id = record.session_id if record else None
+            if record is not None and session_id:
+                session_id = await self._session_id_for_current_backend(thread, record)
+        asyncio.create_task(
+            self._run_claude(
+                seed_message,
+                thread,
+                prompt,
+                session_id=session_id,
+                working_dir_override=working_dir,
+                result_sink=result_sink,
+                lounge=False,
+            )
+        )
+
     def _is_no_mention_scope(self, channel: discord.abc.MessageableChannel) -> bool:
         """Return whether *channel* is one ccdb was invited to speak in freely.
 

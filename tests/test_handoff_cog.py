@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -242,3 +243,85 @@ class TestJobThread:
         thread = await ensure_job_thread(starter, TASK_ID, fetch_channel=fetch)
         assert thread is existing
         fetch.assert_awaited_once_with(4242)
+
+
+class TestChatCogHandoffTurn:
+    @pytest.mark.asyncio
+    async def test_run_handoff_turn_pins_dir_and_harness_then_runs_in_the_thread(self) -> None:
+        from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+        thread = FakeThread(4242, "handoff-6d9f6ad0")
+        run_calls: list[dict[str, object]] = []
+
+        async def _run_claude(seed: object, th: object, prompt: str, **kw: object) -> None:
+            run_calls.append({"seed": seed, "thread": th, "prompt": prompt, **kw})
+
+        settings = SimpleNamespace(set_backend=AsyncMock(), set_model=AsyncMock())
+        cog = SimpleNamespace(
+            repo=SimpleNamespace(ensure_working_dir=AsyncMock(), get=AsyncMock(return_value=None)),
+            _backend_settings=settings,
+            _run_claude=_run_claude,
+            _session_id_for_current_backend=AsyncMock(),
+        )
+        sink = AsyncMock()
+
+        await ClaudeChatCog.run_handoff_turn(
+            cog,  # type: ignore[arg-type]
+            thread,
+            "do the thing",
+            working_dir="/srv/proj",
+            result_sink=sink,
+            backend="claude",
+            model="haiku",
+        )
+        await asyncio.sleep(0)
+
+        assert thread.sent and "Handoff turn" in thread.sent[0]
+        cog.repo.ensure_working_dir.assert_awaited_once_with(4242, "/srv/proj")
+        settings.set_backend.assert_awaited_once_with("claude", thread_id=4242)
+        settings.set_model.assert_awaited_once_with("claude", "haiku", thread_id=4242)
+        assert len(run_calls) == 1
+        assert run_calls[0]["thread"] is thread
+        assert run_calls[0]["session_id"] is None
+        assert run_calls[0]["result_sink"] is sink
+        assert run_calls[0]["lounge"] is False
+
+    @pytest.mark.asyncio
+    async def test_run_handoff_turn_resume_uses_the_threads_session(self) -> None:
+        from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+        thread = FakeThread(5150, "existing")
+        run_calls: list[dict[str, object]] = []
+
+        async def _run_claude(seed: object, th: object, prompt: str, **kw: object) -> None:
+            run_calls.append(kw)
+
+        record = SimpleNamespace(session_id="abc-123")
+        cog = SimpleNamespace(
+            repo=SimpleNamespace(
+                ensure_working_dir=AsyncMock(), get=AsyncMock(return_value=record)
+            ),
+            _backend_settings=None,
+            _run_claude=_run_claude,
+            _session_id_for_current_backend=AsyncMock(return_value="abc-123"),
+        )
+
+        await ClaudeChatCog.run_handoff_turn(
+            cog,  # type: ignore[arg-type]
+            thread,
+            "continue",
+            working_dir=None,
+            result_sink=AsyncMock(),
+            resume=True,
+        )
+        await asyncio.sleep(0)
+
+        assert run_calls[0]["session_id"] == "abc-123"
+
+    def test_capacity_follows_the_concurrency_limit(self) -> None:
+        from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+        cog = SimpleNamespace(active_session_count=2, _max_concurrent=3)
+        assert ClaudeChatCog.handoff_capacity_available(cog) is True  # type: ignore[arg-type]
+        cog.active_session_count = 3
+        assert ClaudeChatCog.handoff_capacity_available(cog) is False  # type: ignore[arg-type]
