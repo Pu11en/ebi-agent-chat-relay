@@ -27,7 +27,7 @@ Try: `make dev-on`
 
 ## 5. Verification and Safe Activation
 
-- [ ] 5.1 **Integration owner** — Run targeted tests, `uv run ruff check claude_discord/ tests/`, `uv run pyright claude_discord/`, the full test suite, and the security audit; record every command and confirm no unrelated project or session data changed.
+- [x] 5.1 **Integration owner** — Run targeted tests, `uv run ruff check claude_discord/ tests/`, `uv run pyright claude_discord/`, the full test suite, and the security audit; record every command and confirm no unrelated project or session data changed.
 - [ ] 5.2 **Integration owner** — Activate the isolated dev worktree only after other live turns are clear; verify New session plus Claude, Codex, and DSH resolve one local project identically and an owner-qualified remote request enters trusted handoff instead of using a local path.
 
 ## How to try it
