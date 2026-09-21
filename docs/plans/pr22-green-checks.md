@@ -30,7 +30,11 @@ and only after Drew says yes (GitHub is always last).
 
 - [ ] 3. Fix the 3.12 hang at its cause. Based on task 2, find the process-wide asyncio object
   (lock, event, queue, future or module-level task) that outlives its event loop, or the task
-  the test leaves running, and make it per-loop or cancel/await it in cleanup. Add a test that
+  the test leaves running, and make it per-loop or cancel/await it in cleanup. Research lead
+  (pytest-asyncio issues #222/#235): its teardown cancels leftover tasks like `asyncio.run`
+  does, and a task that swallows `CancelledError` (e.g. a wait loop with a bare
+  `except`/retry, or `asyncio.wait_for` on 3.12) never finishes — check the build loop's
+  question-wait for that first. Add a test that
   fails under 3.12 before the fix. Full suite under 3.12 must finish with no timeout.
 
 - [ ] 4. CodeQL high alerts — triage and fix. `claude_discord/cogs/task_loop.py:2718` and
@@ -42,8 +46,9 @@ and only after Drew says yes (GitHub is always last).
 
 - [ ] 5. CodeQL medium alerts — log injection and redirects. Log-injection at
   `claude_discord/ext/api_server.py:942,1376,1476,3433,3434` and
-  `claude_code_core/lounge_repo.py:89`: strip CR/LF from request-supplied values before logging
-  (one small shared helper, tested). URL redirection at `claude_discord/ext/api_server.py:733`:
+  `claude_code_core/lounge_repo.py:89`: strip CR/LF from request-supplied values before logging.
+  Research: CodeQL only recognises an inline `.replace("\r", "").replace("\n", "")` at the
+  log call, not a helper function (unless a custom model pack is added), so do it inline. URL redirection at `claude_discord/ext/api_server.py:733`:
   only redirect to relative paths / same origin, with a test; `tests/test_agui_backend.py:388`
   is test code — adjust or mark for dismissal.
 
