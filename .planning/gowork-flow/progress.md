@@ -42,6 +42,8 @@
 - Drew requires actual Discord Reply on the specific blocker message to answer it; normal thread conversation must not be captured as an answer. Added separate persistence, routing and concise reporting tasks.
 - Code inspection: current waiters are keyed by channel ID; _wrap_up waits for a verdict and looks good also invokes keep_work to integrate locally. Therefore the next unresolved decision is local integration timing, not whether to require completion approval.
 - No runtime changes, paid calls or test rerun; this is a documentation-only update.
+- Drew clarified that minimal words still need sufficient standalone context; raw brevity and long cards both miss the need. Added a communication check built on One Question for goal, impact, evidence and next decision, preserving complete internal plans.
+- The latest message's "bc" means because in context, not a selection of local-integration options B and C; local integration remains unanswered.
 - One documentation patch used out-of-order contexts and did not apply; reapplied the same changes in file order successfully.
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.

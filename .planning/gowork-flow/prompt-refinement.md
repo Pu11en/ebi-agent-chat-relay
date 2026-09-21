@@ -53,6 +53,34 @@ answer. Report unsupported runtime behavior honestly.
 
 These instructions require code integration: today's grouping helper receives checkbox labels, not full task blocks. Changing a prompt string alone cannot provide missing context, enforce dependencies, adapt capacity or guarantee cleanup.
 
+## Short Messages With Enough Context
+
+Build on the existing One Question guidance rather than introducing another planning system. Apply this communication check to planning questions, status updates, blocker messages and final recaps.
+
+```text
+Make the message understandable without rereading the thread or opening a file.
+Name the project or feature and the relevant goal before describing a change
+or choice. Include only the background needed to understand its consequence.
+For a result, say what changed and why that helps the user's original goal.
+For a blocker, say what cannot proceed, why it matters, what still can proceed,
+and the one decision needed. State uncertainty when it affects the decision.
+Give each choice a concrete consequence; do not rely on labels such as safe,
+smart, better or recommended to explain the difference.
+Use familiar words, short sentences and whitespace. Replace vague references
+such as this, it or the fix with the thing being discussed when unclear.
+Keep worker-level detail in the full plan; preserve goal, impact, evidence and
+any action needed in the short message. Do not hide a material issue to be brief.
+Do not send full-plan cards by default or make the user read them to answer.
+If an explanation does not land, re-explain using a concrete example instead
+of repeating the same abbreviated wording or posting the whole internal plan.
+Ask a question only when a decision is needed; a successful Go Work recap
+does not create a new approval gate.
+```
+
+Illustrative recap wording, not a report of completed work: "Booking website: added confirmation emails so customers know their appointment was booked. Checks passed."
+
+Review each message for standalone context, plain words, useful brevity, visible consequences and evidence that supports its claims. Validate with representative outputs during implementation; the current draft is not a measured communication improvement.
+
 ## Walkthrough Using the Existing Report Plan
 
 Source: local-plans/generation-wealth-feedback-gowork.md, inspected as a plan, not proof of current execution status.
