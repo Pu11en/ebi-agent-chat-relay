@@ -45,7 +45,9 @@
 - Drew clarified that minimal words still need sufficient standalone context; raw brevity and long cards both miss the need. Added a communication check built on One Question for goal, impact, evidence and next decision, preserving complete internal plans.
 - The latest message's "bc" means because in context, not a selection of local-integration options B and C; local integration remains unanswered.
 - Drew chose A for clarification style: explain unclear points with a concrete example from his project. Recorded in planner communication guidance; global/runtime instructions remain unchanged.
-- Next question returns to unresolved local integration timing, using the separate-build-copy example to supply context.
+- Drew chose A for local integration: automatically bring each checked build into the local project while other builds continue; no looks-good gate. Saved in the plan and prompt draft.
+- Integration must preserve existing edits, serialize same-project merges and verify combined results; conflicts use the existing one-repair/blocker rule. Runtime remains unchanged during planning.
+- Next question: what to do with finished worker thread history, distinct from stopping worker execution, which is already settled.
 - One documentation patch used out-of-order contexts and did not apply; reapplied the same changes in file order successfully.
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.
