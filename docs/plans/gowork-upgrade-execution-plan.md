@@ -166,7 +166,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: a fast worker stops while its sibling continues; crash/exception cannot discard
   its saved commit or leave an execution reservation permanently occupied.
 
-- [ ] T14: Execution spine, only after T13: archive completed worker threads without deleting history.
+- [x] T14: Execution spine, only after T13: archive completed worker threads without deleting history.
   Scope: Discord worker cleanup after durable result save. Archive immediately, regardless
   of sibling completion; never archive the master planning thread. Retry cleanup safely.
   Proof: result-save precedes archive; archive failure retains work and releases process

@@ -337,3 +337,29 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `f23a090`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (412 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T14 — Archive completed worker threads without deleting history
+
+- Ledger: `TaskAttempt.thread_id` / `archived`; `BuildState.note_thread()`, `mark_archived()`
+  (idempotent), `unarchived_threads()` (settled tasks whose thread is still open). Found and
+  fixed while doing this: two `BuildState` handles on one file (the loop's and the cog's) each
+  kept their own document and the last writer won; every accessor and mutation now re-reads the
+  file first (all on one event-loop thread), with a two-handle test.
+- Core: `ManifestResult.thread_id`; `_record_manifest_result` notes the thread *before* the
+  result is saved; `TaskLoop(after_manifest_result=…)` runs strictly after the save and can
+  never fail the build.
+- Cog: the worker thread id travels in the result; `_archive_worker_thread()` archives with
+  `thread.edit(archived=True)` (never `delete`), skips the build's own thread, and on failure
+  leaves the ledger unarchived; `retry_archives(running)` archives every pending thread and is
+  called on `resume_all()` for manifest builds. The pre-existing finish flow still archives the
+  build's own thread with its reason once the result card is posted.
+- Tests: `test_task_state.py` (+2: thread bookkeeping; two handles never lose writes),
+  `test_rolling_workers.py` (+1: the after-save hook sees the saved status and its failure
+  does not break the build), `test_manifest_build_cog.py` (+1: every archive saw "accepted" on
+  disk, one archive failed and stayed pending, `retry_archives` finished it, no `delete`
+  anywhere, no worker rerun).
+- Implementation commit: `1ac9121`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (416 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).
+- Open: a worker that crashes before reporting leaves its thread unarchived and its attempt
+  running; T17 reconciles interrupted work.
