@@ -315,3 +315,25 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `1d164d0`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (408 passed), `ruff check`,
   `ruff format --check`, `pyright` on the touched modules (0 errors).
+
+## T13 — Save and release workers individually
+
+- Core: `TaskLoop(manifest_worker=<one task → ManifestResult>)` replaces the batch dispatcher.
+  `_run_manifest()` keeps a map of in-flight worker tasks, tops it up from `ready_tasks()`
+  whenever there is room, waits with `FIRST_COMPLETED`, and `_record_manifest_result()`
+  persists each result the moment it is known (accept, or block with the reason — a raised
+  exception blocks that task with its message; a cancelled worker is recorded as such).
+  Cancelling the build cancels the in-flight workers, waits for them, and re-raises; their
+  attempts stay `running` in the ledger (T17 reconciles). Termination happens only when
+  nothing is in flight and nothing is ready.
+- Cog: `_run_manifest_task(running, task)` is the per-task worker; its admission slot is
+  released by `run_claude_with_config`'s `finally` as soon as that worker ends; a worker that
+  did not finish keeps its side copy (path named in the reason) — uncombined work is retained;
+  only a DONE with no new commits removes the empty side copy.
+- Tests: `tests/gowork_upgrade/test_rolling_workers.py` (4): a fast worker's dependent starts
+  while a slow sibling runs; a raising worker blocks only its task; cancellation keeps saved
+  results and running attempts; a saved result survives a crash right after it.
+  `test_manifest_dispatch.py` adapted to per-task workers (rounds grouped by start time).
+- Implementation commit: `f23a090`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (412 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).

@@ -159,7 +159,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: duplicate delivery uses the same attempt; worker gets complete input/ownership;
   current handoff contract inspection is documented and no competing format is invented.
 
-- [ ] T13: Execution spine, only after T12: save and release workers individually.
+- [x] T13: Execution spine, only after T12: save and release workers individually.
   Scope: replace batch-only result processing with per-worker completion handling.
   Persist results before cleanup, release execution capacity promptly on success/failure,
   handle exceptions and cancellation, retain uncombined work and ownership correctly.
