@@ -274,7 +274,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: temporary-home fixtures for Claude/Codex/DSH resolve the same guidance; install
   twice creates no duplication and rollback restores only owned content.
 
-- [ ] T30: Execution spine, only after T29: evaluate planning and execution contracts offline.
+- [x] T30: Execution spine, only after T29: evaluate planning and execution contracts offline.
   Scope: static regression fixtures from saved examples. New plan, resumed answers,
   tiny changes, multiple projects, ownership conflict, missing decisions and legacy
   runtime all retain correct scope and readiness; explicitly separate structural results

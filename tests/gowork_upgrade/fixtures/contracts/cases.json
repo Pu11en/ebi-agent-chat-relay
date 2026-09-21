@@ -1,0 +1,198 @@
+{
+  "about": "Saved planning/execution contract cases (T30). Each case is a plan file plus the structural results the installed parser, scheduler, ledger and prompts must produce. 'structural' is checked by code; 'planning' renders the prompt so a person can read it, and 'must_contain' only proves what the prompt carries, not how a model answers. See NOTICE.md for sources.",
+  "cases": [
+    {
+      "id": "new-plan",
+      "scenarios": ["new plan"],
+      "source": "planner-skill-draft/evals/evals.json #1",
+      "person_said": "I want to plan a business with a website, a product and marketing in this thread. I want detailed plans before anything starts building.",
+      "plan": "new-business-plan.md",
+      "runtime": "installed",
+      "structural": {
+        "format": "manifest",
+        "projects": 4,
+        "tasks": 5,
+        "problems": [],
+        "ready_now": ["product.catalog-contract", "website.launch-styling", "marketing.launch-post"],
+        "conflicts": [],
+        "decisions": [
+          "Catalog contract first; the website page follows it",
+          "Workers are sized by the computer, not by a number the person picks",
+          "No paid tools during the build"
+        ],
+        "coverage": {
+          "REQ-CATALOG": ["product.catalog-contract", "product.catalog-fixtures"],
+          "REQ-CATALOG-PAGE": ["website.catalog-page", "website.launch-styling"],
+          "REQ-LAUNCH-POST": ["marketing.launch-post"]
+        }
+      },
+      "planning": {
+        "known_answers": [],
+        "project_facts": ["three projects under one shop folder: product, website, marketing"],
+        "unclear": false,
+        "must_contain": [
+          "ask ONE question",
+          "lettered choices",
+          "product",
+          "website",
+          "marketing",
+          "Catalog contract first",
+          "must wait for another result"
+        ],
+        "must_not_contain": ["Settled already"]
+      }
+    },
+    {
+      "id": "resumed-answers",
+      "scenarios": ["resumed answers"],
+      "source": "planner-skill-draft/evals/evals.json #2",
+      "person_said": "We already decided it should choose as many workers as my computer can handle, including over ten. Continue planning from that answer.",
+      "plan": "../validated-plan.md",
+      "runtime": "installed",
+      "structural": {
+        "format": "manifest",
+        "projects": 4,
+        "tasks": 4,
+        "problems": [],
+        "ready_now": ["product.catalog-api", "website.page-styles", "marketing.launch-post"]
+      },
+      "planning": {
+        "known_answers": [
+          ["How many workers at once?", "as many as the computer can handle, including over ten — automatic"],
+          ["Which comes first?", "the product catalog contract"]
+        ],
+        "project_facts": ["four projects: control, product, website, marketing"],
+        "unclear": false,
+        "must_contain": [
+          "never ask these again",
+          "How many workers at once?",
+          "as many as the computer can handle",
+          "the running system determines available capacity",
+          "Which comes first?"
+        ],
+        "contains_once": ["Settled already"],
+        "must_not_contain": ["found the last explanation unclear"]
+      }
+    },
+    {
+      "id": "tiny-change",
+      "scenarios": ["tiny changes"],
+      "source": "planner-skill-draft/evals/evals.json #4",
+      "person_said": "Fix the misspelled Save label in the existing settings button; keep everything else as it is.",
+      "plan": "tiny-change-plan.md",
+      "runtime": "installed",
+      "structural": {
+        "format": "manifest",
+        "projects": 2,
+        "tasks": 3,
+        "problems": [],
+        "ready_now": ["settings.save-label", "docs.release-note"],
+        "decisions": ["Only the misspelled label changes; no other settings text is touched"]
+      },
+      "edit": {
+        "plan": "tiny-change-plan.v2.md",
+        "accepted_before": ["settings.save-label", "docs.release-note"],
+        "changed": {"settings": 2},
+        "reworked": ["settings.save-label"],
+        "statuses": {
+          "settings.save-label": "pending",
+          "settings.screenshot": "pending",
+          "docs.release-note": "accepted"
+        },
+        "ready_after": ["settings.save-label"],
+        "decisions_after": [
+          "Only the misspelled label changes; no other settings text is touched",
+          "The label reads \"Save changes\", not \"Save\" (changed while the build ran)"
+        ]
+      },
+      "routing": {
+        "must_contain": ["skip it for an already scoped small fix"]
+      }
+    },
+    {
+      "id": "multiple-projects",
+      "scenarios": ["multiple projects"],
+      "source": "tests/gowork_upgrade/fixtures/validated-plan.md (T03)",
+      "plan": "../validated-plan.md",
+      "runtime": "installed",
+      "structural": {
+        "format": "manifest",
+        "projects": 4,
+        "tasks": 4,
+        "problems": [],
+        "ready_now": ["product.catalog-api", "website.page-styles", "marketing.launch-post"],
+        "conflicts": [["website.catalog-page", "website.page-styles"]],
+        "conflict_files": {"website.catalog-page+website.page-styles": ["src/pages/catalog.tsx"]},
+        "coverage": {
+          "REQ-CATALOG": ["product.catalog-api"],
+          "REQ-WEBSITE-CATALOG": ["website.catalog-page", "website.page-styles"],
+          "REQ-LAUNCH-POST": ["marketing.launch-post"]
+        }
+      }
+    },
+    {
+      "id": "ownership-conflict",
+      "scenarios": ["ownership conflict"],
+      "source": "planner-skill-draft/evals/evals.json #3",
+      "person_said": "Turn our agreed plan into build tasks: two tasks edit the same config, a website task needs a product API that is not built, and the current runner only understands checklists.",
+      "plan": "ownership-conflict-plan.md",
+      "runtime": "installed",
+      "structural": {
+        "format": "manifest",
+        "projects": 1,
+        "tasks": 3,
+        "problems": [],
+        "ready_now": ["settings.save-label", "help.autosave-page"],
+        "conflicts": [["settings.save-label", "settings.autosave"]],
+        "conflict_files": {"settings.save-label+settings.autosave": ["config/settings.json"]}
+      }
+    },
+    {
+      "id": "missing-decisions",
+      "scenarios": ["missing decisions"],
+      "source": "prompt-refinement.md — BMad readiness: a builder must not invent an unanswered decision",
+      "plan": "missing-decisions-plan.md",
+      "runtime": "installed",
+      "structural": {
+        "format": "manifest",
+        "projects": 0,
+        "tasks": 0,
+        "problems": ["agreed outcome 'REQ-EXPORT' is not covered by any task"],
+        "ready_now": [],
+        "decisions": []
+      }
+    },
+    {
+      "id": "legacy-runtime",
+      "scenarios": ["legacy runtime"],
+      "source": "planner-skill-draft/evals/evals.json #3",
+      "plan": "../validated-plan.md",
+      "runtime": "legacy",
+      "structural": {
+        "format": "manifest",
+        "projects": 4,
+        "tasks": 4,
+        "problems": [
+          "this plan carries a gowork-plan manifest, but the installed runner ignores manifests",
+          "the installed runner builds one project per plan, but this plan spans 4 projects"
+        ],
+        "ready_now": []
+      }
+    },
+    {
+      "id": "legacy-checkbox",
+      "scenarios": ["legacy runtime"],
+      "source": "tests/gowork_upgrade/fixtures/legacy-plan.md (T01)",
+      "plan": "../legacy-plan.md",
+      "runtime": "legacy",
+      "structural": {
+        "format": "checkbox",
+        "projects": 1,
+        "tasks": 2,
+        "problems": [],
+        "ready_outcomes": ["First task"],
+        "notes": ["checkbox plan: tasks run one at a time in document order"]
+      }
+    }
+  ]
+}

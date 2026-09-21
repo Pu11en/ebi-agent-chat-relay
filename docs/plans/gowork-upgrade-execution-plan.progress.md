@@ -766,3 +766,48 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `71b7d69`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (498 passed), `ruff check`,
   `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors).
+
+## T30 — Evaluate planning and execution contracts offline
+
+- New `claude_code_core/gowork_contracts.py`: `evaluate_cases(case_dir)` reads a saved case
+  set (`cases.json` + plan files) and, for every case, runs the implemented code — T27's
+  `check_plan` for the named runtime (installed or legacy), the parser's ownership conflicts
+  and requirement coverage, T06 `ready_tasks`, T12 `plan_decisions`, and for an `edit` case
+  the T19 `sync_tree` on a ledger with some tasks accepted (what changed, what was reworked,
+  what stayed accepted, what is ready after); for a `planning` case T26's `planning_prompt`
+  with the saved answers; for a `routing` case T29's routing rule. Each expectation becomes a
+  `CheckResult(field, ok, expected, actual)`, so a regression names the case, the field and
+  both values; `Evaluation.problems` names an uncovered scenario or a `copied_from` source
+  with no license notice in `NOTICE.md`. `render_examples()` writes one file per case with
+  "Structural results (checked by code)" before "Rendered planning prompt (not a measure of
+  a live model)" and a README that says prompt quality is not measured and no paid
+  evaluation agent ran; `format_report()` ends with the same line. CLI:
+  `python -m claude_code_core.gowork_contracts tests/gowork_upgrade/fixtures/contracts
+  [--render DIR]`, exit 1 on any structural failure, 2 on an unusable case set.
+- Saved cases (`tests/gowork_upgrade/fixtures/contracts/`, 8 cases over the 7 scenarios):
+  new plan (a four-project shop plan with decisions: 3 ready, 5 tasks, coverage per outcome,
+  prompt asks one question and carries every project and decision); resumed answers (the
+  capacity answer is in the "never ask these again" list exactly once and the unclear-case
+  paragraph is absent); tiny change (the settings plan goes to v2 while two tasks are
+  accepted → exactly `settings.save-label` is reworked, the docs task stays accepted, the
+  dependent screenshot waits; the routing rule skips an already scoped small fix);
+  multiple projects (validated-plan: page waits for the contract; the page/pages-folder
+  overlap is a recorded conflict, not a problem); ownership conflict (two tasks own
+  `config/settings.json`: the plan is valid, the pair is a conflict, only the first is
+  ready); missing decisions (an agreed outcome no task covers is refused by name, decisions
+  empty); legacy runtime (the multi-project plan judged for a checkbox-only runner names
+  both problems; the legacy checkbox plan checks clean with "First task" ready).
+  `NOTICE.md` names each case's source (the four `person_said` lines quote Drew's own draft
+  evals; nothing from Superpowers/GSD/BMad is copied — their MIT notices stay in the draft's
+  `references/licenses/`).
+- Tests: `tests/gowork_upgrade/test_contract_evaluation.py` (7): every case passes and every
+  scenario has a case; key actuals pinned outside cases.json (not self-referential); a wrong
+  expectation fails naming case + field + expected + actual in a short report; rendered files
+  separate structure from prompt quality; a `copied_from` without a notice fails and passes
+  once NOTICE.md names it; the saved cases copy nothing upstream; the command exits 1 on a
+  regression and 0 on the saved set.
+- Implementation commit: recorded in the T31 entry's predecessor line (`git log`:
+  `feat(gowork): evaluate planning and execution contracts offline (T30)`).
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (505 passed), `ruff check`,
+  `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors). No model, network or
+  paid agent is involved anywhere in the evaluator.
