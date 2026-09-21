@@ -63,3 +63,26 @@
   `ruff format --check`, `pyright claude_code_core/loop_store.py claude_discord/cogs/task_loop.py` (0 errors).
 - Open: the cog's in-memory `_running` map is still keyed by repo path (one running build per
   project); T11 replaces that running identity when dispatch moves to the coordinator.
+
+## T05 — Persist task attempts and acceptance evidence
+
+- New `claude_code_core/gowork_state.py`: `open_build_state(path, tree, build_id=…)` creates or
+  reopens one ledger per build (refuses another build's file). Each task has one current
+  `TaskAttempt` — attempt number + stable `attempt_id` (`<build>:<task>:<n>`), plan id and
+  version, owned files/resources, status (pending → running → finished → accepted, or blocked),
+  result commit, checks, review lines, repair count, `accepted` flag, reason.
+- Transitions are explicit and refuse anything stale: `submit_result` is idempotent for the same
+  result, refuses a different result for a finished attempt and refuses any non-current attempt;
+  `accept` needs a finished current attempt whose plan version still matches
+  (`note_plan_version` records a mid-build change; `retry` mints the next attempt at the new
+  version); an accepted task cannot be blocked. Writes are whole-file temp+rename; a stray temp
+  file from an interrupted write is ignored on reopen.
+- Design note: this is the core (shipped) counterpart of the Lockin extension's
+  `run_state.py`; `claude_code_core` cannot import `extensions/` (not in the wheel), so the
+  ledger lives in core and follows the same discipline rather than importing it.
+- Tests: `tests/gowork_upgrade/test_task_state.py` (11).
+- Implementation commit: `9764ca2`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (348 passed), `ruff check`,
+  `ruff format --check`, `pyright claude_code_core/gowork_state.py` (0 errors).
+- Open: nothing wires the ledger into the running loop yet — that is T11's dispatch step;
+  T06 can select ready tasks from `BuildState.accepted_tasks()` plus the plan's dependencies.

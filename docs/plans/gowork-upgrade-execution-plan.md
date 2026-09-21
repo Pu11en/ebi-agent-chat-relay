@@ -86,7 +86,7 @@ new code merely because this build edits it. Report that boundary honestly.
   of repo-only identity; preserve legacy records, lookup compatibility and atomic writes.
   Proof: two plans for one repo survive reopen; migration is repeatable and loses no run.
 
-- [ ] T05: Execution spine, only after T04: persist task attempts and acceptance evidence.
+- [x] T05: Execution spine, only after T04: persist task attempts and acceptance evidence.
   Scope: durable task state. Record ownership, assignment/version, attempt identity,
   result commit, checks/review, repair usage and accepted versus merely finished results.
   Proof: reopen preserves state; duplicate result submission is idempotent; stale attempt
