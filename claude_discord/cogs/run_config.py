@@ -125,6 +125,14 @@ class RunConfig:
     # Which frontend created this session mapping. Historical callers remain
     # Discord by default; the Teams host sets this explicitly.
     session_origin: str = "discord"
+    # What kind of admission slot this run takes on the adaptive capacity path:
+    # "chat" (never queued), "task" (a Go Work worker) or "review" (the build's
+    # own check, which keeps a reserved slot so it cannot queue behind workers).
+    slot_kind: str = "chat"
+    # The Go Work build this run belongs to, for fair admission between builds.
+    slot_build_id: str = ""
+    # How many other tasks this one unblocks; the controller prefers higher.
+    slot_unblocks: int = 0
 
     # Prevent accidental field mutation — RunConfig is a value object.
     # Use dataclasses.replace() to create modified copies.

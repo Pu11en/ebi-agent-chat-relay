@@ -61,7 +61,7 @@ def _cog_with_chat() -> tuple[TaskLoopCog, MagicMock, MagicMock]:
     thread.send = AsyncMock(return_value=MagicMock())
     chat.spawn_session = AsyncMock(return_value=thread)
 
-    async def fresh_turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+    async def fresh_turn(seed, thread, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
         if "checking finished work" in prompt:  # the bot's own end check
             await result_sink("PASS: the goal — it works\nDONE", None)
             return
@@ -605,7 +605,7 @@ def _checking_chat(chat: MagicMock, verdict: str) -> None:
     """Make the fake worker also answer the bot's check round."""
     real = chat.run_fresh_turn.side_effect
 
-    async def turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+    async def turn(seed, thread, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
         if "You are checking finished work" in prompt:
             await result_sink(verdict, None)
             return
@@ -701,7 +701,7 @@ class TestStuckBuildWaits:
         real = chat.run_fresh_turn.side_effect
         calls = {"n": 0}
 
-        async def turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             calls["n"] += 1
             if calls["n"] == 1:
                 await result_sink("x\nSTUCK: the tests need a database", None)
@@ -867,7 +867,7 @@ class TestStartedByWords:
 
 class TestSwitchingPlans:
     def _stuck(self, chat: MagicMock) -> None:
-        async def turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             await result_sink("x\nSTUCK: needs Drew at the computer", None)
 
         chat.run_fresh_turn = AsyncMock(side_effect=turn)
@@ -904,7 +904,7 @@ class TestSwitchingPlans:
         real = chat.run_fresh_turn.side_effect
         calls = {"n": 0}
 
-        async def turn(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             calls["n"] += 1
             if calls["n"] == 1:
                 await real(seed, thread, prompt, working_dir=working_dir, result_sink=result_sink)
@@ -967,7 +967,7 @@ class TestSwitchWhileWaiting:
         chat._backend_settings = None
         thread.delete = AsyncMock()
 
-        async def asks(seed, thread, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def asks(seed, thread, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             await result_sink("x\nASK: which colour?", None)
 
         chat.run_fresh_turn = AsyncMock(side_effect=asks)
@@ -1010,7 +1010,7 @@ class TestWorkerThreadDeleted:
         real = chat.run_fresh_turn.side_effect
         calls = {"n": 0}
 
-        async def turn(seed, th, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, th, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             calls["n"] += 1
             await real(seed, th, prompt, working_dir=working_dir, result_sink=result_sink)
             if calls["n"] == 1:
@@ -1122,7 +1122,7 @@ class TestBuildTalksInItsOwnThread:
         cog, chat, thread = _cog_with_chat()
         outcomes = iter(["x\nSTUCK: no idea", None])
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             nxt = next(outcomes)
             if nxt is None:
                 plan = Path(working_dir) / "PLAN.md"
@@ -1148,7 +1148,7 @@ class TestUsageLimitInThread:
     def _limited_then_fine(self, chat: MagicMock) -> None:
         calls = 0
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -1262,7 +1262,7 @@ class TestPausedBuildListens:
         thread.delete = AsyncMock()
         calls = 0
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -1294,7 +1294,7 @@ class TestPlannerChangesReachTheBuild:
         thread.delete = AsyncMock()
         calls = 0
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             nonlocal calls
             calls += 1
             if calls == 1:  # meanwhile the planning session adds a step (not committed)
@@ -1418,7 +1418,7 @@ class TestGoalNotMet:
         thread.delete = AsyncMock()
         state = {"checks": 0, "added": 0}
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             plan = Path(working_dir) / "PLAN.md"
             if "checking finished work" in prompt:
                 state["checks"] += 1
@@ -1529,7 +1529,7 @@ class TestParallelSteps:
         running_now = 0
         most_at_once = 0
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             nonlocal running_now, most_at_once
             if "checking finished work" in prompt:
                 await result_sink("PASS: ok — ok\nDONE", None)
@@ -1583,7 +1583,7 @@ class TestSmartUnsticking:
         )
         prompts: list[str] = []
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             prompts.append(prompt)
             plan = Path(working_dir) / "PLAN.md"
             if "checking finished work" in prompt:
@@ -1815,7 +1815,7 @@ class TestSecondAiReview:
         reviews: list[str] = []
         builder_prompts: list[str] = []
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             plan = Path(working_dir) / "PLAN.md"
             if "checking finished work" in prompt:
                 await result_sink("PASS: ok — ok\nDONE", None)
@@ -1954,7 +1954,7 @@ class TestReviewFixesInTheCog:
         cog._ai_choices = AsyncMock(return_value=[("dsh", "glm-5.3", "")])  # type: ignore[method-assign]
         calls = 0
 
-        async def turn(seed, thread_, prompt, *, working_dir, result_sink):  # noqa: ANN001
+        async def turn(seed, thread_, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
             nonlocal calls
             calls += 1
             if calls <= 2:

@@ -20,10 +20,15 @@ import contextlib
 import logging
 import re
 from dataclasses import replace
+from typing import Any
 
 import discord
 
 from claude_code_core.frontend import Notice, NoticeLevel
+from claude_code_core.gowork_admission import AdmissionController, Reservation, SlotKind
+from claude_code_core.gowork_capacity import CapacityDecision, CapacityPolicy
+from claude_code_core.gowork_resources import WorkerPeaks
+from claude_code_core.task_loop import MAX_PARALLEL
 
 from ..discord_ui.ask_handler import collect_ask_answers
 from ..discord_ui.embeds import error_embed, timeout_embed
@@ -40,14 +45,20 @@ logger = logging.getLogger(__name__)
 _global_semaphore: asyncio.Semaphore | None = None
 _max_concurrent: int = 10
 _pr_completion_gate: GitHubPrCompletionGate | None = None
+# The adaptive path (no explicit limit): one admission controller for every
+# build, a policy that sizes it from measured resources, and the probe it reads.
+_global_admission: AdmissionController | None = None
+_capacity_policy: CapacityPolicy | None = None
+_resource_probe: Any = None
+_worker_peaks: WorkerPeaks = WorkerPeaks()
 
 
 def configure_session_limit(max_concurrent: int) -> None:
-    """Set the process-wide concurrent session limit.
+    """Set an explicit process-wide concurrent session limit (a fixed semaphore).
 
-    Called once from ``setup_bridge()`` during startup.  All subsequent calls to
-    ``run_claude_with_config()`` — regardless of which Cog invokes them — will
-    honour the limit.
+    Called from ``setup_bridge()`` when the operator configured a number.  Every
+    ``run_claude_with_config()`` call — whichever Cog makes it — honours it, and
+    the adaptive path is switched off.
     """
     global _global_semaphore, _max_concurrent  # noqa: PLW0603
     if type(max_concurrent) is not int or max_concurrent < 1:
@@ -56,9 +67,60 @@ def configure_session_limit(max_concurrent: int) -> None:
     _global_semaphore = asyncio.Semaphore(max_concurrent)
 
 
+def configure_adaptive_limit(
+    *,
+    controller: AdmissionController | None,
+    policy: CapacityPolicy | None,
+    probe: Any = None,
+) -> None:
+    """Use measured capacity instead of a fixed number (``None`` for all switches it off).
+
+    The controller admits runs, the policy resizes it on every ``tick_capacity()``
+    from the probe's snapshot, and an explicit ``configure_session_limit()`` still
+    wins because the fixed semaphore is checked first.
+    """
+    global _global_admission, _capacity_policy, _resource_probe  # noqa: PLW0603
+    _global_admission = controller
+    _capacity_policy = policy
+    _resource_probe = probe
+    if controller is not None and policy is not None:
+        controller.set_capacity(policy.capacity)
+
+
+def tick_capacity() -> CapacityDecision | None:
+    """Re-measure the host and resize the admission controller (adaptive path only)."""
+    if _global_admission is None or _capacity_policy is None or _resource_probe is None:
+        return None
+    held = _global_admission.snapshot().held
+    decision = _capacity_policy.decide(_resource_probe.sample(), _worker_peaks, held=held)
+    _global_admission.set_capacity(decision.capacity)
+    return decision
+
+
+async def run_capacity_ticks(interval_seconds: float) -> None:
+    """Background loop for ``setup_bridge()``: keep the adaptive capacity current."""
+    while True:
+        try:
+            decision = tick_capacity()
+            if decision is not None and decision.pause_starts:
+                logger.info("gowork capacity: %s", decision.reason)
+        except Exception:  # never let a measurement error stop the loop
+            logger.warning("capacity tick failed", exc_info=True)
+        await asyncio.sleep(interval_seconds)
+
+
 def session_limit() -> int | None:
-    """Configured process-wide capacity, or None for unconfigured embedded use."""
-    return _max_concurrent if _global_semaphore is not None else None
+    """Process-wide capacity right now, or None for unconfigured embedded use."""
+    if _global_semaphore is not None:
+        return _max_concurrent
+    if _global_admission is not None:
+        return _global_admission.snapshot().capacity
+    return None
+
+
+def parallel_limit() -> int:
+    """How many Go Work steps may run side by side (the loop's old fixed ten)."""
+    return session_limit() or MAX_PARALLEL
 
 
 def configure_pr_completion_gate(owner: str | None) -> None:
@@ -459,8 +521,10 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
 
     processor = EventProcessor(config)
 
-    # --- Session slot limiter (global semaphore) ---
+    # --- Session slot limiter: an explicit semaphore, else adaptive admission ---
     sem = _global_semaphore
+    admission = _global_admission if sem is None else None
+    reservation: Reservation | None = None
     acquired = False
     try:
         if config.registry is not None:
@@ -480,6 +544,27 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
                 )
         if sem is not None:
             await sem.acquire()
+            acquired = True
+        elif admission is not None:
+            kind: SlotKind = config.slot_kind if config.slot_kind in ("task", "review") else "chat"  # type: ignore[assignment]
+            reservation = admission.reserve(
+                kind,
+                config.slot_build_id or f"thread-{config.surface.thread_key}",
+                unblocks=config.slot_unblocks,
+            )
+            if kind != "chat" and not admission.has_room(kind):
+                with contextlib.suppress(Exception):
+                    snapshot = admission.snapshot()
+                    await config.surface.send_notice(
+                        Notice(
+                            level=NoticeLevel.SUBTLE,
+                            body=(
+                                f"⏳ Waiting for capacity ({snapshot.held} of "
+                                f"{snapshot.capacity} slots in use)"
+                            ),
+                        )
+                    )
+            await reservation.acquire()
             acquired = True
         if config.registry is not None:
             config.registry.update(config.surface.thread_key, execution_state="running")
@@ -512,12 +597,16 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
     finally:
         if sem is not None and acquired:
             sem.release()
+        if reservation is not None:
+            reservation.release()
         if config.stop_view is not None:
             config.stop_view.set_queued_task(None)
         await processor.finalize()
         if config.registry is not None:
             config.registry.unregister(config.surface.thread_key)
-        if config.worktree_manager is not None and (sem is None or acquired):
+        if config.worktree_manager is not None and (
+            (sem is None and admission is None) or acquired
+        ):
             await _cleanup_session_worktree(config)
 
     # After compact_boundary, rerun with a guardrail to prevent Claude from

@@ -117,6 +117,10 @@ class AdmissionController:
             waiting=len(self._waiting),
         )
 
+    def has_room(self, kind: SlotKind) -> bool:
+        """Would a request of this kind be admitted right now, without waiting?"""
+        return not self._waiting and self._room_for(kind)
+
     def fairness(self, build_id: str) -> Fairness:
         return self._fairness.get(build_id, Fairness())
 
@@ -181,6 +185,9 @@ class AdmissionController:
     def _wake(self) -> None:
         """Admit the best waiter while there is room; record who was passed over."""
         while self._waiting:
+            # A waiter cancelled in this same tick still sits in the line with a
+            # cancelled future; resolving it would raise. Drop it first.
+            self._waiting = [w for w in self._waiting if not w.woken.done()]
             chosen = self._choose()
             if chosen is None or not self._room_for(chosen.kind):
                 break

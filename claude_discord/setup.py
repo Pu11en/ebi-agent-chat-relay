@@ -354,16 +354,40 @@ async def setup_bridge(
     if thread_context_days != DEFAULT_DAYS:
         logger.info("Thread context window: %d day(s)", thread_context_days)
 
-    # Max concurrent sessions — fall back to MAX_CONCURRENT_SESSIONS env var, then 10
+    # Max concurrent sessions. An explicit number (parameter or MAX_CONCURRENT_SESSIONS)
+    # is a fixed limit on every run. Without one, capacity is measured: Go Work workers
+    # reserve slots that grow with the host's health, and chat is never queued.
+    from .cogs._run_helper import (
+        configure_adaptive_limit,
+        configure_pr_completion_gate,
+        configure_session_limit,
+    )
+
+    _env_max = os.getenv("MAX_CONCURRENT_SESSIONS", "")
+    explicit_limit = max_concurrent is not None or _env_max.isdigit()
     if max_concurrent is None:
-        _env_max = os.getenv("MAX_CONCURRENT_SESSIONS", "")
         max_concurrent = int(_env_max) if _env_max.isdigit() else 10
-    if max_concurrent != 10:
-        logger.info("Max concurrent sessions: %d", max_concurrent)
+    if explicit_limit:
+        logger.info("Max concurrent sessions: %d (fixed)", max_concurrent)
+        configure_session_limit(max_concurrent)
+        configure_adaptive_limit(controller=None, policy=None, probe=None)
+    else:
+        from claude_code_core.gowork_admission import AdmissionController
+        from claude_code_core.gowork_capacity import CapacityPolicy
+        from claude_code_core.gowork_resources import HostProbe
+        from claude_code_core.loop_store import DEFAULT_PATH as _GOWORK_STATE
 
-    from .cogs._run_helper import configure_pr_completion_gate, configure_session_limit
-
-    configure_session_limit(max_concurrent)
+        policy = CapacityPolicy()
+        configure_adaptive_limit(
+            controller=AdmissionController(
+                _GOWORK_STATE.with_name("gowork-admission.json"),
+                capacity=policy.capacity,
+                review_reserve=1,
+            ),
+            policy=policy,
+            probe=HostProbe(),
+        )
+        logger.info("Session capacity: adaptive (starts at %d, measured)", policy.capacity)
     pr_completion_owner = os.getenv("CCDB_PR_COMPLETION_OWNER", "").strip()
     configure_pr_completion_gate(pr_completion_owner or None)
     if pr_completion_owner:

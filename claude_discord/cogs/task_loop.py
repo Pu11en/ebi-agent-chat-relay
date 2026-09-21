@@ -97,6 +97,7 @@ from claude_code_core.work_copy import (
 )
 
 from ..backend_settings import ALL_BACKENDS
+from ._run_helper import parallel_limit, run_capacity_ticks
 
 if TYPE_CHECKING:
     from .claude_chat import ClaudeChatCog
@@ -110,6 +111,8 @@ ASK_TIMEOUT_SECONDS = 12 * 60 * 60
 VERDICT_REMIND_SECONDS = 24 * 60 * 60
 #: How long starting a new plan waits for the project's open build to close.
 SWITCH_TIMEOUT_SECONDS = 45 * 60
+#: How often the adaptive capacity re-measures the host.
+CAPACITY_TICK_SECONDS = 15
 #: How long starting a build waits for the harness/model or plan reply.
 PICK_TIMEOUT_SECONDS = 12 * 60 * 60
 _NOT_PICKED = "Not started: you didn't pick an AI in time. Say go work again when you're ready."
@@ -804,7 +807,13 @@ class TaskLoopCog(commands.Cog):
                 result["text"], result["error"] = text, error
 
             await chat.run_fresh_turn(
-                seed, thread, prompt, working_dir=str(work_dir), result_sink=sink
+                seed,
+                thread,
+                prompt,
+                working_dir=str(work_dir),
+                result_sink=sink,
+                slot_kind="task",
+                slot_build_id=record.build_id,
             )
             if not result:
                 return None, "the session ended without a result"
@@ -825,7 +834,13 @@ class TaskLoopCog(commands.Cog):
                 result["text"], result["error"] = text, error
 
             await chat.run_fresh_turn(
-                seed, thread, prompt, working_dir=str(work_dir), result_sink=sink
+                seed,
+                thread,
+                prompt,
+                working_dir=str(work_dir),
+                result_sink=sink,
+                slot_kind="review",
+                slot_build_id=record.build_id,
             )
             return result.get("text"), result.get("error") or (
                 None if result else "the session ended without a result"
@@ -887,6 +902,7 @@ class TaskLoopCog(commands.Cog):
             on_result=lambda step, result, detail: self._record(holder[0], step, result, detail),
             review=lambda step, base: self._review_step(holder[0], step, base),
             run_group=lambda steps: self._run_group(holder[0], steps),
+            max_parallel=parallel_limit,
         )
         repo_dir = Path(record.repo_dir)
         copy = WorkCopy(
@@ -984,6 +1000,16 @@ class TaskLoopCog(commands.Cog):
                     await self._maybe_morning_summary(datetime.datetime.now())
 
         self._resume_task = asyncio.create_task(resume_when_ready())
+        # Adaptive capacity (T10): re-measure the host regularly; a no-op when an
+        # explicit session limit is configured.
+        self._capacity_task = asyncio.create_task(
+            run_capacity_ticks(CAPACITY_TICK_SECONDS), name="gowork-capacity"
+        )
+
+    async def cog_unload(self) -> None:
+        for task in (getattr(self, "_capacity_task", None), getattr(self, "_resume_task", None)):
+            if task is not None:
+                task.cancel()
 
     async def _drive(self, running: _Running, report: Any) -> LoopOutcome:
         try:
@@ -2278,6 +2304,8 @@ class TaskLoopCog(commands.Cog):
                 parallel_prompt(copy.plan_path, step),
                 working_dir=str(side.path),
                 result_sink=sink,
+                slot_kind="task",
+                slot_build_id=running.build_id,
             )
             status, detail = parse_status(result.get("text"))
             ok = status == Status.DONE

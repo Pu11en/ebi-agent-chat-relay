@@ -1226,12 +1226,16 @@ class ClaudeChatCog(commands.Cog):
         *,
         working_dir: str | None,
         result_sink: Callable[[str | None, str | None], Awaitable[None]],
+        slot_kind: str = "task",
+        slot_build_id: str = "",
+        slot_unblocks: int = 0,
     ) -> None:
         """Run one turn in *thread* in a brand-new session and wait for it.
 
         Unlike a reply, nothing is resumed: the task loop wants every round to
         start with an empty context, and the thread's backend setting still
-        decides which harness runs it.
+        decides which harness runs it. The slot arguments say what kind of
+        capacity the turn takes (a worker task or the build's own review).
         """
         await self._run_claude(
             seed_message,
@@ -1241,6 +1245,7 @@ class ClaudeChatCog(commands.Cog):
             working_dir_override=working_dir,
             result_sink=result_sink,
             lounge=False,  # a build hears only Drew, never other sessions' notes
+            slot=(slot_kind, slot_build_id, slot_unblocks),
         )
 
     async def run_resumed_turn(
@@ -1707,6 +1712,7 @@ class ClaudeChatCog(commands.Cog):
         interrupt_existing: bool = False,
         interrupt_notice: str = "-# ⚡ Interrupted. Starting with new instruction...",
         lounge: bool = True,
+        slot: tuple[str, str, int] = ("chat", "", 0),
     ) -> None:
         """Execute Claude Code CLI and stream results to the thread.
 
@@ -1825,6 +1831,9 @@ class ClaudeChatCog(commands.Cog):
                     codex_command=(
                         self._factory.codex_command if self._factory is not None else "codex"
                     ),
+                    slot_kind=slot[0],
+                    slot_build_id=slot[1],
+                    slot_unblocks=slot[2],
                 )
             )
         finally:

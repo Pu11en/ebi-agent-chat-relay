@@ -476,6 +476,7 @@ class TaskLoop:
         run_group: Callable[[list[str]], Awaitable[list[tuple[str, bool, str]]]] | None = None,
         on_result: Callable[[str, str, str], Awaitable[None]] | None = None,
         review: Callable[[str, str | None], Awaitable[str | None]] | None = None,
+        max_parallel: Callable[[], int] | None = None,
     ) -> None:
         self.plan_path = plan_path
         self.repo_dir = repo_dir
@@ -490,6 +491,8 @@ class TaskLoop:
         self._before_round = before_round
         #: Parallel steps (idea 2): which open steps can go together, and running them.
         self._next_group = next_group
+        #: How many may go at once: measured capacity on the adaptive path, else ten.
+        self._max_parallel = max_parallel or (lambda: MAX_PARALLEL)
         #: Told how every round ended — (step, result, detail) — for the records.
         self._on_result = on_result
         #: A different AI reviews each finished step (idea 5); None = approved.
@@ -580,7 +583,7 @@ class TaskLoop:
         except Exception:
             logger.warning("task loop: grouping steps failed", exc_info=True)
             return []
-        return [s for s in group if s not in self._solo][:MAX_PARALLEL]
+        return [s for s in group if s not in self._solo][: max(1, self._max_parallel())]
 
     def add_note(self, text: str) -> None:
         """Something the person typed mid-task; the next round reads it."""
