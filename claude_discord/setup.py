@@ -459,6 +459,20 @@ async def setup_bridge(
     bot.session_repo = session_repo  # type: ignore[attr-defined]
     bot.resume_repo = resume_repo  # type: ignore[attr-defined]
     bot.handoff_repo = handoff_repo  # type: ignore[attr-defined]
+    bot.capacity_repo = stores.capacity  # type: ignore[attr-defined]
+
+    # --- Model-capacity recovery (auto-enabled) ---
+    # Every run goes through one coordinator: a "model at capacity" answer
+    # waits and retries within bounds instead of ending the turn, survives a
+    # restart via the capacity_pending_turns table, and may switch only along
+    # CCDB_CAPACITY_FALLBACK. CCDB_CAPACITY_RETRY=0 turns the scheduling off.
+    from .capacity_recovery import CapacityRecoveryCoordinator
+    from .cogs._run_helper import configure_capacity_recovery
+
+    configure_capacity_recovery(
+        CapacityRecoveryCoordinator(store=stores.capacity),
+        backend_factory=backend_factory,
+    )
 
     # --- Thread inbox (optional — THREAD_INBOX_ENABLED=true) ---
     if enable_thread_inbox:
@@ -507,6 +521,7 @@ async def setup_bridge(
         monitor_all_channels=monitor_all_channels,
         mention_anywhere=mention_anywhere,
         thread_context_days=thread_context_days,
+        capacity_repo=stores.capacity,
     )
     await bot.add_cog(chat_cog)
     logger.info("Registered ClaudeChatCog")

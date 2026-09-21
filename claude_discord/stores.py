@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass
 
 from .database.ask_repo import PendingAskRepository
+from .database.capacity_recovery_repo import CapacityRecoveryRepository
 from .database.claims_repo import ClaimRepository
 from .database.frontend_thread_repo import FrontendThreadRepository
 from .database.handoff_repo import HandoffRepository
@@ -50,6 +51,8 @@ class SessionStores:
     summaries: ThreadSummaryRepository
     frontend_threads: FrontendThreadRepository
     handoffs: HandoffRepository
+    #: Turns kept alive across model-capacity retries and restarts.
+    capacity: CapacityRecoveryRepository
 
 
 async def build_session_stores(session_db_path: str) -> SessionStores:
@@ -90,4 +93,5 @@ async def build_session_stores(session_db_path: str) -> SessionStores:
         summaries=summaries,
         frontend_threads=frontend_threads,
         handoffs=HandoffRepository(session_db_path),
+        capacity=CapacityRecoveryRepository(session_db_path),
     )

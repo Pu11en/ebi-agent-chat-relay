@@ -28,11 +28,13 @@ from claude_code_core.backend import SessionBackend
 from ..agent_router import parse_agent_routes
 from ..backend_factory import BackendFactory
 from ..backend_settings import BackendSettings, session_is_resumable
+from ..capacity_recovery import CapacityRestartLoader
 from ..claude.rewind import find_session_jsonl, parse_user_turns
 from ..claude.types import ImageData
 from ..concurrency import SessionRegistry
 from ..cross_backend_handoff import ConversationHistoryReader, build_handoff_prompt
 from ..database.ask_repo import PendingAskRepository
+from ..database.capacity_recovery_repo import CapacityPendingTurn, CapacityRecoveryRepository
 from ..database.lounge_repo import LoungeRepository
 from ..database.repository import SessionRecord, SessionRepository
 from ..database.resume_repo import PendingResumeRepository
@@ -143,10 +145,15 @@ class ClaudeChatCog(commands.Cog):
         conversation_history: ConversationHistoryReader | None = None,
         thread_member_ids: set[int] | None = None,
         thread_member_exclude_category_ids: set[int] | None = None,
+        capacity_repo: CapacityRecoveryRepository | None = None,
     ) -> None:
         self.bot = bot
         self.repo = repo
         self.runner = runner
+        # Pending turns that were waiting for model capacity when the bot
+        # stopped; resumed once on the first on_ready (None disables it).
+        self._capacity_repo = capacity_repo or getattr(bot, "capacity_repo", None)
+        self._capacity_turns_loaded = False
         # Optional backend factory + settings: when both are present,
         # session spawns consult them to honour per-thread /backend overrides.
         # When either is None, we fall back to self.runner.clone() (legacy).
@@ -1427,6 +1434,17 @@ class ClaudeChatCog(commands.Cog):
             self._thread_members_backfilled = True
             asyncio.create_task(self._backfill_thread_members())
 
+        if self._capacity_repo is not None and not self._capacity_turns_loaded:
+            self._capacity_turns_loaded = True
+            loader = CapacityRestartLoader(self._capacity_repo, self.resume_capacity_turn)
+            try:
+                resumed = await loader.load_due()
+            except Exception:
+                logger.warning("Capacity recovery: restart load failed", exc_info=True)
+            else:
+                if resumed:
+                    logger.info("Capacity recovery: resumed %d pending turn(s)", len(resumed))
+
         if self._resume_repo is None:
             return
 
@@ -1496,6 +1514,35 @@ class ClaudeChatCog(commands.Cog):
                 )
             except Exception:
                 logger.error("Failed to resume session in thread %d", thread_id, exc_info=True)
+
+    async def resume_capacity_turn(self, turn: CapacityPendingTurn) -> None:
+        """Continue a turn that was waiting for model capacity when the bot stopped.
+
+        The loader already claimed the record; the claim token travels with the
+        run so the coordinator continues the same logical turn instead of
+        opening a new one. The run goes through ``_run_claude``, so it takes
+        relay admission like any other message.
+        """
+        raw = self.bot.get_channel(turn.thread_id)
+        if raw is None:
+            raw = await self.bot.fetch_channel(turn.thread_id)
+        if not isinstance(raw, discord.Thread):
+            raise RuntimeError(f"capacity recovery: channel {turn.thread_id} is not a thread")
+        record = await self.repo.get(turn.thread_id)
+        working_dir = getattr(record, "working_dir", None)
+        seed = await raw.send(
+            "-# ⏳ Resuming a request that was waiting for model capacity when the bot restarted."
+        )
+        asyncio.create_task(
+            self._run_claude(
+                seed,
+                raw,
+                turn.prompt_ref,
+                session_id=turn.session_id,
+                working_dir_override=working_dir if isinstance(working_dir, str) else None,
+                recovery=(turn.turn_key, turn.claim_token or ""),
+            )
+        )
 
     async def _handle_thread_reply(self, message: discord.Message) -> None:
         """Continue a Claude Code session in an existing thread.
@@ -1751,6 +1798,7 @@ class ClaudeChatCog(commands.Cog):
         interrupt_notice: str = "-# ⚡ Interrupted. Starting with new instruction...",
         lounge: bool = True,
         slot: tuple[str, str, int] = ("chat", "", 0),
+        recovery: tuple[str, str] | None = None,
     ) -> None:
         """Execute Claude Code CLI and stream results to the thread.
 
@@ -1872,6 +1920,8 @@ class ClaudeChatCog(commands.Cog):
                     slot_kind=slot[0],
                     slot_build_id=slot[1],
                     slot_unblocks=slot[2],
+                    recovery_turn_key=recovery[0] if recovery else None,
+                    recovery_claim_token=recovery[1] if recovery else None,
                 )
             )
         finally:
