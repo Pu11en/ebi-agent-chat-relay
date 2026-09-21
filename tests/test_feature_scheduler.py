@@ -247,7 +247,8 @@ class TestTheLivePlan:
         from extensions.feature_workflow.task_graph import parse_task_plan
 
         repo = Path(__file__).resolve().parent.parent
-        plan = parse_task_plan(repo / "openspec/changes/archive/2026-09-21-parallel-gowork/tasks.md", repo_root=repo)
+        archived = "openspec/changes/archive/2026-09-21-parallel-gowork/tasks.md"
+        plan = parse_task_plan(repo / archived, repo_root=repo)
 
         ready = compute_ready_set(plan, {"1.1": "integrated"})
 

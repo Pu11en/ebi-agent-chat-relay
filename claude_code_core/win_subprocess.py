@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from typing import Any
 
-NO_WINDOW: dict[str, int] = (
+# ``Any`` so the mapping can be splatted into ``create_subprocess_exec`` under pyright.
+NO_WINDOW: dict[str, Any] = (
     {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
 )
