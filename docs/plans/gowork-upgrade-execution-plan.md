@@ -75,7 +75,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: complete fixtures round-trip; missing fields/duplicate task IDs fail clearly;
   legacy checkboxes retain a conservative supported path, never invented parallel safety.
 
-- [ ] T03: Execution spine, only after T02: validate dependencies and ownership.
+- [x] T03: Execution spine, only after T02: validate dependencies and ownership.
   Scope: plan validation. Reject missing references/cycles, unsafe paths and invalid
   cross-project requirements. Overlapping ownership prevents simultaneous dispatch,
   not necessarily the whole plan. Require coverage of agreed outcomes.
