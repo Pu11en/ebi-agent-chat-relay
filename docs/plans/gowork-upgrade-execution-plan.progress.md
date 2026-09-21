@@ -266,3 +266,21 @@
 - Open: results are accepted on merge (T15/T16 add combined checks and evidence gates);
   merges are serialized in memory per build (T15 makes integration durable); a failed task is
   blocked at once (T18 adds the single repair attempt).
+
+## T11c — Adapters
+
+- `TaskLoopCog.find_running(plan_path)`; `POST /api/loops` answers `200 {"status": "running",
+  "thread_id", "build_id"}` for a plan already being built and dispatches nothing;
+  `start_asking()` (used by the API's background start and the queue) returns the existing
+  thread and posts "ℹ️ … is already running in <#thread> — nothing new was started.";
+  the `/gowork` slash command posts the same. Stopping by typed "close"/"stop" already matched
+  one build by its worker thread (`take_message`), so it never touches another build.
+- Tests: `tests/gowork_upgrade/test_start_adapters.py` (3): repeated POST returns the running
+  thread with no start; a new plan still starts (202); `find_running` + the command path report
+  the existing thread while the ledger/store hold one build.
+- Implementation commit: `1260bc1`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (403 passed),
+  `tests/test_queue_api.py` + `tests/test_api_server.py`, `ruff check`, `ruff format --check`,
+  `pyright` on both touched modules (0 errors).
+
+T11 is complete (T11a–T11c).

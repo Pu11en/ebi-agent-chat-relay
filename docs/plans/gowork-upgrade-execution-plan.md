@@ -127,7 +127,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: fake process integration exceeds ten only when admitted, backs off under pressure,
   cleans cancellation paths, and normal chat remains responsive without a worker slot.
 
-- [ ] T11: Execution spine, only after T10: dispatch ready work through the existing coordinator.
+- [x] T11: Execution spine, only after T10: dispatch ready work through the existing coordinator.
   Scope: core loop plus Discord/API adapters. Connect multi-build storage, readiness,
   fairness and admissions; replace repo-only running identity and incompatible switch
   behavior for the new multi-plan path while retaining legacy single-build compatibility.
@@ -148,7 +148,7 @@ new code merely because this build edits it. Report that boundary honestly.
     the reason; the build completes when every task is accepted. Checkbox plans are
     untouched. Proof: with fake workers, tasks in two projects run together while a
     dependent task waits for its prerequisite's acceptance and then runs.
-  - [ ] T11c: adapters. `/gowork` and `POST /api/loops` for a build that is already
+  - [x] T11c: adapters. `/gowork` and `POST /api/loops` for a build that is already
     running answer with that build (thread id) and dispatch nothing; stopping a build by
     thread never touches another build. Proof: repeated POST returns the same thread and
     the ledger shows one attempt per task.
