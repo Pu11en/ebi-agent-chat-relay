@@ -153,6 +153,8 @@ ASK_TIMEOUT_SECONDS = 12 * 60 * 60
 VERDICT_REMIND_SECONDS = 24 * 60 * 60
 #: How long starting a new plan waits for the project's open build to close.
 SWITCH_TIMEOUT_SECONDS = 45 * 60
+#: How long cog_unload waits for running builds to stop before moving on.
+UNLOAD_TIMEOUT_SECONDS = 10
 #: How often the adaptive capacity re-measures the host.
 CAPACITY_TICK_SECONDS = 15
 #: How long starting a build waits for the harness/model or plan reply.
@@ -1216,9 +1218,33 @@ class TaskLoopCog(commands.Cog):
         )
 
     async def cog_unload(self) -> None:
-        for task in (getattr(self, "_capacity_task", None), getattr(self, "_resume_task", None)):
-            if task is not None:
-                task.cancel()
+        tasks = [
+            t
+            for t in (getattr(self, "_capacity_task", None), getattr(self, "_resume_task", None))
+            if t
+        ]
+        # Running builds must not be left for asyncio.run's cancel-everything
+        # teardown: on Python 3.12 that can cancel a build mid-subprocess-spawn
+        # and hang the shutdown. Stop each one here, where the cancellation is
+        # delivered alone and the record is kept for startup resume.
+        for running in list(self._running.values()):
+            running.auto_finish = True
+            running.loop.request_stop()
+            if running.wake is None:
+                running.wake = asyncio.Event()
+            running.wake.set()
+            if running.task is not None:
+                tasks.append(running.task)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            # Bounded: a task stuck in a stubborn subprocess teardown must not
+            # stop the rest of the shutdown.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    UNLOAD_TIMEOUT_SECONDS,
+                )
 
     async def _drive(self, running: _Running, report: Any) -> LoopOutcome:
         try:

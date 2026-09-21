@@ -15,16 +15,18 @@ import pytest
 
 from claude_discord.claude.types import MessageType, StreamEvent
 
-if sys.platform == "win32":
+if sys.platform == "win32" or sys.version_info[:2] == (3, 12):
     from asyncio import base_subprocess
 
     _original_try_finish = base_subprocess.BaseSubprocessTransport._try_finish
 
     def _try_finish_even_if_pipes_never_connected(self: base_subprocess.BaseSubprocessTransport):
-        # CPython on Windows: cancelling a task mid-create_subprocess_exec cancels the
-        # transport's _connect_pipes, leaving pipe slots None forever, so _wait() never
-        # resolves and pytest-asyncio's loop teardown hangs. Once closed and exited,
-        # treat never-connected pipes as disconnected so the transport can finish.
+        # CPython on Windows and on Python 3.12 (any platform): cancelling a task
+        # mid-create_subprocess_exec can cancel the transport's _connect_pipes
+        # before it runs, leaving pipe slots None forever, so _wait() never
+        # resolves and pytest-asyncio's loop teardown hangs. Once closed and
+        # exited, treat never-connected pipes as disconnected so the transport
+        # can finish.
         if (
             self._closed  # type: ignore[attr-defined]
             and self._returncode is not None  # type: ignore[attr-defined]

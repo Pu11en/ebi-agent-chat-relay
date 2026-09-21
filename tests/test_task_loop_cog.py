@@ -949,6 +949,35 @@ class TestSwitchingPlans:
             await asyncio.wait_for(r.task, 10)
 
 
+class TestCogUnloadStopsBuilds:
+    async def test_unload_cancels_and_awaits_a_build_waiting_on_a_question(
+        self, repo: Path
+    ) -> None:
+        cog, chat, thread = _cog_with_chat()
+        chat._backend_settings = None
+
+        async def asks(seed, thread, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
+            await result_sink("x\nASK: which colour?", None)
+
+        chat.run_fresh_turn = AsyncMock(side_effect=asks)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+        for _ in range(500):
+            if thread.id in cog._waiters:
+                break
+            await asyncio.sleep(0.01)
+        assert cog.running, "the build should still be waiting for an answer"
+        tasks = {r.task for r in cog.running if r.task is not None}
+
+        await cog.cog_unload()
+
+        assert tasks, "the build's task should have been running"
+        done, pending = await asyncio.wait(tasks, timeout=5)
+        assert not pending, "unload must not leave a build task running"
+
+
 class TestSwitchWhileWaiting:
     def _channel(self) -> MagicMock:
         channel = MagicMock(spec=discord.TextChannel)
