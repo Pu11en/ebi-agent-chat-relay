@@ -1,4 +1,6 @@
 # Plan: get PR #22 (Release v4.1.0) to all-green checks
+Goal: PR #22 shows all-green checks. Both the Python 3.12 and 3.13 test runs pass because the real bot bugs are fixed, not because the tests were changed to hide them. Every security warning is fixed in the bot's real code, with test-file warnings fixed where easy, and each leftover is listed with a written reason.
+Done when: the full test suite (`uv run pytest tests/ -v`) passes on Python 3.12 and 3.13 without freezing or flaky failures, and `uv run ruff check`, `ruff format --check` and `pyright` are clean. Any leftover security warnings are written down with reasons, and none is dismissed on GitHub until you say yes.
 
 Branch: `release/v4.1.0` (work copy on `session/1551675041073336400`, started at 08630d8).
 Why: on 08630d8 CI shows `test (3.12)` hanging (timeout in pytest-asyncio loop teardown right
