@@ -511,6 +511,33 @@ async def setup_bridge(
     await bot.add_cog(chat_cog)
     logger.info("Registered ClaudeChatCog")
 
+    # --- AgentHandoffCog (enabled only by a complete CCDB_HANDOFF_* configuration) ---
+    from .cogs.agent_handoff import AgentHandoffCog
+    from .handoff_config import HandoffConfig, HandoffConfigError
+
+    try:
+        handoff_config = HandoffConfig.from_env()
+    except HandoffConfigError:
+        logger.exception("Handoff configuration is malformed; trusted handoffs stay disabled")
+        handoff_config = None
+    if handoff_config is not None:
+        await bot.add_cog(
+            AgentHandoffCog(
+                bot,
+                repo=handoff_repo,
+                config=handoff_config,
+                chat=chat_cog,
+                fallback_lookup_root=runner.working_dir,
+            )
+        )
+        logger.info(
+            "Registered AgentHandoffCog (agent=%s, peers=%s)",
+            handoff_config.local_agent_id,
+            ", ".join(handoff_config.peers),
+        )
+    else:
+        logger.debug("Trusted handoffs disabled: CCDB_HANDOFF_* configuration is incomplete")
+
     # --- TaskLoopCog (auto-enabled; idle until /gowork or POST /api/loops) ---
     from .cogs.task_loop import TaskLoopCog
 

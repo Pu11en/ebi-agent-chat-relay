@@ -1117,3 +1117,100 @@ class TestOriginSide:
         assert event is not None and event.sender == "david" and event.recipient == "drewai"
         assert await repo.get_job(event.task_id, "drewai") is not None
         origin_channel.send.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Wiring through setup_bridge (task 4.3)
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock  # noqa: E402
+
+
+def _bridge_bot() -> MagicMock:
+    bot = MagicMock()
+    bot.channel_id = 123
+    bot.add_cog = AsyncMock()
+    bot.cogs = {}
+    bot.wait_until_ready = AsyncMock()
+    return bot
+
+
+def _bridge_runner(tmp_path: Path) -> MagicMock:
+    runner = MagicMock()
+    runner.model = "sonnet"
+    runner.working_dir = str(tmp_path)
+    runner.api_port = None
+    return runner
+
+
+class TestSetupWiring:
+    @pytest.mark.asyncio
+    async def test_ordinary_consumers_start_without_the_handoff_cog(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from claude_discord.setup import setup_bridge
+
+        for key in CONFIG_ENV:
+            monkeypatch.delenv(key, raising=False)
+        bot = _bridge_bot()
+        components = await setup_bridge(
+            bot,
+            _bridge_runner(tmp_path),
+            session_db_path=str(tmp_path / "sessions.db"),
+            enable_scheduler=False,
+            worktree_base_dir=str(tmp_path / "worktrees"),
+        )
+        added = [call.args[0] for call in bot.add_cog.await_args_list]
+        assert not any(isinstance(cog, AgentHandoffCog) for cog in added)
+        assert components.handoff_repo is not None
+
+    @pytest.mark.asyncio
+    async def test_complete_config_registers_the_handoff_cog(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from claude_discord.setup import setup_bridge
+
+        for key, value in CONFIG_ENV.items():
+            monkeypatch.setenv(key, value)
+        bot = _bridge_bot()
+        components = await setup_bridge(
+            bot,
+            _bridge_runner(tmp_path),
+            session_db_path=str(tmp_path / "sessions.db"),
+            enable_scheduler=False,
+            worktree_base_dir=str(tmp_path / "worktrees"),
+        )
+        added = [call.args[0] for call in bot.add_cog.await_args_list]
+        handoff = [cog for cog in added if isinstance(cog, AgentHandoffCog)]
+        assert len(handoff) == 1
+        assert handoff[0].config.local_agent_id == "david"
+        assert handoff[0].executor.local_agent_id == "david"
+        assert components.handoff_repo is not None
+
+    @pytest.mark.asyncio
+    async def test_malformed_config_is_logged_and_the_bot_still_starts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from claude_discord.setup import setup_bridge
+
+        for key, value in CONFIG_ENV.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setenv("CCDB_HANDOFF_AGENTS", "drewai=notanid")
+        bot = _bridge_bot()
+        await setup_bridge(
+            bot,
+            _bridge_runner(tmp_path),
+            session_db_path=str(tmp_path / "sessions.db"),
+            enable_scheduler=False,
+            worktree_base_dir=str(tmp_path / "worktrees"),
+        )
+        added = [call.args[0] for call in bot.add_cog.await_args_list]
+        assert not any(isinstance(cog, AgentHandoffCog) for cog in added)
+
+    def test_public_exports(self) -> None:
+        import claude_discord
+        from claude_discord import cogs
+
+        assert claude_discord.AgentHandoffCog is AgentHandoffCog
+        assert cogs.AgentHandoffCog is AgentHandoffCog
+        assert claude_discord.HandoffConfig is HandoffConfig
