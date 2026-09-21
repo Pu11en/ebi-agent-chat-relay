@@ -431,3 +431,31 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `b0d6490`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (427 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T18 — Enforce exactly one automatic repair attempt
+
+- Ledger: `MAX_AUTO_REPAIRS = 1`; `TaskAttempt.lineage_repairs` (carried into every later
+  attempt) and `previous_failure`; `repairs_left()`, `repair()` (a fresh attempt that knows
+  why; refused when the budget is spent or nothing failed), `retry()` (a person's request,
+  never refused, keeps the lineage count).
+- Core `_record_manifest_result`: a failed result blocks the task, then — when the reason is
+  a real failure (`_is_repairable`: not a cancellation, a restart interruption or an
+  unavailable required review) and a repair is left — calls `repair()` and reports "🔧 …
+  trying once more with the reason". A second failure stays blocked: a blocker for a person.
+  Independent tasks keep going.
+- Handoff: `WorkerHandoff.previous_failure` / `attempt`; the prompt tells the repair worker
+  what was sent back and that this is the last automatic try.
+- Cog: side copies are named `<task>-a<attempt>` (slug limit raised to 48 chars) so the
+  repair's fresh side copy never wipes the clashing branch T15 kept.
+- Every failure entry point on the manifest path is that one function; the legacy checkbox
+  build keeps its own unstick ladder (`_unstick`, tries bounded by its existing constants) and
+  never reaches the manifest ledger — recorded, not merged, because the two paths do not share
+  state (see `docs/plans/v4.1.0-decisions.md`).
+- Tests: `test_task_state.py` (+1 budget across attempts and reopen), `test_rolling_workers.py`
+  (+4: fail→repair→fail = blocker with exactly two attempts and siblings accepted; a repair
+  that succeeds saw the reason; an interrupted repair earns no third attempt after a restart;
+  cancellations do not spend the repair), `test_manifest_dispatch.py` expectations updated,
+  `test_manifest_build_cog.py` clash test now proves the clashing branch survives the repair.
+- Implementation commit: `deb0e7b`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (432 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).

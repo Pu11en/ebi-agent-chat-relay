@@ -191,7 +191,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: restart before dispatch, during execution, after result save and after merge
   preserves completed work; uncertain still-running ownership is not blindly reassigned.
 
-- [ ] T18: Execution spine, only after T17: enforce exactly one automatic repair attempt.
+- [x] T18: Execution spine, only after T17: enforce exactly one automatic repair attempt.
   Scope: retries, smart_unstick, model escalation, splitting and goal-auto-round paths.
   Original failure gets one repair; durable lineage keeps the budget across restarts,
   splitting or model changes. Independent work continues; exhausted tasks become blockers.
