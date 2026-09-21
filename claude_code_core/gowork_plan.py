@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,9 @@ class PlanIdentity:
     version: int
     project_path: Path
     parent_id: str | None = None
+    #: This plan's own combined check (a program with arguments, split with shlex).
+    #: A secondary repository is only integrated when it declares one and it passes.
+    check: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,11 +311,17 @@ def _parse_identity(raw: object, index: int, base_dir: Path) -> PlanIdentity:
     parent_value = raw.get("parent_id")
     if parent_value is not None:
         parent_value = _validate_plan_id(parent_value, index)
+    check_value = raw.get("check")
+    if check_value is not None:
+        if not isinstance(check_value, str) or not check_value.strip():
+            raise PlanValidationError(f"plan '{plan_id}' check must be a non-empty string")
+        check_value = check_value.strip()
     return PlanIdentity(
         plan_id=plan_id,
         version=version,
         project_path=_canonical_path(project_value, base_dir),
         parent_id=parent_value,
+        check=check_value,
     )
 
 
@@ -596,12 +606,50 @@ def has_manifest(text: str) -> bool:
     return _MANIFEST_RE.search(text) is not None
 
 
-def parse_plan_tree(text: str, *, source_path: Path) -> PlanTree:
+def _same_or_inside(path: Path, root: Path) -> bool:
+    """Whether *path* is *root* or beneath it, after symlinks and case are settled."""
+    inner = Path(os.path.normcase(os.path.realpath(path)))
+    outer = Path(os.path.normcase(os.path.realpath(root)))
+    return inner == outer or outer in inner.parents
+
+
+def validate_project_roots(tree: PlanTree, *, roots: Sequence[Path], source_path: Path) -> None:
+    """Refuse a plan whose project lies outside the plan's own repository and every
+    approved root.
+
+    The cog passes the roots (the configured project roots, else the parent folder
+    of the master plan's repository); this module never reads the environment.
+    A path inside the repository the plan document lives in needs no approval —
+    the person chose to build that repository. Anything else is a repository the
+    bot would copy, run workers in and fast-forward, so it must be approved first.
+    """
+    own_repo = _project_root(source_path)
+    approved = [Path(root) for root in roots]
+    for plan in tree.plans:
+        if _same_or_inside(plan.project_path, own_repo):
+            continue
+        if any(_same_or_inside(plan.project_path, root) for root in approved):
+            continue
+        shown = ", ".join(root.as_posix() for root in approved)
+        raise PlanValidationError(
+            f"plan '{plan.plan_id}' project_path '{plan.project_path.as_posix()}' is outside "
+            "the approved project roots"
+            + (f" ({shown})" if shown else " (no approved project root is configured)")
+            + "; a plan may only build repositories beneath an approved root"
+        )
+
+
+def parse_plan_tree(
+    text: str, *, source_path: Path, roots: Sequence[Path] | None = None
+) -> PlanTree:
     """Parse identity metadata from a Markdown plan.
 
     A plan without a manifest remains valid as a deterministic, version-one,
     single-plan tree.  Relative project paths in a manifest are resolved from
-    the Markdown file's directory and stored canonically.
+    the Markdown file's directory and stored canonically.  With *roots*, every
+    project outside the plan's own repository must lie beneath one of them
+    (see :func:`validate_project_roots`); ``None`` skips that confinement for
+    callers that never run anything (export, offline evaluation).
     """
     matches = list(_MANIFEST_RE.finditer(text))
     if not matches:
@@ -634,15 +682,18 @@ def parse_plan_tree(text: str, *, source_path: Path) -> PlanTree:
     )
     plans = tuple(_parse_identity(item, index, base_dir) for index, item in enumerate(raw_plans))
     tasks = tuple(_parse_assignment(item, index) for index, item in enumerate(raw_tasks))
-    return PlanTree(
+    tree = PlanTree(
         plans=plans, tasks=tasks, schema_version=schema_version, requirements=requirements
     )
+    if roots is not None:
+        validate_project_roots(tree, roots=roots, source_path=source_path)
+    return tree
 
 
-def load_plan_tree(source_path: Path) -> PlanTree:
-    """Read *source_path* and parse its Go Work plan identities."""
+def load_plan_tree(source_path: Path, *, roots: Sequence[Path] | None = None) -> PlanTree:
+    """Read *source_path* and parse its Go Work plan identities (see ``parse_plan_tree``)."""
     text = source_path.read_text(encoding="utf-8", errors="replace")
-    return parse_plan_tree(text, source_path=source_path)
+    return parse_plan_tree(text, source_path=source_path, roots=roots)
 
 
 def _display_path(project_path: Path, relative_to: Path | None) -> str:
@@ -674,6 +725,8 @@ def render_plan_manifest(tree: PlanTree, *, relative_to: Path | None = None) -> 
         }
         if plan.parent_id is not None:
             item["parent_id"] = plan.parent_id
+        if plan.check is not None:
+            item["check"] = plan.check
         rendered_plans.append(item)
     manifest["plans"] = rendered_plans
     rendered_tasks: list[dict[str, object]] = []

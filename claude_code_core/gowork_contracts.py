@@ -17,6 +17,7 @@ agent is involved.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +50,18 @@ PROMPT_QUALITY_LINE = (
     "prompt quality: not measured — the rendered prompts show what the planner is given, "
     "not how a model answers; no live model and no paid evaluation agent ran"
 )
+
+
+#: A case id names the rendered file ``<case_id>.md``: one plain name, no separators.
+_CASE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _plain_case_id(value: object, *, where: str) -> str:
+    if not isinstance(value, str) or not _CASE_ID_RE.fullmatch(value) or value in (".", ".."):
+        raise ContractError(
+            f"{where}: case id {value!r} must be one plain name (letters, digits, '.', '_' or '-')"
+        )
+    return value
 
 
 class ContractError(ValueError):
@@ -116,7 +129,8 @@ def load_cases(case_dir: Path) -> list[dict[str, Any]]:
     for case in cases:
         case_id = case.get("id") if isinstance(case, dict) else None
         if not isinstance(case_id, str) or not case_id:
-            raise ContractError(f"{path}: every case needs an id")
+            raise ContractError(f"{path}: every case needs a case id")
+        _plain_case_id(case_id, where=str(path))
         if case_id in seen:
             raise ContractError(f"{path}: duplicate case id '{case_id}'")
         seen.add(case_id)
@@ -377,7 +391,7 @@ def render_examples(evaluation: Evaluation, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for result in evaluation.results:
-        path = out_dir / f"{result.case_id}.md"
+        path = out_dir / f"{_plain_case_id(result.case_id, where='render_examples')}.md"
         path.write_text(_render_case(result), encoding="utf-8")
         written.append(path)
     readme = out_dir / "README.md"

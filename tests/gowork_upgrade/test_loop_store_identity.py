@@ -22,7 +22,7 @@ def _rec(tmp_path: Path, plan: str = "PLAN.md", thread: int = 11, repo: str = "p
         plan_path=str(tmp_path / repo / plan),
         copy_path=str(tmp_path / f"copy-{thread}"),
         copy_plan=str(tmp_path / f"copy-{thread}" / plan),
-        branch=f"gowork/{plan}-{thread}",
+        branch=f"gowork/plan-20260921-1200{thread:02d}",  # the shape the code creates
         worker_thread_id=thread,
         report_channel_id=22,
     )

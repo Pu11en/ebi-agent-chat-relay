@@ -30,7 +30,7 @@ import logging
 import os
 import re
 import shlex
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -738,6 +738,7 @@ class TaskLoop:
         reconcile: Callable[[BuildState], Awaitable[None]] | None = None,
         state_path: Path | None = None,
         build_id: str = "",
+        plan_roots: Sequence[Path] | None = None,
     ) -> None:
         self.plan_path = plan_path
         self.repo_dir = repo_dir
@@ -779,6 +780,9 @@ class TaskLoop:
         self._reconcile = reconcile
         self.state_path = state_path
         self.build_id = build_id
+        #: Where a manifest may point a secondary plan (E2); None = unconfined,
+        #: which only offline callers (export, evaluation) should ever use.
+        self.plan_roots = plan_roots
 
     async def _run_manifest(self) -> LoopOutcome:
         """Build a manifest plan: start what is ready, record each worker as it finishes.
@@ -799,7 +803,7 @@ class TaskLoop:
                     except Exception:
                         logger.warning("task loop: before-round hook failed", exc_info=True)
                 try:
-                    tree = load_plan_tree(self.plan_path)
+                    tree = load_plan_tree(self.plan_path, roots=self.plan_roots)
                     state = open_build_state(self.state_path, tree, build_id=self.build_id)
                 except (PlanValidationError, StaleAttemptError, OSError) as exc:
                     await self._report(f"🛑 The plan can't be built as written: {exc}")
@@ -1001,7 +1005,9 @@ class TaskLoop:
             return None
         try:
             state = open_build_state(
-                self.state_path, load_plan_tree(self.plan_path), build_id=self.build_id
+                self.state_path,
+                load_plan_tree(self.plan_path, roots=self.plan_roots),
+                build_id=self.build_id,
             )
         except (PlanValidationError, StaleAttemptError, OSError):
             return None

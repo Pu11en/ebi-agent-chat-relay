@@ -20,10 +20,13 @@ import asyncio
 import contextlib
 import datetime
 import logging
+import os
 import re
 import shlex
 import shutil
+import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,6 +38,8 @@ from discord.ext import commands
 from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
 from claude_code_core.capacity import BackendFailure, classify_failure
 from claude_code_core.capacity_policy import FallbackTarget, RecoveryStatus, RecoveryTracker
+from claude_code_core.child_env import strip_transport_credentials
+from claude_code_core.escalation import CONSULT_DISALLOWED_TOOLS
 from claude_code_core.gowork_blockers import BlockerLedger
 from claude_code_core.gowork_friction import FrictionEvent, append_friction
 from claude_code_core.gowork_handoff import (
@@ -42,7 +47,12 @@ from claude_code_core.gowork_handoff import (
     persist_handoff,
     render_worker_prompt,
 )
-from claude_code_core.gowork_plan import has_manifest, load_plan_tree
+from claude_code_core.gowork_plan import (
+    PlanTree,
+    PlanValidationError,
+    has_manifest,
+    load_plan_tree,
+)
 from claude_code_core.gowork_records import (
     append_record,
     lessons_prompt,
@@ -113,6 +123,8 @@ from claude_code_core.work_copy import (
     create_work_copy,
     head_commit,
     integrate_build,
+    is_gowork_branch,
+    is_under_work_root,
     keep_work,
     merge_side_copy,
     remove_side_copy,
@@ -126,6 +138,7 @@ from claude_code_core.work_copy import (
 )
 
 from ..backend_settings import ALL_BACKENDS
+from ..project_creation import ProjectRoots, configured_root_list
 from ._run_helper import capacity_coordinator, parallel_limit, run_capacity_ticks
 
 if TYPE_CHECKING:
@@ -459,6 +472,49 @@ def _is_interrupted(reason: str) -> bool:
     return "interrupted by a restart" in reason.lower()
 
 
+def _helper_env(runner: Any) -> dict[str, str]:
+    """The environment for a one-shot helper CLI call (E2).
+
+    The runner's own environment when it has one (same keys and overlay as a real
+    session); otherwise the bot's environment with every transport credential
+    removed. Never ``None`` — that would hand the child ``DISCORD_BOT_TOKEN`` and
+    ``CCDB_API_SECRET`` whenever the runner is missing or its ``_build_env`` fails.
+    """
+    if runner is not None:
+        try:
+            env = runner._build_env()
+        except Exception:
+            logger.warning("gowork: falling back to a stripped environment", exc_info=True)
+        else:
+            if isinstance(env, dict):
+                return env
+    return strip_transport_credentials(dict(os.environ))
+
+
+def _same_or_inside(path: Path, root: Path) -> bool:
+    """Whether *path* is *root* or beneath it, after symlinks and case are settled."""
+    inner = Path(os.path.normcase(os.path.realpath(path)))
+    outer = Path(os.path.normcase(os.path.realpath(root)))
+    return inner == outer or outer in inner.parents
+
+
+def _repo_check(tree: PlanTree, repo: Path) -> list[str] | None:
+    """The ``check`` a secondary repository's plan declares, as an argv, or None.
+
+    A repository is only integrated with a check of its own (E2); a plan whose
+    project sits in *repo* and names one supplies it. Several plans in one
+    repository must agree — differing checks are treated as none, and reported.
+    """
+    found: list[list[str]] = []
+    for plan in tree.plans:
+        if plan.check is None or not _same_or_inside(plan.project_path, repo):
+            continue
+        argv = _check_argv(plan.check)
+        if argv and argv not in found:
+            found.append(argv)
+    return found[0] if len(found) == 1 else None
+
+
 def _side_name(task_id: str, attempt: int) -> str:
     """One side copy per attempt, so a repair never destroys the clashing version it fixes."""
     return f"{task_id}-a{attempt}"
@@ -617,15 +673,21 @@ class TaskLoopCog(commands.Cog):
         allowed_user_ids: set[int] | None = None,
         work_root: Path | None = None,
         store: LoopStore | None = None,
+        project_roots: Sequence[Path] | None = None,
     ) -> None:
         self.bot = bot
         self._allowed_user_ids = allowed_user_ids
         #: Where each build's own copy of the project is made (None = default).
         self._work_root = work_root
+        #: Where a manifest may point a secondary plan (E2). None = read
+        #: ``CCDB_PROJECT_ROOTS`` on each use, else the master repository's parent.
+        self._project_roots = project_roots
         #: Every build in flight, by build id (several may share one project).
         self._running: dict[str, _Running] = {}
         #: Running builds on disk, so a bot restart resumes them.
         self._store = store or LoopStore()
+        if self._store.work_root is None:  # records name copies to remove: confine them
+            self._store.work_root = work_root or DEFAULT_ROOT
         self._project_copy_lock = asyncio.Lock()
         #: Every build's open questions (T20), beside the loop store.
         self._blockers = BlockerLedger(self._store.path.with_name("gowork-blockers.json"))
@@ -1041,6 +1103,7 @@ class TaskLoopCog(commands.Cog):
             reconcile=lambda state: self._reconcile_interrupted(holder[0], state),
             state_path=self._store.path.with_name("builds") / f"{record.build_id}.json",
             build_id=record.build_id,
+            plan_roots=self._plan_roots(Path(record.repo_dir)),
         )
         repo_dir = Path(record.repo_dir)
         copy = WorkCopy(
@@ -1216,9 +1279,9 @@ class TaskLoopCog(commands.Cog):
         if command is None:
             return None
         runner: Any = getattr(self._chat(), "runner", None)
-        env = None
-        with contextlib.suppress(Exception):
-            env = runner._build_env()
+        # The interview reads the build's copy (the plan, the log, `git log`), so it
+        # keeps its tools; it must not keep the bot's credentials (E2).
+        env = _helper_env(runner)
         try:
             proc = await asyncio.create_subprocess_exec(
                 command,
@@ -1714,19 +1777,38 @@ class TaskLoopCog(commands.Cog):
             return await keep_work(running.copy, prefer_build=prefer_build)
         check = plan_check_command(plan_text)
         # Other repositories first: the master's copy holds the plan, so it goes last
-        # and the build is only "kept" once every project landed.
+        # and the build is only "kept" once every project landed. A repository is
+        # only moved forward when its plan declares its own check and that check
+        # passes on the merged result (E2); otherwise its copy stays on its branch.
+        tree = load_plan_tree(running.copy.plan_path, roots=self._plan_roots(running.repo_dir))
+        by_hand: list[str] = []
+        left: dict[Path, WorkCopy] = {}
         for copy in self._all_project_copies(running):
-            other = await integrate_build(copy, check=None)
+            other_check = _repo_check(tree, copy.source_repo)
+            if other_check is None:
+                left[copy.source_repo] = copy
+                by_hand.append(
+                    f"left on branch `{copy.branch}` in {copy.source_repo.as_posix()}: "
+                    "no check defined, merge by hand"
+                )
+                continue
+            other = await integrate_build(copy, check=other_check)
             if not other.ok:
-                return False, f"{copy.source_repo.name}: {other.message}"
+                message = f"{copy.source_repo.name}: {other.message}"
+                if other.check_output:
+                    fence = "```"
+                    message += f"\n{fence}\n{other.check_output[-600:]}\n{fence}"
+                return False, message
             with contextlib.suppress(Exception):
                 self._build_state(running).forget_project_copy(str(copy.source_repo))
-        running.project_copies = {}
+        running.project_copies = left
         result = await integrate_build(running.copy, check=check)
         message = result.message
         if not result.ok and result.check_output:
             fence = "```"
             message += f"\n{fence}\n{result.check_output[-600:]}\n{fence}"
+        if result.ok and by_hand:
+            message += "; " + "; ".join(by_hand)
         return result.ok, message
 
     async def _finish_early(self, running: _Running) -> str:
@@ -2077,17 +2159,28 @@ class TaskLoopCog(commands.Cog):
         command = shutil.which("claude")
         if command is None:
             return None
-        env = None
-        with contextlib.suppress(Exception):
-            env = runner._build_env()  # the same keys and overlay as real sessions
+        env = _helper_env(runner)  # the same keys and overlay as real sessions, never None
+        # Text in, text out: no settings, no tools, no MCP servers, an empty folder —
+        # the same isolation an escalation gets (E2). A picker that could read the
+        # bot's files or the project would be a second, unguarded agent.
+        workdir = tempfile.mkdtemp(prefix="ccdb-gowork-pick-")
         try:
             proc = await asyncio.create_subprocess_exec(
                 command,
                 "-p",
                 "--model",
                 "haiku",
+                "--setting-sources",
+                "",
+                "--tools",
+                "",
+                "--strict-mcp-config",
+                "--disallowedTools",
+                *CONSULT_DISALLOWED_TOOLS,
                 "--",
                 prompt,
+                cwd=workdir,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -2101,6 +2194,8 @@ class TaskLoopCog(commands.Cog):
         except Exception:
             logger.warning("gowork: the step-AI picker couldn't run", exc_info=True)
             return None
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
         if proc.returncode != 0:
             return None
         return out.decode(errors="replace").strip() or None
@@ -2551,6 +2646,7 @@ class TaskLoopCog(commands.Cog):
         """The build's work copy for *project_path*'s repository (made on first use), and
         where that project sits inside it."""
         assert running.copy is not None
+        self._assert_approved(running, project_path)
         top = Path((await _wc_git(project_path, "rev-parse", "--show-toplevel")).strip()).resolve()
         rel = project_path.resolve().relative_to(top)
         # The plan is read from the build's own copy (a worktree), so its projects
@@ -2572,16 +2668,62 @@ class TaskLoopCog(commands.Cog):
             running.project_copies[top] = copy
         return copy, rel
 
+    def _plan_roots(self, repo_dir: Path) -> tuple[Path, ...]:
+        """Where a manifest may point a secondary plan (E2).
+
+        The configured ``CCDB_PROJECT_ROOTS`` when the operator set any (an entry that
+        does not exist approves nothing); otherwise the parent folder of the master
+        plan's repository. The pure plan module never reads the environment — this is
+        the one place the roots are decided.
+        """
+        if self._project_roots is not None:
+            return tuple(self._project_roots)
+        configured = configured_root_list(os.environ)
+        if configured:
+            return ProjectRoots.from_paths(configured).paths
+        return (repo_dir.resolve().parent,)
+
+    def _assert_approved(self, running: _Running, project_path: Path) -> None:
+        """Refuse a project outside the build's own copy and every approved root
+        before any git command touches it."""
+        assert running.copy is not None
+        own = (running.copy.path, running.copy.source_repo)
+        if any(_same_or_inside(project_path, root) for root in own):
+            return
+        roots = self._plan_roots(running.repo_dir)
+        if any(_same_or_inside(project_path, root) for root in roots):
+            return
+        raise PlanValidationError(
+            f"project '{project_path.as_posix()}' is outside the approved project roots "
+            f"({', '.join(r.as_posix() for r in roots) or 'none configured'})"
+        )
+
     def _remembered_project_copy(self, running: _Running, top: Path) -> WorkCopy | None:
         """A copy of another repository made before a restart, if it still exists."""
         try:
             remembered = self._build_state(running).project_copies().get(str(top))
         except Exception:
             return None
-        if not remembered or not Path(remembered["path"]).is_dir():
+        if not remembered:
             return None
-        path = Path(remembered["path"])
-        return WorkCopy(source_repo=top, path=path, branch=remembered["branch"], plan_path=path)
+        return self._trusted_copy(top, remembered)
+
+    def _trusted_copy(self, top: Path, remembered: dict[str, str]) -> WorkCopy | None:
+        """A remembered copy as a ``WorkCopy`` — only when it is a gowork branch on a
+        folder inside this cog's work-copy area (E2). The ledger is data; a record that
+        named the person's project would otherwise reach ``git worktree remove --force``."""
+        path = Path(remembered.get("path", ""))
+        branch = remembered.get("branch", "")
+        if not is_gowork_branch(branch) or not is_under_work_root(path, self._work_area):
+            logger.warning("gowork: ignoring untrusted remembered copy for %s", top)
+            return None
+        if not path.is_dir():
+            return None
+        return WorkCopy(source_repo=top, path=path, branch=branch, plan_path=path)
+
+    @property
+    def _work_area(self) -> Path:
+        return self._work_root or DEFAULT_ROOT
 
     def _all_project_copies(self, running: _Running) -> list[WorkCopy]:
         """Every other-repository copy this build made, in memory or remembered."""
@@ -2589,11 +2731,11 @@ class TaskLoopCog(commands.Cog):
         try:
             for root, remembered in self._build_state(running).project_copies().items():
                 top = Path(root)
-                if top not in copies and Path(remembered["path"]).is_dir():
-                    path = Path(remembered["path"])
-                    copies[top] = WorkCopy(
-                        source_repo=top, path=path, branch=remembered["branch"], plan_path=path
-                    )
+                if top in copies:
+                    continue
+                copy = self._trusted_copy(top, remembered)
+                if copy is not None:
+                    copies[top] = copy
         except Exception:
             pass
         return list(copies.values())
@@ -2612,7 +2754,7 @@ class TaskLoopCog(commands.Cog):
         plan_path = running.copy.plan_path
         if not plan_path.is_file():  # the copy was integrated and removed: the plan is home
             plan_path = running.copy.source_repo / plan_path.relative_to(running.copy.path)
-        tree = load_plan_tree(plan_path)
+        tree = load_plan_tree(plan_path, roots=self._plan_roots(running.repo_dir))
         return open_build_state(
             builds / f"{running.build_id}.json", tree, build_id=running.build_id
         )
@@ -2952,7 +3094,7 @@ class TaskLoopCog(commands.Cog):
         settings = getattr(chat, "_backend_settings", None)
         parent: Any = getattr(running.thread, "parent", None) or running.report_target
         plan_text = running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
-        tree = load_plan_tree(running.copy.plan_path)
+        tree = load_plan_tree(running.copy.plan_path, roots=self._plan_roots(running.repo_dir))
         builds = self._store.path.with_name("builds")
         state = open_build_state(
             builds / f"{running.build_id}.json", tree, build_id=running.build_id

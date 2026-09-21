@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -25,6 +26,9 @@ from enum import StrEnum
 from pathlib import Path
 
 from claude_code_core.gowork_plan import PlanTree
+from claude_code_core.work_copy import is_gowork_branch
+
+logger = logging.getLogger(__name__)
 
 STATE_VERSION = 1
 MAX_TEXT_CHARS = 2000
@@ -498,10 +502,28 @@ class BuildState:
         self._write()
 
     def project_copies(self) -> dict[str, dict[str, str]]:
-        """Work copies of the build's other repositories, by repository root."""
+        """Work copies of the build's other repositories, by repository root.
+
+        Each entry names a worktree to remove and a branch to delete, so only
+        entries with the shape ``note_project_copy`` writes are returned (E2);
+        the caller still checks the path against its work-copy area.
+        """
         self._reload()
         value = self._document.get("project_copies")
-        return dict(value) if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        trusted: dict[str, dict[str, str]] = {}
+        for root, entry in value.items():
+            if (
+                isinstance(entry, dict)
+                and isinstance(entry.get("path"), str)
+                and entry["path"]
+                and is_gowork_branch(entry.get("branch"))
+            ):
+                trusted[root] = {"path": entry["path"], "branch": entry["branch"]}
+            else:
+                logger.warning("ignoring untrusted project copy entry for %r", root)
+        return trusted
 
     def note_project_copy(self, repo_root: str, *, path: str, branch: str) -> None:
         self._reload()
@@ -619,9 +641,12 @@ def open_build_state(path: Path, tree: PlanTree, *, build_id: str) -> BuildState
         raise StaleAttemptError(
             f"the build state at {path} belongs to build {document.get('build_id')}, not {build_id}"
         )
-    for key in ("tasks", "events", "plan_versions"):
-        if not isinstance(document.get(key), (dict, list)):
-            raise StaleAttemptError(f"the build state at {path} has no '{key}' section")
+    for key, kind in (("tasks", dict), ("events", list), ("plan_versions", dict)):
+        if not isinstance(document.get(key), kind):
+            raise StaleAttemptError(
+                f"the build state at {path} has no usable '{key}' section "
+                f"(expected a JSON {'object' if kind is dict else 'array'})"
+            )
     state = BuildState(path, tree, document)
     state.sync_tree(tree)
     return state

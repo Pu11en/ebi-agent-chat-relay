@@ -95,6 +95,8 @@ def _cog() -> tuple[TaskLoopCog, MagicMock, list[MagicMock]]:
     bot.cogs = {"ClaudeChatCog": chat}
     tmp = Path(tempfile.mkdtemp(prefix="gowork-id-"))
     cog = TaskLoopCog(bot, work_root=tmp / "copies", store=LoopStore(tmp / "loops.json"))
+    cog._quick_ai = AsyncMock(return_value=None)  # type: ignore[method-assign]  # no real AI
+    cog._interview_ai = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return cog, chat, threads
 
 

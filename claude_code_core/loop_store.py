@@ -11,10 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from claude_code_core.work_copy import is_gowork_branch, is_under_work_root
+
 logger = logging.getLogger(__name__)
+
+#: A build id names the ledger file ``builds/<build_id>.json``: no separators, ever.
+_BUILD_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 DEFAULT_PATH = Path(
     os.environ.get(
@@ -57,11 +63,33 @@ class LoopRecord:
             object.__setattr__(self, "build_id", f"thread-{self.worker_thread_id}")
 
 
+def record_problem(record: LoopRecord, work_root: Path | None) -> str | None:
+    """Why a record read from disk must not be acted on, or None when it is sound.
+
+    The record names a worktree to remove with ``--force``, a branch to delete and
+    a ledger file to open, so each of those is checked against the shape this code
+    writes (E2). With *work_root*, the copy must also lie inside that area.
+    """
+    if not _BUILD_ID_RE.fullmatch(record.build_id):
+        return f"build_id {record.build_id!r} is not a plain name"
+    if not is_gowork_branch(record.branch):
+        return f"branch {record.branch!r} is not a gowork build branch"
+    copy = Path(record.copy_path)
+    if work_root is not None and not is_under_work_root(copy, work_root):
+        return f"copy_path {record.copy_path!r} is not inside the work-copy area {work_root}"
+    if not is_under_work_root(Path(record.copy_plan), copy):
+        return f"copy_plan {record.copy_plan!r} is not inside copy_path"
+    return None
+
+
 class LoopStore:
     """A small JSON file: one record per running build."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, path: Path | None = None, *, work_root: Path | None = None) -> None:
         self.path = path or DEFAULT_PATH
+        #: Where every build's copy lives; a record whose copy is elsewhere is skipped.
+        #: None = shape checks only (the cog always sets it, ``DEFAULT_ROOT`` by default).
+        self.work_root = work_root
 
     def all(self) -> list[LoopRecord]:
         try:
@@ -74,9 +102,15 @@ class LoopStore:
         records = []
         for item in raw if isinstance(raw, list) else []:
             try:
-                records.append(LoopRecord(**item))
+                record = LoopRecord(**item)
             except TypeError:
                 logger.warning("skipping malformed gowork record: %r", item)
+                continue
+            problem = record_problem(record, self.work_root)
+            if problem is not None:
+                logger.warning("skipping untrusted gowork record %s: %s", record.build_id, problem)
+                continue
+            records.append(record)
         return records
 
     def get(self, build_id: str) -> LoopRecord | None:
