@@ -536,6 +536,40 @@ class TestRestartSafety:
         assert current is not None
         assert current.state is HandoffState.COMPLETED
 
+    async def test_requeue_closes_the_interrupted_attempt_so_it_can_be_reclaimed(
+        self, repo: HandoffRepository
+    ) -> None:
+        task = make_task()
+        await repo.record_task(task, now=NOW)
+        await repo.save_transition(apply(await _job(repo, task), HandoffTrigger.START, now=NOW))
+        assert await repo.claim_attempt(task.task_id, LOCAL_AGENT, attempt=1, now=NOW)
+
+        await repo.requeue_running(LOCAL_AGENT, now=NOW + timedelta(minutes=2))
+
+        attempt = (await repo.list_attempts(task.task_id, LOCAL_AGENT))[0]
+        assert attempt.is_finished
+        assert attempt.outcome == "interrupted"
+        assert await repo.unfinished_attempt(task.task_id, LOCAL_AGENT) is None
+        # The same attempt number is claimed again — resumed, not retried — and only once.
+        assert not await repo.claim_attempt(task.task_id, LOCAL_AGENT, attempt=1, now=NOW)
+        assert await repo.reclaim_interrupted_attempt(
+            task.task_id, LOCAL_AGENT, attempt=1, now=NOW + timedelta(minutes=3)
+        )
+        assert not await repo.reclaim_interrupted_attempt(
+            task.task_id, LOCAL_AGENT, attempt=1, now=NOW + timedelta(minutes=3)
+        )
+        reclaimed = await repo.unfinished_attempt(task.task_id, LOCAL_AGENT)
+        assert reclaimed is not None and reclaimed.attempt == 1
+
+    async def test_a_failed_attempt_cannot_be_reclaimed(self, repo: HandoffRepository) -> None:
+        task = make_task()
+        await repo.record_task(task, now=NOW)
+        await repo.claim_attempt(task.task_id, LOCAL_AGENT, attempt=1, now=NOW)
+        await repo.finish_attempt(task.task_id, LOCAL_AGENT, attempt=1, outcome="failed", now=NOW)
+        assert not await repo.reclaim_interrupted_attempt(
+            task.task_id, LOCAL_AGENT, attempt=1, now=NOW
+        )
+
     async def test_another_agents_jobs_are_not_reconciled(self, repo: HandoffRepository) -> None:
         mine = make_task()
         theirs = make_task(sender=LOCAL_AGENT, recipient="imac")

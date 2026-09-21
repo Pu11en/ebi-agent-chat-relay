@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,8 +14,10 @@ from claude_code_core.handoffs.protocol import (
     ConversationCoordinate,
     HandoffEvent,
     HandoffEventKind,
+    HandoffTask,
+    next_sequence,
 )
-from claude_code_core.handoffs.state import HandoffTrigger, apply
+from claude_code_core.handoffs.state import HandoffTrigger, Transition, apply
 
 from .database.handoff_repo import HandoffRepository
 
@@ -33,8 +36,13 @@ async def record_and_deliver_handoff_result(
     error: str | None,
     now: datetime | None = None,
     event_id_factory: Any | None = None,
+    on_transition: Callable[[HandoffTask, Transition], Awaitable[None]] | None = None,
 ) -> bool:
-    """Record a worker result and try to send it back to the task origin."""
+    """Record a worker result and try to send it back to the task origin.
+
+    ``on_transition`` is told about the terminal transition (and handed the
+    result event through ``Transition.note``) so the job thread can show it.
+    """
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
     recipient = local_agent_id.strip().lower()
     task = await repo.get_task(task_id, recipient)
@@ -43,26 +51,32 @@ async def record_and_deliver_handoff_result(
 
     outcome = "failed" if error else "completed"
     summary = _summary(text=text, error=error)
+    last = await repo.last_sequence(task.task_id)
     event = HandoffEvent(
         event_id=_new_event_id(event_id_factory),
         kind=HandoffEventKind.RESULT,
         task_id=task.task_id,
         sender=task.recipient,
         recipient=task.sender,
-        sequence=1,
+        sequence=next_sequence(last if last is not None else 0),
         created_at=stamp,
         payload={"outcome": outcome, "summary": summary},
     )
 
     result_recorded = await repo.record_result(task.task_id, recipient, event=event, now=stamp)
     if result_recorded:
-        await _finish_job(
+        transition = await _finish_job(
             repo,
             task_id=task.task_id,
             recipient=recipient,
             outcome=outcome,
             now=stamp,
         )
+        if transition is not None and on_transition is not None:
+            try:
+                await on_transition(task, transition)
+            except Exception:
+                logger.warning("handoff status hook failed for %s", task_id, exc_info=True)
 
     return await deliver_pending_handoff_results(repo=repo, bot=bot, now=stamp)
 
@@ -103,13 +117,16 @@ async def _finish_job(
     recipient: str,
     outcome: str,
     now: datetime,
-) -> None:
+) -> Transition | None:
     job = await repo.get_job(task_id, recipient)
     if job is None:
-        return
+        return None
     trigger = HandoffTrigger.FAIL if outcome == "failed" else HandoffTrigger.COMPLETE
     await repo.finish_attempt(task_id, recipient, attempt=job.attempt, outcome=outcome, now=now)
-    await repo.save_transition(apply(job, trigger, now=now, note=outcome))
+    transition = apply(job, trigger, now=now, note=outcome)
+    if not await repo.save_transition(transition):
+        return None
+    return transition
 
 
 async def _resolve_destination(bot: Any, destination: ConversationCoordinate) -> Any:

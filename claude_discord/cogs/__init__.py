@@ -1,5 +1,6 @@
 """Cogs for claude-code-discord-bridge."""
 
+from .agent_handoff import AgentHandoffCog
 from .ask_command import AskCommandCog
 from .auto_upgrade import AutoUpgradeCog
 from .claude_chat import ClaudeChatCog
@@ -18,6 +19,7 @@ from .task_loop import TaskLoopCog
 from .webhook_trigger import WebhookTriggerCog
 
 __all__ = [
+    "AgentHandoffCog",
     "AutoUpgradeCog",
     "ClaudeChatCog",
     "CollisionWatchCog",

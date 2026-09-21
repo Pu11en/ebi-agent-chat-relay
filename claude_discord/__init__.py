@@ -12,6 +12,7 @@ from .claude.parser import parse_line
 from .claude.runner import ClaudeRunner
 from .claude.types import MessageType, StreamEvent, ToolCategory, ToolUseEvent
 from .cog_loader import load_custom_cogs
+from .cogs.agent_handoff import AgentHandoffCog
 from .cogs.ask_command import AskCommandCog
 from .cogs.auto_upgrade import AutoUpgradeCog, UpgradeConfig
 from .cogs.claude_chat import ClaudeChatCog
@@ -40,6 +41,7 @@ from .discord_ui.embeds import (
     tool_use_embed,
 )
 from .discord_ui.status import StatusManager
+from .handoff_config import HandoffConfig
 from .protocols import DrainAware
 from .session_sync import CliSession, SessionMessage, extract_recent_messages, scan_cli_sessions
 from .setup import BridgeComponents, setup_bridge
@@ -59,6 +61,8 @@ __all__ = [
     "SessionManageCog",
     "TaskLoopCog",
     "CollisionWatchCog",
+    "AgentHandoffCog",
+    "HandoffConfig",
     "AskCommandCog",
     "OllamaCommandCog",
     "ProjectLauncherCog",

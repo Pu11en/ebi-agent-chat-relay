@@ -172,3 +172,43 @@ def test_project_lookup_model_defaults_to_cheap_claude(monkeypatch: pytest.Monke
     assert project_lookup_harness() == ("claude", "haiku")
     monkeypatch.setenv("CCDB_PROJECT_LOOKUP_MODEL", "sonnet")
     assert project_lookup_harness() == ("claude", "sonnet")
+
+
+@pytest.mark.asyncio
+async def test_project_lookup_endpoint_resolves_root_like_the_discord_path(
+    repo: NotificationRepository, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The configured lookup root wins over the runner's working directory (review fix b)."""
+    import discord
+
+    from claude_discord.handoff_projects import lookup_root
+
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    runner_dir = tmp_path / "runner"
+    runner_dir.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_LOOKUP_ROOT", str(configured))
+
+    thread = MagicMock()
+    thread.id = 444
+    thread.name = "🔎 Project lookup"
+    cog = MagicMock()
+    cog.spawn_session = AsyncMock(return_value=thread)
+    channel = MagicMock(spec=discord.TextChannel)
+    bot = MagicMock()
+    bot.cogs = {"ClaudeChatCog": cog}
+    bot.get_channel.return_value = channel
+
+    api = ApiServer(repo=repo, bot=bot, default_channel_id=12345, working_dir=str(runner_dir))
+    server = TestServer(api.app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        resp = await client.post("/api/project-lookup", json={"text": "find it"})
+        assert resp.status == 201
+        body = await resp.json()
+        assert body["working_dir"] == str(configured)
+        assert body["working_dir"] == lookup_root(fallback=str(runner_dir))
+        assert cog.spawn_session.await_args.kwargs["working_dir"] == str(configured)
+    finally:
+        await client.close()

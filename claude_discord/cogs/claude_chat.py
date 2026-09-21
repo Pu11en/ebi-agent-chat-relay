@@ -48,8 +48,9 @@ from ..discord_ui.thread_context import DEFAULT_DAYS, build_recent_transcript
 from ..discord_ui.thread_dashboard import ThreadState, ThreadStatusDashboard
 from ..discord_ui.thread_renamer import suggest_title
 from ..discord_ui.views import RewindSelectView, StopView
+from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
-from ..handoff_sender import send_project_lookup_handoff
+from ..handoff_sender import build_project_lookup_handoff_event, send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ._run_helper import run_claude_with_config
@@ -464,6 +465,14 @@ class ClaudeChatCog(commands.Cog):
         if trigger is None:
             return False
 
+        # A configured handoff channel is the durable route: the job is
+        # stored, visible in one thread, and survives the recipient being away.
+        handoff_cog: Any = self.bot.cogs.get("AgentHandoffCog")
+        if handoff_cog is not None and await self._send_handoff_via_cog(
+            handoff_cog, message, trigger
+        ):
+            return True
+
         try:
             route = parse_agent_routes(os.getenv("CCDB_AGENT_ROUTES")).resolve(trigger.agent_id)
         except (KeyError, ValueError):
@@ -500,6 +509,22 @@ class ClaudeChatCog(commands.Cog):
             destination=destination_sender,
             sender_agent_id=sender_agent_id,
         )
+        with contextlib.suppress(Exception):
+            await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}")
+        return True
+
+    async def _send_handoff_via_cog(self, handoff_cog: Any, message: Any, trigger: Any) -> bool:
+        """Hand the lookup to a configured peer through ``AgentHandoffCog``."""
+        try:
+            event = build_project_lookup_handoff_event(
+                trigger,
+                origin_message=message,
+                sender_agent_id=handoff_cog.config.local_agent_id,
+            )
+            await handoff_cog.send_task(event)
+        except (ValueError, RuntimeError):
+            logger.info("handoff channel could not take the lookup; trying routes", exc_info=True)
+            return False
         with contextlib.suppress(Exception):
             await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}")
         return True
@@ -547,32 +572,33 @@ class ClaudeChatCog(commands.Cog):
         return True
 
     @staticmethod
+    def _handoff_config() -> HandoffConfig | None:
+        """The strict per-instance handoff configuration, or None when incomplete."""
+        try:
+            return HandoffConfig.from_env()
+        except ValueError:
+            logger.warning("Ignoring malformed handoff configuration", exc_info=True)
+            return None
+
+    @staticmethod
     def _handoff_sender_trusted(message: Any) -> bool:
         """Only a trusted bot account may hand a job to this bot.
 
-        A packet spawns a worker and delivers results wherever the packet says, so
-        the sender matters more than the packet. ``CCDB_HANDOFF_TRUSTED_BOT_IDS`` lists
-        the bot accounts allowed to send one; without it, a bot that is a member of
-        this server may, but a webhook or a bot from elsewhere never can.
+        The rule lives in :func:`claude_discord.handoff_config.legacy_sender_trusted`;
+        an instance with a complete ``HandoffConfig`` receives packets through
+        ``AgentHandoffCog`` instead, which verifies guild, channel and identity.
         """
-        if getattr(message, "webhook_id", None) is not None:
-            return False
-        author_id = getattr(getattr(message, "author", None), "id", None)
-        if not isinstance(author_id, int):
-            return False
-        allowed = {
-            int(part)
-            for part in os.getenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", "").split(",")
-            if part.strip().isdigit()
-        }
-        if allowed:
-            return author_id in allowed
-        guild = getattr(message, "guild", None)
-        return guild is not None and guild.get_member(author_id) is not None
+        return legacy_sender_trusted(message)
 
     async def _try_receive_handoff_message(self, message: discord.Message) -> bool:
         """Receive a trusted handoff packet from another Discord bot."""
         if self._handoff_repo is None:
+            return False
+        # A complete handoff configuration hands the dedicated channel to
+        # AgentHandoffCog, whose checks are stricter; this path keeps the
+        # narrow project-lookup route working everywhere else.
+        config = ClaudeChatCog._handoff_config()
+        if config is not None and config.in_handoff_scope(message.channel):
             return False
         if not ClaudeChatCog._handoff_sender_trusted(message):
             return False
@@ -620,6 +646,55 @@ class ClaudeChatCog(commands.Cog):
         if hasattr(channel, "create_thread"):
             return channel
         return None
+
+    def handoff_capacity_available(self) -> bool:
+        """Whether a handoff may start a turn now; otherwise it stays queued."""
+        return self.active_session_count < self._max_concurrent
+
+    async def run_handoff_turn(
+        self,
+        thread: Any,
+        prompt: str,
+        *,
+        working_dir: str | None,
+        result_sink: Callable[[str | None, str | None], Awaitable[None]],
+        resume: bool = False,
+        backend: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Run one handoff turn inside an existing thread, without waiting for it.
+
+        The job thread already shows the packet, so the turn runs there rather
+        than in a new session thread. ``resume`` continues the thread's stored
+        session (an explicitly selected existing session); otherwise the turn
+        starts fresh. The working directory and harness are pinned before the
+        run so a restart cannot fall back to another project or model.
+        """
+        seed_message = await thread.send(f"🤝 Handoff turn ({'resume' if resume else 'fresh'})")
+        if working_dir is not None:
+            await self.repo.ensure_working_dir(int(thread.id), working_dir)
+        settings = self._backend_settings
+        if backend and settings is not None:
+            await settings.set_backend(backend, thread_id=int(thread.id))
+            if model:
+                await settings.set_model(backend, model, thread_id=int(thread.id))
+        session_id: str | None = None
+        if resume:
+            record = await self.repo.get(int(thread.id))
+            session_id = record.session_id if record else None
+            if record is not None and session_id:
+                session_id = await self._session_id_for_current_backend(thread, record)
+        asyncio.create_task(
+            self._run_claude(
+                seed_message,
+                thread,
+                prompt,
+                session_id=session_id,
+                working_dir_override=working_dir,
+                result_sink=result_sink,
+                lounge=False,
+            )
+        )
 
     def _is_no_mention_scope(self, channel: discord.abc.MessageableChannel) -> bool:
         """Return whether *channel* is one ccdb was invited to speak in freely.

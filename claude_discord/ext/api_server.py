@@ -1508,7 +1508,9 @@ class ApiServer:
             return web.json_response({"error": "text or query is required"}, status=400)
 
         try:
-            project_root = resolve_project_lookup_root(configured=self.working_dir)
+            # Same precedence as the Discord-envelope path: configuration first,
+            # the runner's working directory only when nothing is configured.
+            project_root = resolve_project_lookup_root(fallback=self.working_dir)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=503)
 
