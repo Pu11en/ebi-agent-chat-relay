@@ -38,3 +38,27 @@
 - Open note: the artifact preserves machine-transcribed wording exactly, including
   fragments, repetition, background audio, and offensive language; later synthesis
   should quote selectively and keep source citations.
+
+## Task 3 — Turn the quotes into answerable themes
+
+- Completed: 2026-09-20 CDT
+- What changed: grouped the actionable transcript material into eight ranked themes,
+  including the Henry pilot, data trust, city filtering, simple PDF delivery, outreach,
+  niche selection, pricing validation, and the separate short-video workflow.
+- Output: `answerable-themes.md` in the requested Generation Wealth feedback folder;
+  every theme includes the user need, likely question, what Drew can answer locally,
+  evidence needed, overclaim warnings, dated transcript evidence, and an answer direction.
+  `status.json` now records 8 themes and 41 distinct passage references and points to
+  `report-draft.md` next.
+- Integrity check: all 41 cited passage IDs exist in the exhaustive quote extraction;
+  the artifact contains eight top asks and all six required fields for every theme.
+- Plan check: `check_progress.py` passed with three listed artifacts.
+- Project verification: ruff and formatting passed; pyright reported no errors; public
+  imports succeeded; all 3,456 tests passed with 15 warnings and 84% coverage.
+- Security note: the repository-wide ruff security scan reported 30 existing findings in
+  untouched source files. This task changed no project source code, so those unrelated
+  findings were not altered or expanded into this transcript-analysis task.
+- Work commit: `b65b69a`; this completion record is committed separately.
+- Open note: no transcript evidence yet proves that Henry used the finished package or
+  that any proposed price has real customer support; the report should preserve those
+  limits rather than turn the speakers' hypotheses into facts.
