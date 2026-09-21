@@ -22,6 +22,10 @@
       "project_path": "website"
     }
   ],
+  "requirements": [
+    {"id": "REQ-CATALOG", "outcome": "The product catalog contract is published"},
+    {"id": "REQ-WEBSITE-CATALOG", "outcome": "The website shows the product catalog"}
+  ],
   "tasks": [
     {
       "id": "product.catalog-api",

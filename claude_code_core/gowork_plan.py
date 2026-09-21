@@ -28,6 +28,10 @@ _TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*\S)")
 _GOAL_RE = re.compile(r"^\s*\**Goal:\**\s*(.+?)\s*$", re.IGNORECASE)
 _CHECK_RE = re.compile(r"^\s*\**Check:\**\s*`?(.+?)`?\s*$", re.IGNORECASE)
 
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_PATTERN_CHARS = frozenset("*?[")
+
 _TASK_FIELDS = (
     "id",
     "plan_id",
@@ -75,6 +79,24 @@ class TaskAssignment:
 
 
 @dataclass(frozen=True, slots=True)
+class Requirement:
+    """One outcome Drew agreed to, which at least one task must deliver."""
+
+    requirement_id: str
+    outcome: str
+
+
+@dataclass(frozen=True, slots=True)
+class OwnershipConflict:
+    """Two tasks that must not run at the same time, and what they share."""
+
+    first_task_id: str
+    second_task_id: str
+    files: tuple[str, ...]
+    resources: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PlanTree:
     """A validated rooted tree of plans, potentially spanning projects."""
 
@@ -82,6 +104,7 @@ class PlanTree:
     tasks: tuple[TaskAssignment, ...] = ()
     schema_version: int = SCHEMA_VERSION
     is_legacy: bool = False
+    requirements: tuple[Requirement, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
@@ -91,6 +114,10 @@ class PlanTree:
             )
         _validate_tree(self.plans)
         _validate_assignments(self.plans, self.tasks)
+        _validate_dependencies(self.plans, self.tasks)
+        _validate_owned_files(self.tasks)
+        if not self.is_legacy:
+            _validate_coverage(self.requirements, self.tasks)
 
     @property
     def master(self) -> PlanIdentity:
@@ -118,6 +145,44 @@ class PlanTree:
     def tasks_for(self, plan_id: str) -> tuple[TaskAssignment, ...]:
         """Return tasks owned by *plan_id* in their declared order."""
         return tuple(task for task in self.tasks if task.plan_id == plan_id)
+
+    def ownership_conflicts(self) -> tuple[OwnershipConflict, ...]:
+        """Return every task pair whose ownership overlaps, in declared order.
+
+        A conflict keeps that pair from being dispatched together; it does not
+        invalidate the plan or hold back unrelated tasks.
+        """
+        conflicts: list[OwnershipConflict] = []
+        for index, first in enumerate(self.tasks):
+            for second in self.tasks[index + 1 :]:
+                conflict = self._conflict(first, second)
+                if conflict is not None:
+                    conflicts.append(conflict)
+        return tuple(conflicts)
+
+    def can_run_together(self, first_task_id: str, second_task_id: str) -> bool:
+        """Return whether two tasks own nothing in common."""
+        first = self.task(first_task_id)
+        second = self.task(second_task_id)
+        return first.task_id != second.task_id and self._conflict(first, second) is None
+
+    def _conflict(self, first: TaskAssignment, second: TaskAssignment) -> OwnershipConflict | None:
+        files: list[str] = []
+        if self.get(first.plan_id).project_path == self.get(second.plan_id).project_path:
+            for first_file in first.owned_files:
+                for second_file in second.owned_files:
+                    shared = _shared_file(first_file, second_file)
+                    if shared is not None and shared not in files:
+                        files.append(shared)
+        resources = tuple(item for item in first.owned_resources if item in second.owned_resources)
+        if not files and not resources:
+            return None
+        return OwnershipConflict(
+            first_task_id=first.task_id,
+            second_task_id=second.task_id,
+            files=tuple(files),
+            resources=resources,
+        )
 
 
 def _canonical_path(value: str, base_dir: Path) -> Path:
@@ -310,6 +375,149 @@ def _validate_assignments(
             )
 
 
+def _validate_dependencies(
+    plans: tuple[PlanIdentity, ...], tasks: tuple[TaskAssignment, ...]
+) -> None:
+    plans_by_id = {plan.plan_id: plan for plan in plans}
+    by_id = {task.task_id: task for task in tasks}
+    for task in tasks:
+        seen: set[str] = set()
+        for dependency in task.dependencies:
+            if dependency == task.task_id:
+                raise PlanValidationError(f"task '{task.task_id}' depends on itself")
+            if dependency in seen:
+                raise PlanValidationError(
+                    f"task '{task.task_id}' lists dependency '{dependency}' more than once"
+                )
+            seen.add(dependency)
+            if dependency not in by_id:
+                raise PlanValidationError(
+                    f"task '{task.task_id}' depends on unknown task '{dependency}'"
+                )
+
+    finished: set[str] = set()
+    for start in by_id:
+        if start in finished:
+            continue
+        trail: list[str] = [start]
+        pending = [iter(by_id[start].dependencies)]
+        while pending:
+            dependency = next(pending[-1], None)
+            if dependency is None:
+                pending.pop()
+                finished.add(trail.pop())
+            elif dependency in trail:
+                cycle = [*trail[trail.index(dependency) :], dependency]
+                raise PlanValidationError(f"dependency cycle detected: {' -> '.join(cycle)}")
+            elif dependency not in finished:
+                trail.append(dependency)
+                pending.append(iter(by_id[dependency].dependencies))
+
+    # Projects are combined separately, so a result crossing between them must be
+    # named as an input; otherwise the worker has no evidence of what it consumes.
+    for task in tasks:
+        project = plans_by_id[task.plan_id].project_path
+        named = {item.split(":", 1)[0].strip() for item in task.required_inputs}
+        for dependency in task.dependencies:
+            other = plans_by_id[by_id[dependency].plan_id].project_path
+            if other != project and dependency not in named:
+                raise PlanValidationError(
+                    f"task '{task.task_id}' depends on '{dependency}' in another project but "
+                    f"no required input names it; add a required input starting with "
+                    f"'{dependency}:'"
+                )
+
+
+def _validate_owned_files(tasks: tuple[TaskAssignment, ...]) -> None:
+    for task in tasks:
+        for value in task.owned_files:
+            problem = _unsafe_path_reason(value)
+            if problem is not None:
+                raise PlanValidationError(f"task '{task.task_id}' owned file '{value}' {problem}")
+
+
+def _unsafe_path_reason(value: str) -> str | None:
+    if _CONTROL_RE.search(value):
+        return "must not contain control characters"
+    if "\\" in value:
+        return "must use '/' separators"
+    if value.startswith("~"):
+        return "must not start with '~'"
+    if value.startswith("/") or _DRIVE_RE.match(value):
+        return "must be relative to its project"
+    parts = [part for part in value.split("/") if part not in ("", ".")]
+    if ".." in parts:
+        return "must stay inside its project (no '..' parts)"
+    if parts and parts[0].lower() == ".git":
+        return "must not be inside '.git'"
+    return None
+
+
+def _owned_prefix(value: str) -> tuple[str, ...]:
+    """Return the literal leading parts of an owned path, stopping at any pattern."""
+    parts: list[str] = []
+    for part in value.split("/"):
+        if part in ("", "."):
+            continue
+        if _PATTERN_CHARS.intersection(part):
+            break
+        parts.append(part)
+    return tuple(parts)
+
+
+def _shared_file(first: str, second: str) -> str | None:
+    """Return the narrower path when one owned path equals or contains the other."""
+    first_parts = _owned_prefix(first)
+    second_parts = _owned_prefix(second)
+    shorter = min(len(first_parts), len(second_parts))
+    if first_parts[:shorter] != second_parts[:shorter]:
+        return None
+    return first if len(first_parts) >= len(second_parts) else second
+
+
+def _validate_coverage(
+    requirements: tuple[Requirement, ...], tasks: tuple[TaskAssignment, ...]
+) -> None:
+    seen: set[str] = set()
+    for requirement in requirements:
+        if requirement.requirement_id in seen:
+            raise PlanValidationError(f"duplicate requirement id '{requirement.requirement_id}'")
+        seen.add(requirement.requirement_id)
+    if tasks and not requirements:
+        raise PlanValidationError(
+            "a plan with tasks must list the agreed outcomes under 'requirements'"
+        )
+    for task in tasks:
+        if task.source_requirement not in seen:
+            raise PlanValidationError(
+                f"task '{task.task_id}' source_requirement '{task.source_requirement}' is not "
+                "an agreed outcome"
+            )
+    covered = {task.source_requirement for task in tasks}
+    for requirement in requirements:
+        if requirement.requirement_id not in covered:
+            raise PlanValidationError(
+                f"agreed outcome '{requirement.requirement_id}' is not covered by any task"
+            )
+
+
+def _parse_requirement(raw: object, index: int) -> Requirement:
+    if not isinstance(raw, dict):
+        raise PlanValidationError(f"requirement {index} must be an object")
+    requirement_id = raw.get("id")
+    if not isinstance(requirement_id, str) or not _ID_RE.fullmatch(requirement_id):
+        raise PlanValidationError(
+            f"requirement {index} id must start with a letter or number and contain only "
+            "letters, numbers, '.', '_' or '-'"
+        )
+    outcome = raw.get("outcome")
+    if not isinstance(outcome, str) or not outcome.strip():
+        raise PlanValidationError(
+            f"requirement '{requirement_id}' field 'outcome' must be a non-empty string"
+        )
+    return Requirement(requirement_id=requirement_id, outcome=outcome.strip())
+
+
 def _project_root(source_path: Path) -> Path:
     """Find the containing repository without invoking git; otherwise use the plan folder."""
     for candidate in (source_path.parent, *source_path.parents):
@@ -403,10 +611,18 @@ def parse_plan_tree(text: str, *, source_path: Path) -> PlanTree:
     raw_tasks = raw.get("tasks", [])
     if not isinstance(raw_tasks, list):
         raise PlanValidationError("gowork-plan manifest tasks must be a list")
+    raw_requirements = raw.get("requirements", [])
+    if not isinstance(raw_requirements, list):
+        raise PlanValidationError("gowork-plan manifest requirements must be a list")
     base_dir = source_path.resolve(strict=False).parent
+    requirements = tuple(
+        _parse_requirement(item, index) for index, item in enumerate(raw_requirements)
+    )
     plans = tuple(_parse_identity(item, index, base_dir) for index, item in enumerate(raw_plans))
     tasks = tuple(_parse_assignment(item, index) for index, item in enumerate(raw_tasks))
-    return PlanTree(plans=plans, tasks=tasks, schema_version=schema_version)
+    return PlanTree(
+        plans=plans, tasks=tasks, schema_version=schema_version, requirements=requirements
+    )
 
 
 def load_plan_tree(source_path: Path) -> PlanTree:
@@ -430,6 +646,9 @@ def render_plan_manifest(tree: PlanTree, *, relative_to: Path | None = None) -> 
     manifest: dict[str, Any] = {
         "schema_version": tree.schema_version,
         "plans": [],
+        "requirements": [
+            {"id": item.requirement_id, "outcome": item.outcome} for item in tree.requirements
+        ],
         "tasks": [],
     }
     rendered_plans: list[dict[str, object]] = []

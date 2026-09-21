@@ -65,9 +65,11 @@ from .frontend import (
     derive_thread_key,
 )
 from .gowork_plan import (
+    OwnershipConflict,
     PlanIdentity,
     PlanTree,
     PlanValidationError,
+    Requirement,
     TaskAssignment,
     load_plan_tree,
     parse_plan_tree,
@@ -169,9 +171,11 @@ __all__ = [
     "ThreadKey",
     "derive_thread_key",
     # Go Work plan identity
+    "OwnershipConflict",
     "PlanIdentity",
     "PlanTree",
     "PlanValidationError",
+    "Requirement",
     "TaskAssignment",
     "load_plan_tree",
     "parse_plan_tree",
