@@ -32,16 +32,18 @@ from discord import app_commands
 from discord.ext import commands
 
 from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
-from claude_code_core.gowork_plan import has_manifest
+from claude_code_core.gowork_plan import has_manifest, load_plan_tree
 from claude_code_core.gowork_records import (
     append_record,
     lessons_prompt,
     read_records,
     track_record,
 )
+from claude_code_core.gowork_schedule import ReadyTask
 from claude_code_core.loop_store import LoopRecord, LoopStore
 from claude_code_core.task_loop import (
     LoopOutcome,
+    ManifestResult,
     Status,
     TaskLoop,
     append_fix_task,
@@ -57,6 +59,7 @@ from claude_code_core.task_loop import (
     is_looks_good,
     list_plans,
     list_plans_across,
+    manifest_worker_prompt,
     merge_open_tasks,
     missing_steps_prompt,
     needs_you,
@@ -88,13 +91,18 @@ from claude_code_core.work_copy import (
     WorkCopy,
     WorkCopyError,
     commit_all,
+    create_project_copy,
     create_side_copy,
     create_work_copy,
+    head_commit,
     keep_work,
     merge_side_copy,
     remove_side_copy,
     remove_work_copy,
     side_has_new_work,
+)
+from claude_code_core.work_copy import (
+    _git as _wc_git,
 )
 
 from ..backend_settings import ALL_BACKENDS
@@ -437,6 +445,10 @@ class _Running:
     report_channel_id: int
     #: Stable identity in the LoopStore (several builds may share one project).
     build_id: str = ""
+    #: A manifest build's work copies of its other projects, by repository root.
+    project_copies: dict[Path, WorkCopy] | None = None
+    #: Git touches one copy at a time: side copies are made and merged under this.
+    git_lock: asyncio.Lock | None = None
     copy: WorkCopy | None = None
     task: asyncio.Task[LoopOutcome] | None = None
     thread: Any = None
@@ -557,6 +569,7 @@ class TaskLoopCog(commands.Cog):
         self._running: dict[str, _Running] = {}
         #: Running builds on disk, so a bot restart resumes them.
         self._store = store or LoopStore()
+        self._project_copy_lock = asyncio.Lock()
         #: Channels/threads waiting for the person's next typed message.
         self._waiters: dict[int, asyncio.Future[str]] = {}
         #: Waiters that only take a matching reply; anything else goes to the chat.
@@ -941,6 +954,9 @@ class TaskLoopCog(commands.Cog):
             review=lambda step, base: self._review_step(holder[0], step, base),
             run_group=lambda steps: self._run_group(holder[0], steps),
             max_parallel=parallel_limit,
+            manifest_dispatch=lambda tasks: self._dispatch_manifest(holder[0], tasks),
+            state_path=self._store.path.with_name("builds") / f"{record.build_id}.json",
+            build_id=record.build_id,
         )
         repo_dir = Path(record.repo_dir)
         copy = WorkCopy(
@@ -2310,6 +2326,118 @@ class TaskLoopCog(commands.Cog):
                 return group
         running.groups = await self._groups_for(steps)
         return next((g for g in running.groups if g and g[0] == steps[0]), steps[:1])
+
+    async def _project_copy(self, running: _Running, project_path: Path) -> tuple[WorkCopy, Path]:
+        """The build's work copy for *project_path*'s repository (made on first use), and
+        where that project sits inside it."""
+        assert running.copy is not None
+        top = Path((await _wc_git(project_path, "rev-parse", "--show-toplevel")).strip()).resolve()
+        rel = project_path.resolve().relative_to(top)
+        # The plan is read from the build's own copy (a worktree), so its projects
+        # resolve under that copy: that is this build's copy, not another repository.
+        if top in (running.copy.source_repo, running.copy.path.resolve()):
+            return running.copy, rel
+        if running.project_copies is None:
+            running.project_copies = {}
+        async with self._project_copy_lock:
+            copy = running.project_copies.get(top)
+            if copy is None:
+                copy = await create_project_copy(top, label=top.name, root=self._work_root)
+                running.project_copies[top] = copy
+        return copy, rel
+
+    async def _dispatch_manifest(
+        self, running: _Running, tasks: list[ReadyTask]
+    ) -> list[ManifestResult]:
+        """Run each ready manifest task in its own side copy and worker thread (T11b)."""
+        assert running.copy is not None
+        chat = self._chat()
+        settings = getattr(chat, "_backend_settings", None)
+        parent: Any = getattr(running.thread, "parent", None) or running.report_target
+        tree = load_plan_tree(running.copy.plan_path)
+        goal, _done = plan_goal(
+            running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        )
+
+        async def one(task: ReadyTask) -> ManifestResult:
+            assignment = tree.task(task.task_id)
+            project_copy, rel = await self._project_copy(running, task.project_path)
+            if running.git_lock is None:
+                running.git_lock = asyncio.Lock()
+            async with running.git_lock:
+                side = await create_side_copy(project_copy, task.task_id)
+            cwd = side.path / rel
+            sub: Any = await chat.spawn_session(
+                parent,
+                f"⚡ One task of the {running.repo_dir.name} build, running alongside "
+                f"others: {assignment.outcome[:120]}",
+                thread_name=f"⚡ {assignment.outcome[:80]}",
+                auto_start=False,
+                working_dir=str(cwd),
+            )
+            self._quiet(sub.id)
+            if settings is not None:
+                with contextlib.suppress(Exception):
+                    harness = await settings.current_backend(running.worker_thread_id)
+                    model = await settings.current_model(harness, running.worker_thread_id)
+                    await settings.set_backend(harness, thread_id=sub.id)
+                    if model:
+                        await settings.set_model(harness, model, thread_id=sub.id)
+            result: dict[str, str | None] = {}
+
+            async def sink(text: str | None, error: str | None) -> None:
+                result["text"], result["error"] = text, error
+
+            ai = await self._ai_label(running, sub.id)
+            started = time.monotonic()
+            seed = await sub.send(f"-# ⚡ Working on: {assignment.outcome}")
+            dependents = sum(task.task_id in t.dependencies for t in tree.tasks)
+            await chat.run_fresh_turn(
+                seed,
+                sub,
+                manifest_worker_prompt(assignment, cwd=cwd, goal=goal),
+                working_dir=str(cwd),
+                result_sink=sink,
+                slot_kind="task",
+                slot_build_id=running.build_id,
+                slot_unblocks=dependents,
+            )
+            status, detail = parse_status(result.get("text"))
+            ok = status == Status.DONE
+            async with running.git_lock:
+                landed = ok and await side_has_new_work(project_copy, side)
+                landed = landed and await merge_side_copy(project_copy, side)
+                commit = await head_commit(project_copy.path) if landed else None
+                if not landed:
+                    await remove_side_copy(project_copy, side)
+            reason = detail or result.get("error") or ""
+            if ok and not landed:
+                reason = reason or "the worker reported DONE but committed no new work"
+            await self._record(
+                running,
+                assignment.outcome,
+                "done alongside others" if landed else "didn't combine",
+                reason,
+                ai=ai,
+                seconds=time.monotonic() - started,
+            )
+            return ManifestResult(
+                task_id=task.task_id,
+                ok=landed,
+                detail=reason,
+                commit=commit,
+                checks=(f"worker ran: {assignment.acceptance_check}",) if landed else (),
+            )
+
+        outcomes = await asyncio.gather(*(one(t) for t in tasks), return_exceptions=True)
+        results: list[ManifestResult] = []
+        for task, outcome in zip(tasks, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                logger.warning("gowork: a manifest task failed to run", exc_info=outcome)
+                results.append(ManifestResult(task.task_id, False, f"it couldn't start: {outcome}"))
+            else:
+                results.append(outcome)
+        return results
 
     async def _run_group(self, running: _Running, steps: list[str]) -> list[tuple[str, bool, str]]:
         """Build *steps* at the same time, each in its own copy and thread, then merge.

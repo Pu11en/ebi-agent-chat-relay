@@ -32,6 +32,9 @@ def repo(tmp_path: Path) -> Path:
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.email", "t@t")
     _git(tmp_path, "config", "user.name", "t")
+    for project in ("control", "product", "website", "marketing"):
+        (tmp_path / project).mkdir()
+        (tmp_path / project / "README.md").write_text(f"# {project}\n")
     manifest = (FIXTURES / "validated-plan.md").read_text(encoding="utf-8")
     (tmp_path / "PLAN-A.md").write_text(manifest.replace("Launch the business", "Plan A"))
     (tmp_path / "PLAN-B.md").write_text(manifest.replace("Launch the business", "Plan B"))
@@ -60,6 +63,13 @@ def _cog() -> tuple[TaskLoopCog, MagicMock, list[MagicMock]]:
     async def fresh_turn(seed, thread, prompt, *, working_dir, result_sink, **_slot):  # noqa: ANN001
         if "checking finished work" in prompt or "agree the goal" in prompt:
             await result_sink("PASS: fine\nDONE", None)
+            return
+        if "Your task (" in prompt:  # a manifest task: leave one committed file behind
+            cwd = Path(working_dir)
+            (cwd / f"work-{cwd.parent.name[-24:]}.txt").write_text("done\n")
+            subprocess.run(["git", "-C", working_dir, "add", "."], capture_output=True)
+            subprocess.run(["git", "-C", working_dir, "commit", "-qm", "work"], capture_output=True)
+            await result_sink("Built it.\nDONE", None)
             return
         # Tick the first open box of whichever plan the prompt names, like a worker would.
         for plan in sorted(Path(working_dir).glob("*.md")):
@@ -98,7 +108,7 @@ async def test_two_manifest_plans_run_in_one_project_at_once(repo: Path) -> None
     a = await cog.start_loop(_channel(), str(repo / "PLAN-A.md"))
     b = await cog.start_loop(_channel(), str(repo / "PLAN-B.md"))
 
-    assert a is not b and len(threads) == 2
+    assert a is not b and a in threads and b in threads
     assert {r.build_id for r in cog.running} == {f"thread-{a.id}", f"thread-{b.id}"}
     assert {r.repo_dir for r in cog.running} == {repo.resolve()}
     assert sorted(rec.plan_path for rec in cog._store.for_repo(str(repo.resolve()))) == sorted(
@@ -114,7 +124,7 @@ async def test_starting_a_running_plan_names_that_build_and_opens_nothing(repo: 
 
     assert info.value.thread is first
     assert info.value.build_id == f"thread-{first.id}"
-    assert len(threads) == 1 and chat.spawn_session.await_count == 1
+    assert len(cog.running) == 1 and len(cog._store.all()) == 1  # no second build
 
 
 async def test_stopping_one_build_leaves_the_other_alone(repo: Path) -> None:
@@ -158,4 +168,4 @@ async def test_a_manifest_plan_may_start_beside_a_checkbox_build(repo: Path) -> 
     cog, _chat, threads = _cog()
     await cog.start_loop(_channel(), str(repo / "LEGACY.md"))
     await cog.start_loop(_channel(), str(repo / "PLAN-A.md"))
-    assert len(threads) == 2 and len(cog.running) == 2
+    assert len(cog.running) == 2

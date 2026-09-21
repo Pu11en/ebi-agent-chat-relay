@@ -86,6 +86,27 @@ async def create_work_copy(
     return WorkCopy(source_repo=repo, path=path, branch=branch, plan_path=copy_plan)
 
 
+async def create_project_copy(repo_dir: Path, *, label: str, root: Path | None = None) -> WorkCopy:
+    """A fresh worktree of *repo_dir* for a manifest build's other project (no plan file).
+
+    ``plan_path`` points at the copy's root so callers that only name the copy
+    still have a path; nothing is written into the project.
+    """
+    repo = Path((await _git(repo_dir, "rev-parse", "--show-toplevel")).strip()).resolve()
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    slug = _SLUG_RE.sub("-", label.lower()).strip("-")[:40] or "project"
+    branch = f"gowork/{slug}-{stamp}"
+    path = (root or DEFAULT_ROOT) / f"{repo.name}-{slug}-{stamp}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    await _git(repo, "worktree", "add", "-q", "-b", branch, str(path), "HEAD")
+    return WorkCopy(source_repo=repo, path=path, branch=branch, plan_path=path)
+
+
+async def head_commit(path: Path) -> str:
+    """The commit a copy is at right now."""
+    return (await _git(path, "rev-parse", "HEAD")).strip()
+
+
 async def remove_work_copy(copy: WorkCopy) -> None:
     """Delete the copy and its branch. Only after the work was kept or thrown away."""
     await _git(copy.source_repo, "worktree", "remove", "--force", str(copy.path))

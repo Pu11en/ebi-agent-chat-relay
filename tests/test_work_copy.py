@@ -135,3 +135,22 @@ async def test_saving_a_new_plan_never_commits_what_the_person_staged(
 
     assert not ok and "unsaved" in msg  # refused, as before
     assert "app.txt" in _git(repo, "diff", "--cached", "--name-only")  # still staged, not committed
+
+
+async def test_project_copy_needs_no_plan_and_takes_side_copies(repo: Path, tmp_path: Path) -> None:
+    """T11b: a manifest build works in other projects too, which hold no plan file."""
+    copy = await wc.create_project_copy(repo, label="website", root=tmp_path / "copies")
+    assert copy.path.is_dir() and copy.path != repo
+    assert copy.branch.startswith("gowork/website-")
+    assert _git(copy.path, "rev-parse", "HEAD").strip() == _git(repo, "rev-parse", "HEAD").strip()
+
+    side = await wc.create_side_copy(copy, "catalog-page")
+    (side.path / "page.txt").write_text("hi")
+    _git(side.path, "add", ".")
+    _git(side.path, "commit", "-qm", "page")
+    assert await wc.side_has_new_work(copy, side)
+    assert await wc.merge_side_copy(copy, side)
+    assert (copy.path / "page.txt").read_text() == "hi"
+    assert await wc.head_commit(copy.path) == _git(copy.path, "rev-parse", "HEAD").strip()
+    await wc.remove_work_copy(copy)
+    assert not copy.path.exists()

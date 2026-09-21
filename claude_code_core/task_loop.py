@@ -34,6 +34,15 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from claude_code_core.gowork_plan import (
+    PlanValidationError,
+    TaskAssignment,
+    has_manifest,
+    load_plan_tree,
+)
+from claude_code_core.gowork_schedule import ReadyTask, ready_tasks
+from claude_code_core.gowork_state import StaleAttemptError, TaskStatus, open_build_state
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ROUNDS = 40
@@ -449,6 +458,19 @@ class LoopOutcome:
     rounds: int = 0
 
 
+@dataclass(frozen=True)
+class ManifestResult:
+    """What one manifest task's worker came back with."""
+
+    task_id: str
+    ok: bool
+    detail: str = ""
+    commit: str | None = None
+    checks: tuple[str, ...] = ()
+
+
+#: Runs the given ready tasks side by side and reports each one (T11b).
+ManifestDispatch = Callable[[list[ReadyTask]], Awaitable[list[ManifestResult]]]
 RunRound = Callable[[str], Awaitable[tuple[str | None, str | None]]]
 #: Told the limit message; True once another AI was picked or the wait is over.
 OnLimit = Callable[[str], Awaitable[bool]]
@@ -477,6 +499,9 @@ class TaskLoop:
         on_result: Callable[[str, str, str], Awaitable[None]] | None = None,
         review: Callable[[str, str | None], Awaitable[str | None]] | None = None,
         max_parallel: Callable[[], int] | None = None,
+        manifest_dispatch: ManifestDispatch | None = None,
+        state_path: Path | None = None,
+        build_id: str = "",
     ) -> None:
         self.plan_path = plan_path
         self.repo_dir = repo_dir
@@ -505,6 +530,83 @@ class TaskLoop:
         self._stop = False
         #: Things the person typed while a task was running.
         self._notes: list[str] = []
+        #: The multi-plan path (T11b): a manifest plan is built from its ledger.
+        self._manifest_dispatch = manifest_dispatch
+        self.state_path = state_path
+        self.build_id = build_id
+
+    async def _run_manifest(self) -> LoopOutcome:
+        """Build a manifest plan: dispatch what is ready, record what came back, repeat."""
+        assert self._manifest_dispatch is not None and self.state_path is not None
+        rounds = 0
+        while True:
+            if self._before_round is not None:
+                try:
+                    await self._before_round()
+                except Exception:
+                    logger.warning("task loop: before-round hook failed", exc_info=True)
+            try:
+                tree = load_plan_tree(self.plan_path)
+                state = open_build_state(self.state_path, tree, build_id=self.build_id)
+            except (PlanValidationError, StaleAttemptError, OSError) as exc:
+                await self._report(f"🛑 The plan can't be built as written: {exc}")
+                return LoopOutcome(Status.STUCK, str(exc), rounds)
+            if self._stop:
+                await self._report("⏹️ Loop stopped.")
+                return LoopOutcome(Status.NONE, "stopped", rounds)
+            if rounds >= self.max_rounds:
+                await self._report(f"🛑 Stopped after {rounds} rounds (the safety limit).")
+                return LoopOutcome(Status.STUCK, "round limit reached", rounds)
+
+            ready = list(ready_tasks(state, limit=max(1, self._max_parallel())))
+            if not ready:
+                records = state.records
+                total = len(records)
+                if all(r.accepted for r in records):
+                    await self._report(
+                        f"✔️ All {total} tasks are accepted. Checking the finished work…"
+                    )
+                    return LoopOutcome(Status.COMPLETE, rounds=rounds)
+                blocked = [r for r in records if r.status is TaskStatus.BLOCKED]
+                if blocked:
+                    lines = "; ".join(f"{r.task_id}: {r.reason or 'blocked'}" for r in blocked)
+                    await self._report(f"🛑 Stuck — {len(blocked)} task(s) blocked: {lines}")
+                    return LoopOutcome(Status.STUCK, f"blocked: {lines}", rounds)
+                waiting = [r.task_id for r in records if not r.accepted]
+                detail = "nothing is ready and nothing is running: " + ", ".join(waiting)
+                await self._report(f"🛑 {detail}")
+                return LoopOutcome(Status.STUCK, detail, rounds)
+
+            rounds += 1
+            for task in ready:
+                state.begin(task.task_id)
+            await self._report(
+                f"⚡ Round {rounds}: {len(ready)} task(s) — " + ", ".join(t.task_id for t in ready)
+            )
+            results = await self._manifest_dispatch(ready)
+            seen = {r.task_id for r in results}
+            for task in ready:
+                if task.task_id not in seen:
+                    results.append(
+                        ManifestResult(task.task_id, False, "the worker reported nothing")
+                    )
+            for result in results:
+                if result.task_id not in state:
+                    continue
+                attempt = state[result.task_id].attempt_id
+                if result.ok and result.commit:
+                    state.submit_result(
+                        result.task_id,
+                        attempt,
+                        commit=result.commit,
+                        checks=result.checks or ("the worker reported DONE",),
+                    )
+                    state.accept(result.task_id, attempt)
+                    await self._result(result.task_id, "done", result.detail)
+                else:
+                    reason = result.detail or "the worker did not finish"
+                    state.block(result.task_id, reason)
+                    await self._result(result.task_id, "stuck", reason)
 
     async def _run_plan_check(self) -> list[str]:
         """The bot's own check after a claimed DONE — trust proof, not words."""
@@ -598,6 +700,13 @@ class TaskLoop:
         self._stop = False
 
     async def run(self) -> LoopOutcome:
+        if self._manifest_dispatch is not None and self.state_path is not None:
+            try:
+                text = self.plan_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            if has_manifest(text):
+                return await self._run_manifest()
         answer: tuple[str, str] | None = None
         retry_reason: str | None = None
         retries = 0
@@ -949,6 +1058,44 @@ def parallel_prompt(plan_path: Path, step: str) -> str:
         "Finish with one or two plain sentences on what you did, for a non-technical "
         "reader. The very last line must be exactly one of:",
         "DONE — the step is finished and committed",
+        "STUCK: <plain reason> — you cannot finish it this way",
+    ]
+    return "\n".join(parts)
+
+
+def manifest_worker_prompt(assignment: TaskAssignment, *, cwd: Path, goal: str | None) -> str:
+    """The prompt for one task of a manifest build (T11b; T12 makes it a persisted handoff)."""
+    parts = [
+        "[gowork build worker — for this worker only] You are one of several workers "
+        "building tasks of a plan at the same time, each in its own copy. You start "
+        "with no memory.",
+    ]
+    if goal:
+        parts += ["", f"The goal of this whole build: {goal}"]
+    parts += [
+        "",
+        f"Your task ({assignment.task_id}): {assignment.outcome}",
+        f"Work only in this folder: {cwd}",
+        "You may change only these files/folders: " + ", ".join(assignment.owned_files),
+    ]
+    if assignment.owned_resources:
+        parts.append("Resources you own: " + ", ".join(assignment.owned_resources))
+    if assignment.required_inputs:
+        parts.append("Inputs you can rely on: " + "; ".join(assignment.required_inputs))
+    parts += [
+        f"Expected output: {assignment.output}",
+        f"Acceptance check — run it and make it pass: {assignment.acceptance_check}",
+        f"This delivers agreed outcome {assignment.source_requirement}.",
+        "Other tasks are being built right now by others: don't do them, and don't edit "
+        "the plan file (the bot records results).",
+        "Commit your work with git. Leave no uncommitted changes.",
+        "",
+        "Never push, deploy, delete data, spend money or use new API keys. If the task "
+        "needs any of that, don't do it: end with STUCK and say why.",
+        "",
+        "Finish with one or two plain sentences on what you did, for a non-technical "
+        "reader. The very last line must be exactly one of:",
+        "DONE — the task is finished, checked and committed",
         "STUCK: <plain reason> — you cannot finish it this way",
     ]
     return "\n".join(parts)
