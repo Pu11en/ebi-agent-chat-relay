@@ -520,6 +520,8 @@ class _Running:
     #: Started from the build queue; True while it waits for the person.
     queued: bool = False
     waiting_for_person: bool = False
+    #: True while the build sits in _park waiting for the person (T21 wakes it).
+    parked: bool = False
     #: The backup AI was switched to once already (it may not run out again).
     fallback_used: bool = False
     #: The build reached its finished card: the thread is a normal chat now.
@@ -697,6 +699,9 @@ class TaskLoopCog(commands.Cog):
         text = (getattr(message, "content", "") or "").strip()
         if channel_id is None or not text:
             return False
+        claimed = self._take_blocker_reply(message, channel_id, text)
+        if claimed is not None:
+            return claimed
         for running in self._running.values():
             if (
                 running.worker_thread_id == channel_id
@@ -1478,7 +1483,11 @@ class TaskLoopCog(commands.Cog):
         with contextlib.suppress(discord.HTTPException):
             await running.thread.send(ask[:1900])
         self._queue_waiting(running, why.splitlines()[0].replace("**", "")[:200])
-        reply = await self._wait_parked(running, ask)
+        running.parked = True
+        try:
+            reply = await self._wait_parked(running, ask)
+        finally:
+            running.parked = False
         running.waiting_for_person = False
         if reply is None:  # a new plan was started in this project
             return await self._finish_early(running)
@@ -1564,6 +1573,17 @@ class TaskLoopCog(commands.Cog):
         """
         running.wake = running.wake or asyncio.Event()
         running.in_review = True
+
+        def channel_accepts(text: str) -> bool:
+            # In the build's thread anything is for the build; where it was planned,
+            # only a real choice is (the rest is normal chat). While questions are open
+            # (T21), "retry"/"skip" must be replies to one question, so only ending
+            # the build counts here.
+            choice = parked_choice(text)
+            if self._blockers.unresolved(build_id=running.build_id):
+                return choice in ("throw", "finish")
+            return choice is not None
+
         try:
             while not running.auto_finish:
                 try:
@@ -1571,9 +1591,7 @@ class TaskLoopCog(commands.Cog):
                         running,
                         [running.worker_thread_id, running.report_channel_id],
                         VERDICT_REMIND_SECONDS,
-                        # In the build's thread anything is for the build; where it was
-                        # planned, only a real choice is (the rest is normal chat).
-                        accepts={running.report_channel_id: lambda t: parked_choice(t) is not None},
+                        accepts={running.report_channel_id: channel_accepts},
                     )
                 except PickDeclinedError:
                     continue  # the chat answers it; still waiting
@@ -2415,6 +2433,91 @@ class TaskLoopCog(commands.Cog):
         return open_build_state(
             builds / f"{running.build_id}.json", tree, build_id=running.build_id
         )
+
+    def _take_blocker_reply(self, message: Any, channel_id: int, text: str) -> bool | None:
+        """A Discord Reply to a blocker question answers exactly that question (T21).
+
+        None: not a reply to any blocker — the normal rules decide. True: claimed (the
+        chat must ignore it), whether or not work was dispatched. False: a reply that
+        must stay ordinary conversation (wrong channel or an unauthorized user).
+        """
+        reference = getattr(message, "reference", None)
+        ref_id = getattr(reference, "message_id", None) if reference is not None else None
+        if not isinstance(ref_id, int):
+            return None
+        blocker = self._blockers.by_message(ref_id)
+        if blocker is None:
+            return None
+        author_id = getattr(getattr(message, "author", None), "id", None)
+        if not isinstance(author_id, int) or not self._authorized(author_id):
+            return False
+        if blocker.posted_channel_id not in (None, channel_id):
+            return False
+        running = self._running.get(blocker.build_id)
+        note = self._blocker_answer_note(blocker, running)
+        if note is not None:
+            asyncio.get_running_loop().create_task(self._say(message.channel, note))
+            return True
+        assert running is not None
+        if not self._blockers.resolve(
+            blocker.blocker_id, answer=text, by_user_id=author_id, reply_message_id=message.id
+        ):
+            return True
+        asyncio.get_running_loop().create_task(
+            self._apply_blocker_answer(running, blocker.task_id, text, message.channel)
+        )
+        return True
+
+    def _blocker_answer_note(self, blocker: Any, running: _Running | None) -> str | None:
+        """Why a reply cannot dispatch work — or None when it can."""
+        if blocker.resolved:
+            return (
+                f"ℹ️ That question was already answered ({blocker.answer!r}); nothing new started."
+            )
+        if running is None:
+            return f"ℹ️ The build that asked about `{blocker.task_id}` is not running any more."
+        try:
+            current = self._build_state(running)[blocker.task_id]
+        except Exception:
+            return "ℹ️ I can't find that build's records any more; nothing started."
+        if current.attempt_id != blocker.attempt_id:
+            return (
+                f"ℹ️ `{blocker.task_id}` has moved on since that question (it is on attempt "
+                f"{current.attempt} now); reply to its latest question instead."
+            )
+        return None
+
+    async def _say(self, channel: Any, text: str) -> None:
+        with contextlib.suppress(Exception):
+            await channel.send(text)
+
+    async def _apply_blocker_answer(
+        self, running: _Running, task_id: str, answer: str, channel: Any
+    ) -> None:
+        """retry / skip / instructions — then wake the build so only that task moves."""
+        try:
+            state = self._build_state(running)
+            choice = answer.strip().lower().rstrip(".!")
+            if choice in {"skip", "skip it", "leave it"}:
+                state.block(task_id, "skipped on your request; its dependents stay held")
+                await self._say(channel, f"⏭️ Skipping `{task_id}`; anything that needs it waits.")
+            elif choice in {"retry", "try again", "again", "go", "keep going"}:
+                state.retry(task_id)
+                await self._say(channel, f"🔁 Trying `{task_id}` again.")
+            else:
+                state.rework(task_id, f"you said: {answer.strip()[:500]}")
+                await self._say(channel, f"📝 Got it — `{task_id}` will try again with that.")
+        except Exception as exc:
+            await self._say(channel, f"⚠️ Couldn't apply that answer: {exc}")
+            return
+        # A parked build resumes its loop; a running one picks the task up on its own.
+        if not running.parked:
+            return
+        for cid in (running.report_channel_id, running.worker_thread_id):
+            future = self._waiters.get(cid)
+            if future is not None and not future.done():
+                future.set_result("keep going")
+                break
 
     async def _after_manifest_result(self, running: _Running, result: ManifestResult) -> None:
         """After a result is saved: archive its thread (T14) and, if the task is now a

@@ -525,3 +525,92 @@ async def test_a_stuck_task_becomes_one_durable_question(repo: Path) -> None:
 
     assert await cog.repost_blockers(cog.running[0]) == 0  # already on Discord: not again
     assert len([t for t in posted if t.startswith("❓")]) == 1
+
+
+def _reply(channel_id: int, ref_message_id: int | None, text: str, author_id: int = 1) -> MagicMock:
+    message = MagicMock()
+    message.id = 70000 + abs(hash((channel_id, ref_message_id, text))) % 10000
+    message.channel.id = channel_id
+    message.channel.send = AsyncMock()
+    message.content = text
+    message.author.id = author_id
+    message.reference = MagicMock(message_id=ref_message_id) if ref_message_id else None
+    return message
+
+
+async def test_replies_resolve_only_their_own_blocker(repo: Path) -> None:
+    """T21: two questions, two replies — each moves only its task; duplicates, unknown and
+    unauthorized references dispatch nothing; ordinary messages stay ordinary."""
+    failing = re.sub(
+        r'"acceptance_check": "[^"]*"',
+        f'"acceptance_check": "{_PY} -c exit(1)"',
+        _passing_manifest(),
+        count=1,  # product.catalog-api always fails its check
+    ).replace(
+        '"acceptance_check": "' + _PY + ' -c pass",\n      "source_requirement": "REQ-LAUNCH-POST"',
+        '"acceptance_check": "'
+        + _PY
+        + ' -c exit(1)",\n      "source_requirement": "REQ-LAUNCH-POST"',
+    )
+    _plan_with_mode(repo, failing)
+    cog, chat, _threads, _worked = _cog()
+    cog._allowed_user_ids = {1}
+    cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    channel = _channel()
+    posted: list[MagicMock] = []
+
+    async def send(text: str, **_k: object) -> MagicMock:
+        message = MagicMock()
+        message.id = 5000 + len(posted)
+        message.content = text
+        posted.append(message)
+        return message
+
+    channel.send = AsyncMock(side_effect=send)
+    worker, ledger = await _run_until_settled(cog, channel, repo / "PLAN.md")
+    for _ in range(500):  # let the build park on its questions
+        if cog.running and cog.running[0].parked:
+            break
+        await asyncio.sleep(0.01)
+    questions = {m.id: m.content for m in posted if m.content.startswith("❓")}
+    assert len(questions) == 2
+    api_q = next(mid for mid, text in questions.items() if "product.catalog-api" in text)
+    post_q = next(mid for mid, text in questions.items() if "marketing.launch-post" in text)
+    build_id = f"thread-{worker.id}"
+
+    # Not a reply to a question: the normal rules (here: nothing pending) → not claimed.
+    assert cog.take_message(_reply(channel.id, None, "how is it going?")) is False
+    # Unknown reference → normal chat.
+    assert cog.take_message(_reply(channel.id, 4242, "retry")) is False  # not an answer here
+    # Unauthorized user → stays ordinary conversation, nothing dispatched.
+    assert cog.take_message(_reply(channel.id, api_q, "retry", author_id=99)) is False
+    assert cog._blockers.by_message(api_q).resolved is False  # type: ignore[union-attr]
+
+    # Two real replies.
+    assert cog.take_message(_reply(channel.id, post_q, "skip")) is True
+    assert cog.take_message(_reply(channel.id, api_q, "retry")) is True
+    await asyncio.sleep(0.05)
+    assert cog._blockers.by_message(post_q).answer == "skip"  # type: ignore[union-attr]
+    assert cog._blockers.by_message(api_q).answer == "retry"  # type: ignore[union-attr]
+
+    # A duplicate reply to an answered question dispatches nothing.
+    assert cog.take_message(_reply(channel.id, api_q, "retry again")) is True
+    await asyncio.sleep(0.05)
+
+    for _ in range(1500):
+        state = json.loads((cog._store.path.with_name("builds") / f"{build_id}.json").read_text())
+        if state["tasks"]["product.catalog-api"]["attempt"] >= 3 and (
+            cog.running and cog.running[0].parked
+        ):
+            break
+        await asyncio.sleep(0.01)
+    tasks = json.loads((cog._store.path.with_name("builds") / f"{build_id}.json").read_text())[
+        "tasks"
+    ]
+    assert tasks["product.catalog-api"]["attempt"] == 3  # retried exactly once more
+    assert (
+        tasks["marketing.launch-post"]["attempt"] == 2
+        and "skipped" in tasks["marketing.launch-post"]["reason"]
+    )
+    assert tasks["website.page-styles"]["status"] == "accepted"  # untouched
+    assert len(cog._blockers.unresolved(build_id=build_id)) == 1  # the retried task asked again
