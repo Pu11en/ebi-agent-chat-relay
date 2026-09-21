@@ -49,7 +49,7 @@ Expected final files:
   - Create `check_progress.py` if it does not exist; the check should pass after this task and validate every listed artifact that exists.
   - Write `source-index.md` and `status.json`.
 
-- [ ] Extract everything Generation Wealth said.
+- [x] Extract everything Generation Wealth said.
   - Use the source inventory only; do not invent quotes or rely on memory.
   - Pull exact quotes when available, and short faithful paraphrases when transcripts are messy.
   - Preserve dates, transcript/source path, and nearby context.
