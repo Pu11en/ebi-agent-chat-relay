@@ -325,3 +325,329 @@ class TestChatCogHandoffTurn:
         assert ClaudeChatCog.handoff_capacity_available(cog) is True  # type: ignore[arg-type]
         cog.active_session_count = 3
         assert ClaudeChatCog.handoff_capacity_available(cog) is False  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# The dedicated listener (task 2.3)
+# ---------------------------------------------------------------------------
+
+import os  # noqa: E402
+import tempfile  # noqa: E402
+from collections.abc import AsyncIterator  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from claude_code_core.handoffs.state import HandoffState  # noqa: E402
+from claude_discord.cogs.agent_handoff import AgentHandoffCog  # noqa: E402
+from claude_discord.database.handoff_repo import HandoffRepository  # noqa: E402
+from claude_discord.database.models import init_db  # noqa: E402
+from claude_discord.handoff_authority import RecipientPolicy  # noqa: E402
+from claude_discord.handoff_config import HandoffConfig  # noqa: E402
+from claude_discord.handoff_executor import HandoffExecutor  # noqa: E402
+from claude_discord.handoff_projects import ApprovedRootResolver  # noqa: E402
+
+DREWAI_BOT, IMAC_BOT, DAVID_BOT = 111, 222, 333
+CONFIG_ENV = {
+    "CCDB_AGENT_ID": "david",
+    "CCDB_HANDOFF_GUILD_ID": str(GUILD),
+    "CCDB_HANDOFF_CHANNEL_ID": str(CHANNEL),
+    "CCDB_HANDOFF_AGENTS": f"drewai={DREWAI_BOT},imac={IMAC_BOT},david={DAVID_BOT}",
+}
+
+
+@pytest.fixture
+async def repo() -> AsyncIterator[HandoffRepository]:
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    await init_db(path)
+    try:
+        yield HandoffRepository(path)
+    finally:
+        os.unlink(path)
+
+
+class FakeGuild:
+    def __init__(self, guild_id: int = GUILD) -> None:
+        self.id = guild_id
+
+
+class FakeChannel:
+    """The agent-handoffs channel: starters live here, threads hang off them."""
+
+    def __init__(self, channel_id: int = CHANNEL) -> None:
+        self.id = channel_id
+        self.parent_id = None
+        self.guild = FakeGuild()
+        self.messages: list[FakeMessage] = []
+        self.threads: dict[int, FakeThread] = {}
+        self._next_id = 9000
+
+    async def send(self, content: str) -> FakeMessage:
+        self._next_id += 1
+        message = FakeMessage(
+            self._next_id, content, author_id=DAVID_BOT, channel=self, guild=self.guild
+        )
+        self.messages.append(message)
+        return message
+
+    def history(self, *, limit: int = 100, after: object = None, oldest_first: bool = True):
+        async def _iter():
+            for message in self.messages[-limit:]:
+                yield message
+
+        return _iter()
+
+
+class FakeMessage:
+    def __init__(
+        self,
+        message_id: int,
+        content: str,
+        *,
+        author_id: int,
+        channel: object,
+        guild: object,
+        bot: bool = True,
+        webhook_id: int | None = None,
+    ) -> None:
+        self.id = message_id
+        self.content = content
+        self.author = SimpleNamespace(id=author_id, bot=bot)
+        self.channel = channel
+        self.guild = guild
+        self.webhook_id = webhook_id
+        self.thread: FakeThread | None = None
+
+    async def create_thread(self, *, name: str, **_: object) -> FakeThread:
+        if self.thread is not None:
+            raise RuntimeError("already has a thread")
+        self.thread = FakeThread(self.id, name)
+        channel = self.channel
+        if isinstance(channel, FakeChannel):
+            channel.threads[self.id] = self.thread
+        return self.thread
+
+
+def _bot(channel: FakeChannel) -> SimpleNamespace:
+    async def fetch_channel(channel_id: int) -> object:
+        found = channel.threads.get(channel_id)
+        if found is None:
+            raise RuntimeError(f"no channel {channel_id}")
+        return found
+
+    def get_channel(channel_id: int) -> object | None:
+        if channel_id == channel.id:
+            return channel
+        return channel.threads.get(channel_id)
+
+    return SimpleNamespace(
+        cogs={},
+        get_channel=get_channel,
+        fetch_channel=fetch_channel,
+        user=SimpleNamespace(id=DAVID_BOT),
+    )
+
+
+def _starter(channel: FakeChannel, event: p.HandoffEvent, *, author_id: int = DREWAI_BOT):
+    message = FakeMessage(
+        4242, render_task_starter(event), author_id=author_id, channel=channel, guild=channel.guild
+    )
+    channel.messages.append(message)
+    return message
+
+
+def _cog(
+    repo: HandoffRepository, channel: FakeChannel, project_root: Path, **kw: object
+) -> AgentHandoffCog:
+    config = HandoffConfig.from_env(CONFIG_ENV)
+    assert config is not None
+    bot = _bot(channel)
+    executor = HandoffExecutor(
+        repo=repo,
+        local_agent_id="david",
+        resolver=ApprovedRootResolver(roots={"drew": (project_root.parent,)}),
+        policy=RecipientPolicy(),
+        thread_lookup=bot.fetch_channel,
+    )
+    return AgentHandoffCog(
+        bot,  # type: ignore[arg-type]
+        repo=repo,
+        config=config,
+        executor=executor,
+        start_loops=False,
+        **kw,  # type: ignore[arg-type]
+    )
+
+
+class TestAgentHandoffCog:
+    @pytest.mark.asyncio
+    async def test_starter_from_a_trusted_peer_is_stored_acked_and_started(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "drewp" / "main-projects"
+        root.mkdir(parents=True)
+        channel = FakeChannel()
+        cog = _cog(repo, channel, root)
+        chat = SimpleNamespace(
+            bot=cog.bot,
+            handoff_capacity_available=lambda: True,
+            run_handoff_turn=AsyncMock(),
+        )
+        cog.bot.cogs["ClaudeChatCog"] = chat
+        starter = _starter(channel, make_task_event())
+
+        receipt = await cog.handle_message(starter, now=NOW)
+
+        assert receipt is not None and receipt.created is True
+        job = await repo.get_job(TASK_ID, "david")
+        assert job is not None and job.state is HandoffState.RUNNING
+        thread = channel.threads[4242]
+        assert thread.name == job_thread_name(TASK_ID)
+        assert await repo.get_job_thread(TASK_ID, "david") == 4242
+        acks = [parse_event_message(t) for t in thread.sent]
+        assert acks[0] is not None and acks[0].kind is p.HandoffEventKind.ACK
+        chat.run_handoff_turn.assert_awaited_once()
+        assert chat.run_handoff_turn.await_args.args[0] is thread
+
+    @pytest.mark.asyncio
+    async def test_redelivered_starter_reuses_the_job_and_thread(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "drewp" / "main-projects"
+        root.mkdir(parents=True)
+        channel = FakeChannel()
+        cog = _cog(repo, channel, root)
+        chat = SimpleNamespace(
+            bot=cog.bot, handoff_capacity_available=lambda: True, run_handoff_turn=AsyncMock()
+        )
+        cog.bot.cogs["ClaudeChatCog"] = chat
+        starter = _starter(channel, make_task_event())
+
+        first = await cog.handle_message(starter, now=NOW)
+        second = await cog.handle_message(starter, now=NOW)
+
+        assert first is not None and first.created
+        assert second is not None and not second.created
+        assert await repo.count_tasks() == 1
+        assert len(channel.threads) == 1
+        assert chat.run_handoff_turn.await_count == 1
+        acks = [
+            e
+            for e in (parse_event_message(t) for t in channel.threads[4242].sent)
+            if e is not None and e.kind is p.HandoffEventKind.ACK
+        ]
+        assert len(acks) == 1
+
+    @pytest.mark.asyncio
+    async def test_ordinary_bot_messages_start_nothing(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        chatter = FakeMessage(
+            1, "✅ build passed", author_id=DREWAI_BOT, channel=channel, guild=channel.guild
+        )
+        broken = FakeMessage(
+            2,
+            "CCDB_HANDOFF_V1\nnot a packet",
+            author_id=DREWAI_BOT,
+            channel=channel,
+            guild=channel.guild,
+        )
+        assert await cog.handle_message(chatter) is None
+        assert await cog.handle_message(broken) is None
+        assert await repo.count_tasks() == 0
+
+    @pytest.mark.asyncio
+    async def test_untrusted_senders_and_places_are_refused(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        event = make_task_event()
+        elsewhere = FakeChannel(channel_id=CHANNEL + 1)
+        cases = [
+            _starter(channel, event, author_id=999),  # unmapped bot
+            _starter(channel, event, author_id=IMAC_BOT),  # mapped, but not the packet's sender
+            FakeMessage(
+                5,
+                render_task_starter(event),
+                author_id=DREWAI_BOT,
+                channel=elsewhere,
+                guild=channel.guild,
+            ),
+            FakeMessage(
+                6,
+                render_task_starter(event),
+                author_id=DREWAI_BOT,
+                channel=channel,
+                guild=channel.guild,
+                webhook_id=77,
+            ),
+            FakeMessage(
+                7,
+                render_task_starter(event),
+                author_id=DREWAI_BOT,
+                channel=channel,
+                guild=channel.guild,
+                bot=False,
+            ),
+        ]
+        for message in cases:
+            assert await cog.handle_message(message) is None
+        assert await repo.count_tasks() == 0
+        assert channel.threads == {}
+
+    @pytest.mark.asyncio
+    async def test_a_task_for_another_recipient_is_ignored(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        starter = _starter(channel, make_task_event(make_task("drewai", "imac")))
+        assert await cog.handle_message(starter) is None
+        assert await repo.count_tasks() == 0
+
+    @pytest.mark.asyncio
+    async def test_listener_only_reacts_to_bots_in_the_handoff_scope(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        cog.handle_message = AsyncMock()  # type: ignore[method-assign]
+        human = FakeMessage(1, "hi", author_id=5, channel=channel, guild=channel.guild, bot=False)
+        outside = FakeMessage(
+            2, "x", author_id=DREWAI_BOT, channel=FakeChannel(CHANNEL + 9), guild=channel.guild
+        )
+        inside = FakeMessage(3, "x", author_id=DREWAI_BOT, channel=channel, guild=channel.guild)
+        await cog.on_message(human)  # type: ignore[arg-type]
+        await cog.on_message(outside)  # type: ignore[arg-type]
+        await cog.on_message(inside)  # type: ignore[arg-type]
+        cog.handle_message.assert_awaited_once_with(inside)
+
+    @pytest.mark.asyncio
+    async def test_chat_cog_bot_guard_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An ordinary bot message still starts zero chat turns in ClaudeChatCog."""
+        from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+        monkeypatch.delenv("CCDB_ALLOWED_CATEGORY_IDS", raising=False)
+        monkeypatch.delenv("CCDB_LAUNCHER_CHANNEL_ID", raising=False)
+        for key, value in CONFIG_ENV.items():
+            monkeypatch.setenv(key, value)
+        cog = SimpleNamespace(
+            _handoff_repo=None,
+            _try_receive_handoff_message=AsyncMock(return_value=False),
+            _handle_thread_reply=AsyncMock(),
+            _handle_new_conversation=AsyncMock(),
+            _handle_mention=AsyncMock(),
+            _is_no_mention_scope=lambda channel: True,
+            _is_summoned=lambda message: True,
+            _allowed_user_ids=None,
+            _claimed_by_task_loop=lambda message: False,
+        )
+        message = FakeMessage(
+            1, "✅ build passed", author_id=DREWAI_BOT, channel=FakeChannel(), guild=FakeGuild()
+        )
+        await ClaudeChatCog.on_message(cog, message)  # type: ignore[arg-type]
+        cog._handle_thread_reply.assert_not_awaited()
+        cog._handle_new_conversation.assert_not_awaited()
+        cog._handle_mention.assert_not_awaited()
