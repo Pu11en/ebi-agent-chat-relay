@@ -167,6 +167,7 @@ class SurfaceCommandsCog(commands.Cog):
         repo: Any,
         chat: Any,
         lifecycle: SessionLifecycleService | None = None,
+        launcher: Any | None = None,
     ) -> None:
         self.bot = bot
         self.surface = surface
@@ -175,6 +176,9 @@ class SurfaceCommandsCog(commands.Cog):
         # The shared close/reopen service. Absent, `/close` declines; it never
         # falls back to the destructive helper.
         self.lifecycle = lifecycle
+        # The launcher owns the New session / Sessions / Settings flows; the
+        # control-center commands are only its slash-command spelling.
+        self.launcher = launcher
         self.actions = ChatSessionActions(self)
 
     # -- shared checks -----------------------------------------------------
@@ -204,7 +208,34 @@ class SurfaceCommandsCog(commands.Cog):
     async def in_session(self, interaction: discord.Interaction) -> bool:
         return await self.in_place(interaction, "session", SurfaceLocation.MANAGED_SESSION)
 
+    async def _control_flow(self, interaction: discord.Interaction, command: str) -> Any | None:
+        """The launcher, when ``command`` may run here; otherwise ``None`` after replying."""
+        if not await self.in_place(interaction, command, SurfaceLocation.CONTROL_CENTER):
+            return None
+        if self.launcher is None:
+            await _say(interaction, f"`/{command}` is not available on this computer yet.")
+            return None
+        return self.launcher
+
     # -- commands ----------------------------------------------------------
+
+    @app_commands.command(name="new", description="Start a new session in a folder")
+    async def new_command(self, interaction: discord.Interaction) -> None:
+        launcher = await self._control_flow(interaction, "new")
+        if launcher is not None:
+            await launcher.show_new_session(interaction)
+
+    @app_commands.command(name="settings", description="Open the settings this computer supports")
+    async def settings_command(self, interaction: discord.Interaction) -> None:
+        launcher = await self._control_flow(interaction, "settings")
+        if launcher is not None:
+            await launcher.show_settings(interaction)
+
+    async def open_sessions(self, interaction: discord.Interaction, query: str | None) -> None:
+        """`/sessions`: the Sessions browser. Registered by SessionManageCog, routed here."""
+        launcher = await self._control_flow(interaction, "sessions")
+        if launcher is not None:
+            await launcher.show_sessions(interaction, query)
 
     @app_commands.command(
         name="session", description="Fork, rewind, compact, clear, context, or goal"

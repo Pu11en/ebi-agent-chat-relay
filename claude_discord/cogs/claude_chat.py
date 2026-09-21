@@ -56,6 +56,7 @@ from .run_config import RunConfig
 
 if TYPE_CHECKING:
     from ..bot import ClaudeDiscordBot
+    from ..command_surface import CommandSurface
     from ..database.handoff_repo import HandoffRepository
     from ..session_lifecycle import SessionLifecycleService
 
@@ -80,6 +81,8 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "stop": "📌 Session",
     "session": "📌 Session",  # fork / rewind / compact / clear / context / goal in one view
     "close": "📌 Session",  # wrap up + archive through the lifecycle service; reopenable
+    "new": "📌 Session",  # control center: Favorites / Recent / Browse / Create / Clone
+    "settings": "🔧 Advanced",  # control center: what this computer supports
     "clear": "📌 Session",
     "rewind": "📌 Session",
     "compact": "📌 Session",
@@ -219,6 +222,8 @@ class ClaudeChatCog(commands.Cog):
         # The shared close/reopen service (discord-command-surface). Set by
         # setup_bridge(); None leaves every close path a no-op here.
         self.lifecycle: SessionLifecycleService | None = None
+        # The location coordinator; set by setup_bridge(). None keeps /help global.
+        self.command_surface: CommandSurface | None = None
 
     async def _complete_pending_close(self, thread_id: int) -> None:
         """Finish a `/close` that was requested while this thread's turn ran.
@@ -725,6 +730,31 @@ class ClaudeChatCog(commands.Cog):
 
         return runner
 
+    async def _location_help(self, interaction: discord.Interaction) -> discord.Embed | None:
+        """The location-aware help embed, or ``None`` when the full list applies."""
+        if self.command_surface is None:
+            return None
+        from ..command_surface import SurfaceLocation, help_sections
+        from .surface_commands import locate
+
+        location = await locate(self.command_surface, self.repo, interaction)
+        sections = help_sections(location)
+        if not sections:
+            return None
+        here = (
+            "this computer's control center"
+            if location is SurfaceLocation.CONTROL_CENTER
+            else "a session thread"
+        )
+        embed = discord.Embed(
+            title="🤖 Help — what works here",
+            description=f"You are in {here}. Everything below works from right here.",
+            color=0x5865F2,
+        )
+        for name, lines in sections:
+            embed.add_field(name=name, value="\n".join(lines), inline=False)
+        return embed
+
     @app_commands.command(name="help", description="Show available commands and how to use the bot")
     async def help_command(self, interaction: discord.Interaction) -> None:
         """Display a categorised embed of all slash commands.
@@ -733,7 +763,16 @@ class ClaudeChatCog(commands.Cog):
         command tree so they can never drift from the actual definitions.
         Category assignments live in _HELP_CATEGORY; CI (test_help_sync.py)
         ensures every registered command is listed there.
+
+        In a configured control center or a managed session thread the embed
+        is location-aware (discord-command-surface): only the buttons and the
+        commands that work *there*. Everywhere else the full list remains.
         """
+        located = await self._location_help(interaction)
+        if located is not None:
+            await interaction.response.send_message(embed=located, ephemeral=True)
+            return
+
         sections: dict[str, list[str]] = {s: [] for s in _HELP_SECTION_ORDER}
 
         for cmd in sorted(interaction.client.tree.get_commands(), key=lambda c: c.name):  # type: ignore[attr-defined]

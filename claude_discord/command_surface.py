@@ -172,5 +172,34 @@ class CommandSurface:
         return f"`/{command}` works in the control center or inside a session thread."
 
 
+#: The session-thread actions `/help` describes there; each mirrors one command.
+SESSION_ACTIONS: tuple[ButtonSpec, ...] = (
+    ButtonSpec("Switch", "switch"),
+    ButtonSpec("Stop", "stop"),
+    ButtonSpec("Session", "session"),
+    ButtonSpec("Close", "close"),
+)
+
+
+def help_sections(location: SurfaceLocation) -> list[tuple[str, list[str]]]:
+    """What `/help` says in ``location``: the actions there, then its commands.
+
+    Plain strings so any frontend can render them; an unsupported location
+    gets nothing, because there is nothing that works there.
+    """
+    if location is SurfaceLocation.CONTROL_CENTER:
+        actions = CONTROL_CENTER_BUTTONS
+    elif location is SurfaceLocation.MANAGED_SESSION:
+        actions = SESSION_ACTIONS
+    else:
+        return []
+    by_name = {spec.name: spec for spec in FINAL_COMMANDS}
+    buttons = [f"**{action.label}** — {by_name[action.command].summary}" for action in actions]
+    commands = [
+        f"`/{spec.name}` — {spec.summary}" for spec in FINAL_COMMANDS if location in spec.locations
+    ]
+    return [("Buttons", buttons), ("Commands", commands)]
+
+
 def _spec_for(command: str) -> CommandSpec | None:
     return next((spec for spec in FINAL_COMMANDS if spec.name == command), None)

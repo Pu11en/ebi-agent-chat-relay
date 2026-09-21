@@ -194,3 +194,48 @@ class TestSessionActionAdapter:
         event = channel_interaction()
         await cog.actions.clear(event)
         cog.chat.clear_thread.assert_not_awaited()
+
+
+class TestControlCenterCommands:
+    """4.1: /new, /sessions and /settings are thin calls into the launcher's flows."""
+
+    @pytest.fixture
+    def wired(self, cog):
+        cog.launcher = SimpleNamespace(
+            show_new_session=AsyncMock(), show_sessions=AsyncMock(), show_settings=AsyncMock()
+        )
+        return cog
+
+    async def test_new_opens_the_launcher_flow_in_the_control_center(self, wired):
+        event = channel_interaction()
+        await wired.new_command.callback(wired, event)
+        wired.launcher.show_new_session.assert_awaited_once_with(event)
+
+    async def test_settings_opens_the_settings_home_in_the_control_center(self, wired):
+        event = channel_interaction()
+        await wired.settings_command.callback(wired, event)
+        wired.launcher.show_settings.assert_awaited_once_with(event)
+
+    async def test_sessions_passes_the_query_to_the_browser(self, wired):
+        event = channel_interaction()
+        await wired.open_sessions(event, "api")
+        wired.launcher.show_sessions.assert_awaited_once_with(event, "api")
+
+    @pytest.mark.parametrize("command", ["new_command", "settings_command"])
+    async def test_control_commands_in_a_session_thread_change_nothing(self, wired, command):
+        event = thread_interaction()
+        await getattr(wired, command).callback(wired, event)
+        wired.launcher.show_new_session.assert_not_awaited()
+        wired.launcher.show_settings.assert_not_awaited()
+        assert "control center" in event.response.send_message.call_args.args[0]
+
+    async def test_sessions_in_a_session_thread_changes_nothing(self, wired):
+        event = thread_interaction()
+        await wired.open_sessions(event, None)
+        wired.launcher.show_sessions.assert_not_awaited()
+        assert "control center" in event.response.send_message.call_args.args[0]
+
+    async def test_without_a_launcher_the_commands_decline(self, cog):
+        event = channel_interaction()
+        await cog.new_command.callback(cog, event)
+        assert "not available" in event.response.send_message.call_args.args[0]

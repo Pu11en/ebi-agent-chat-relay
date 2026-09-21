@@ -2536,6 +2536,74 @@ class TestGoalCommand:
         assert "◎" in send_args.args[0] or "goal" in send_args.args[0].lower()
 
 
+class TestLocationAwareHelp:
+    """discord-command-surface 4.1: /help lists only what works where it is invoked."""
+
+    def _cog(self) -> ClaudeChatCog:
+        from claude_discord.command_surface import CommandSurface
+
+        cog = _make_cog()
+        cog.command_surface = CommandSurface.for_control_centers(100)
+        cog.repo.get = AsyncMock(side_effect=lambda tid: MagicMock() if tid == 555 else None)
+        return cog
+
+    @staticmethod
+    def _interaction(channel: object) -> MagicMock:
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel = channel
+        interaction.channel_id = getattr(channel, "id", None)
+        interaction.guild_id = 10
+        interaction.response = MagicMock()
+        interaction.response.send_message = AsyncMock()
+        interaction.client = MagicMock()
+        interaction.client.tree.get_commands.return_value = []
+        return interaction
+
+    @pytest.mark.asyncio
+    async def test_help_in_the_control_center_lists_the_four_commands(self) -> None:
+        cog = self._cog()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 100
+        interaction = self._interaction(channel)
+        await cog.help_command.callback(cog, interaction)
+        embed = interaction.response.send_message.call_args.kwargs["embed"]
+        text = "\n".join(f"{f.name}\n{f.value}" for f in embed.fields)
+        assert "New session" in text and "Sessions" in text and "Settings" in text
+        for name in ("/new", "/sessions", "/settings", "/help"):
+            assert f"`{name}`" in text
+        for name in ("/switch", "/stop", "/session", "/close", "/launcher", "/fork"):
+            assert f"`{name}`" not in text
+        assert interaction.response.send_message.call_args.kwargs["ephemeral"] is True
+
+    @pytest.mark.asyncio
+    async def test_help_in_a_session_thread_lists_the_five_commands(self) -> None:
+        cog = self._cog()
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 555
+        thread.parent_id = 100
+        interaction = self._interaction(thread)
+        await cog.help_command.callback(cog, interaction)
+        embed = interaction.response.send_message.call_args.kwargs["embed"]
+        text = "\n".join(f"{f.name}\n{f.value}" for f in embed.fields)
+        for name in ("/switch", "/stop", "/session", "/close", "/help"):
+            assert f"`{name}`" in text
+        assert "`/new`" not in text and "`/settings`" not in text
+
+    @pytest.mark.asyncio
+    async def test_help_elsewhere_or_without_a_surface_keeps_the_full_list(self) -> None:
+        cog = self._cog()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 300
+        interaction = self._interaction(channel)
+        legacy = MagicMock()
+        legacy.name = "launcher"
+        legacy.description = "Old launcher"
+        interaction.client.tree.get_commands.return_value = [legacy]
+        await cog.help_command.callback(cog, interaction)
+        embed = interaction.response.send_message.call_args.kwargs["embed"]
+        assert "/launcher" in "\n".join(f.value for f in embed.fields)
+
+
 class TestLifecycleHooks:
     """discord-command-surface 3.4: run finalization and startup finish pending closes."""
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import discord
@@ -215,6 +216,12 @@ class SessionManageCog(commands.Cog):
         # Optional ClaudeRunner reference for reading the default model.
         # Resolved lazily from ClaudeChatCog if not provided directly.
         self._runner = runner
+        # discord-command-surface: when the Sessions browser is attached (by
+        # setup_bridge), `/sessions` opens it instead of the static list. The
+        # registration stays here so the command name is never duplicated.
+        self.session_browser: (
+            Callable[[discord.Interaction, str | None], Awaitable[None]] | None
+        ) = None
 
     async def _get_thread_style(self) -> str:
         """Get the configured thread style, defaulting to 'channel'."""
@@ -546,16 +553,22 @@ class SessionManageCog(commands.Cog):
 
     @app_commands.command(
         name="sessions",
-        description="List all known Claude Code sessions",
+        description="Find a session, then open, close, or start another in its folder",
     )
-    @app_commands.describe(origin="Filter by session origin")
+    @app_commands.describe(
+        query="Word from a title, summary or folder", origin="Filter by session origin"
+    )
     @app_commands.choices(origin=_ORIGIN_CHOICES)
     async def sessions_list(
         self,
         interaction: discord.Interaction,
+        query: str | None = None,
         origin: str | None = None,
     ) -> None:
-        """List all sessions with origin, summary, and last activity."""
+        """Open the Sessions browser when attached; otherwise the legacy list."""
+        if self.session_browser is not None:
+            await self.session_browser(interaction, (query or "").strip() or None)
+            return
         # Convert "all" to None for the repository
         origin_filter = None if origin in (None, "all") else origin
         records = await self.repo.list_all(limit=25, origin=origin_filter)

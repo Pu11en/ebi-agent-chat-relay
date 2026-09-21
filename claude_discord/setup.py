@@ -528,6 +528,7 @@ async def setup_bridge(
     # finalization and startup reconciliation. It archives; it never deletes.
     lifecycle = build_lifecycle_service(bot, chat_cog, session_repo)
     chat_cog.lifecycle = lifecycle
+    chat_cog.command_surface = command_surface  # makes /help location-aware
     surface_cog = SurfaceCommandsCog(
         bot,
         surface=command_surface,
@@ -585,6 +586,11 @@ async def setup_bridge(
             lifecycle=lifecycle,
         )
         await bot.add_cog(launcher_cog)
+        # /new, /sessions and /settings are the launcher's flows spelled as
+        # commands; /sessions keeps its SessionManageCog registration and is
+        # routed to the browser so no command name is registered twice.
+        surface_cog.launcher = launcher_cog
+        session_manage_cog.session_browser = surface_cog.open_sessions
         skill_cog = SkillCommandCog(
             bot,
             repo=session_repo,
