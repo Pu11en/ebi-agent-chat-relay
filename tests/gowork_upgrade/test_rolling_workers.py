@@ -75,6 +75,7 @@ def _loop(plan: Path, tmp_path: Path, worker: FakeWorker) -> TaskLoop:
         manifest_worker=worker,
         state_path=tmp_path / "state" / "build.json",
         build_id="thread-1",
+        after_manifest_result=getattr(worker, "after", None),
     )
 
 
@@ -151,3 +152,23 @@ async def test_a_saved_result_survives_a_crash_right_after_it(plan: Path, tmp_pa
     with pytest.raises(OSError):
         await loop.run()
     assert _state(plan, tmp_path)[API].status is TaskStatus.ACCEPTED
+
+
+async def test_the_after_save_hook_runs_only_once_the_result_is_on_disk(
+    plan: Path, tmp_path: Path
+) -> None:
+    """T14: whatever cleans up a worker (archiving its thread) sees the saved result."""
+    seen: list[tuple[str, str]] = []
+
+    async def after(result: ManifestResult) -> None:
+        seen.append((result.task_id, _state(plan, tmp_path)[result.task_id].status.value))
+        if result.task_id == POST:
+            raise RuntimeError("Discord is down")  # must not break the build
+
+    worker = FakeWorker({}, raise_for={STYLES})
+    loop = _loop(plan, tmp_path, worker)
+    loop._after_manifest_result = after
+    outcome = await loop.run()
+
+    assert outcome.status is Status.STUCK
+    assert dict(seen) == {API: "accepted", POST: "accepted", STYLES: "blocked", PAGE: "accepted"}

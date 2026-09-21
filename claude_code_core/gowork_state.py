@@ -87,6 +87,9 @@ class TaskAttempt:
     accepted: bool = False
     reason: str | None = None
     updated_at: str = ""
+    #: The worker thread this attempt ran in, and whether it was archived after the save.
+    thread_id: int | None = None
+    archived: bool = False
 
     def to_json(self) -> dict:
         return {
@@ -105,6 +108,8 @@ class TaskAttempt:
             "accepted": self.accepted,
             "reason": self.reason,
             "updated_at": self.updated_at,
+            "thread_id": self.thread_id,
+            "archived": self.archived,
         }
 
     @classmethod
@@ -126,6 +131,8 @@ class TaskAttempt:
                 accepted=bool(value.get("accepted", False)),
                 reason=value.get("reason"),
                 updated_at=str(value.get("updated_at", "")),
+                thread_id=int(value["thread_id"]) if value.get("thread_id") is not None else None,
+                archived=bool(value.get("archived", False)),
             )
         except (KeyError, ValueError, TypeError) as exc:
             raise StaleAttemptError(f"unreadable task attempt in the build state: {value}") from exc
@@ -147,24 +154,38 @@ class BuildState:
     def build_id(self) -> str:
         return str(self._document["build_id"])
 
+    def _reload(self) -> None:
+        """Re-read the file: several handles may share one ledger, all on one loop thread."""
+        try:
+            document = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(document, dict) and document.get("build_id") == self.build_id:
+            self._document = document
+
     @property
     def events(self) -> tuple[dict, ...]:
+        self._reload()
         return tuple(self._document["events"])
 
     @property
     def records(self) -> tuple[TaskAttempt, ...]:
+        self._reload()
         return tuple(TaskAttempt.from_json(v) for v in self._document["tasks"].values())
 
     def __getitem__(self, task_id: str) -> TaskAttempt:
+        self._reload()
         try:
             return TaskAttempt.from_json(self._document["tasks"][task_id])
         except KeyError as exc:
             raise KeyError(f"no task '{task_id}' in build {self.build_id}") from exc
 
     def __contains__(self, task_id: str) -> bool:
+        self._reload()
         return task_id in self._document["tasks"]
 
     def plan_version(self, plan_id: str) -> int:
+        self._reload()
         return int(self._document["plan_versions"][plan_id])
 
     def accepted_tasks(self) -> tuple[str, ...]:
@@ -277,8 +298,32 @@ class BuildState:
         self.block(task_id, reason)
         return self.retry(task_id)
 
+    def note_thread(self, task_id: str, attempt: str, *, thread_id: int) -> TaskAttempt:
+        """Remember which worker thread the current attempt runs in."""
+        record = self._current(task_id, attempt)
+        return self._apply(
+            task_id, replace(record, thread_id=int(thread_id), archived=False), "thread"
+        )
+
+    def mark_archived(self, task_id: str) -> TaskAttempt:
+        """The worker thread was archived (idempotent)."""
+        record = self[task_id]
+        if record.archived:
+            return record
+        return self._apply(task_id, replace(record, archived=True), "archived")
+
+    def unarchived_threads(self) -> tuple[tuple[str, int], ...]:
+        """Settled tasks whose worker thread still awaits its archive."""
+        settled = (TaskStatus.FINISHED, TaskStatus.ACCEPTED, TaskStatus.BLOCKED)
+        return tuple(
+            (r.task_id, r.thread_id)
+            for r in self.records
+            if r.thread_id is not None and not r.archived and r.status in settled
+        )
+
     def note_plan_version(self, plan_id: str, version: int) -> None:
         """Requirements changed: remember the new version so old attempts cannot be accepted."""
+        self._reload()
         if plan_id not in self._document["plan_versions"]:
             raise KeyError(f"no plan '{plan_id}' in build {self.build_id}")
         self._document["plan_versions"][plan_id] = int(version)
@@ -316,6 +361,8 @@ class BuildState:
     def _apply(
         self, task_id: str, record: TaskAttempt, change: str, **detail: object
     ) -> TaskAttempt:
+        # `record` came from a fresh read (every accessor reloads); merge onto the current file.
+        self._reload()
         stamped = replace(record, updated_at=_now())
         self._document["tasks"][task_id] = stamped.to_json()
         self._document["events"].append(

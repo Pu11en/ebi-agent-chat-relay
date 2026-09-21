@@ -467,6 +467,8 @@ class ManifestResult:
     detail: str = ""
     commit: str | None = None
     checks: tuple[str, ...] = ()
+    #: The worker thread the attempt ran in, for archiving after the save (T14).
+    thread_id: int | None = None
 
 
 #: Runs one ready task to completion and reports it (T11b, per worker since T13).
@@ -500,6 +502,7 @@ class TaskLoop:
         review: Callable[[str, str | None], Awaitable[str | None]] | None = None,
         max_parallel: Callable[[], int] | None = None,
         manifest_worker: ManifestWorker | None = None,
+        after_manifest_result: Callable[[ManifestResult], Awaitable[None]] | None = None,
         state_path: Path | None = None,
         build_id: str = "",
     ) -> None:
@@ -532,6 +535,8 @@ class TaskLoop:
         self._notes: list[str] = []
         #: The multi-plan path (T11b): a manifest plan is built from its ledger.
         self._manifest_worker = manifest_worker
+        #: Runs after a worker's result is on disk (T14: archive its thread, never before).
+        self._after_manifest_result = after_manifest_result
         self.state_path = state_path
         self.build_id = build_id
 
@@ -598,6 +603,13 @@ class TaskLoop:
                         logger.warning("gowork: worker for %s raised", task_id, exc_info=exc)
                         result = ManifestResult(task_id, False, f"the worker failed: {exc}")
                     await self._record_manifest_result(state, result)
+                    if self._after_manifest_result is not None:
+                        try:
+                            await self._after_manifest_result(result)
+                        except Exception:
+                            logger.warning(
+                                "gowork: after-result hook failed for %s", task_id, exc_info=True
+                            )
         except asyncio.CancelledError:
             for pending in in_flight.values():
                 pending.cancel()
@@ -609,6 +621,8 @@ class TaskLoop:
         if result.task_id not in state:
             return
         attempt = state[result.task_id].attempt_id
+        if result.thread_id is not None:
+            state.note_thread(result.task_id, attempt, thread_id=result.thread_id)
         if result.ok and result.commit:
             state.submit_result(
                 result.task_id,

@@ -144,3 +144,35 @@ def test_interrupted_writes_leave_recoverable_state(state: BuildState, tmp_path:
 def test_opening_with_another_build_id_is_refused(state: BuildState) -> None:
     with pytest.raises(StaleAttemptError, match="thread-11"):
         open_build_state(state.path, state.tree, build_id="thread-12")
+
+
+def test_worker_threads_are_remembered_until_archived(state: BuildState) -> None:
+    """T14: the thread a task ran in outlives the worker so its archive can be retried."""
+    attempt = state.begin(API)
+    state.note_thread(API, attempt.attempt_id, thread_id=4242)
+    assert state[API].thread_id == 4242 and not state[API].archived
+    assert state.unarchived_threads() == ()  # still running: nothing to archive yet
+
+    state.submit_result(API, attempt.attempt_id, commit="abc", checks=["ok"])
+    assert state.unarchived_threads() == ((API, 4242),)
+    state.mark_archived(API)
+    state.mark_archived(API)  # idempotent
+    assert state[API].archived and state.unarchived_threads() == ()
+
+    again = open_build_state(state.path, state.tree, build_id="thread-11")
+    assert again[API].thread_id == 4242 and again[API].archived
+
+    with pytest.raises(StaleAttemptError):
+        state.note_thread(API, "thread-11:product.catalog-api:9", thread_id=1)
+
+
+def test_two_handles_on_one_ledger_never_lose_each_others_writes(state: BuildState) -> None:
+    """T14: the cog and the loop each open the ledger; both must see the latest file."""
+    other = open_build_state(state.path, state.tree, build_id="thread-11")
+    attempt = state.begin(API)
+    other.note_thread(API, attempt.attempt_id, thread_id=77)  # written through the other handle
+    state.submit_result(API, attempt.attempt_id, commit="abc", checks=["ok"])  # must not drop it
+    assert state[API].thread_id == 77 and other[API].status is TaskStatus.FINISHED
+    other.mark_archived(API)
+    state.accept(API, attempt.attempt_id)
+    assert state[API].archived and other[API].accepted

@@ -124,3 +124,74 @@ async def test_manifest_build_runs_projects_together_and_accepts_every_task(repo
     page = next(p for p in prompts if "website.catalog-page" in p)
     assert "Attempt: thread-" in page and "src/pages/catalog.tsx" in page
     assert "product.catalog-api: accepted at " in page  # evidence behind its input
+
+
+async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retried(
+    repo: Path,
+) -> None:
+    """T14: archive follows the durable save; a failed archive is retried, nothing is deleted."""
+    cog, chat, threads, _worked = _cog()
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 1
+    channel.send = AsyncMock()
+    archived_after: dict[int, str] = {}
+
+    def make_edit(thread: MagicMock):  # noqa: ANN202
+        async def edit(**kwargs: object) -> None:
+            if kwargs.get("archived"):
+                ledger = json.loads(
+                    (
+                        cog._store.path.with_name("builds") / f"thread-{threads[0].id}.json"
+                    ).read_text()
+                )
+                task = next(t for t in ledger["tasks"].values() if t.get("thread_id") == thread.id)
+                if thread.id == threads[2].id and thread.id not in archived_after:
+                    archived_after[thread.id] = "failed once"
+                    raise discord.HTTPException(MagicMock(status=500), "boom")
+                archived_after[thread.id] = task["status"]  # what was on disk at archive time
+
+        return edit
+
+    original_spawn = chat.spawn_session.side_effect
+
+    async def spawn(*a, **k):  # noqa: ANN001, ANN002, ANN003
+        thread = await original_spawn(*a, **k)
+        thread.edit = AsyncMock(side_effect=make_edit(thread))
+        return thread
+
+    chat.spawn_session = AsyncMock(side_effect=spawn)
+    cog.bot.get_channel = MagicMock(
+        side_effect=lambda cid: next((t for t in threads if t.id == cid), None)
+    )
+
+    worker = await cog.start_loop(channel, str(repo / "PLAN.md"))
+    for _ in range(1000):
+        if cog.running and cog.running[0].in_review:
+            break
+        await asyncio.sleep(0.01)
+    running = cog.running[0]
+
+    assert set(archived_after.values()) == {"accepted", "failed once"}  # saved before archived
+    # The build's own thread is only ever archived by the finish flow (with its reason),
+    # never by the per-task archive; the planning channel is never touched.
+    assert all(
+        c.kwargs.get("reason") == "go-work finished"
+        for c in worker.edit.call_args_list
+        if c.kwargs.get("archived")
+    )
+    assert not hasattr(channel, "edit") or not channel.edit.called
+    for thread in threads:
+        thread.delete.assert_not_called()
+
+    ledger = json.loads(
+        (cog._store.path.with_name("builds") / f"thread-{worker.id}.json").read_text()
+    )
+    pending = [t for t in ledger["tasks"].values() if not t["archived"]]
+    assert len(pending) == 1 and pending[0]["thread_id"] == threads[2].id
+
+    assert await cog.retry_archives(running) == 1  # what a restart would do
+    ledger = json.loads(
+        (cog._store.path.with_name("builds") / f"thread-{worker.id}.json").read_text()
+    )
+    assert all(t["archived"] for t in ledger["tasks"].values())
+    assert chat.run_fresh_turn.await_count == 4  # four workers, none rerun by the retry

@@ -969,6 +969,9 @@ class TaskLoopCog(commands.Cog):
             run_group=lambda steps: self._run_group(holder[0], steps),
             max_parallel=parallel_limit,
             manifest_worker=lambda task: self._run_manifest_task(holder[0], task),
+            after_manifest_result=lambda result: self._archive_worker_thread(
+                holder[0], result.task_id
+            ),
             state_path=self._store.path.with_name("builds") / f"{record.build_id}.json",
             build_id=record.build_id,
         )
@@ -1035,6 +1038,12 @@ class TaskLoopCog(commands.Cog):
                 f"🔁 Resuming after a restart: Task {min(snap.checked + 1, total)} of {total}"
             )
             resumed += 1
+            running = self._running.get(record.build_id)
+            if running is not None and has_manifest(
+                Path(record.copy_plan).read_text(encoding="utf-8", errors="replace")
+            ):
+                with contextlib.suppress(Exception):
+                    await self.retry_archives(running)
         return resumed
 
     async def _tell_orphaned(self, record: LoopRecord) -> None:
@@ -2364,6 +2373,52 @@ class TaskLoopCog(commands.Cog):
                 running.project_copies[top] = copy
         return copy, rel
 
+    def _build_state(self, running: _Running):  # noqa: ANN202
+        assert running.copy is not None
+        builds = self._store.path.with_name("builds")
+        tree = load_plan_tree(running.copy.plan_path)
+        return open_build_state(
+            builds / f"{running.build_id}.json", tree, build_id=running.build_id
+        )
+
+    async def _archive_worker_thread(self, running: _Running, task_id: str) -> None:
+        """Archive one task's worker thread after its result is saved (T14). Never delete."""
+        try:
+            state = self._build_state(running)
+        except Exception:
+            logger.warning("gowork: can't read the build ledger to archive", exc_info=True)
+            return
+        pending = dict(state.unarchived_threads())
+        thread_id = pending.get(task_id)
+        if thread_id is None or thread_id == running.worker_thread_id:
+            return  # nothing to do, or the build's own thread (never archived)
+        thread: Any = self.bot.get_channel(thread_id)
+        if thread is None:
+            with contextlib.suppress(Exception):
+                thread = await self.bot.fetch_channel(thread_id)
+        if thread is None:
+            return  # gone or unreachable: the ledger keeps it for the next try
+        try:
+            await thread.edit(archived=True)
+        except Exception:
+            logger.info("gowork: archiving thread %s failed; will retry", thread_id)
+            return
+        state.mark_archived(task_id)
+
+    async def retry_archives(self, running: _Running) -> int:
+        """Archive every settled worker thread still open (after a restart, or at the end)."""
+        try:
+            state = self._build_state(running)
+        except Exception:
+            return 0
+        done = 0
+        before = {task_id for task_id, _ in state.unarchived_threads()}
+        for task_id in before:
+            await self._archive_worker_thread(running, task_id)
+        with contextlib.suppress(Exception):
+            done = len(before) - len(self._build_state(running).unarchived_threads())
+        return done
+
     async def _run_manifest_task(self, running: _Running, task: ReadyTask) -> ManifestResult:
         """Run one manifest task in its own side copy and worker thread (T11b, T13).
 
@@ -2405,6 +2460,9 @@ class TaskLoopCog(commands.Cog):
                 working_dir=str(cwd),
             )
             self._quiet(sub.id)
+            with contextlib.suppress(Exception):  # the ledger knows where to archive later
+                state.note_thread(task.task_id, handoff.attempt_id, thread_id=sub.id)
+            worker_thread_id = sub.id
             if settings is not None:
                 with contextlib.suppress(Exception):
                     harness = await settings.current_backend(running.worker_thread_id)
@@ -2462,6 +2520,7 @@ class TaskLoopCog(commands.Cog):
                 detail=reason,
                 commit=commit,
                 checks=(f"worker ran: {assignment.acceptance_check}",) if landed else (),
+                thread_id=worker_thread_id,
             )
 
         return await one(task)
