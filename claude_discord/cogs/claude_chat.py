@@ -44,6 +44,7 @@ from ..discord_ui.thread_context import DEFAULT_DAYS, build_recent_transcript
 from ..discord_ui.thread_dashboard import ThreadState, ThreadStatusDashboard
 from ..discord_ui.thread_renamer import suggest_title
 from ..discord_ui.views import RewindSelectView, StopView
+from ..handoff_executor import execute_ready_handoff_tasks
 from ..handoff_sender import send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
@@ -473,17 +474,34 @@ class ClaudeChatCog(commands.Cog):
 
         local_agent_id = os.getenv("CCDB_AGENT_ID", "").strip() or "ccdb"
         try:
-            return (
-                await handle_handoff_message(
-                    message,
+            result = await handle_handoff_message(
+                message,
+                repo=self._handoff_repo,
+                local_agent_id=local_agent_id,
+            )
+            if result is None:
+                return False
+            parent_channel = self._handoff_worker_parent_channel(message)
+            if parent_channel is not None:
+                await execute_ready_handoff_tasks(
                     repo=self._handoff_repo,
+                    chat=self,
+                    parent_channel=parent_channel,
                     local_agent_id=local_agent_id,
                 )
-                is not None
-            )
+            return True
         except Exception:
             logger.warning("Could not receive handoff message", exc_info=True)
             return True
+
+    def _handoff_worker_parent_channel(self, message: discord.Message) -> Any | None:
+        channel = message.channel
+        parent = getattr(channel, "parent", None)
+        if parent is not None and hasattr(parent, "create_thread"):
+            return parent
+        if hasattr(channel, "create_thread"):
+            return channel
+        return None
 
     def _is_no_mention_scope(self, channel: discord.abc.MessageableChannel) -> bool:
         """Return whether *channel* is one ccdb was invited to speak in freely.
