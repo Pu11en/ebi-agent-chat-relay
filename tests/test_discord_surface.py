@@ -279,6 +279,75 @@ class TestChoicePrompt:
         assert len(view.children) == 2
 
 
+def _thread_with_chat_cog(allowed: set[int] | None) -> MagicMock:
+    """A thread whose client has a ClaudeChatCog carrying *allowed*."""
+    thread = _fake_thread()
+    chat = MagicMock()
+    chat._allowed_user_ids = allowed
+    client = MagicMock()
+    client.get_cog = MagicMock(side_effect=lambda name: chat if name == "ClaudeChatCog" else None)
+    thread._state = MagicMock()
+    thread._state._get_client = MagicMock(return_value=client)
+    return thread
+
+
+class TestPromptsAreBoundToAllowedUsers:
+    """Every prompt the surface posts carries the bot's allowlist.
+
+    The surface is built in several places (RunConfig, DiscordFrontend, the
+    context nudge) and none of them should have to remember to wire this, so
+    the allowlist is discovered from the thread's own client when it is not
+    passed explicitly.
+    """
+
+    async def test_explicit_allowlist_reaches_the_choice_view(self) -> None:
+        surface = DiscordSurface(_fake_thread(), allowed_user_ids={1, 2})
+        prompt = ChoicePrompt(question="?", choices=(Choice(value="a", label="A"),))
+        with patch("claude_discord.surface.ChoiceView") as view_cls:
+            view_cls.return_value.wait_for_answer = AsyncMock(return_value=("a",))
+            await surface.prompt_choice(prompt)
+        assert view_cls.call_args.kwargs["allowed_user_ids"] == frozenset({1, 2})
+
+    async def test_explicit_allowlist_reaches_the_form_launcher(self) -> None:
+        from claude_code_core.frontend import FormField, FormPrompt
+
+        surface = DiscordSurface(_fake_thread(), allowed_user_ids={7})
+        prompt = FormPrompt(title="T", fields=(FormField(key="k", label="K", kind="text"),))
+        with patch("claude_discord.surface.FormLauncher") as launcher_cls:
+            launcher_cls.return_value.wait_for_answer = AsyncMock(return_value=None)
+            await surface.prompt_form(prompt)
+        assert launcher_cls.call_args.kwargs["allowed_user_ids"] == frozenset({7})
+
+    def test_allowlist_is_discovered_from_the_chat_cog_when_not_given(self) -> None:
+        surface = DiscordSurface(_thread_with_chat_cog({3, 4}))
+        assert surface.allowed_user_ids == frozenset({3, 4})
+
+    def test_an_open_chat_cog_leaves_prompts_open(self) -> None:
+        surface = DiscordSurface(_thread_with_chat_cog(None))
+        assert surface.allowed_user_ids is None
+
+    def test_a_thread_without_a_client_leaves_prompts_open(self) -> None:
+        assert DiscordSurface(_fake_thread()).allowed_user_ids is None
+
+    def test_explicit_wins_over_discovery(self) -> None:
+        surface = DiscordSurface(_thread_with_chat_cog({3, 4}), allowed_user_ids={9})
+        assert surface.allowed_user_ids == frozenset({9})
+
+    async def test_form_launcher_refuses_a_stranger(self) -> None:
+        from claude_code_core.frontend import FormField, FormPrompt
+        from claude_discord.surface import FormLauncher
+
+        prompt = FormPrompt(title="T", fields=(FormField(key="k", label="K", kind="text"),))
+        launcher = FormLauncher(prompt, allowed_user_ids=frozenset({1}))
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.user = MagicMock()
+        interaction.user.id = 99
+        interaction.response = MagicMock()
+        interaction.response.send_message = AsyncMock()
+        assert await launcher.interaction_check(interaction) is False
+        assert interaction.response.send_message.await_args.kwargs["ephemeral"] is True
+
+
 class TestFileDelivery:
     async def test_paths_and_blobs_both_reach_discord(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         real = tmp_path / "a.txt"

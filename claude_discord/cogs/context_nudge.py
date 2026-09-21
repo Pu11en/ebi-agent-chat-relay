@@ -82,7 +82,10 @@ class ContextNudger:
             logger.warning("context nudge failed for thread %s", thread.id, exc_info=True)
 
     async def _ask(self, thread: discord.Thread, step: int, backend: str | None = None) -> bool:
-        answer = await DiscordSurface(thread).prompt_choice(
+        # "Yes" runs a model turn and opens a thread, so only the people allowed
+        # to talk to the bot may press it — the same set the chat cog enforces.
+        surface = DiscordSurface(thread, allowed_user_ids=self._chat._allowed_user_ids)
+        answer = await surface.prompt_choice(
             ChoicePrompt(
                 question=(
                     f"This session is about {context_label(step, backend)} full. "

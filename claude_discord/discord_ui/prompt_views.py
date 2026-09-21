@@ -45,6 +45,26 @@ logger = logging.getLogger(__name__)
 # for the free-text option.
 MAX_BUTTONS = 4
 
+NOT_FOR_YOU = "This prompt isn't for you."
+
+
+async def check_allowed(
+    interaction: discord.Interaction, allowed_user_ids: frozenset[int] | None
+) -> bool:
+    """The one gate every prompt consults before it accepts an answer.
+
+    A prompt is public in the thread, but its answer runs a model turn — a
+    permission grant, a plan approval, a fresh session. ``None`` means the bot
+    has no allowlist and anyone may answer, as before; a set (even an empty
+    one) means only those people may. A stranger gets an ephemeral refusal
+    and the prompt keeps waiting for its owner.
+    """
+    if allowed_user_ids is None or interaction.user.id in allowed_user_ids:
+        return True
+    with contextlib.suppress(discord.HTTPException):
+        await interaction.response.send_message(NOT_FOR_YOU, ephemeral=True)
+    return False
+
 
 class ChoiceView(discord.ui.View):
     """Buttons or a select menu for a :class:`ChoicePrompt`.
@@ -52,11 +72,17 @@ class ChoiceView(discord.ui.View):
     Resolve with :meth:`wait_for_answer`, which returns the chosen *values*
     (not labels — the caller matches on values), or ``None`` when the prompt
     times out with no default.
+
+    *allowed_user_ids* binds the answer to the bot's allowlist; see
+    :func:`check_allowed`.
     """
 
-    def __init__(self, prompt: ChoicePrompt) -> None:
+    def __init__(
+        self, prompt: ChoicePrompt, *, allowed_user_ids: frozenset[int] | None = None
+    ) -> None:
         super().__init__(timeout=prompt.timeout_seconds)
         self._prompt = prompt
+        self.allowed_user_ids = allowed_user_ids
         self._future: asyncio.Future[tuple[str, ...] | None] = (
             asyncio.get_running_loop().create_future()
         )
@@ -82,6 +108,9 @@ class ChoiceView(discord.ui.View):
         if not self._future.done():
             self._future.set_result(values)
         self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await check_allowed(interaction, self.allowed_user_ids)
 
     async def on_timeout(self) -> None:
         default = self._prompt.default_on_timeout
@@ -145,8 +174,11 @@ class FormModal(discord.ui.Modal):
 
     MAX_INPUTS = 5
 
-    def __init__(self, prompt: FormPrompt) -> None:
+    def __init__(
+        self, prompt: FormPrompt, *, allowed_user_ids: frozenset[int] | None = None
+    ) -> None:
         super().__init__(title=prompt.title[:45], timeout=prompt.timeout_seconds)
+        self.allowed_user_ids = allowed_user_ids
         self._keys: list[str] = []
         self._future: asyncio.Future[dict[str, str] | None] = (
             asyncio.get_running_loop().create_future()
@@ -166,6 +198,9 @@ class FormModal(discord.ui.Modal):
                     ),
                 )
             )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await check_allowed(interaction, self.allowed_user_ids)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         with contextlib.suppress(discord.HTTPException):
