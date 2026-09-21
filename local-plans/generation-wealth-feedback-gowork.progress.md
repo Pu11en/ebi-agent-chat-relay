@@ -120,3 +120,6 @@
 - Work commit: `39634ca`; this completion record is committed separately.
 - Open note: Drew only needs to taste-check the reply tone and ask priority; the PDF
   already satisfies the agreed build goal and needs no correction to send.
+
+## Next time (from how this build went)
+- It all ran smoothly: PDF review finished in 6 minutes with complete output (all 10 pages, formatting, sources, dates, and eight draft replies ready).
