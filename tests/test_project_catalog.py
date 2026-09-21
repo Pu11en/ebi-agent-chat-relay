@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -382,6 +382,13 @@ class TestCatalogSnapshot:
 # ---------------------------------------------------------------------------
 
 
+def _symlink_dir(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:  # Windows without Developer Mode: no symlink privilege
+        pytest.skip(f"symlinks not permitted here: {exc}")
+
+
 def make_fs_root(
     base: Path,
     *,
@@ -390,7 +397,7 @@ def make_fs_root(
     computer: str = "drewai",
 ) -> ApprovedRoot:
     """An approved root pointing at a real directory under ``tmp_path``."""
-    return ApprovedRoot(key=key, path=PurePosixPath(base), owner=owner, computer=computer)
+    return ApprovedRoot(key=key, path=PurePath(base), owner=owner, computer=computer)
 
 
 def make_tree(base: Path, *names: str) -> Path:
@@ -435,13 +442,13 @@ class TestDiscoveryBoundary:
         outside = tmp_path / "outside" / "elsewhere"
         outside.mkdir(parents=True)
         make_tree(root, "alpha")
-        (root / "linked").symlink_to(outside, target_is_directory=True)
+        _symlink_dir(root / "linked", outside)
 
         snapshot = ProjectDiscovery([make_fs_root(root)]).snapshot()
 
         assert [project.identity.name for project in snapshot.projects] == ["alpha", "linked"]
         for project in snapshot.projects:
-            assert project.path.parent == PurePosixPath(root)
+            assert project.path.parent == PurePath(root)
 
     def test_hidden_and_noise_directories_are_skipped(self, tmp_path: Path) -> None:
         make_tree(tmp_path, "alpha", ".cache", "node_modules", "__pycache__", "venv")
@@ -452,7 +459,7 @@ class TestDiscoveryBoundary:
 
     def test_broken_symlinks_are_not_projects(self, tmp_path: Path) -> None:
         make_tree(tmp_path, "alpha")
-        (tmp_path / "dangling").symlink_to(tmp_path / "gone", target_is_directory=True)
+        _symlink_dir(tmp_path / "dangling", tmp_path / "gone")
 
         snapshot = ProjectDiscovery([make_fs_root(tmp_path)]).snapshot()
 
@@ -569,7 +576,7 @@ class TestDiscoveryOrderingAndIdentity:
         project = ProjectDiscovery([make_fs_root(tmp_path)]).snapshot().projects[0]
 
         assert project.availability is Availability.AVAILABLE
-        assert project.working_directory == PurePosixPath(tmp_path / "alpha")
+        assert project.working_directory == PurePath(tmp_path / "alpha")
 
 
 class TestDiscoveryBounds:
@@ -968,7 +975,7 @@ class TestRemoteOwnerResolution:
         remote = resolver.resolve("Drew's alpha")
 
         assert isinstance(local, LocalProjectResolution)
-        assert local.working_directory == PurePosixPath(tmp_path / "alpha")
+        assert local.working_directory == PurePath(tmp_path / "alpha")
         assert remote.working_directory is None
         assert remote.is_local_available is False
 
@@ -1002,7 +1009,7 @@ class TestLocalOwnerResolution:
         result = resolver.resolve("David's alpha")
 
         assert isinstance(result, LocalProjectResolution)
-        assert result.working_directory == PurePosixPath(tmp_path / "alpha")
+        assert result.working_directory == PurePath(tmp_path / "alpha")
         assert result.project.identity.owner == "david"
 
     def test_davids_projects_are_limited_to_davids_roots(self, tmp_path: Path) -> None:
@@ -1142,7 +1149,7 @@ class TestSameNamedLocalProjects:
         result = resolver.resolve("beta")
 
         assert isinstance(result, LocalProjectResolution)
-        assert result.working_directory == PurePosixPath(first / "beta")
+        assert result.working_directory == PurePath(first / "beta")
 
 
 class TestLocalResolutionAvailability:

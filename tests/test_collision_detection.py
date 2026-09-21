@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -343,7 +344,10 @@ async def test_event_processor_records_every_codex_path_resolving_relative_ones(
         _tool_event("Edit", {"file_path": "a.py", "file_paths": ["a.py", "/abs/b.py"]})
     )
 
-    assert tracker.recent_paths(A, now=0.0) == {"/home/ebi/repo/a.py", "/abs/b.py"}
+    assert tracker.recent_paths(A, now=0.0) == {
+        os.path.normpath("/home/ebi/repo/a.py"),
+        "/abs/b.py",
+    }
 
 
 async def test_event_processor_ignores_reads() -> None:

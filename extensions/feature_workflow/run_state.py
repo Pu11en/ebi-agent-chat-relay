@@ -38,7 +38,6 @@ should run — only the question of what has already happened.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -48,6 +47,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from extensions.feature_workflow import _filelock
 from extensions.feature_workflow.scheduler import TaskStatus
 from extensions.feature_workflow.task_graph import TaskGraph
 
@@ -129,11 +129,13 @@ def _atomic(path: Path, value: object) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        directory_flag = getattr(os, "O_DIRECTORY", None)
+        if directory_flag is not None:  # Windows cannot fsync a directory
+            directory = os.open(path.parent, directory_flag)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -512,12 +514,12 @@ class RunState:
         """Serialize read-modify-write, and re-read so a stale object cannot win."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with (self.path.parent / f"{self.path.name}.lock").open("a") as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX)
+            _filelock.lock(stream)
             try:
                 self._document = _read(self.path, self.graph, self.approval_digest, self.run_id)
                 yield
             finally:
-                fcntl.flock(stream, fcntl.LOCK_UN)
+                _filelock.unlock(stream)
 
 
 def _new_document(graph: TaskGraph, approval_digest: str, run_id: str) -> dict:

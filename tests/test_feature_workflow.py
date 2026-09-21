@@ -84,7 +84,7 @@ async def setup(tmp_path: Path) -> tuple[Coordinator, FakeAPI, dict]:
         plan = repo / "openspec" / "changes" / name / "proposal.md"
         plan.parent.mkdir(parents=True)
         plan.write_text(f"Feature {name}: isolated demonstration.\n")
-        files = [str(plan.relative_to(repo))]
+        files = [plan.relative_to(repo).as_posix()]
         features.append(
             {
                 "id": name,

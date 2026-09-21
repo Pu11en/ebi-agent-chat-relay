@@ -6,12 +6,37 @@ Class-level fixtures with the same name take precedence (pytest scoping rules).
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
 
 from claude_discord.claude.types import MessageType, StreamEvent
+
+if sys.platform == "win32":
+    from asyncio import base_subprocess
+
+    _original_try_finish = base_subprocess.BaseSubprocessTransport._try_finish
+
+    def _try_finish_even_if_pipes_never_connected(self: base_subprocess.BaseSubprocessTransport):
+        # CPython on Windows: cancelling a task mid-create_subprocess_exec cancels the
+        # transport's _connect_pipes, leaving pipe slots None forever, so _wait() never
+        # resolves and pytest-asyncio's loop teardown hangs. Once closed and exited,
+        # treat never-connected pipes as disconnected so the transport can finish.
+        if (
+            self._closed  # type: ignore[attr-defined]
+            and self._returncode is not None  # type: ignore[attr-defined]
+            and not self._finished  # type: ignore[attr-defined]
+            and all(p is None or p.disconnected for p in self._pipes.values())  # type: ignore[attr-defined]
+        ):
+            self._finished = True  # type: ignore[attr-defined]
+            # Not self._call: that queues into _pending_calls, drained only by _connect_pipes.
+            self._loop.call_soon(self._call_connection_lost, None)  # type: ignore[attr-defined]
+            return
+        _original_try_finish(self)
+
+    base_subprocess.BaseSubprocessTransport._try_finish = _try_finish_even_if_pipes_never_connected  # type: ignore[method-assign]
 
 
 @pytest.fixture(autouse=True)

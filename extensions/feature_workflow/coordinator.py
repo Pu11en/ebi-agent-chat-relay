@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +19,8 @@ import urllib.request
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from extensions.feature_workflow import _filelock
 
 
 class WorkflowError(Exception):
@@ -89,11 +90,13 @@ def _atomic(path: Path, value: Any) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        directory_flag = getattr(os, "O_DIRECTORY", None)
+        if directory_flag is not None:  # Windows cannot fsync a directory
+            directory = os.open(path.parent, directory_flag)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -149,13 +152,13 @@ class Coordinator:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         with (self.state_dir / "lock").open("a") as stream:
             try:
-                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _filelock.lock(stream, blocking=False)
             except BlockingIOError as exc:
                 raise WorkflowError("Another coordinator holds the run lock") from exc
             try:
                 yield
             finally:
-                fcntl.flock(stream, fcntl.LOCK_UN)
+                _filelock.unlock(stream)
 
     def _save(self, state: dict) -> None:
         _atomic(self.state_dir / "state.json", state)
@@ -325,7 +328,7 @@ class Coordinator:
             f"Approved feature worker {manifest['run_id']}/{task['id']}. "
             f"Plan owner thread {feature['plan_owner']}; "
             f"integration owner {manifest['integration_owner']}.\n"
-            f"Your durable thread binding is {self.state_dir}/threads/$DISCORD_THREAD_ID.json "
+            f"Your durable thread binding is {self.state_dir / 'threads'}/$DISCORD_THREAD_ID.json "
             "(written immediately after thread creation); use it when resuming this feature.\n"
             f"Read repository instructions at {self.repo}. "
             f"First check {result}. If the result JSON already exists, do not rebuild; "

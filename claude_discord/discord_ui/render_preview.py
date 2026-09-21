@@ -57,7 +57,7 @@ def preview_name(filename: str) -> str:
     ``docs/dash.svg`` → ``docs/dash.preview.png``.
     """
     p = Path(filename)
-    return str(p.with_name(f"{p.stem}.preview.png"))
+    return p.with_name(f"{p.stem}.preview.png").as_posix()
 
 
 async def _ensure_browser() -> object | None:

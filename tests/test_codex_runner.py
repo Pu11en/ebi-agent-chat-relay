@@ -92,6 +92,10 @@ class _InterruptibleProcess(_FakeProcess):
         self.returncode = 1
         self.interrupted.set()
 
+    def terminate(self) -> None:
+        # On Windows the runner interrupts with terminate() instead of SIGINT.
+        self.send_signal(0)
+
 
 class _CompletesBeforeExitProcess(_FakeProcess):
     """Process that emits turn.completed before its natural exit is observed."""
