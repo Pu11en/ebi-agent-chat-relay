@@ -648,6 +648,37 @@ async def setup_bridge(
         await bot.add_cog(skill_cog)
         logger.info("Registered SkillCommandCog")
 
+    # --- MyAISetupCog (Settings → My AI Setup; read-only inventory) ---
+    # Registers one Settings entry; no command of its own. Reads only the
+    # declared roots (~/.claude, the Codex home, the DSH config, the custom
+    # Cogs directory, the working directory as one project) and runs no model.
+    from .ai_setup_local import LocalRoots, build_local_collector
+    from .cogs.my_ai_setup import MyAISetupCog
+    from .database.ai_setup_repo import AISetupRepository
+
+    try:
+        ai_setup_repo = AISetupRepository(session_db_path)
+        await ai_setup_repo.init_db()
+        ai_setup_roots = LocalRoots.from_env(working_dir=runner.working_dir)
+        ai_setup_cog = MyAISetupCog(
+            bot,
+            repo=ai_setup_repo,
+            collector=build_local_collector(ai_setup_roots, tree=bot.tree),
+            chat=chat_cog,
+            allowed_user_ids=allowed_user_ids,
+            owner=ai_setup_roots.owner,
+            settings_home=launcher_cog.settings_home if launcher_cog is not None else None,
+            trusted_computers=[
+                name.strip()
+                for name in os.getenv("CCDB_AI_SETUP_TRUSTED_COMPUTERS", "").split(",")
+                if name.strip()
+            ],
+        )
+        await bot.add_cog(ai_setup_cog)
+        logger.info("Registered MyAISetupCog")
+    except Exception:  # noqa: BLE001 — an inventory problem must not stop the bot
+        logger.exception("MyAISetupCog was not registered")
+
     # --- SchedulerCog (optional) ---
     task_repo: TaskRepository | None = None
     if enable_scheduler:

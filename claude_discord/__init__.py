@@ -19,6 +19,7 @@ from .cogs.claude_chat import ClaudeChatCog
 from .cogs.collision_watch import CollisionWatchCog
 from .cogs.context_links import ContextLinksCog
 from .cogs.event_processor import EventProcessor
+from .cogs.my_ai_setup import MyAISetupCog
 from .cogs.notification_dispatch import NotificationDispatchCog
 from .cogs.ollama_command import OllamaCommandCog
 from .cogs.project_launcher import ProjectLauncherCog
@@ -62,6 +63,7 @@ __all__ = [
     "TaskLoopCog",
     "CollisionWatchCog",
     "AgentHandoffCog",
+    "MyAISetupCog",
     "HandoffConfig",
     "AskCommandCog",
     "OllamaCommandCog",

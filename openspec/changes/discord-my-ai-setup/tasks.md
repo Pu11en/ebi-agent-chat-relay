@@ -24,7 +24,7 @@ Try: `make dev-on`
 
 - [x] 4.1 **Depends on 3.3; owner: Discord view** — Build owner-bound paginated views in `claude_discord/discord_ui/my_ai_setup.py` with Browse by kind as default and sibling Where it lives/Compare computers tabs; verify component-limit and authorization tests using the approved prototype as the visual reference.
 - [x] 4.2 **Owner: detail view** — Render safe source, user-facing scope, availability evidence, prerequisites, measurements, and last-change facts while hiding Mega Global and unknown guesses; verify snapshots of item details contain no internal ownership label or secret value.
-- [ ] 4.3 **Depends on 4.1 and command-surface Settings interface; owner: Settings integration** — Register My AI Setup as a Settings entry without owning or duplicating the parent Settings command; verify interaction tests open Browse by kind and spend no model tokens.
+- [x] 4.3 **Depends on 4.1 and command-surface Settings interface; owner: Settings integration** — Register My AI Setup as a Settings entry without owning or duplicating the parent Settings command; verify interaction tests open Browse by kind and spend no model tokens.
 - [ ] 4.4 **Depends on 4.2; owner: Setup Agent handoff** — Add Ask Setup Agent using the existing session creation contract and a bounded safe item packet; verify tests create one management thread, attach no raw secret content, and perform no edit before the user's request is processed normally.
 
 ## 5. Verification and Safe Activation
