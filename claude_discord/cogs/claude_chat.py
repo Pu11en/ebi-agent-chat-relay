@@ -77,6 +77,7 @@ SEED_CONTEXT_MESSAGE_LIMIT = 40
 _HELP_CATEGORY: dict[str, str | None] = {
     "help": None,  # the help command doesn't list itself
     "stop": "📌 Session",
+    "session": "📌 Session",  # fork / rewind / compact / clear / context / goal in one view
     "clear": "📌 Session",
     "rewind": "📌 Session",
     "compact": "📌 Session",

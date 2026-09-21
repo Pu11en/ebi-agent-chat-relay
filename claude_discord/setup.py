@@ -516,6 +516,22 @@ async def setup_bridge(
     await bot.add_cog(chat_cog)
     logger.info("Registered ClaudeChatCog")
 
+    # --- SurfaceCommandsCog: the location-aware final surface (/session, ...) ---
+    # Control centers are the configured channels; a thread counts as a session
+    # only when a record is bound to it, so an unconfigured bot fails closed.
+    from .cogs.surface_commands import SurfaceCommandsCog
+    from .command_surface import CommandSurface
+
+    command_surface = CommandSurface.from_ids([*_all_channel_ids, _launcher_home_id])
+    surface_cog = SurfaceCommandsCog(
+        bot,
+        surface=command_surface,
+        repo=session_repo,
+        chat=chat_cog,
+    )
+    await bot.add_cog(surface_cog)
+    logger.info("Registered SurfaceCommandsCog")
+
     # --- TaskLoopCog (auto-enabled; idle until /gowork or POST /api/loops) ---
     from .cogs.task_loop import TaskLoopCog
 
