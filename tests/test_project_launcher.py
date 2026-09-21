@@ -998,3 +998,213 @@ async def test_sessions_close_without_a_lifecycle_service_declines_safely(cog):
     await cog.close_from_sessions(event, 2)
     cog.repo.delete.assert_not_awaited()
     assert "not available" in event.followup.send.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# shared-project-catalog 4.1: the catalog feeds the New session menus
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def catalog_cog(cog, tmp_path: Path) -> ProjectLauncherCog:
+    from claude_discord.catalog_config import CatalogConfig
+    from claude_discord.catalog_service import ProjectCatalogService
+    from claude_discord.database.project_catalog_repo import ProjectCatalogRepository
+
+    main = tmp_path / "main"
+    work = tmp_path / "work"
+    for name in ("alpha", "beta", "gamma"):
+        (main / name).mkdir(parents=True)
+    (work / "alpha").mkdir(parents=True)
+    (main / "notes.txt").write_text("not a project", encoding="utf-8")
+    db = str(tmp_path / "settings.db")
+    config = CatalogConfig.from_env(
+        {
+            "CCDB_PROJECT_ROOTS": f"{main},{work}",
+            "CCDB_CATALOG_OWNER": "drew",
+            "CCDB_CATALOG_COMPUTER": "drewai",
+        }
+    )
+    cog.catalog = ProjectCatalogService(
+        config, ProjectCatalogRepository(db), settings=cog.settings, cache_ttl=0
+    )
+    cog.chat.spawn_session = AsyncMock()
+    cog.chat._run_claude = AsyncMock()
+    return cog
+
+
+def _option_labels(view) -> list[str]:
+    return [option.label for option in _selects(view)[0].options]
+
+
+def _option_values(view) -> list[str]:
+    return [option.value for option in _selects(view)[0].options]
+
+
+async def _open_projects(cog, event):
+    await cog.show_new_session(event)
+    menu = event.followup.send.call_args.kwargs["view"]
+    await _buttons(menu)["Projects"].callback(event)
+    return event.edit_original_response.call_args.kwargs["view"]
+
+
+async def test_projects_lists_every_catalog_project_favorites_first_and_hidden_omitted(
+    catalog_cog, tmp_path
+):
+    from claude_discord.project_catalog import ProjectIdentity
+
+    gamma = ProjectIdentity("drew", "drewai", "main", "gamma").key
+    beta = ProjectIdentity("drew", "drewai", "main", "beta").key
+    await catalog_cog.catalog.set_favorite(10, 42, gamma, True)
+    await catalog_cog.catalog.set_hidden(10, 42, beta, True)
+    event = interaction()
+    view = await _open_projects(catalog_cog, event)
+    assert _option_labels(view) == ["⭐ gamma", "alpha (main)", "alpha (work)"]
+    assert _option_values(view) == [
+        gamma,
+        "drew:drewai:main:alpha",
+        "drew:drewai:work:alpha",
+    ]
+    # Another operator's view is untouched, and the listing never scanned inside a project.
+    other = interaction(43)
+    view = await _open_projects(catalog_cog, other)
+    assert _option_labels(view) == ["alpha (main)", "alpha (work)", "beta", "gamma"]
+    assert "notes.txt" not in str(event.edit_original_response.call_args)
+
+
+async def test_choosing_a_catalog_project_binds_its_canonical_path_without_a_model_call(
+    catalog_cog, tmp_path
+):
+    event = interaction()
+    view = await _open_projects(catalog_cog, event)
+    thread = _idle_thread(event)
+    select = _selects(view)[0]
+    select._values = ["drew:drewai:work:alpha"]
+    await select.callback(event)
+    catalog_cog.repo.save.assert_awaited_once_with(
+        333, "", working_dir=str(tmp_path / "work" / "alpha")
+    )
+    assert str(tmp_path / "work" / "alpha") in thread.send.call_args.args[0]
+    catalog_cog.chat.spawn_session.assert_not_awaited()
+    catalog_cog.chat._run_claude.assert_not_awaited()
+    # The open is remembered by identity, so Recent offers it back.
+    recent = await catalog_cog.catalog.recents(10, 42)
+    assert [entry.key for entry in recent] == ["drew:drewai:work:alpha"]
+    # One menu creates one thread.
+    await select.callback(event)
+    catalog_cog.repo.save.assert_awaited_once()
+
+
+async def test_stale_catalog_project_is_refused_before_binding(catalog_cog, tmp_path):
+    event = interaction()
+    view = await _open_projects(catalog_cog, event)
+    _idle_thread(event)
+    (tmp_path / "main" / "beta").rmdir()
+    select = _selects(view)[0]
+    select._values = ["drew:drewai:main:beta"]
+    await select.callback(event)
+    catalog_cog.repo.save.assert_not_awaited()
+    event.channel.create_thread.assert_not_called()
+    text = event.edit_original_response.call_args.kwargs["content"]
+    assert "no longer available" in text and "beta" in text
+    # A key this computer never issued is refused the same way.
+    view = event.edit_original_response.call_args.kwargs["view"]
+    select = _selects(view)[0]
+    select._values = ["drew:drewai:main:.."]
+    await select.callback(event)
+    catalog_cog.repo.save.assert_not_awaited()
+
+
+async def test_catalog_favorites_and_recent_feed_their_menus(catalog_cog, tmp_path):
+    from claude_discord.project_catalog import ProjectIdentity
+
+    gamma = ProjectIdentity("drew", "drewai", "main", "gamma").key
+    await catalog_cog.catalog.set_favorite(10, 42, gamma, True)
+    event = interaction()
+    await catalog_cog.show_new_session(event)
+    menu = event.followup.send.call_args.kwargs["view"]
+    assert list(_buttons(menu))[0] == "Projects"
+    await _buttons(menu)["Favorites"].callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    assert _option_values(view) == [gamma]
+    # Nothing opened yet: Recent says so and offers the menu again.
+    await _buttons(menu)["Recent"].callback(event)
+    assert "No recent" in event.edit_original_response.call_args.kwargs["content"]
+    await catalog_cog.catalog.remember_path(10, 42, str(tmp_path / "main" / "alpha"))
+    await _buttons(menu)["Recent"].callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    assert _option_values(view) == ["drew:drewai:main:alpha"]
+    # A recent whose folder vanished is skipped, not offered.
+    (tmp_path / "main" / "alpha").rmdir()
+    await _buttons(menu)["Recent"].callback(event)
+    assert "No recent" in event.edit_original_response.call_args.kwargs["content"]
+
+
+async def test_search_finds_hidden_projects_and_marks_them(catalog_cog):
+    from claude_discord.project_catalog import ProjectIdentity
+
+    beta = ProjectIdentity("drew", "drewai", "main", "beta").key
+    await catalog_cog.catalog.set_hidden(10, 42, beta, True)
+    event = interaction()
+    view = await _open_projects(catalog_cog, event)
+    assert beta not in _option_values(view)
+    await catalog_cog.show_project_pick(event, query="bet")
+    view = event.edit_original_response.call_args.kwargs["view"]
+    assert _option_labels(view) == ["🙈 beta"]
+    assert _option_values(view) == [beta]
+    await catalog_cog.show_project_pick(event, query="nothing-like-this")
+    assert "No project" in event.edit_original_response.call_args.kwargs["content"]
+
+
+async def test_favorite_and_hide_modes_toggle_metadata_without_starting(catalog_cog):
+    from claude_discord.project_catalog import ProjectIdentity
+
+    gamma = ProjectIdentity("drew", "drewai", "main", "gamma").key
+    event = interaction()
+    view = await _open_projects(catalog_cog, event)
+    _idle_thread(event)
+    await _buttons(view)["Favorite"].callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    select = _selects(view)[0]
+    select._values = [gamma]
+    await select.callback(event)
+    assert [e.key for e in await catalog_cog.catalog.favorites(10, 42)] == [gamma]
+    view = event.edit_original_response.call_args.kwargs["view"]
+    assert _option_labels(view)[0] == "⭐ gamma"
+    await _buttons(view)["Hide"].callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    select = _selects(view)[0]
+    select._values = ["drew:drewai:main:beta"]
+    await select.callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    assert "drew:drewai:main:beta" not in _option_values(view)
+    event.channel.create_thread.assert_not_called()
+    catalog_cog.repo.save.assert_not_awaited()
+    catalog_cog.chat.spawn_session.assert_not_awaited()
+
+
+async def test_legacy_favorites_are_adopted_into_the_catalog_view(catalog_cog, tmp_path):
+    await catalog_cog.change_favorite(10, 42, str(tmp_path / "main" / "beta"), add=True)
+    await catalog_cog.change_favorite(10, 42, str(tmp_path), add=True)  # outside every root
+    event = interaction()
+    await catalog_cog.show_new_session(event)
+    menu = event.followup.send.call_args.kwargs["view"]
+    await _buttons(menu)["Favorites"].callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    assert _option_values(view) == ["drew:drewai:main:beta"]
+    # The raw list is untouched, so Browse → Favorites + recent still offers the other one.
+    assert str(tmp_path) in await catalog_cog.favorites(10, 42)
+
+
+async def test_suggestions_come_from_the_catalog_when_present(catalog_cog, tmp_path, monkeypatch):
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))  # the legacy scan would list main/work
+    event = interaction()
+    await catalog_cog.show_folders(event, manage=True)
+    view = event.followup.send.call_args.kwargs["view"]
+    options = {o.description for o in _selects(view)[0].options}
+    assert options == {
+        str(tmp_path / "main" / "alpha")[-100:],
+        str(tmp_path / "work" / "alpha")[-100:],
+        str(tmp_path / "main" / "beta")[-100:],
+        str(tmp_path / "main" / "gamma")[-100:],
+    }
