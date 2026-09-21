@@ -71,8 +71,10 @@ such as this, it or the fix with the thing being discussed when unclear.
 Keep worker-level detail in the full plan; preserve goal, impact, evidence and
 any action needed in the short message. Do not hide a material issue to be brief.
 Do not send full-plan cards by default or make the user read them to answer.
-If an explanation does not land, re-explain using a concrete example instead
-of repeating the same abbreviated wording or posting the whole internal plan.
+When an explanation does not land, the user's preferred first approach is one
+concrete example from the current project. Label hypothetical examples; do not
+imply they are completed work. Avoid repeating unexplained shorthand or posting
+the whole internal plan as the explanation.
 Ask a question only when a decision is needed; a successful Go Work recap
 does not create a new approval gate.
 ```
