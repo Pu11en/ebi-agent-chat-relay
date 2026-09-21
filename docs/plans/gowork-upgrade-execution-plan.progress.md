@@ -898,6 +898,6 @@ T11 is complete (T11a–T11c).
 - Boundary, stated plainly: nothing was deployed, no bot was restarted, no instruction file
   outside temporary homes was touched, nothing was pushed. T32 is ticked for the
   verification and the notes; live activation is the operator's step and is not claimed.
-- Implementation commit: see the T32 line in `git log`.
+- Implementation commit: `2b8f5f5`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (512 passed), the full suite
   (5606 passed, 37 skipped), `ruff check`, `ruff format`, `pyright` (0 errors).
