@@ -806,8 +806,7 @@ T11 is complete (T11a–T11c).
   separate structure from prompt quality; a `copied_from` without a notice fails and passes
   once NOTICE.md names it; the saved cases copy nothing upstream; the command exits 1 on a
   regression and 0 on the saved set.
-- Implementation commit: recorded in the T31 entry's predecessor line (`git log`:
-  `feat(gowork): evaluate planning and execution contracts offline (T30)`).
+- Implementation commit: `8c45fe4`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (505 passed), `ruff check`,
   `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors). No model, network or
   paid agent is involved anywhere in the evaluator.
