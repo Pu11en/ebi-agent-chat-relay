@@ -65,6 +65,7 @@ from .frontend import (
     derive_thread_key,
 )
 from .gowork_admission import AdmissionController, AdmissionSnapshot, Reservation
+from .gowork_capacity import CapacityDecision, CapacityPolicy
 from .gowork_plan import (
     OwnershipConflict,
     PlanIdentity,
@@ -202,6 +203,8 @@ __all__ = [
     "ReadyTask",
     "HostProbe",
     "AdmissionController",
+    "CapacityDecision",
+    "CapacityPolicy",
     "AdmissionSnapshot",
     "Reservation",
     "Pressure",
