@@ -14,6 +14,9 @@ Keep chat brief and ask one unresolved decision at a time, with meaningful
 lettered choices and a recommendation. Explain unfamiliar options simply.
 Look up facts yourself; do not ask the user to solve implementation details.
 Record the answer and its consequences before asking the next question.
+Continue until required user decisions are resolved; do not mistake short chat
+for permission to leave gaps in the detailed plan. Obtain technical facts from
+the project and record routine engineering choices without needless questions.
 For each agreed outcome, specify a small worker task, required inputs, owned
 files/resources, output and check. Preserve all agreed scope across the tasks.
 Identify what can run independently and what must wait for another result.
@@ -72,5 +75,7 @@ Source: local-plans/generation-wealth-feedback-gowork.md, inspected as a plan, n
 
 ## Still Open
 
-- The preferred small interaction format: tiny outline plus one question, a concrete example at a time, questions until a final summary, or a brief running checklist.
+- Interaction settled: short multiple-choice questions with strong distinct options, continuing until required answers are recorded; detailed internal plans remain essential.
+- Name settled: improve Go Work and its loops, not a separately named replacement.
+- Recommended loop model: durable coordinator, independent child-plan lanes and fresh short-lived task workers; the coordinator owns retries, dependency release and shared capacity instead of letting workers spawn unlimited private loops.
 - Capacity priority across builds, failure policy and retention remain open; the latest message does not resolve them.

@@ -14,6 +14,9 @@ Done when: A local practice run proves dependencies, automatic worker sizing und
 - Keep one master planning conversation, with separate small build tasks beneath it.
 - A business can have website, product and marketing plans; each can have smaller plans of its own.
 - Plan in detail before building; later small changes remain possible.
+- **Planning interaction settled:** keep plans detailed internally, while asking short multiple-choice questions with useful distinct options until every required user decision is answered. Gather technical facts from the project instead of making Drew supply them; retain saved answers and show little at a time.
+- **Name and direction:** keep Go Work as the name and evolve its existing loops.
+- **Recommended execution shape:** one persistent coordinator tracks child plans and starts independent ready tasks within automatic capacity. Each task gets a fresh worker session; finished workers close while the coordinator retains results and advances the lanes. Existing Go Work already has parallel groups.
 - Independent work may run together; work that needs another task's result must wait.
 - **Capacity decision, updated September 20:** automatically use as many useful workers as the computer can support, including more than ten when resources allow; Drew should not choose a count for every launch.
 - The planning session identifies independent work and reads available capacity; the running bot keeps checking actual machine load and controls worker starts across all builds.
@@ -94,7 +97,7 @@ The Check command above is the existing baseline; every implementation task also
 - [ ] **T14: Show one master status in Discord.** Summarize running, waiting, blocked and ready-for-Drew tasks with the next relevant action. Needs: T04, T08, T10. Proof: mixed task states display accurately without requiring worker-thread reading.
 - [ ] **T15: Separate finished workers from Drew's review.** Keep results available after execution ends, using the chosen archive/retention policy and a local test handoff. Needs: T14 and retention decision. Proof: all workers are closed while the parent still says ready for Drew.
 - [ ] **T16: Report repeated workflow friction.** Extend existing run records with wait time, repair attempts, review outcomes and repeated owner questions. Needs: T04, T12. Proof: a saved sample produces reproducible counts; unavailable cost data stays unknown.
-- [ ] **T17a: Refine existing planner prompts.** Preserve the current conversation style and saved answers while showing short, concrete examples instead of routine full-plan cards; add clear worker-task preparation using selected OSS patterns. Needs: preferred short interaction format. Proof: real-plan examples remain complete internally, readable in chat and free of repeated settled questions; focused draft exists in prompt-refinement.md.
+- [ ] **T17a: Refine existing planner prompts.** Preserve saved answers and ask short multiple-choice questions with useful options until required user decisions are resolved; retain detailed plans internally and add clear worker-task preparation using selected OSS patterns. Needs: existing examples and settled interaction preference. Proof: real-plan examples remain complete internally, readable in chat and free of repeated settled questions; focused draft exists in prompt-refinement.md.
 - [ ] **T17b: Define compatible planning templates.** Capture the master record, decisions, ownership, dependencies and completion evidence; export only formats the installed runner actually supports. Needs: T17a. Proof: business examples have full requirement coverage and unsupported dependency behavior is clearly rejected or serialized through a verified supported path.
 - [ ] **T17c: Connect planner instructions and execution context.** Put the agreed execution guidance in the existing shared instructions or a small supporting skill; pass complete task inputs/outputs/ownership to the grouping helper, not just titles. Needs: T17a, T17b. Proof: all three harnesses use the same guidance and grouping receives relevant task details; runtime dependency enforcement remains code-backed.
 - [ ] **T17d: Evaluate planner behavior.** Check the proposed scenarios for new plans, resumed answers, ownership conflicts and tiny changes; compare live behavior only within separately authorized evaluation scope. Needs: T17b, T17c and T03 for executable dependency checks. Proof: saved evidence distinguishes static validation from actual model behavior and records any failures.
@@ -110,7 +113,7 @@ Settled answers are listed in section 1; the following are proposals or open cho
 Ask one question at a time and record the answer before moving to dependent questions.
 
 - **Q1 settled:** automatically choose the useful worker count from independent work and available machine resources, with a protective maximum if needed; do not enforce ten forever or ask for a count each launch.
-- **Planner workflow, next:** when should brainstorming turn into detailed task-writing? Recommended: when the important decisions are settled, without a separate command; alternatives are only on request, maintaining draft tasks throughout, or completing one business area at a time.
+- **Planning interaction settled:** detailed plans built through short multiple-choice questions until required user decisions are filled in; retain the Go Work name and existing loop concept.
 - **Q2, still open:** which ready work gets capacity first when builds compete? Recommended: tasks that unblock other tasks, with aging so other builds still progress; alternatives are equal sharing, finishing the oldest build first or explicit project priority.
 - **Engineering follow-through:** determine headroom thresholds, sampling, fallback and ceiling from read-only measurements and simulated tests during implementation; do not ask Drew to guess technical numbers or promise a safe count from one idle snapshot.
 - **Failure policy:** when a product task is stuck, should independent website or marketing work continue, and how much automatic repair is allowed?
@@ -118,7 +121,7 @@ Ask one question at a time and record the answer before moving to dependent ques
 - **Review strength:** retain cheap/balanced/careful behavior, or change which tasks need a separate reviewer and what happens when one is unavailable?
 - **Changes during a build:** apply new directions only to unstarted tasks, stop affected workers, or finish their current attempts and then replace stale work?
 - **First release boundary:** include multi-project business plans immediately, or first prove multiple lanes within one project while preserving the same data format?
-- **Names and reporting:** one improved Go Work command or distinct named workflows; milestone updates or mainly a final report?
+- **Name settled; reporting open:** keep Go Work; decide later whether build updates should focus on milestones or mainly the final report.
 - **Implementation method, after the design is settled:** choose fresh-session Go Work or small normal-session increments; this planning request does not launch either.
 
 ## 6. How to Try It
