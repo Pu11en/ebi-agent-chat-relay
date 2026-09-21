@@ -70,3 +70,155 @@ class TestRenderFileToPng:
         f.write_text("<h1>hi</h1>", encoding="utf-8")
         monkeypatch.setattr(rp, "_HAS_PLAYWRIGHT", False)
         assert await rp.render_file_to_png(f) is None
+
+
+class _FakeRoute:
+    def __init__(self, url: str) -> None:
+        self.request = type("Req", (), {"url": url})()
+        self.aborted = False
+        self.continued = False
+
+    async def abort(self, *_args: object) -> None:
+        self.aborted = True
+
+    async def continue_(self, *_args: object, **_kw: object) -> None:
+        self.continued = True
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.content: str | None = None
+        self.route_pattern: str | None = None
+        self.route_handler = None
+        self.closed = False
+
+    async def goto(self, *_args: object, **_kw: object) -> None:
+        raise AssertionError("goto must never be used: file:// grants local-file reads")
+
+    async def route(self, pattern: str, handler) -> None:  # noqa: ANN001
+        self.route_pattern = pattern
+        self.route_handler = handler
+
+    async def set_content(self, html: str, **_kw: object) -> None:
+        self.content = html
+
+    async def wait_for_load_state(self, *_args: object, **_kw: object) -> None:
+        return None
+
+    async def screenshot(self, **_kw: object) -> bytes:
+        return b"\x89PNG\r\n\x1a\nfake"
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeContext:
+    def __init__(self, page: _FakePage) -> None:
+        self.page = page
+        self.closed = False
+
+    async def new_page(self) -> _FakePage:
+        return self.page
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeBrowser:
+    def __init__(self) -> None:
+        self.page = _FakePage()
+        self.context = _FakeContext(self.page)
+        self.context_kwargs: dict[str, object] | None = None
+
+    async def new_context(self, **kwargs: object) -> _FakeContext:
+        self.context_kwargs = kwargs
+        return self.context
+
+    async def new_page(self, **_kw: object) -> _FakePage:
+        raise AssertionError("pages must come from an isolated, script-less context")
+
+
+class TestRenderIsolation:
+    """A session's HTML must not become a local-file reader.
+
+    Rendering via ``goto(file://…)`` let a prompt-injected session embed
+    ``<iframe src="file:///…/.codex/auth.json">`` and receive the secret back
+    as a PNG. The document is now rendered from bytes with scripts off and
+    every request aborted.
+    """
+
+    @pytest.fixture
+    def browser(self, monkeypatch: pytest.MonkeyPatch) -> _FakeBrowser:
+        fake = _FakeBrowser()
+
+        async def fake_ensure() -> _FakeBrowser:
+            return fake
+
+        monkeypatch.setattr(rp, "_HAS_PLAYWRIGHT", True)
+        monkeypatch.setattr(rp, "_ensure_browser", fake_ensure)
+        return fake
+
+    @pytest.mark.asyncio
+    async def test_html_is_rendered_from_bytes_not_file_url(
+        self, tmp_path: Path, browser: _FakeBrowser
+    ) -> None:
+        f = tmp_path / "r.html"
+        f.write_text('<iframe src="file:///etc/passwd"></iframe>', encoding="utf-8")
+
+        png = await rp.render_file_to_png(f)
+
+        assert png is not None
+        assert browser.page.content is not None
+        assert "file:///etc/passwd" in browser.page.content  # markup is inlined, not fetched
+        assert browser.context.closed is True
+
+    @pytest.mark.asyncio
+    async def test_context_has_javascript_disabled(
+        self, tmp_path: Path, browser: _FakeBrowser
+    ) -> None:
+        f = tmp_path / "r.html"
+        f.write_text("<h1>hi</h1>", encoding="utf-8")
+
+        await rp.render_file_to_png(f)
+
+        assert browser.context_kwargs is not None
+        assert browser.context_kwargs["java_script_enabled"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///C:/Users/x/.codex/auth.json",
+            "file:///home/x/.claude.json",
+            "https://attacker.example/collect?d=1",
+            "http://127.0.0.1:8080/api/tasks",
+        ],
+    )
+    async def test_every_request_is_aborted(
+        self, tmp_path: Path, browser: _FakeBrowser, url: str
+    ) -> None:
+        f = tmp_path / "r.html"
+        f.write_text("<h1>hi</h1>", encoding="utf-8")
+
+        await rp.render_file_to_png(f)
+
+        assert browser.page.route_pattern == "**/*"
+        assert browser.page.route_handler is not None
+        route = _FakeRoute(url)
+        await browser.page.route_handler(route)
+        assert route.aborted is True
+        assert route.continued is False
+
+    @pytest.mark.asyncio
+    async def test_svg_is_inlined_as_a_data_image(
+        self, tmp_path: Path, browser: _FakeBrowser
+    ) -> None:
+        """SVG keeps working — embedded inline, where it can neither script nor fetch."""
+        f = tmp_path / "d.svg"
+        f.write_text('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>', encoding="utf-8")
+
+        png = await rp.render_file_to_png(f)
+
+        assert png is not None
+        assert browser.page.content is not None
+        assert "data:image/svg+xml;base64," in browser.page.content

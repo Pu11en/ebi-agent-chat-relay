@@ -10,6 +10,14 @@ inline as expandable, scrollable text, and a screenshot of it is harder to read
 and cannot be scrolled or copied. Plans (``*.plan.json``) are turned into
 Markdown by ``file_sender`` for the same reason.
 
+The document is untrusted — it was written by a model session that may have
+been prompt-injected — so it is rendered as a sealed picture, never as a page
+with privileges. The bytes are handed to ``page.set_content`` (never
+``goto(file://…)``, which would let ``<iframe src="file:///…/.codex/auth.json">``
+read any local file into the PNG), JavaScript is disabled on the context, and a
+catch-all route aborts every request so neither ``file://`` nor ``http(s)://``
+subresources are fetched. Inline ``data:`` content still renders.
+
 Playwright + Chromium are the render engine. Both are optional at runtime:
 if either is missing (fresh install, headless server without the browser
 download) this module degrades to no-op so file delivery still works.
@@ -21,9 +29,11 @@ Install the browser once per host with::
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +68,34 @@ def preview_name(filename: str) -> str:
     """
     p = Path(filename)
     return p.with_name(f"{p.stem}.preview.png").as_posix()
+
+
+async def _abort_request(route: Any) -> None:
+    """Refuse every request the document tries to make.
+
+    The document is rendered from bytes, so it has no legitimate reason to
+    fetch anything: a ``file://`` subresource is a local-file read, an
+    ``http(s)://`` one is an egress channel. Inline ``data:`` content never
+    reaches the network layer and is unaffected.
+    """
+    await route.abort("blockedbyclient")
+
+
+def _inline_document(filename: str, raw: bytes) -> str:
+    """Return the HTML handed to ``set_content`` for *raw*.
+
+    HTML is passed through as text. SVG is wrapped as a ``data:`` image: an
+    SVG inside ``<img>`` can run no script and load no external resource,
+    which is exactly the sandbox we want, and it scales to the viewport.
+    """
+    if Path(filename).suffix.lower() == ".svg":
+        encoded = base64.b64encode(raw).decode("ascii")
+        return (
+            "<!doctype html><html><body style='margin:0'>"
+            f"<img src='data:image/svg+xml;base64,{encoded}' "
+            "style='display:block;max-width:100%'></body></html>"
+        )
+    return raw.decode("utf-8", errors="replace")
 
 
 async def _ensure_browser() -> object | None:
@@ -95,22 +133,33 @@ async def render_file_to_png(source: Path) -> bytes | None:
         return None
     if not is_renderable(source.name):
         return None
+    try:
+        raw = source.read_bytes()
+    except OSError:
+        logger.info("Preview source unreadable: %s", source, exc_info=True)
+        return None
     browser = await _ensure_browser()
     if browser is None:
         return None
 
+    markup = _inline_document(source.name, raw)
     try:
-        page = await browser.new_page(  # type: ignore[attr-defined]
+        # A fresh context per render: no cookies, no scripts, nothing shared
+        # with the previous session's document.
+        context = await browser.new_context(  # type: ignore[attr-defined]
             viewport={"width": _PREVIEW_WIDTH, "height": _PREVIEW_HEIGHT},
             device_scale_factor=2,
+            java_script_enabled=False,
+            offline=True,
         )
         try:
-            await page.goto(source.resolve().as_uri(), timeout=_PREVIEW_TIMEOUT_MS)
-            await page.wait_for_load_state("networkidle", timeout=_PREVIEW_TIMEOUT_MS)
+            page = await context.new_page()
+            await page.route("**/*", _abort_request)
+            await page.set_content(markup, wait_until="load", timeout=_PREVIEW_TIMEOUT_MS)
             png: bytes = await page.screenshot(full_page=True, type="png")
         finally:
             with contextlib.suppress(Exception):
-                await page.close()
+                await context.close()
     except Exception:
         logger.info("Preview render failed for %s", source, exc_info=True)
         return None
