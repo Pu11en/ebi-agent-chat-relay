@@ -97,6 +97,8 @@ async def test_find_running_and_the_command_path_report_the_existing_thread(tmp_
     bot.cogs = {"ClaudeChatCog": chat}
     tmp = Path(tempfile.mkdtemp(prefix="gowork-ad-"))
     cog = TaskLoopCog(bot, work_root=tmp / "copies", store=LoopStore(tmp / "loops.json"))
+    cog._quick_ai = AsyncMock(return_value=None)  # type: ignore[method-assign]  # no real AI
+    cog._interview_ai = AsyncMock(return_value=None)  # type: ignore[method-assign]
     channel = MagicMock(spec=discord.TextChannel)
     channel.id = 1
     channel.send = AsyncMock()

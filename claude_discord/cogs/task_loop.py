@@ -24,6 +24,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -37,6 +38,8 @@ from discord.ext import commands
 from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
 from claude_code_core.capacity import BackendFailure, classify_failure
 from claude_code_core.capacity_policy import FallbackTarget, RecoveryStatus, RecoveryTracker
+from claude_code_core.child_env import strip_transport_credentials
+from claude_code_core.escalation import CONSULT_DISALLOWED_TOOLS
 from claude_code_core.gowork_blockers import BlockerLedger
 from claude_code_core.gowork_friction import FrictionEvent, append_friction
 from claude_code_core.gowork_handoff import (
@@ -465,6 +468,25 @@ def _check_argv(command: str) -> list[str]:
 
 def _is_interrupted(reason: str) -> bool:
     return "interrupted by a restart" in reason.lower()
+
+
+def _helper_env(runner: Any) -> dict[str, str]:
+    """The environment for a one-shot helper CLI call (E2).
+
+    The runner's own environment when it has one (same keys and overlay as a real
+    session); otherwise the bot's environment with every transport credential
+    removed. Never ``None`` — that would hand the child ``DISCORD_BOT_TOKEN`` and
+    ``CCDB_API_SECRET`` whenever the runner is missing or its ``_build_env`` fails.
+    """
+    if runner is not None:
+        try:
+            env = runner._build_env()
+        except Exception:
+            logger.warning("gowork: falling back to a stripped environment", exc_info=True)
+        else:
+            if isinstance(env, dict):
+                return env
+    return strip_transport_credentials(dict(os.environ))
 
 
 def _same_or_inside(path: Path, root: Path) -> bool:
@@ -1253,9 +1275,9 @@ class TaskLoopCog(commands.Cog):
         if command is None:
             return None
         runner: Any = getattr(self._chat(), "runner", None)
-        env = None
-        with contextlib.suppress(Exception):
-            env = runner._build_env()
+        # The interview reads the build's copy (the plan, the log, `git log`), so it
+        # keeps its tools; it must not keep the bot's credentials (E2).
+        env = _helper_env(runner)
         try:
             proc = await asyncio.create_subprocess_exec(
                 command,
@@ -2133,17 +2155,28 @@ class TaskLoopCog(commands.Cog):
         command = shutil.which("claude")
         if command is None:
             return None
-        env = None
-        with contextlib.suppress(Exception):
-            env = runner._build_env()  # the same keys and overlay as real sessions
+        env = _helper_env(runner)  # the same keys and overlay as real sessions, never None
+        # Text in, text out: no settings, no tools, no MCP servers, an empty folder —
+        # the same isolation an escalation gets (E2). A picker that could read the
+        # bot's files or the project would be a second, unguarded agent.
+        workdir = tempfile.mkdtemp(prefix="ccdb-gowork-pick-")
         try:
             proc = await asyncio.create_subprocess_exec(
                 command,
                 "-p",
                 "--model",
                 "haiku",
+                "--setting-sources",
+                "",
+                "--tools",
+                "",
+                "--strict-mcp-config",
+                "--disallowedTools",
+                *CONSULT_DISALLOWED_TOOLS,
                 "--",
                 prompt,
+                cwd=workdir,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -2157,6 +2190,8 @@ class TaskLoopCog(commands.Cog):
         except Exception:
             logger.warning("gowork: the step-AI picker couldn't run", exc_info=True)
             return None
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
         if proc.returncode != 0:
             return None
         return out.decode(errors="replace").strip() or None
