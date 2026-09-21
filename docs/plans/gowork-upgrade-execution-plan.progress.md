@@ -857,7 +857,7 @@ T11 is complete (T11a–T11c).
   `test_task_state.py` (+1: an earlier attempt's thread is listed until archived across
   repair, rework and retry, and survives reopen); `test_manifest_build_cog.py` archive test
   adapted as above.
-- Implementation commit: see the T31 line in `git log`.
+- Implementation commit: `3a26888`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (509 passed), `ruff check`,
   `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors). Security: the demo
   runs `git` and the acceptance checks as argv lists (no shell); the only file it writes are
