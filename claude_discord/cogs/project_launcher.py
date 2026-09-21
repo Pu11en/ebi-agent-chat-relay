@@ -18,6 +18,12 @@ from ..category_scope import category_allowed
 from ..command_surface import CONTROL_CENTER_BUTTONS
 from ..database.repository import SessionRepository
 from ..database.settings_repo import SettingsRepository
+from ..project_creation import (
+    ProjectCreationError,
+    ProjectRoots,
+    clone_project,
+    create_project,
+)
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 logger = logging.getLogger(__name__)
@@ -272,8 +278,39 @@ class FolderMenu(PersonalView):
         self.add_item(add)
 
 
+class CreateProjectModal(discord.ui.Modal, title="Create a project folder"):
+    name = discord.ui.TextInput(label="Folder name", max_length=80)
+
+    def __init__(self, cog: ProjectLauncherCog, user_id: int) -> None:
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            return
+        await self.cog.create_and_start(interaction, str(self.name))
+
+
+class CloneProjectModal(discord.ui.Modal, title="Clone a repository"):
+    repository = discord.ui.TextInput(label="Repository (owner/repo or https link)", max_length=300)
+    name = discord.ui.TextInput(label="Folder name (optional)", max_length=80, required=False)
+
+    def __init__(self, cog: ProjectLauncherCog, user_id: int) -> None:
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            return
+        await self.cog.create_and_start(
+            interaction, str(self.name), repository=str(self.repository)
+        )
+
+
 class NewSessionMenu(PersonalView):
-    """The New session choices: Favorites, Recent, Browse (Create and Clone join in 2.3).
+    """The New session choices: Favorites, Recent, Browse, Create, Clone.
 
     Every choice ends in :meth:`ProjectLauncherCog.new_session`, which binds a
     folder and posts a notice — it never starts a model turn.
@@ -281,10 +318,19 @@ class NewSessionMenu(PersonalView):
 
     def __init__(self, cog: ProjectLauncherCog, user_id: int) -> None:
         super().__init__(cog, user_id)
+
+        async def create(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(CreateProjectModal(cog, user_id))
+
+        async def clone(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(CloneProjectModal(cog, user_id))
+
         choices: list[tuple[str, discord.ButtonStyle, Any]] = [
             ("Favorites", discord.ButtonStyle.primary, cog.show_favorite_pick),
             ("Recent", discord.ButtonStyle.secondary, cog.show_recent_pick),
             ("Browse", discord.ButtonStyle.secondary, cog.show_browse_choice),
+            ("Create", discord.ButtonStyle.secondary, create),
+            ("Clone", discord.ButtonStyle.secondary, clone),
         ]
         for label, style, opener in choices:
             button: discord.ui.Button[NewSessionMenu] = discord.ui.Button(label=label, style=style)
@@ -824,6 +870,32 @@ class ProjectLauncherCog(commands.Cog):
         else:
             await interaction.followup.send(text, view=view, ephemeral=True)
 
+    def project_roots(self) -> ProjectRoots:
+        """Where Create and Clone may put folders: ``CCDB_PROJECT_ROOTS``, else the cwd."""
+        return ProjectRoots.from_env(fallback=self.working_dir)
+
+    async def create_and_start(
+        self, interaction: discord.Interaction, name: str, *, repository: str | None = None
+    ) -> None:
+        """Create (or clone into) a folder beneath an approved root, then bind an idle thread.
+
+        Every refusal and failure is reported in one ephemeral message and
+        starts nothing; only a folder that now exists gets a session.
+        """
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        roots = self.project_roots()
+        try:
+            if repository:
+                folder = await clone_project(roots, None, repository, name=name.strip() or None)
+            else:
+                folder = await create_project(roots, None, name)
+        except ProjectCreationError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        await self._start_idle_thread(interaction, str(folder))
+
     async def new_session(self, interaction: discord.Interaction, path: str) -> None:
         if not await self.authorize(interaction):
             return
@@ -833,6 +905,10 @@ class ProjectLauncherCog(commands.Cog):
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
+        await self._start_idle_thread(interaction, path)
+
+    async def _start_idle_thread(self, interaction: discord.Interaction, path: str) -> None:
+        """Bind ``path`` to a fresh thread; the interaction is already deferred."""
         channel = interaction.channel
         if self.session_channel_id is not None:
             channel = self.bot.get_channel(self.session_channel_id)

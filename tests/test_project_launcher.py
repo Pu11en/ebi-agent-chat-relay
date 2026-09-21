@@ -735,3 +735,100 @@ async def test_new_thread_notice_names_folder_and_default_model_without_a_turn(c
     assert "claude-opus-4-1" in notice
     cog.chat.spawn_session.assert_not_awaited()
     cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.3: Create and Clone (thin calls into project_creation)
+# ---------------------------------------------------------------------------
+
+
+def _idle_thread(event) -> MagicMock:
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.mention = "<#333>"
+    thread.add_user = AsyncMock()
+    thread.send = AsyncMock()
+    event.channel.create_thread = AsyncMock(return_value=thread)
+    return thread
+
+
+async def test_new_session_menu_also_offers_create_and_clone(cog):
+    event = interaction()
+    await cog.show_new_session(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    assert set(_buttons(view)) == {"Favorites", "Recent", "Browse", "Create", "Clone"}
+
+
+async def test_create_makes_a_folder_under_the_approved_root_and_an_idle_thread(
+    cog, tmp_path, monkeypatch
+):
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(root))
+    event = interaction()
+    _idle_thread(event)
+    cog.chat.spawn_session = AsyncMock()
+    await cog.create_and_start(event, "fresh-app")
+    assert (root / "fresh-app").is_dir()
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(root / "fresh-app"))
+    cog.chat.spawn_session.assert_not_awaited()
+
+
+async def test_create_refuses_traversal_and_starts_nothing(cog, tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(root))
+    event = interaction()
+    await cog.create_and_start(event, "../escape")
+    assert not (tmp_path / "escape").exists()
+    cog.repo.save.assert_not_awaited()
+    event.channel.create_thread.assert_not_called()
+    assert "folder name" in event.followup.send.call_args.args[0]
+
+
+async def test_clone_failure_is_reported_and_no_session_is_started(cog, tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(root))
+
+    async def failing(argv, cwd):
+        return 128
+
+    monkeypatch.setattr("claude_discord.project_creation.run_git", failing)
+    event = interaction()
+    await cog.create_and_start(event, "", repository="octo/hello")
+    assert not (root / "hello").exists()
+    cog.repo.save.assert_not_awaited()
+    event.channel.create_thread.assert_not_called()
+    assert "Nothing was started" in event.followup.send.call_args.args[0]
+
+
+async def test_clone_success_binds_the_cloned_folder(cog, tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(root))
+
+    async def ok(argv, cwd):
+        assert argv[:3] == ["git", "clone", "--"]
+        return 0
+
+    monkeypatch.setattr("claude_discord.project_creation.run_git", ok)
+    event = interaction()
+    _idle_thread(event)
+    await cog.create_and_start(event, "", repository="octo/hello")
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(root / "hello"))
+
+
+async def test_create_and_clone_buttons_open_modals(cog):
+    event = interaction()
+    await cog.show_new_session(event)
+    buttons = _buttons(event.followup.send.call_args.kwargs["view"])
+    await buttons["Create"].callback(event)
+    await buttons["Clone"].callback(event)
+    from claude_discord.cogs.project_launcher import CloneProjectModal, CreateProjectModal
+
+    modals = [c.args[0] for c in event.response.send_modal.await_args_list]
+    assert isinstance(modals[0], CreateProjectModal)
+    assert isinstance(modals[1], CloneProjectModal)
+    assert len(modals[0].children) == 1
+    assert len(modals[1].children) == 2
