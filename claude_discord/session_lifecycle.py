@@ -397,6 +397,26 @@ class SessionLifecycleService:
         return bool(await self.turns.is_active(thread_id))
 
 
+def close_outcome_text(outcome: CloseOutcome) -> str:
+    """One plain sentence per close outcome, safe for any frontend to send verbatim."""
+    if outcome.state is CloseState.CLOSED:
+        where = " and archived" if outcome.archived else ""
+        text = f"Session closed{where}. Reopen it any time from **Sessions**."
+        if outcome.wrap_up:
+            text += f"\n> {outcome.wrap_up[:900]}"
+        return text
+    if outcome.state is CloseState.PENDING:
+        return (
+            "A turn is still running. The session will wrap up and close by itself "
+            "when it finishes; nothing was interrupted."
+        )
+    if outcome.state is CloseState.ALREADY_CLOSED:
+        return "This session is already closed. Reopen it from **Sessions** to continue."
+    if outcome.state is CloseState.NOT_REQUESTED:
+        return "No close was requested for this session; nothing changed."
+    return "No session is bound to this thread, so there is nothing to close."
+
+
 def _require_authority(authorization: CloseAuthorization) -> None:
     """Fail closed on anything that is not a typed authorization."""
     if not isinstance(authorization, CloseAuthorization):

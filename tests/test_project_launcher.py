@@ -832,3 +832,95 @@ async def test_create_and_clone_buttons_open_modals(cog):
     assert isinstance(modals[1], CloneProjectModal)
     assert len(modals[0].children) == 1
     assert len(modals[1].children) == 2
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.4: Sessions browser wired to the launcher
+# ---------------------------------------------------------------------------
+
+
+def _record(thread_id: int, folder: str, *, closed: bool = False, summary: str | None = None):
+    return SimpleNamespace(
+        thread_id=thread_id,
+        session_id=f"s{thread_id}",
+        working_dir=folder,
+        summary=summary,
+        last_used_at=f"2026-09-{thread_id:02d} 09:00:00",
+        lifecycle_state="closed" if closed else "open",
+        is_closed=closed,
+    )
+
+
+def _live_thread(thread_id: int, name: str, *, archived: bool = False) -> MagicMock:
+    live = MagicMock(spec=discord.Thread)
+    live.id = thread_id
+    live.parent_id = 100
+    live.guild.id = 10
+    live.name = name
+    live.archived = archived
+    live.mention = f"<#{thread_id}>"
+    live.permissions_for.return_value.view_channel = True
+    live.is_private.return_value = False
+    live.edit = AsyncMock()
+    return live
+
+
+async def test_sessions_lists_accessible_records_newest_first(cog, tmp_path):
+    cog.repo.list_all.return_value = [
+        _record(3, str(tmp_path), summary="newest"),
+        _record(2, str(tmp_path), closed=True),
+        _record(1, str(tmp_path)),
+    ]
+    threads = {3: _live_thread(3, "Newest"), 2: _live_thread(2, "Closed", archived=True)}
+
+    async def fetch(thread_id: int):
+        if thread_id in threads:
+            return threads[thread_id]
+        raise discord.NotFound(MagicMock(status=404), "deleted")
+
+    cog.bot.fetch_channel = AsyncMock(side_effect=fetch)
+    event = interaction()
+    await cog.show_sessions(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    options = _selects(view)[0].options
+    assert [o.value for o in options] == ["3", "2"]
+    assert set(_buttons(view)) == {"Open", "New in same folder", "Close", "Search"}
+
+
+async def test_sessions_search_narrows_by_title(cog, tmp_path):
+    cog.repo.list_all.return_value = [_record(3, str(tmp_path)), _record(2, str(tmp_path))]
+    threads = {3: _live_thread(3, "API work"), 2: _live_thread(2, "Website")}
+    cog.bot.fetch_channel = AsyncMock(side_effect=lambda tid: threads[tid])
+    event = interaction()
+    await cog.show_sessions(event, "web")
+    options = _selects(event.followup.send.call_args.kwargs["view"])[0].options
+    assert [o.value for o in options] == ["2"]
+
+
+async def test_sessions_open_unarchives_and_links_without_touching_the_conversation(
+    cog, tmp_path
+):
+    live = _live_thread(2, "Closed", archived=True)
+    cog.bot.fetch_channel = AsyncMock(return_value=live)
+    cog.repo.get.return_value = _record(2, str(tmp_path), closed=True)
+    event = interaction()
+    await cog.open_session(event, 2)
+    live.edit.assert_awaited_once_with(archived=False)
+    assert "https://discord.com/channels/10/2" in event.followup.send.call_args.args[0]
+    cog.repo.save.assert_not_awaited()
+    assert await cog.recents(10, 42) == [str(tmp_path)]
+
+
+async def test_sessions_new_in_same_folder_creates_an_idle_thread(cog, tmp_path):
+    cog.new_session = AsyncMock()
+    event = interaction()
+    await cog.new_in_same_folder(event, str(tmp_path))
+    cog.new_session.assert_awaited_once_with(event, str(tmp_path))
+
+
+async def test_sessions_close_without_a_lifecycle_service_declines_safely(cog):
+    cog.repo.delete = AsyncMock()
+    event = interaction()
+    await cog.close_from_sessions(event, 2)
+    cog.repo.delete.assert_not_awaited()
+    assert "not available" in event.followup.send.call_args.args[0]

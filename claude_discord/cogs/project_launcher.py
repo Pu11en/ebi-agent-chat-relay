@@ -18,16 +18,42 @@ from ..category_scope import category_allowed
 from ..command_surface import CONTROL_CENTER_BUTTONS
 from ..database.repository import SessionRepository
 from ..database.settings_repo import SettingsRepository
+from ..discord_ui.session_browser import (
+    SessionActions,
+    SessionBrowser,
+    SessionBrowserView,
+    browser_text,
+)
 from ..project_creation import (
     ProjectCreationError,
     ProjectRoots,
     clone_project,
     create_project,
 )
+from ..session_lifecycle import CloseAuthorization, SessionLifecycleService, close_outcome_text
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 logger = logging.getLogger(__name__)
 _LIMIT = 25
+
+
+class _LauncherSessionActions:
+    """The cog's four session operations, bundled for the Sessions view."""
+
+    def __init__(self, cog: ProjectLauncherCog) -> None:
+        self.cog = cog
+
+    async def open(self, interaction: discord.Interaction, thread_id: int) -> None:
+        await self.cog.open_session(interaction, thread_id)
+
+    async def new_in_same_folder(self, interaction: discord.Interaction, folder: str) -> None:
+        await self.cog.new_in_same_folder(interaction, folder)
+
+    async def close(self, interaction: discord.Interaction, thread_id: int) -> None:
+        await self.cog.close_from_sessions(interaction, thread_id)
+
+    async def search(self, interaction: discord.Interaction, query: str) -> None:
+        await self.cog.show_sessions(interaction, query or None, edit=True)
 
 
 def directory(value: str) -> str:
@@ -520,6 +546,7 @@ class ProjectLauncherCog(commands.Cog):
         session_channel_id: int | None = None,
         backend_settings: Any | None = None,
         backend_factory: Any | None = None,
+        lifecycle: SessionLifecycleService | None = None,
     ) -> None:
         self.bot = bot
         self.repo = repo
@@ -533,6 +560,9 @@ class ProjectLauncherCog(commands.Cog):
         # model without a model turn. Absent, the notice names no model.
         self.backend_settings = backend_settings
         self.backend_factory = backend_factory
+        # The shared close/reopen service. Absent, Sessions' Close declines and
+        # Open only unarchives — it never falls back to deleting anything.
+        self.lifecycle = lifecycle
         self._favorites_lock = asyncio.Lock()
         self._panel_lock = asyncio.Lock()
         self._view: LauncherView | None = None
@@ -654,9 +684,81 @@ class ProjectLauncherCog(commands.Cog):
     async def show_browse_choice(self, interaction: discord.Interaction) -> None:
         await self.show_browser(interaction, edit=True)
 
-    async def show_sessions(self, interaction: discord.Interaction) -> None:
-        """Sessions: find a session to continue (the browser lands in task 2.4)."""
-        await self.show_resume(interaction)
+    async def show_sessions(
+        self, interaction: discord.Interaction, query: str | None = None, *, edit: bool = False
+    ) -> None:
+        """Sessions: newest-first, searchable, with Open / New in same folder / Close."""
+        if not await self.authorize(interaction):
+            return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
+        async def resolve(thread_id: int) -> discord.Thread | None:
+            return await self.visible_thread(thread_id, interaction)
+
+        entries = await SessionBrowser(self.repo, resolve).find(query)
+        text = browser_text(entries, query)
+        view = SessionBrowserView(entries, self.session_actions(), user_id=interaction.user.id)
+        if edit:
+            await interaction.edit_original_response(content=text, view=view)
+        else:
+            await interaction.followup.send(text, view=view, ephemeral=True)
+
+    def session_actions(self) -> SessionActions:
+        """The four operations the Sessions view may call, all owned by this cog."""
+        return _LauncherSessionActions(self)
+
+    async def open_session(self, interaction: discord.Interaction, thread_id: int) -> None:
+        """Open (and if needed unarchive/reopen) a session's original thread; never clone it."""
+        if not await self.authorize(interaction):
+            return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        thread = await self.visible_thread(thread_id, interaction)
+        if thread is None:
+            await interaction.followup.send(
+                "That session's thread is no longer available. Open Sessions again.",
+                ephemeral=True,
+            )
+            return
+        record = await self.repo.get(thread.id)
+        reopened = False
+        if self.lifecycle is not None and record is not None and record.is_closed:
+            outcome = await self.lifecycle.reopen(thread.id)
+            reopened = outcome.is_reopened
+        if getattr(thread, "archived", False) and not reopened:
+            with contextlib.suppress(discord.HTTPException):
+                await thread.edit(archived=False)
+        if record is not None and record.working_dir:
+            await self.remember_folder(
+                interaction.guild_id or 0, interaction.user.id, record.working_dir
+            )
+        note = " Reopened — the conversation continues where it stopped." if reopened else ""
+        await interaction.followup.send(
+            f"Continue here: https://discord.com/channels/{thread.guild.id}/{thread.id}{note}",
+            ephemeral=True,
+        )
+
+    async def new_in_same_folder(self, interaction: discord.Interaction, folder: str) -> None:
+        """A clean idle thread in the selected session's folder; the original is untouched."""
+        await self.new_session(interaction, folder)
+
+    async def close_from_sessions(self, interaction: discord.Interaction, thread_id: int) -> None:
+        """Close through the shared lifecycle; without it, decline rather than delete."""
+        if not await self.authorize(interaction):
+            return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        if self.lifecycle is None:
+            await interaction.followup.send(
+                "Close is not available on this computer yet; the session was left as it is.",
+                ephemeral=True,
+            )
+            return
+        outcome = await self.lifecycle.close(
+            thread_id, CloseAuthorization.from_interaction(interaction.user.id)
+        )
+        await interaction.followup.send(close_outcome_text(outcome), ephemeral=True)
 
     async def show_settings(self, interaction: discord.Interaction) -> None:
         """Settings: this computer's supported configuration (task 2.5)."""

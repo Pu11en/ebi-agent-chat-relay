@@ -892,3 +892,25 @@ class TestServiceWithoutASurface:
         outcome = await service.close(51, HUMAN)
 
         assert outcome.state is CloseState.CLOSED
+
+
+class TestCloseOutcomeText:
+    """The sentence every frontend sends is decided once, next to the states."""
+
+    def test_every_state_has_a_distinct_sentence(self):
+        from claude_discord.session_lifecycle import CloseOutcome, close_outcome_text
+
+        texts = {state: close_outcome_text(CloseOutcome(state=state)) for state in CloseState}
+        assert len(set(texts.values())) == len(CloseState)
+        assert "still running" in texts[CloseState.PENDING]
+        assert "already closed" in texts[CloseState.ALREADY_CLOSED]
+        assert "nothing to close" in texts[CloseState.NO_SESSION]
+
+    def test_closed_text_quotes_the_wrap_up(self):
+        from claude_discord.session_lifecycle import CloseOutcome, close_outcome_text
+
+        text = close_outcome_text(
+            CloseOutcome(state=CloseState.CLOSED, wrap_up="Shipped the fix.", archived=True)
+        )
+        assert "archived" in text
+        assert "Shipped the fix." in text
