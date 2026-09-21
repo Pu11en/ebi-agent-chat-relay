@@ -14,7 +14,7 @@ def _rec(tmp_path: Path, repo: str = "proj") -> LoopRecord:
         copy_path=str(tmp_path / "copy"),
         copy_plan=str(tmp_path / "copy" / "PLAN.md"),
         branch="gowork/plan-1",
-        worker_thread_id=11,
+        worker_thread_id=11 if repo == "proj" else 12,  # every build has its own thread
         report_channel_id=22,
         notify_user_id=33,
         harness="claude",

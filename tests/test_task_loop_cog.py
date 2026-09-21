@@ -330,6 +330,40 @@ class TestResume:
             await asyncio.wait_for(cog.running[0].task, 10)
         assert cog._store.all() == []
 
+    async def test_a_legacy_record_without_build_id_is_migrated_and_resumed(
+        self, repo: Path
+    ) -> None:
+        """T04: records saved before build ids exist still resume, and are upgraded on disk."""
+        import json
+
+        cog, chat, thread = _cog_with_chat()
+        copy = await create_work_copy(repo, repo / "PLAN.md", root=cog._work_root)
+        legacy = {
+            "repo_dir": str(repo),
+            "plan_path": str(repo / "PLAN.md"),
+            "copy_path": str(copy.path),
+            "copy_plan": str(copy.plan_path),
+            "branch": copy.branch,
+            "worker_thread_id": thread.id,
+            "report_channel_id": 1,
+        }
+        cog._store.path.parent.mkdir(parents=True, exist_ok=True)
+        cog._store.path.write_text(json.dumps([legacy]), encoding="utf-8")
+        report_channel = MagicMock()
+        report_channel.id = 1
+        report_channel.send = AsyncMock()
+        cog.bot.get_channel = MagicMock(
+            side_effect=lambda cid: thread if cid == thread.id else report_channel
+        )
+
+        assert await cog.resume_all() == 1
+        on_disk = json.loads(cog._store.path.read_text(encoding="utf-8"))
+        assert on_disk[0]["build_id"] == f"thread-{thread.id}"
+        assert cog.running[0].build_id == f"thread-{thread.id}"
+        await _type_when_asked(cog, 1, "looks good")
+        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        assert cog._store.all() == []  # forgotten by build id, not by repo
+
     async def test_a_saved_build_carries_on_in_its_own_thread(self, repo: Path) -> None:
         from claude_code_core.loop_store import LoopRecord
 

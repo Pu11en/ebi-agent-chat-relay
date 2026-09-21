@@ -47,10 +47,18 @@ class LoopRecord:
     queued: bool = False
     #: "cheap", "balanced" or "careful" — where the build sits between cost and quality.
     mode: str = "balanced"
+    #: Stable identity of this build. Several builds may run in one project, so the
+    #: project path is not enough; the worker thread is unique per build and survives
+    #: restarts, which is what legacy records (saved without an id) derive it from.
+    build_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.build_id:
+            object.__setattr__(self, "build_id", f"thread-{self.worker_thread_id}")
 
 
 class LoopStore:
-    """A small JSON file: one record per project with a build running."""
+    """A small JSON file: one record per running build."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or DEFAULT_PATH
@@ -71,6 +79,12 @@ class LoopStore:
                 logger.warning("skipping malformed gowork record: %r", item)
         return records
 
+    def get(self, build_id: str) -> LoopRecord | None:
+        return next((r for r in self.all() if r.build_id == build_id), None)
+
+    def for_repo(self, repo_dir: str) -> list[LoopRecord]:
+        return [r for r in self.all() if r.repo_dir == repo_dir]
+
     def _write(self, records: list[LoopRecord]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
@@ -78,8 +92,24 @@ class LoopStore:
         tmp.replace(self.path)
 
     def save(self, record: LoopRecord) -> None:
-        others = [r for r in self.all() if r.repo_dir != record.repo_dir]
+        others = [r for r in self.all() if r.build_id != record.build_id]
         self._write([*others, record])
 
-    def remove(self, repo_dir: str) -> None:
-        self._write([r for r in self.all() if r.repo_dir != repo_dir])
+    def remove(self, build_id_or_repo_dir: str) -> None:
+        """Forget one build by id, or — for callers that predate ids — every build of a repo."""
+        records = self.all()
+        kept = [r for r in records if r.build_id != build_id_or_repo_dir]
+        if len(kept) == len(records):
+            kept = [r for r in records if r.repo_dir != build_id_or_repo_dir]
+        self._write(kept)
+
+    def migrate(self) -> int:
+        """Write derived build ids to disk. Repeatable; returns how many records lacked one."""
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError):
+            return 0
+        missing = sum(1 for item in raw if isinstance(item, dict) and not item.get("build_id"))
+        if missing:
+            self._write(self.all())
+        return missing

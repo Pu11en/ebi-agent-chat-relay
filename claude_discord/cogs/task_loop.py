@@ -418,6 +418,8 @@ class _Running:
     repo_dir: Path
     worker_thread_id: int
     report_channel_id: int
+    #: Stable identity in the LoopStore (several builds may share one project).
+    build_id: str = ""
     copy: WorkCopy | None = None
     task: asyncio.Task[LoopOutcome] | None = None
     thread: Any = None
@@ -895,6 +897,7 @@ class TaskLoopCog(commands.Cog):
             repo_dir,
             thread.id,
             record.report_channel_id,
+            build_id=record.build_id,
             copy=copy,
             thread=thread,
             report_target=report_target,
@@ -921,6 +924,7 @@ class TaskLoopCog(commands.Cog):
     async def resume_all(self) -> int:
         """Pick up every build that was running when the bot stopped."""
         resumed = 0
+        self._store.migrate()
         for record in self._store.all():
             repo_dir = Path(record.repo_dir)
             if repo_dir in self._running:
@@ -931,7 +935,7 @@ class TaskLoopCog(commands.Cog):
                     thread = await self.bot.fetch_channel(record.worker_thread_id)
             if thread is None or not Path(record.copy_plan).is_file():
                 logger.warning("gowork: can't resume %s (thread or copy gone)", repo_dir)
-                self._store.remove(record.repo_dir)
+                self._store.remove(record.build_id)
                 if Path(record.copy_plan).is_file():
                     await self._tell_orphaned(record)
                 continue
@@ -996,7 +1000,7 @@ class TaskLoopCog(commands.Cog):
                     continue
                 if await self._park(running, outcome) == "gone":
                     break
-            self._store.remove(str(running.repo_dir))
+            self._store.remove(running.build_id)
             return outcome
         except asyncio.CancelledError:
             # Bot shutting down: keep the record so startup resumes this build.
@@ -1004,7 +1008,7 @@ class TaskLoopCog(commands.Cog):
         except (WorkCopyError, FileNotFoundError, NotADirectoryError):
             # The build's copy was deleted while it worked: stop, don't crash.
             logger.info("gowork: the copy of %s is gone; stopping", running.repo_dir)
-            self._store.remove(str(running.repo_dir))
+            self._store.remove(running.build_id)
             with contextlib.suppress(Exception):
                 await running.report_target.send(
                     f"⚠️ {running.repo_dir.name}'s build copy is gone from this computer, so I "
@@ -1017,11 +1021,11 @@ class TaskLoopCog(commands.Cog):
             running.auto_finish = True
             with contextlib.suppress(Exception):
                 await self._finish_early(running)
-            self._store.remove(str(running.repo_dir))
+            self._store.remove(running.build_id)
             return LoopOutcome(Status.NONE, "worker thread deleted")
         except Exception as exc:
             logger.exception("task loop crashed in %s", running.repo_dir)
-            self._store.remove(str(running.repo_dir))
+            self._store.remove(running.build_id)
             with contextlib.suppress(Exception):
                 await running.report_target.send(f"💥 The build crashed: {exc}")
             raise
@@ -2184,6 +2188,7 @@ class TaskLoopCog(commands.Cog):
         record = {
             "time": datetime.datetime.now().isoformat(timespec="seconds"),
             "repo": running.repo_dir.name,
+            "build": running.build_id,
             "plan": running.copy.plan_path.name if running.copy else "",
             "step": step,
             "ai": ai or (started[1] if started else "the thread's AI"),
