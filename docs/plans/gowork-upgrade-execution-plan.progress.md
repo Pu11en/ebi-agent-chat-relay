@@ -45,3 +45,21 @@
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (329 passed), `ruff check`,
   `ruff format --check`, `pyright claude_code_core/gowork_plan.py` (0 errors).
 - Open: nothing for T03. T04 can key LoopStore by stable build identity.
+
+## T04 — Store multiple builds without overwriting runs
+
+- `LoopRecord.build_id`: stable build identity, derived as `thread-<worker_thread_id>` when a
+  record has none (legacy files therefore load with the same id on every read, no write).
+- `LoopStore.save`/`remove` key by build id; `remove()` still accepts a repo path for callers
+  that predate ids; `get()`, `for_repo()` added; `migrate()` writes derived ids to disk and is
+  repeatable (returns how many records lacked one; a second run returns 0 and changes nothing).
+  Writes stay atomic (tmp + replace; a failed replace leaves the old file intact — tested).
+- Cog: `_Running.build_id`, every "forget this build" call uses the id, `resume_all()`
+  migrates first, step records now carry `"build"`.
+- Tests: `tests/gowork_upgrade/test_loop_store_identity.py` (7), `tests/test_task_loop_cog.py::TestResume::test_a_legacy_record_without_build_id_is_migrated_and_resumed`;
+  `tests/test_loop_store.py` fixture corrected (two projects never share one worker thread).
+- Implementation commit: `0c0cd59`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (337 passed), `ruff check`,
+  `ruff format --check`, `pyright claude_code_core/loop_store.py claude_discord/cogs/task_loop.py` (0 errors).
+- Open: the cog's in-memory `_running` map is still keyed by repo path (one running build per
+  project); T11 replaces that running identity when dispatch moves to the coordinator.

@@ -81,7 +81,7 @@ new code merely because this build edits it. Report that boundary honestly.
   not necessarily the whole plan. Require coverage of agreed outcomes.
   Proof: valid independent work passes; each invalid fixture explains the specific issue.
 
-- [ ] T04: Execution spine, only after T03: store multiple builds without overwriting runs.
+- [x] T04: Execution spine, only after T03: store multiple builds without overwriting runs.
   Scope: LoopStore and existing persistence adapters. Use stable build identity instead
   of repo-only identity; preserve legacy records, lookup compatibility and atomic writes.
   Proof: two plans for one repo survive reopen; migration is repeatable and loses no run.
