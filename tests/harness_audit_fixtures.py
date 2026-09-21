@@ -9,6 +9,7 @@ fixture trees under ``tests/fixtures/harness_audit/``.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import date
 from pathlib import Path
 
@@ -214,3 +215,48 @@ def codex_invocation(project: Path, *extra: str) -> dict[str, object]:
         "environment_names": ["CODEX_HOME", "OPENAI_API_KEY", "PATH"],
         "cli_version": "0.147.0",
     }
+
+
+FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "harness_audit"
+HOME_TOKEN = "__HOME__"
+
+
+def materialize_fixture(name: str, tmp_path: Path) -> tuple[Path, list[str]]:
+    """Copy a checked-in fixture tree into ``tmp_path`` and resolve its ``__HOME__`` token.
+
+    Returns the materialized home and the CLI argument fragment that points the
+    audit at it (roots, declared links/modes, invocation records, shared salt).
+    """
+    source = FIXTURE_ROOT / name
+    destination = tmp_path / name
+    shutil.copytree(source, destination)
+    home = destination / "home"
+    home_text = home.as_posix()
+    for path in destination.rglob("*"):
+        if path.is_file() and path.suffix in {".json", ".jsonl"}:
+            text = path.read_text(encoding="utf-8")
+            if HOME_TOKEN in text:
+                path.write_text(text.replace(HOME_TOKEN, home_text), encoding="utf-8", newline="\n")
+    projects = home / ".claude" / "projects"
+    if projects.is_dir():
+        for slug in list(projects.iterdir()):
+            if HOME_TOKEN in slug.name:
+                real_slug = "-" + home_text.replace("/", "-").replace(":", "") + "-projects-relay"
+                slug.rename(projects / real_slug)
+    args = [
+        "--home",
+        str(home),
+        "--project",
+        str(home / "projects" / "relay"),
+        "--declare",
+        str(destination / "declare.json"),
+        "--invocation-claude",
+        str(destination / "invocation-claude.json"),
+        "--invocation-codex",
+        str(destination / "invocation-codex.json"),
+        "--salt",
+        "shared",
+        "--known-project",
+        "ebi-agent-chat-relay",
+    ]
+    return home, args
