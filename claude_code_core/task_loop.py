@@ -36,7 +36,12 @@ from pathlib import Path
 
 from claude_code_core.gowork_plan import PlanValidationError, has_manifest, load_plan_tree
 from claude_code_core.gowork_schedule import ReadyTask, ready_tasks
-from claude_code_core.gowork_state import StaleAttemptError, TaskStatus, open_build_state
+from claude_code_core.gowork_state import (
+    BuildState,
+    StaleAttemptError,
+    TaskStatus,
+    open_build_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -464,8 +469,8 @@ class ManifestResult:
     checks: tuple[str, ...] = ()
 
 
-#: Runs the given ready tasks side by side and reports each one (T11b).
-ManifestDispatch = Callable[[list[ReadyTask]], Awaitable[list[ManifestResult]]]
+#: Runs one ready task to completion and reports it (T11b, per worker since T13).
+ManifestWorker = Callable[[ReadyTask], Awaitable[ManifestResult]]
 RunRound = Callable[[str], Awaitable[tuple[str | None, str | None]]]
 #: Told the limit message; True once another AI was picked or the wait is over.
 OnLimit = Callable[[str], Awaitable[bool]]
@@ -494,7 +499,7 @@ class TaskLoop:
         on_result: Callable[[str, str, str], Awaitable[None]] | None = None,
         review: Callable[[str, str | None], Awaitable[str | None]] | None = None,
         max_parallel: Callable[[], int] | None = None,
-        manifest_dispatch: ManifestDispatch | None = None,
+        manifest_worker: ManifestWorker | None = None,
         state_path: Path | None = None,
         build_id: str = "",
     ) -> None:
@@ -526,82 +531,114 @@ class TaskLoop:
         #: Things the person typed while a task was running.
         self._notes: list[str] = []
         #: The multi-plan path (T11b): a manifest plan is built from its ledger.
-        self._manifest_dispatch = manifest_dispatch
+        self._manifest_worker = manifest_worker
         self.state_path = state_path
         self.build_id = build_id
 
     async def _run_manifest(self) -> LoopOutcome:
-        """Build a manifest plan: dispatch what is ready, record what came back, repeat."""
-        assert self._manifest_dispatch is not None and self.state_path is not None
+        """Build a manifest plan: start what is ready, record each worker as it finishes.
+
+        Workers are independent tasks; the first to finish is saved at once and its
+        dependents may start while its siblings are still running (T13). Cancelling
+        the build cancels the workers and leaves their attempts as they were.
+        """
+        assert self._manifest_worker is not None and self.state_path is not None
         rounds = 0
-        while True:
-            if self._before_round is not None:
+        in_flight: dict[str, asyncio.Task[ManifestResult]] = {}
+        try:
+            while True:
+                if self._before_round is not None and not in_flight:
+                    try:
+                        await self._before_round()
+                    except Exception:
+                        logger.warning("task loop: before-round hook failed", exc_info=True)
                 try:
-                    await self._before_round()
-                except Exception:
-                    logger.warning("task loop: before-round hook failed", exc_info=True)
-            try:
-                tree = load_plan_tree(self.plan_path)
-                state = open_build_state(self.state_path, tree, build_id=self.build_id)
-            except (PlanValidationError, StaleAttemptError, OSError) as exc:
-                await self._report(f"🛑 The plan can't be built as written: {exc}")
-                return LoopOutcome(Status.STUCK, str(exc), rounds)
-            if self._stop:
-                await self._report("⏹️ Loop stopped.")
-                return LoopOutcome(Status.NONE, "stopped", rounds)
-            if rounds >= self.max_rounds:
-                await self._report(f"🛑 Stopped after {rounds} rounds (the safety limit).")
-                return LoopOutcome(Status.STUCK, "round limit reached", rounds)
+                    tree = load_plan_tree(self.plan_path)
+                    state = open_build_state(self.state_path, tree, build_id=self.build_id)
+                except (PlanValidationError, StaleAttemptError, OSError) as exc:
+                    await self._report(f"🛑 The plan can't be built as written: {exc}")
+                    return LoopOutcome(Status.STUCK, str(exc), rounds)
 
-            ready = list(ready_tasks(state, limit=max(1, self._max_parallel())))
-            if not ready:
-                records = state.records
-                total = len(records)
-                if all(r.accepted for r in records):
+                if not in_flight:
+                    if self._stop:
+                        await self._report("⏹️ Loop stopped.")
+                        return LoopOutcome(Status.NONE, "stopped", rounds)
+                    if rounds >= self.max_rounds:
+                        await self._report(f"🛑 Stopped after {rounds} rounds (the safety limit).")
+                        return LoopOutcome(Status.STUCK, "round limit reached", rounds)
+
+                room = max(1, self._max_parallel()) - len(in_flight)
+                ready = (
+                    list(ready_tasks(state, running=in_flight, limit=room))
+                    if room > 0 and not self._stop
+                    else []
+                )
+                if ready:
+                    rounds += 1
+                    for task in ready:
+                        state.begin(task.task_id)
+                        in_flight[task.task_id] = asyncio.ensure_future(self._manifest_worker(task))
                     await self._report(
-                        f"✔️ All {total} tasks are accepted. Checking the finished work…"
+                        f"⚡ Started {len(ready)} task(s) — " + ", ".join(t.task_id for t in ready)
                     )
-                    return LoopOutcome(Status.COMPLETE, rounds=rounds)
-                blocked = [r for r in records if r.status is TaskStatus.BLOCKED]
-                if blocked:
-                    lines = "; ".join(f"{r.task_id}: {r.reason or 'blocked'}" for r in blocked)
-                    await self._report(f"🛑 Stuck — {len(blocked)} task(s) blocked: {lines}")
-                    return LoopOutcome(Status.STUCK, f"blocked: {lines}", rounds)
-                waiting = [r.task_id for r in records if not r.accepted]
-                detail = "nothing is ready and nothing is running: " + ", ".join(waiting)
-                await self._report(f"🛑 {detail}")
-                return LoopOutcome(Status.STUCK, detail, rounds)
+                if not in_flight:
+                    return await self._manifest_outcome(state, rounds)
 
-            rounds += 1
-            for task in ready:
-                state.begin(task.task_id)
-            await self._report(
-                f"⚡ Round {rounds}: {len(ready)} task(s) — " + ", ".join(t.task_id for t in ready)
+                done, _pending = await asyncio.wait(
+                    in_flight.values(), return_when=asyncio.FIRST_COMPLETED
+                )
+                for finished in done:
+                    task_id = next(k for k, v in in_flight.items() if v is finished)
+                    del in_flight[task_id]
+                    try:
+                        result = finished.result()
+                    except asyncio.CancelledError:
+                        result = ManifestResult(task_id, False, "the worker was cancelled")
+                    except Exception as exc:
+                        logger.warning("gowork: worker for %s raised", task_id, exc_info=exc)
+                        result = ManifestResult(task_id, False, f"the worker failed: {exc}")
+                    await self._record_manifest_result(state, result)
+        except asyncio.CancelledError:
+            for pending in in_flight.values():
+                pending.cancel()
+            await asyncio.gather(*in_flight.values(), return_exceptions=True)
+            raise
+
+    async def _record_manifest_result(self, state: BuildState, result: ManifestResult) -> None:
+        """Persist one worker's outcome the moment it is known (T13)."""
+        if result.task_id not in state:
+            return
+        attempt = state[result.task_id].attempt_id
+        if result.ok and result.commit:
+            state.submit_result(
+                result.task_id,
+                attempt,
+                commit=result.commit,
+                checks=result.checks or ("the worker reported DONE",),
             )
-            results = await self._manifest_dispatch(ready)
-            seen = {r.task_id for r in results}
-            for task in ready:
-                if task.task_id not in seen:
-                    results.append(
-                        ManifestResult(task.task_id, False, "the worker reported nothing")
-                    )
-            for result in results:
-                if result.task_id not in state:
-                    continue
-                attempt = state[result.task_id].attempt_id
-                if result.ok and result.commit:
-                    state.submit_result(
-                        result.task_id,
-                        attempt,
-                        commit=result.commit,
-                        checks=result.checks or ("the worker reported DONE",),
-                    )
-                    state.accept(result.task_id, attempt)
-                    await self._result(result.task_id, "done", result.detail)
-                else:
-                    reason = result.detail or "the worker did not finish"
-                    state.block(result.task_id, reason)
-                    await self._result(result.task_id, "stuck", reason)
+            state.accept(result.task_id, attempt)
+            await self._result(result.task_id, "done", result.detail)
+        else:
+            reason = result.detail or "the worker did not finish"
+            state.block(result.task_id, reason)
+            await self._result(result.task_id, "stuck", reason)
+
+    async def _manifest_outcome(self, state: BuildState, rounds: int) -> LoopOutcome:
+        records = state.records
+        if all(r.accepted for r in records):
+            await self._report(
+                f"✔️ All {len(records)} tasks are accepted. Checking the finished work…"
+            )
+            return LoopOutcome(Status.COMPLETE, rounds=rounds)
+        blocked = [r for r in records if r.status is TaskStatus.BLOCKED]
+        if blocked:
+            lines = "; ".join(f"{r.task_id}: {r.reason or 'blocked'}" for r in blocked)
+            await self._report(f"🛑 Stuck — {len(blocked)} task(s) blocked: {lines}")
+            return LoopOutcome(Status.STUCK, f"blocked: {lines}", rounds)
+        waiting = [r.task_id for r in records if not r.accepted]
+        detail = "nothing is ready and nothing is running: " + ", ".join(waiting)
+        await self._report(f"🛑 {detail}")
+        return LoopOutcome(Status.STUCK, detail, rounds)
 
     async def _run_plan_check(self) -> list[str]:
         """The bot's own check after a claimed DONE — trust proof, not words."""
@@ -695,7 +732,7 @@ class TaskLoop:
         self._stop = False
 
     async def run(self) -> LoopOutcome:
-        if self._manifest_dispatch is not None and self.state_path is not None:
+        if self._manifest_worker is not None and self.state_path is not None:
             try:
                 text = self.plan_path.read_text(encoding="utf-8", errors="replace")
             except OSError:

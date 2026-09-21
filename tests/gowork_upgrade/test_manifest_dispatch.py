@@ -8,6 +8,7 @@ dependent task waits for its prerequisite's acceptance.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -34,22 +35,29 @@ def plan(tmp_path: Path) -> Path:
 
 
 class FakeDispatch:
+    """One worker per task; `rounds` groups the tasks that were started together."""
+
     def __init__(self, fail: set[str] = frozenset()) -> None:  # type: ignore[assignment]
         self.rounds: list[list[str]] = []
         self.fail = set(fail)
+        self._tick: int | None = None
 
-    async def __call__(self, tasks: list[ReadyTask]) -> list[ManifestResult]:
-        self.rounds.append([t.task_id for t in tasks])
-        return [
-            ManifestResult(
-                task_id=t.task_id,
-                ok=t.task_id not in self.fail,
-                detail="" if t.task_id not in self.fail else "the tests failed",
-                commit=f"c-{t.task_id}" if t.task_id not in self.fail else None,
-                checks=("pytest: passed",),
-            )
-            for t in tasks
-        ]
+    async def __call__(self, task: ReadyTask) -> ManifestResult:
+        loop = asyncio.get_running_loop()
+        tick = loop.time()
+        if self._tick is None or tick - self._tick > 0.005:
+            self.rounds.append([])
+        self._tick = tick
+        self.rounds[-1].append(task.task_id)
+        await asyncio.sleep(0.01)
+        ok = task.task_id not in self.fail
+        return ManifestResult(
+            task_id=task.task_id,
+            ok=ok,
+            detail="" if ok else "the tests failed",
+            commit=f"c-{task.task_id}" if ok else None,
+            checks=("pytest: passed",),
+        )
 
 
 def _loop(plan: Path, tmp_path: Path, dispatch: FakeDispatch, **kwargs: object) -> TaskLoop:
@@ -70,7 +78,7 @@ def _loop(plan: Path, tmp_path: Path, dispatch: FakeDispatch, **kwargs: object) 
         run_round=run_round,
         ask=ask,
         report=report,
-        manifest_dispatch=dispatch,
+        manifest_worker=dispatch,
         state_path=tmp_path / "state" / "build.json",
         build_id="thread-1",
         **kwargs,  # type: ignore[arg-type]

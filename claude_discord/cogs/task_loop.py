@@ -968,7 +968,7 @@ class TaskLoopCog(commands.Cog):
             review=lambda step, base: self._review_step(holder[0], step, base),
             run_group=lambda steps: self._run_group(holder[0], steps),
             max_parallel=parallel_limit,
-            manifest_dispatch=lambda tasks: self._dispatch_manifest(holder[0], tasks),
+            manifest_worker=lambda task: self._run_manifest_task(holder[0], task),
             state_path=self._store.path.with_name("builds") / f"{record.build_id}.json",
             build_id=record.build_id,
         )
@@ -2364,10 +2364,14 @@ class TaskLoopCog(commands.Cog):
                 running.project_copies[top] = copy
         return copy, rel
 
-    async def _dispatch_manifest(
-        self, running: _Running, tasks: list[ReadyTask]
-    ) -> list[ManifestResult]:
-        """Run each ready manifest task in its own side copy and worker thread (T11b)."""
+    async def _run_manifest_task(self, running: _Running, task: ReadyTask) -> ManifestResult:
+        """Run one manifest task in its own side copy and worker thread (T11b, T13).
+
+        The loop saves the result the moment this returns and starts the next ready
+        task while siblings are still working. A worker that fails keeps its side copy
+        (uncombined work is retained for repair); a cancelled worker leaves the loop to
+        record its attempt as it was.
+        """
         assert running.copy is not None
         chat = self._chat()
         settings = getattr(chat, "_backend_settings", None)
@@ -2430,14 +2434,20 @@ class TaskLoopCog(commands.Cog):
             status, detail = parse_status(result.get("text"))
             ok = status == Status.DONE
             async with running.git_lock:
-                landed = ok and await side_has_new_work(project_copy, side)
-                landed = landed and await merge_side_copy(project_copy, side)
+                has_work = ok and await side_has_new_work(project_copy, side)
+                landed = has_work and await merge_side_copy(project_copy, side)
                 commit = await head_commit(project_copy.path) if landed else None
-                if not landed:
-                    await remove_side_copy(project_copy, side)
+                if ok and not has_work:
+                    await remove_side_copy(project_copy, side)  # nothing there to keep
             reason = detail or result.get("error") or ""
-            if ok and not landed:
+            if ok and not has_work:
                 reason = reason or "the worker reported DONE but committed no new work"
+            elif has_work and not landed:
+                reason = reason or "the work did not combine with the build's copy"
+            elif not ok:
+                reason = (
+                    reason or "the worker did not finish"
+                ) + f" (its work is kept at {side.path})"
             await self._record(
                 running,
                 assignment.outcome,
@@ -2454,15 +2464,7 @@ class TaskLoopCog(commands.Cog):
                 checks=(f"worker ran: {assignment.acceptance_check}",) if landed else (),
             )
 
-        outcomes = await asyncio.gather(*(one(t) for t in tasks), return_exceptions=True)
-        results: list[ManifestResult] = []
-        for task, outcome in zip(tasks, outcomes, strict=True):
-            if isinstance(outcome, BaseException):
-                logger.warning("gowork: a manifest task failed to run", exc_info=outcome)
-                results.append(ManifestResult(task.task_id, False, f"it couldn't start: {outcome}"))
-            else:
-                results.append(outcome)
-        return results
+        return await one(task)
 
     async def _run_group(self, running: _Running, steps: list[str]) -> list[tuple[str, bool, str]]:
         """Build *steps* at the same time, each in its own copy and thread, then merge.
