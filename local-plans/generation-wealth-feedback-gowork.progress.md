@@ -16,4 +16,4 @@
   source files were changed to address them.
 - Open note: one source session was still recording, so later tasks must enforce the
   fixed timestamp cutoff recorded in the source index.
-- Commit: recorded in the follow-up bookkeeping commit after this entry was created.
+- Work and completion record commit: `5f92af0`.
