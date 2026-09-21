@@ -13,8 +13,13 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from claude_code_core.gowork_contracts import (
     SCENARIOS,
+    CaseResult,
+    ContractError,
+    Evaluation,
     evaluate_cases,
     format_report,
     render_examples,
@@ -165,3 +170,27 @@ def test_the_command_fails_on_a_regression_and_passes_on_the_saved_cases(
     assert contracts_main([str(cases)]) == 1
     out = capsys.readouterr().out
     assert "ownership-conflict: conflicts" in out
+
+
+@pytest.mark.parametrize(
+    "case_id", ["../escape", "sub/dir", "back\slash", "..", ".", "has space", "", "a:b"]
+)
+def test_a_case_id_that_is_not_a_plain_name_never_names_an_output_file(
+    tmp_path: Path, case_id: str
+) -> None:
+    """E2: ``render_examples`` writes ``<case_id>.md``; the id is data from cases.json."""
+    result = CaseResult(case_id=case_id, scenarios=("multiple-projects",), checks=())
+    evaluation = Evaluation(results=(result,), coverage={}, problems=())
+    out = tmp_path / "rendered"
+
+    with pytest.raises(ContractError, match="case id"):
+        render_examples(evaluation, out)
+    assert not (tmp_path / "escape.md").exists() and not list(tmp_path.rglob("*.md"))
+
+    # The loader refuses the same ids up front, so a bad cases.json never evaluates.
+    cases = _copy_cases(tmp_path)
+    document = json.loads((cases / "cases.json").read_text(encoding="utf-8"))
+    document["cases"][0]["id"] = case_id
+    (cases / "cases.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ContractError, match="case id"):
+        evaluate_cases(cases)
