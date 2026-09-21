@@ -15,7 +15,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..category_scope import category_allowed
-from ..command_surface import CONTROL_CENTER_BUTTONS
+from ..command_surface import CONTROL_CENTER_BUTTONS, retirement_enabled
 from ..database.repository import SessionRepository
 from ..database.settings_repo import SettingsRepository
 from ..discord_ui.session_browser import (
@@ -625,6 +625,16 @@ class ProjectLauncherCog(commands.Cog):
     def control_row(self) -> ControlRowView:
         return self._control_row or ControlRowView(self)
 
+    def panel_view(self) -> discord.ui.View:
+        """The pinned panel's buttons: the old three until retirement is switched on.
+
+        Task 4.4 removes the old launcher buttons only after recorded
+        acceptance; `CCDB_RETIRE_SUPERSEDED_COMMANDS=1` is that switch.
+        """
+        if retirement_enabled():
+            return self.control_row()
+        return self._view or LauncherView(self)
+
     async def control_content(self) -> str:
         return (
             f"{await self.status_block()}\n"
@@ -1205,11 +1215,11 @@ class ProjectLauncherCog(commands.Cog):
                     with contextlib.suppress(discord.NotFound):
                         message = await channel.fetch_message(int(saved))
                 if message is not None and self.bot.user and message.author.id == self.bot.user.id:
-                    await message.edit(embed=self.embed(), view=self._view or LauncherView(self))
+                    await message.edit(embed=self.embed(), view=self.panel_view())
                 else:
                     message = await channel.send(
                         embed=self.embed(),
-                        view=self._view or LauncherView(self),
+                        view=self.panel_view(),
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                     await self.settings.set(key, str(message.id))

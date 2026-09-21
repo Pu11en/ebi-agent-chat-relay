@@ -22,9 +22,11 @@ ordinary thread under a configured channel does not inherit session commands.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import os
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class SurfaceLocation(Enum):
@@ -199,6 +201,53 @@ def help_sections(location: SurfaceLocation) -> list[tuple[str, list[str]]]:
         f"`/{spec.name}` — {spec.summary}" for spec in FINAL_COMMANDS if location in spec.locations
     ]
     return [("Buttons", buttons), ("Commands", commands)]
+
+
+#: Retirement of superseded commands (task 4.4) is a switch, off by default:
+#: it may only be turned on after the operator has recorded acceptance of the
+#: replacement surface in Discord. It removes registrations only — no service
+#: code and no stored state — so turning it back off restores the old commands.
+RETIREMENT_ENV = "CCDB_RETIRE_SUPERSEDED_COMMANDS"
+#: Comma-separated command names an instance keeps registered despite retirement
+#: (its own custom-cog commands, for example).
+RETIREMENT_KEEP_ENV = "CCDB_RETIREMENT_KEEP"
+
+
+def retirement_enabled(env: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if env is None else env
+    return source.get(RETIREMENT_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def retire_superseded_commands(
+    tree: Any,
+    *,
+    enabled: bool | None = None,
+    keep: Iterable[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Remove every top-level command outside the final eight; returns what was removed.
+
+    ``tree`` is a ``discord.app_commands.CommandTree`` (or anything with
+    ``get_commands()`` and ``remove_command(name)``). With retirement off —
+    the default — nothing is touched.
+    """
+    source = os.environ if env is None else env
+    if enabled is None:
+        enabled = retirement_enabled(source)
+    if not enabled:
+        return []
+    spared = {spec.name for spec in FINAL_COMMANDS}
+    spared.update(name.strip() for name in (keep or ()) if name.strip())
+    spared.update(
+        name.strip() for name in source.get(RETIREMENT_KEEP_ENV, "").split(",") if name.strip()
+    )
+    removed: list[str] = []
+    for command in list(tree.get_commands()):
+        if command.name in spared:
+            continue
+        tree.remove_command(command.name)
+        removed.append(command.name)
+    return removed
 
 
 def _spec_for(command: str) -> CommandSpec | None:

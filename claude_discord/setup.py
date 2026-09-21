@@ -682,6 +682,15 @@ async def setup_bridge(
         # raises deliberately, and the chat path surfaces it on first use.
         logger.exception("Could not register AskCommandCog")
 
+    # Task 4.4: superseded registrations go only after recorded acceptance,
+    # behind CCDB_RETIRE_SUPERSEDED_COMMANDS (off by default). Registration
+    # only — services and stored state stay, so switching it off restores them.
+    from .command_surface import retire_superseded_commands
+
+    retired = retire_superseded_commands(bot.tree)
+    if retired:
+        logger.info("Retired superseded commands: %s", ", ".join(sorted(retired)))
+
     components = BridgeComponents(
         session_repo=session_repo,
         task_repo=task_repo,

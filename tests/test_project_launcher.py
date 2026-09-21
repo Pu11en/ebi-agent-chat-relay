@@ -976,6 +976,22 @@ async def test_sessions_close_uses_the_lifecycle_with_the_users_authority(cog):
     assert "closed" in event.followup.send.call_args.args[0].lower()
 
 
+# ---------------------------------------------------------------------------
+# discord-command-surface 4.4 (code part, behind the retirement switch)
+# ---------------------------------------------------------------------------
+
+
+async def test_pinned_panel_keeps_old_buttons_until_retirement_is_switched_on(cog, monkeypatch):
+    monkeypatch.delenv("CCDB_RETIRE_SUPERSEDED_COMMANDS", raising=False)
+    assert {b.label for b in cog.panel_view().children} == {
+        "Favorite folders",
+        "New session",
+        "Resume",
+    }
+    monkeypatch.setenv("CCDB_RETIRE_SUPERSEDED_COMMANDS", "1")
+    assert [b.label for b in cog.panel_view().children] == ["New session", "Sessions", "Settings"]
+
+
 async def test_sessions_close_without_a_lifecycle_service_declines_safely(cog):
     cog.repo.delete = AsyncMock()
     event = interaction()
