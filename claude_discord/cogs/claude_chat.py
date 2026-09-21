@@ -115,7 +115,7 @@ class ClaudeChatCog(commands.Cog):
         bot: ClaudeDiscordBot,
         repo: SessionRepository,
         runner: SessionBackend,
-        max_concurrent: int = 3,
+        max_concurrent: int = 10,
         allowed_user_ids: set[int] | None = None,
         registry: SessionRegistry | None = None,
         dashboard: ThreadStatusDashboard | None = None,

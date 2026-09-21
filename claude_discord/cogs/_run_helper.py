@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Global session slot limiter
 # ---------------------------------------------------------------------------
 _global_semaphore: asyncio.Semaphore | None = None
-_max_concurrent: int = 3
+_max_concurrent: int = 10
 _pr_completion_gate: GitHubPrCompletionGate | None = None
 
 

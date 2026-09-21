@@ -350,11 +350,11 @@ async def setup_bridge(
     if thread_context_days != DEFAULT_DAYS:
         logger.info("Thread context window: %d day(s)", thread_context_days)
 
-    # Max concurrent sessions — fall back to MAX_CONCURRENT_SESSIONS env var, then 3
+    # Max concurrent sessions — fall back to MAX_CONCURRENT_SESSIONS env var, then 10
     if max_concurrent is None:
         _env_max = os.getenv("MAX_CONCURRENT_SESSIONS", "")
-        max_concurrent = int(_env_max) if _env_max.isdigit() else 3
-    if max_concurrent != 3:
+        max_concurrent = int(_env_max) if _env_max.isdigit() else 10
+    if max_concurrent != 10:
         logger.info("Max concurrent sessions: %d", max_concurrent)
 
     from .cogs._run_helper import configure_pr_completion_gate, configure_session_limit
