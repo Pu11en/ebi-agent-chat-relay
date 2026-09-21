@@ -153,7 +153,7 @@ new code merely because this build edits it. Report that boundary honestly.
     thread never touches another build. Proof: repeated POST returns the same thread and
     the ledger shows one attempt per task.
 
-- [ ] T12: Execution spine, only after T11: issue compact persisted worker handoffs.
+- [x] T12: Execution spine, only after T11: issue compact persisted worker handoffs.
   Scope: existing handoff contract adapter and worker prompt. Supply only assignment,
   goal, saved decisions, required input evidence and expected result, not all chat history.
   Proof: duplicate delivery uses the same attempt; worker gets complete input/ownership;

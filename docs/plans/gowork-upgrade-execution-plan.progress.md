@@ -284,3 +284,34 @@
   `pyright` on both touched modules (0 errors).
 
 T11 is complete (T11a–T11c).
+
+## T12 — Compact persisted worker handoffs
+
+- Handoff contract inspection (read-only, this repo): the bot-to-bot contract is
+  `claude_code_core/handoffs/protocol.py` (`HandoffTask`: sender/recipient agent ids, origin and
+  reply `ConversationCoordinate`s, `ProjectLocator`, `AuthorityScope`, goal, expected result,
+  bounded text, UUID task ids) carried through Discord as a `CCDB_HANDOFF_V1` JSON envelope
+  (`claude_discord/handoff_messages.py`) and executed by `handoff_executor.py` for the project
+  lookup use case. It moves a job *between two agents*; a Go Work worker is the same bot, one
+  build, one attempt, on this host. Re-using the packet would require inventing a sender /
+  recipient pair and posting envelopes into worker threads — a second use of the format, not a
+  fit. So no envelope is posted and no competing message format exists: the worker handoff is a
+  local file that follows the packet's rules (bounded fields, stable identity, no transcript).
+- New `claude_code_core/gowork_handoff.py`: `WorkerHandoff` (attempt id, task/plan ids and
+  version, project dir, goal, outcome, owned files/resources, required inputs, **input
+  evidence** = each dependency's accepted commit and check output from the ledger, expected
+  output, acceptance check, source requirement, saved decisions, created_at);
+  `plan_decisions()` reads the plan's `## Decisions` list; `build_handoff()` needs a running
+  attempt; `persist_handoff()` writes `<builds>/<build_id>/handoffs/<attempt>.json` once and
+  returns the existing file on a second delivery; `render_worker_prompt()` is the worker's
+  entire briefing (no chat history) and names the saved file.
+- Cog: `_dispatch_manifest()` builds and persists the handoff *before* spawning the worker and
+  renders the prompt from it; the interim T11b prompt helper is gone.
+- Tests: `tests/gowork_upgrade/test_worker_handoff.py` (5: decisions parsing; assignment +
+  goal + decisions + evidence; duplicate delivery reuses the file and a retry gets a new one;
+  the prompt comes from the handoff alone; a pending attempt is refused);
+  `test_manifest_build_cog.py` now checks one handoff file per attempt and that the website
+  page's prompt carried product's evidence.
+- Implementation commit: `1d164d0`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (408 passed), `ruff check`,
+  `ruff format --check`, `pyright` on the touched modules (0 errors).
