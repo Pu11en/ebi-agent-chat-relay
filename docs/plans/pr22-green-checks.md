@@ -61,13 +61,29 @@ and only after Drew says yes (GitHub is always last).
   Note: #1 was the only high open on the default-branch analysis; #10–#12 appear on the
   PR merge analysis (all three confirmed via the SARIF data-flow paths).
 
-- [ ] 5. CodeQL medium alerts — log injection and redirects. Log-injection at
+- [x] 5. CodeQL medium alerts — log injection and redirects. Log-injection at
   `claude_discord/ext/api_server.py:942,1376,1476,3433,3434` and
   `claude_code_core/lounge_repo.py:89`: strip CR/LF from request-supplied values before logging.
   Research: CodeQL only recognises an inline `.replace("\r", "").replace("\n", "")` at the
   log call, not a helper function (unless a custom model pack is added), so do it inline. URL redirection at `claude_discord/ext/api_server.py:733`:
   only redirect to relative paths / same origin, with a test; `tests/test_agui_backend.py:388`
   is test code — adjust or mark for dismissal.
+
+  Verdicts (CodeQL medium alerts):
+  - Log injection, `api_server.py` (task-register name, relay-delivery log, claim-denied
+    log, resume-mark log) and `claude_code_core/lounge_repo.py:89` (lounge label) — FIXED:
+    every request-supplied value is now stripped inline at the log call with
+    `.replace("\r", "").replace("\n", "")` (CodeQL does not recognise the `_sanitize_log`
+    helper; the inline form it does recognise). Behaviour was already safe at the int-only
+    sites; the inline form makes that visible to the scanner.
+  - URL redirection, `api_server.py` GET /obsidian — FIXED: the `vault` and `file` query
+    values are regex-validated (no CR/LF, `:`, `&`, `?`, `%`) and the final
+    `obsidian://open?...` target is fullmatch-validated before the redirect; hostile
+    params now get a 400. Covered by `tests/test_api_log_sanitization.py`.
+  - `tests/test_agui_backend.py:388` — KEEP, dismiss as "used in tests": the test
+    deliberately raises a 302 to its own localhost fixture server to prove the AG-UI
+    client refuses to follow redirects while carrying an Authorization header; the
+    target is not user-controlled.
 
 - [ ] 6. Full local gate. Default Python: `scripts/test-clean-env.sh`,
   `uv run ruff check`, `uv run ruff format --check`, `uv run pyright claude_discord/`; then the

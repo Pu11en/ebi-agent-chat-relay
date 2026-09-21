@@ -218,6 +218,12 @@ _UNSAFE_FILENAME_RE = re.compile(r"[^\w.\-]+")
 # "<parent-thread>:<slug>"), so the shape is loose but bounded and path-safe.
 _CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,119}$")
 _THREAD_META_KEY = "thread_meta:{thread_id}"
+
+# GET /obsidian redirect hardening: the two query values fully control the
+# redirect target, so each part must be free of CR/LF (header/log injection),
+# ":" (scheme smuggling) and URL delimiters before it is embedded.
+_OBSIDIAN_PART_RE = re.compile(r"[^\r\n:&?%]+")
+_OBSIDIAN_TARGET_RE = re.compile(r"obsidian://open\?vault=[^&\r\n]+&file=[^&\r\n]+")
 _CORRELATION_KEY = "thread_correlation:{correlation_id}"
 
 
@@ -729,7 +735,21 @@ class ApiServer:
             return web.json_response(
                 {"error": "vault and file query parameters are required"}, status=400
             )
+        # The redirect target is fully controlled by these two query values, so
+        # reject anything that could break out of the intended obsidian:// form:
+        # CR/LF (header/log injection), ":" (scheme smuggling), and the URL
+        # delimiters "&", "?" and "%" (query-structure rewriting).
+        if (
+            _OBSIDIAN_PART_RE.fullmatch(vault) is None
+            or _OBSIDIAN_PART_RE.fullmatch(file_path) is None
+        ):
+            return web.json_response(
+                {"error": "vault and file must not contain control or URL delimiter characters"},
+                status=400,
+            )
         target = f"obsidian://open?vault={quote(vault, safe='')}&file={quote(file_path, safe='')}"
+        if _OBSIDIAN_TARGET_RE.fullmatch(target) is None:
+            return web.json_response({"error": "invalid obsidian target"}, status=400)
         raise web.HTTPFound(location=target)
 
     async def notify(self, request: web.Request) -> web.Response:
@@ -939,7 +959,11 @@ class ApiServer:
             logger.warning("Failed to create task: %s", exc)
             return web.json_response({"error": "Task name already exists"}, status=409)
 
-        logger.info("Task registered via API: id=%d, name=%s", task_id, _sanitize_log(data["name"]))
+        logger.info(
+            "Task registered via API: id=%d, name=%s",
+            task_id,
+            str(data["name"]).replace("\r", "").replace("\n", ""),
+        )
         return web.json_response({"status": "created", "id": task_id}, status=201)
 
     async def list_tasks(self, request: web.Request) -> web.Response:
@@ -1371,10 +1395,10 @@ class ApiServer:
         )
         logger.info(
             "Relayed message: thread %s → thread %s (mode=%s, hop=%s)",
-            from_thread,
-            thread_id,
-            mode,
-            hop,
+            str(from_thread).replace("\r", "").replace("\n", ""),
+            str(thread_id).replace("\r", "").replace("\n", ""),
+            str(mode).replace("\r", "").replace("\n", ""),
+            str(hop).replace("\r", "").replace("\n", ""),
         )
         return web.json_response(
             {
@@ -1473,9 +1497,9 @@ class ApiServer:
         if not acquired:
             logger.info(
                 "Claim denied: %s wanted by thread %s, held by thread %s",
-                _sanitize_log(resource),
-                thread_id,
-                claim.thread_id,
+                resource.replace("\r", "").replace("\n", ""),
+                str(thread_id).replace("\r", "").replace("\n", ""),
+                str(claim.thread_id).replace("\r", "").replace("\n", ""),
             )
             return web.json_response(
                 {"status": "held", "claim": self._claim_json(claim)},
@@ -3430,8 +3454,8 @@ class ApiServer:
         logger.info(
             "Thread %d marked for resume (reason=%s, session_id=%s)",
             thread_id,
-            _sanitize_log(reason),
-            _sanitize_log(session_id),
+            str(reason).replace("\r", "").replace("\n", ""),
+            str(session_id).replace("\r", "").replace("\n", ""),
         )
         return web.json_response({"status": "marked", "id": row_id}, status=201)
 

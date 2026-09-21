@@ -143,3 +143,40 @@ Left open: `tests/test_setup.py` has 2 pre-existing failures
 fail identically with this task's changes stashed — not introduced here; task
 6's full gate will need to look at them. Alert #10 needs Drew's yes before it
 is dismissed on GitHub (per the build rules).
+
+## 5: CodeQL medium alerts — log injection and redirects
+
+What changed:
+
+- `claude_discord/ext/api_server.py`: the four flagged log calls (task-register
+  name, relayed-message delivery, claim-denied, resume-mark) now strip CR/LF
+  inline at the log call with `.replace("\r", "").replace("\n", "")` — CodeQL
+  does not recognise the `_sanitize_log` helper, only the inline form. The
+  int-only sites were already safe; this makes it visible to the scanner.
+- `claude_code_core/lounge_repo.py`: the "Lounge message posted by" log now
+  strips CR/LF inline from the label (was `%r`, which escapes but is not
+  recognised as a sanitizer).
+- `claude_discord/ext/api_server.py` GET `/obsidian`: the `vault`/`file` query
+  values are regex-validated (reject CR/LF, `:`, `&`, `?`, `%` → 400) and the
+  assembled `obsidian://open?...` target is fullmatch-validated before the
+  redirect.
+- New `tests/test_api_log_sanitization.py` (5 tests). TDD note: the two
+  redirect-rejection tests were RED before the fix (hostile params got a 302);
+  the three log tests passed before and after — those sites were already
+  functionally safe, the code change is scanner visibility, so they are guard
+  tests.
+
+Verdict for `tests/test_agui_backend.py:388`: keep, dismiss as "used in tests"
+(the test's redirect target is its own localhost fixture server, not
+user-controlled; it exists to prove the client refuses redirects with an
+Authorization header).
+
+Proof:
+
+- `uv run pytest tests/test_api_log_sanitization.py` → 5 passed (redirect tests
+  RED → GREEN across the fix).
+- `uv run pytest tests/test_api_server.py tests/test_agui_backend.py` →
+  155 passed; claims/lounge/context-links suites → 110 passed.
+- `uv run pyright claude_discord/` → 0 errors, 0 warnings.
+- Plan `Check:` (`scripts/pr22-gate.sh`) → `386 passed`, `All checks passed!`
+  (ruff), `529 files already formatted`.
