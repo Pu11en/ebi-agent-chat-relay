@@ -27,11 +27,11 @@ def main() -> int:
         return subprocess.run(
             [sys.executable, "-m", "pytest", *map(str, sorted(tests)), "-q"],
             cwd=root,
-            timeout=105,
+            timeout=300,  # real git worktrees in the cog tests are slow on Windows
             check=False,
         ).returncode
     except subprocess.TimeoutExpired:
-        print("Go Work checks exceeded 105 seconds", file=sys.stderr)
+        print("Go Work checks exceeded 300 seconds", file=sys.stderr)
         return 1
 
 
