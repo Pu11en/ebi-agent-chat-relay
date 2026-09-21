@@ -57,12 +57,15 @@ from claude_code_core.task_loop import (
     LoopOutcome,
     ManifestResult,
     Status,
+    TaskContext,
     TaskLoop,
     _is_repairable,
     append_fix_task,
     append_tasks,
     checker_prompt,
     clear_reply,
+    constrain_groups,
+    contexts_for_steps,
     count_tasks,
     finished_checks,
     first_unchecked,
@@ -75,6 +78,7 @@ from claude_code_core.task_loop import (
     merge_open_tasks,
     missing_steps_prompt,
     needs_you,
+    open_task_contexts,
     open_tasks,
     parallel_prompt,
     parked_choice,
@@ -861,7 +865,7 @@ class TaskLoopCog(commands.Cog):
             )
             self._store.save(record)
             plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
-            groups = await self._groups_for(open_tasks(plan_text))
+            groups = await self._groups_for(open_tasks(plan_text), open_task_contexts(plan_text))
             self._launch(record, thread, report_target)
             self._running[record.build_id].groups = groups  # set before the loop's first step
             with contextlib.suppress(discord.HTTPException):
@@ -2506,19 +2510,36 @@ class TaskLoopCog(commands.Cog):
         ]
         return [b for b in bullets if b][:3]
 
-    async def _groups_for(self, steps: list[str]) -> list[list[str]]:
-        """Ask the quick AI which of *steps* can be built at the same time."""
+    async def _groups_for(
+        self, steps: list[str], contexts: list[TaskContext] | None = None
+    ) -> list[list[str]]:
+        """Ask the quick AI which of *steps* can be built at the same time.
+
+        With *contexts* (T28) the AI sees each step's prerequisites, inputs and
+        ownership, and its answer is constrained by them before it is kept.
+        """
         if len(steps) < 2:
             return [[s] for s in steps]
-        reply = await self._quick_ai(group_prompt(steps))
-        return [[steps[i] for i in g] for g in parse_groups(reply, len(steps))]
+        reply = await self._quick_ai(group_prompt(steps, contexts))
+        groups = [[steps[i] for i in g] for g in parse_groups(reply, len(steps))]
+        return constrain_groups(groups, contexts) if contexts else groups
+
+    @staticmethod
+    def _contexts(running: _Running) -> list[TaskContext]:
+        """The open tasks of the build's plan with their details (T28); [] on any trouble."""
+        if running.copy is None:
+            return []
+        try:
+            return open_task_contexts(running.copy.plan_path.read_text(encoding="utf-8"))
+        except OSError:
+            return []
 
     async def _next_group(self, running: _Running, steps: list[str]) -> list[str]:
         """The group the first open step belongs to (asks again after plan changes)."""
         for group in running.groups:
             if group and group[0] == steps[0] and all(s in steps for s in group):
                 return group
-        running.groups = await self._groups_for(steps)
+        running.groups = await self._groups_for(steps, self._contexts(running))
         return next((g for g in running.groups if g and g[0] == steps[0]), steps[:1])
 
     async def _project_copy(self, running: _Running, project_path: Path) -> tuple[WorkCopy, Path]:
@@ -3066,6 +3087,7 @@ class TaskLoopCog(commands.Cog):
         chat = self._chat()
         settings = getattr(chat, "_backend_settings", None)
         parent: Any = getattr(running.thread, "parent", None) or running.report_target
+        contexts = contexts_for_steps(self._contexts(running), steps)
         with contextlib.suppress(discord.HTTPException):
             await running.thread.send(
                 "-# ⚡ Building these at the same time: " + "; ".join(short_label(s) for s in steps)
@@ -3100,7 +3122,7 @@ class TaskLoopCog(commands.Cog):
             await chat.run_fresh_turn(
                 seed,
                 sub,
-                parallel_prompt(copy.plan_path, step),
+                parallel_prompt(copy.plan_path, step, contexts[index]),
                 working_dir=str(side.path),
                 result_sink=sink,
                 slot_kind="task",

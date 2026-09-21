@@ -475,6 +475,15 @@ def _shared_file(first: str, second: str) -> str | None:
     return first if len(first_parts) >= len(second_parts) else second
 
 
+def owned_paths_overlap(first: str, second: str) -> bool:
+    """Whether two owned paths name the same file, or one contains the other.
+
+    The same rule the manifest's ownership conflicts use, for callers that
+    hold plain path strings (a checkbox plan's ``Files:`` lines, T28).
+    """
+    return _shared_file(first, second) is not None
+
+
 def _validate_coverage(
     requirements: tuple[Requirement, ...], tasks: tuple[TaskAssignment, ...]
 ) -> None:

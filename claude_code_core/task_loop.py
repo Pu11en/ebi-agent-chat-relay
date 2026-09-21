@@ -43,7 +43,12 @@ from claude_code_core.gowork_friction import (
     friction_report,
     read_friction,
 )
-from claude_code_core.gowork_plan import PlanValidationError, has_manifest, load_plan_tree
+from claude_code_core.gowork_plan import (
+    PlanValidationError,
+    has_manifest,
+    load_plan_tree,
+    owned_paths_overlap,
+)
 from claude_code_core.gowork_prompts import COMMUNICATION_RULES
 from claude_code_core.gowork_report import render_completion, render_progress
 from claude_code_core.gowork_schedule import ReadyTask, ready_tasks
@@ -156,6 +161,204 @@ def _task_blocks(lines: list[str]) -> list[tuple[int, int, bool, str]]:
         blocks.append((i, j, m.group(1) != " ", m.group(2).strip()))
         i = j
     return blocks
+
+
+@dataclass(frozen=True)
+class TaskContext:
+    """One open checkbox task with the details written under it (T28).
+
+    The indented ``Depends on`` / ``Inputs`` / ``Files`` / ``Resources`` /
+    ``Result`` / ``Verify`` lines (what T27 exports, what the plan template
+    asks for) travel with the label into grouping and worker prompts, and
+    the declared ownership and prerequisites are enforced in code before a
+    group runs. A task with no such lines is just its label, as before.
+    """
+
+    label: str
+    task_id: str | None = None
+    depends_on: tuple[str, ...] = ()
+    inputs: tuple[str, ...] = ()
+    files: tuple[str, ...] = ()
+    resources: tuple[str, ...] = ()
+    result: str = ""
+    verify: str = ""
+    #: Every indented line under the checkbox, as written.
+    details: tuple[str, ...] = ()
+
+    @property
+    def owns_anything(self) -> bool:
+        return bool(self.files or self.resources)
+
+    def context_lines(self) -> list[str]:
+        """The task's details as short ``key: value`` lines (nothing invented)."""
+        lines: list[str] = []
+        if self.depends_on:
+            lines.append("depends on: " + "; ".join(self.depends_on))
+        if self.inputs:
+            lines.append("inputs: " + "; ".join(self.inputs))
+        if self.files:
+            lines.append("owns: " + ", ".join(self.files))
+        if self.resources:
+            lines.append("owns resources: " + ", ".join(self.resources))
+        if self.result:
+            lines.append("result: " + self.result)
+        if self.verify:
+            lines.append("verify: " + self.verify)
+        return lines
+
+    def summary(self) -> str:
+        return "; ".join(self.context_lines())
+
+    def depends_on_labels(self, contexts: list[TaskContext]) -> tuple[int, ...]:
+        """Which of *contexts* this task's ``Depends on`` lines name (by index).
+
+        A dependency names a task by its backticked id when it has one, else
+        by its label; a task never depends on itself.
+        """
+        found: list[int] = []
+        for dependency in self.depends_on:
+            for index, other in enumerate(contexts):
+                if other is self or index in found:
+                    continue
+                if other.task_id is not None and f"`{other.task_id}`" in dependency:
+                    found.append(index)
+                    break
+            else:
+                for index, other in enumerate(contexts):
+                    if other is self or index in found:
+                        continue
+                    if dependency == other.label or other.label in dependency:
+                        found.append(index)
+                        break
+        return tuple(found)
+
+
+_CONTEXT_KEY_RE = re.compile(r"^\s*\**([A-Za-z][A-Za-z ]{0,20}?)\**\s*:\s*(.*?)\s*$")
+_LIST_KEYS = {
+    "depends on": "depends_on",
+    "needs": "depends_on",
+    "after": "depends_on",
+    "inputs": "inputs",
+    "input": "inputs",
+    "files": "files",
+    "owns": "files",
+    "resources": "resources",
+}
+_TEXT_KEYS = {"result": "result", "output": "result", "verify": "verify", "task": "task_id"}
+
+
+def _split_items(value: str, separators: str) -> tuple[str, ...]:
+    if value.strip().lower() in ("", "none", "-", "n/a"):
+        return ()
+    parts = re.split(f"[{separators}]", value)
+    return tuple(p.strip().strip("`").strip() for p in parts if p.strip().strip("`").strip())
+
+
+def open_task_contexts(plan_text: str) -> list[TaskContext]:
+    """Every unticked task with its indented details, in plan order."""
+    lines = plan_text.splitlines()
+    contexts: list[TaskContext] = []
+    for start, end, ticked, label in _task_blocks(lines):
+        if ticked:
+            continue
+        details = tuple(line.strip() for line in lines[start + 1 : end] if line.strip())
+        fields: dict[str, object] = {}
+        for detail in details:
+            m = _CONTEXT_KEY_RE.match(detail)
+            if m is None:
+                continue
+            key, value = m.group(1).strip().lower(), m.group(2)
+            if key in _LIST_KEYS:
+                separators = ";" if _LIST_KEYS[key] in ("depends_on", "inputs") else ",;"
+                fields[_LIST_KEYS[key]] = _split_items(value, separators)
+            elif key in _TEXT_KEYS:
+                text = value.strip()
+                if key == "task":
+                    fields["task_id"] = text.split(" ", 1)[0].strip("`") or None
+                else:
+                    fields[_TEXT_KEYS[key]] = text
+        contexts.append(TaskContext(label=label, details=details, **fields))  # type: ignore[arg-type]
+    return contexts
+
+
+def contexts_for_steps(contexts: list[TaskContext], steps: list[str]) -> list[TaskContext | None]:
+    """One context per step, by label and occurrence: the second "Update the config"
+    in *steps* is the second such task in the plan, never the first again."""
+    used: set[int] = set()
+    matched: list[TaskContext | None] = []
+    for step in steps:
+        found = None
+        for index, context in enumerate(contexts):
+            if context.label == step and index not in used:
+                used.add(index)
+                found = context
+                break
+        matched.append(found)
+    return matched
+
+
+def _contexts_conflict(first: TaskContext, second: TaskContext, any_declared: bool) -> bool:
+    """Whether two tasks may not run together on what they declare.
+
+    With no ownership declared anywhere the suggestion stands, as before. Once
+    any task declares ownership, a task that declares none has unknown
+    ownership and runs alone; two declared owners conflict when a file or
+    folder contains the other's or a resource is shared.
+    """
+    if not any_declared:
+        return False
+    if not first.owns_anything or not second.owns_anything:
+        return True
+    if any(owned_paths_overlap(a, b) for a in first.files for b in second.files):
+        return True
+    return bool(set(first.resources) & set(second.resources))
+
+
+def constrain_groups(groups: list[list[str]], contexts: list[TaskContext]) -> list[list[str]]:
+    """Enforce declared prerequisites and ownership on a suggested grouping.
+
+    The suggestion is advisory: a step joins a group only when every task it
+    depends on sits in an earlier group and it owns nothing in common with
+    the steps already in the group; otherwise it runs on its own, later.
+    Every open step comes out exactly once — duplicates and unknown names are
+    dropped, missing steps are appended alone — so nothing is lost to a bad
+    answer. With no details declared anywhere the suggestion is returned as is.
+    """
+    any_declared = any(c.owns_anything for c in contexts)
+    placed: set[int] = set()
+    result: list[list[int]] = []
+    used: set[int] = set()
+
+    def index_of(label: str) -> int | None:
+        for index, context in enumerate(contexts):
+            if context.label == label and index not in used:
+                used.add(index)
+                return index
+        return None
+
+    for group in groups:
+        indices = sorted(i for label in group if (i := index_of(label)) is not None)
+        current: list[int] = []
+        held: list[int] = []
+        for index in indices:
+            deps = contexts[index].depends_on_labels(contexts)
+            blocked = any(dep not in placed for dep in deps)
+            conflict = any(
+                _contexts_conflict(contexts[index], contexts[other], any_declared)
+                for other in current
+            )
+            (held if blocked or conflict else current).append(index)
+        if current:
+            result.append(current)
+            placed.update(current)
+        for index in held:
+            result.append([index])
+            placed.add(index)
+    for index in range(len(contexts)):
+        if index not in placed:
+            result.append([index])
+            placed.add(index)
+    return [[contexts[i].label for i in group] for group in result]
 
 
 def merge_open_tasks(copy_text: str, old_real: str, new_real: str) -> str | None:
@@ -902,7 +1105,13 @@ class TaskLoop:
         except Exception:
             logger.warning("task loop: grouping steps failed", exc_info=True)
             return []
-        return [s for s in group if s not in self._solo][: max(1, self._max_parallel())]
+        # The suggestion is advisory (T28): declared prerequisites and ownership are
+        # enforced here against what is open right now, and a group that skips the
+        # first open step is no group — that step runs alone, as it always did.
+        suggested = [s for s in group if s not in self._solo]
+        allowed = constrain_groups([suggested], open_task_contexts(text))
+        first = allowed[0] if allowed and steps[0] in allowed[0] else []
+        return first[: max(1, self._max_parallel())]
 
     def add_note(self, text: str) -> None:
         """Something the person typed mid-task; the next round reads it."""
@@ -1211,16 +1420,35 @@ def parse_pick(reply: str | None, count: int) -> int | None:
 MAX_PARALLEL = 10
 
 
-def group_prompt(open_steps: list[str]) -> str:
-    """Ask a quick AI which open steps can be built at the same time."""
+def group_prompt(open_steps: list[str], contexts: list[TaskContext] | None = None) -> str:
+    """Ask a quick AI which open steps can be built at the same time.
+
+    With *contexts* (one per step, T28) each step shows what it depends on,
+    consumes, owns and must produce — titles alone cannot tell two "Update
+    the config" steps apart. The answer stays advisory; see
+    :func:`constrain_groups`.
+    """
+    if contexts is not None and len(contexts) != len(open_steps):
+        contexts = None
     lines = [
         "These are the steps still to do in a software build, in order. Group the steps "
         "that can be built at the same time by different people: a step can only join "
         "a group if it doesn't need the result of any step in or before that group, and "
         "the steps in a group shouldn't change the same files. When unsure, keep a step "
         "on its own. Keep the order.",
-        "",
-        *[f"{i}. {step}" for i, step in enumerate(open_steps, start=1)],
+    ]
+    if contexts is not None:
+        lines.append(
+            "Each step lists what it depends on, its inputs, the files it owns and its "
+            "result. A step that depends on another open step, or owns the same file or "
+            "folder as another step, must not share a group with it."
+        )
+    lines.append("")
+    for i, step in enumerate(open_steps, start=1):
+        lines.append(f"{i}. {step}")
+        if contexts is not None:
+            lines += [f"   {line}" for line in contexts[i - 1].context_lines()]
+    lines += [
         "",
         "Answer with one line only, the step numbers, commas inside a group and | between "
         "groups, e.g. `1,2 | 3 | 4,5`.",
@@ -1247,8 +1475,12 @@ def parse_groups(text: str | None, count: int) -> list[list[int]]:
     return alone
 
 
-def parallel_prompt(plan_path: Path, step: str) -> str:
-    """The prompt for one step of a group that runs at the same time as others."""
+def parallel_prompt(plan_path: Path, step: str, context: TaskContext | None = None) -> str:
+    """The prompt for one step of a group that runs at the same time as others.
+
+    With *context* (T28) the worker is told its prerequisites, inputs, owned
+    files, expected result and check inline — not just the title.
+    """
     parts = [
         "[gowork build worker — for this worker only] You are one of several workers "
         "building steps of a plan at the same time, each in its own copy. You start "
@@ -1266,6 +1498,21 @@ def parallel_prompt(plan_path: Path, step: str) -> str:
         "",
         f"Read the plan for context: {plan_path}",
         f"Do exactly this one step, nothing else: {step}",
+    ]
+    if context is not None:
+        if context.depends_on:
+            parts.append("It builds on (already done): " + "; ".join(context.depends_on))
+        if context.inputs:
+            parts.append("Inputs you can rely on: " + "; ".join(context.inputs))
+        if context.files:
+            parts.append("You may change only these files/folders: " + ", ".join(context.files))
+        if context.resources:
+            parts.append("Resources you own: " + ", ".join(context.resources))
+        if context.result:
+            parts.append(f"Expected result: {context.result}")
+        if context.verify:
+            parts.append(f"Verify — run it and make it pass: {context.verify}")
+    parts += [
         "The other steps are being built right now by others: don't do them, and don't "
         "edit the plan file or its progress log (the bot ticks the box and writes the "
         "note).",
