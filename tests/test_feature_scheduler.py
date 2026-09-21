@@ -251,11 +251,25 @@ class TestTheLivePlan:
 
         ready = compute_ready_set(plan, {"1.1": "integrated"})
 
-        # 1.2, 1.3, 2.1, 2.3, 4.1, 4.3, 4.4 and 5.2 are ticked in the plan (built),
-        # so every task that needed only them is a worker now; the rest still wait
-        # on real dependencies.
-        assert ready.worker_ids == ("2.2", "4.2")
+        # Every box in the plan is ticked (built here or covered by the Go Work
+        # upgrade), so the live plan has nothing left to start and nothing waiting.
+        assert ready.worker_ids == ()
+
+    def test_the_same_plan_with_two_boxes_reopened_starts_only_the_independent_one(
+        self,
+    ) -> None:
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parent.parent
+        plan_path = "openspec/changes/parallel-gowork/tasks.md"
+        text = (repo / plan_path).read_text(encoding="utf-8")
+        reopened = text.replace("- [x] 2.2 ", "- [ ] 2.2 ").replace("- [x] 3.1 ", "- [ ] 3.1 ")
+        assert reopened != text
+        plan = parse_task_graph(reopened, plan_path=plan_path)
+
+        ready = compute_ready_set(plan, {"1.1": "integrated"})
+
+        # 2.2 needs only built tasks, so it is a worker; 3.1 still waits on 2.2.
+        assert ready.worker_ids == ("2.2",)
         assert ready.kind_for("3.1") == "dependency"
-        assert ready.kind_for("5.3") == "dependency"
-        assert "5.1" in ready.blockers_for("5.3")
-        assert "3.4" in ready.blockers_for("5.1")
+        assert "2.2" in ready.blockers_for("3.1")
