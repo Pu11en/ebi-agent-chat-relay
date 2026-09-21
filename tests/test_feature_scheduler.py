@@ -251,11 +251,11 @@ class TestTheLivePlan:
 
         ready = compute_ready_set(plan, {"1.1": "integrated"})
 
-        # 1.2, 1.3, 2.1, 2.3, 4.1 and 4.3 are ticked in the plan (built), so every
-        # task that needed only them is a worker now; the rest still wait on real
-        # dependencies.
+        # 1.2, 1.3, 2.1, 2.3, 4.1, 4.3 and 4.4 are ticked in the plan (built), so
+        # every task that needed only them is a worker now; the rest still wait on
+        # real dependencies.
         assert ready.worker_ids == ("2.2", "4.2")
         assert ready.kind_for("3.1") == "dependency"
         assert ready.kind_for("5.3") == "dependency"
         assert "5.2" in ready.blockers_for("5.3")
-        assert "4.2" in ready.blockers_for("4.4")
+        assert "3.4" in ready.blockers_for("5.1")
