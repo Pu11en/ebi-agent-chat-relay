@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from claude_code_core.context_nudge import (
+    context_label,
     handoff_path,
     handoff_prompt,
     next_thread_name,
@@ -74,17 +75,18 @@ class ContextNudger:
             if step is None:
                 return
             self._offered[thread.id] = step
-            yes = await self._ask(thread, step)
+            yes = await self._ask(thread, step, getattr(record, "backend", None))
             if yes:
                 await self.hand_off(thread)
         except Exception:
             logger.warning("context nudge failed for thread %s", thread.id, exc_info=True)
 
-    async def _ask(self, thread: discord.Thread, step: int) -> bool:
+    async def _ask(self, thread: discord.Thread, step: int, backend: str | None = None) -> bool:
         answer = await DiscordSurface(thread).prompt_choice(
             ChoicePrompt(
                 question=(
-                    f"This session is about {step}% full. Long sessions get slower and "
+                    f"This session is about {context_label(step, backend)} full. "
+                    "Long sessions get slower and "
                     "start forgetting early details. Continue in a fresh session? "
                     "I'll save a handoff first, so nothing is lost."
                 ),

@@ -17,6 +17,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from claude_code_core.context_nudge import context_label
 from claude_code_core.thread_search import ThreadSearchResult, run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
@@ -853,8 +854,9 @@ class SessionManageCog(commands.Cog):
         warning = ratio >= _AUTOCOMPACT_THRESHOLD
         color = COLOR_ERROR if warning else COLOR_INFO
 
+        label = context_label(pct, record.backend)
         lines = [
-            f"`{bar}`  **{pct}%**  ({record.context_used:,} / {record.context_window:,} tokens)",
+            f"`{bar}`  **{label}**  ({record.context_used:,} / {record.context_window:,} tokens)",
             "",
             f"⚡ autocompact threshold: {round(_AUTOCOMPACT_THRESHOLD * 100, 1)}%"
             f" ({distance_to_compact:,} tokens away)",

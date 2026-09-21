@@ -24,6 +24,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from claude_code_core.backend import SessionBackend
+from claude_code_core.context_nudge import context_label
 
 from ..agent_router import parse_agent_routes
 from ..backend_factory import BackendFactory
@@ -963,8 +964,8 @@ class ClaudeChatCog(commands.Cog):
         # view callback once the user confirms a specific turn to rewind to.
         ctx_note = ""
         if record.context_window and record.context_used is not None:
-            pct = round(record.context_used / record.context_window * 100)
-            ctx_note = f" (context {pct}% full)"
+            pct = record.context_used / record.context_window * 100
+            ctx_note = f" (context {context_label(pct, record.backend)} full)"
 
         assert jsonl_path is not None  # guaranteed: turns is non-empty here
         view = RewindSelectView(

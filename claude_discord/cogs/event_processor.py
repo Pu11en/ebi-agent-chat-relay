@@ -28,6 +28,7 @@ from claude_code_core.approvals import (
     permission_result,
     plan_result,
 )
+from claude_code_core.context_nudge import context_label
 from claude_code_core.frontend import (
     ActivitySpec,
     ChoicePrompt,
@@ -125,6 +126,12 @@ def _completion_fields(event: StreamEvent, runner: object) -> tuple[tuple[str, s
         fields.append(("Cost", f"${event.cost_usd:.4f}"))
     if event.input_tokens is not None and event.output_tokens is not None:
         fields.append(("Tokens", f"{event.input_tokens} in · {event.output_tokens} out"))
+    if event.context_window and event.input_tokens is not None:
+        used = (
+            event.input_tokens + (event.cache_read_tokens or 0) + (event.cache_creation_tokens or 0)
+        )
+        pct = min(100.0, used * 100 / event.context_window)
+        fields.append(("Context", context_label(pct, backend, estimated=event.context_estimated)))
     return tuple(fields)
 
 

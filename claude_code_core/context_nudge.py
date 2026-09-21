@@ -19,6 +19,9 @@ from pathlib import Path
 #: offered once per thread, so a "no" stays quiet until the next step.
 NUDGE_STEPS = (50, 75, 90)
 
+#: Backends whose context figure is a characters/4 estimate, not a measurement.
+ESTIMATED_CONTEXT_BACKENDS = frozenset({"dsh"})
+
 _PART_RE = re.compile(r"^(.*?) · part (\d+)$")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MAX_THREAD_NAME = 100
@@ -31,6 +34,14 @@ def nudge_step(used: int | None, window: int | None, already: int) -> int | None
     pct = used * 100 / window
     crossed = [s for s in NUDGE_STEPS if pct >= s and s > already]
     return max(crossed) if crossed else None
+
+
+def context_label(pct: float, backend: str | None, *, estimated: bool = False) -> str:
+    """``"67%"``, or ``"67% (estimate)"`` when the figure was not measured."""
+    label = f"{round(pct)}%"
+    if estimated or (backend or "") in ESTIMATED_CONTEXT_BACKENDS:
+        label += " (estimate)"
+    return label
 
 
 def handoff_path(workdir: Path, thread_name: str, date: str) -> Path:

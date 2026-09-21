@@ -93,6 +93,23 @@ def _make_result_event(**kwargs) -> StreamEvent:
     )
 
 
+def test_completion_fields_show_context_and_label_an_estimate() -> None:
+    """D10b: the Done notice carries the context figure, marked when estimated."""
+    from claude_discord.cogs.event_processor import _completion_fields
+
+    runner = MagicMock()
+    runner.model = "deepseek-v4-flash"
+    exact = _make_result_event(input_tokens=1000, output_tokens=10, context_window=4000)
+    fields = dict(_completion_fields(exact, runner))
+    assert fields["Context"] == "25%"
+
+    estimated = _make_result_event(
+        input_tokens=1000, output_tokens=10, context_window=4000, context_estimated=True
+    )
+    assert dict(_completion_fields(estimated, runner))["Context"] == "25% (estimate)"
+    assert "Context" not in dict(_completion_fields(_make_result_event(), runner))
+
+
 def test_backend_name_does_not_unwrap_arbitrary_mock_attributes() -> None:
     """Only real backend wrappers should have their ``inner`` traversed."""
     assert _backend_name_from_runner(MagicMock()) == "claude"

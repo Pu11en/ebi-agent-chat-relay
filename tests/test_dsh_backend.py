@@ -973,3 +973,63 @@ def test_max_tokens_notice_is_session_less_so_it_renders():
     assert events[0].message_type == MessageType.SYSTEM
     assert events[0].session_id is None
     assert "truncated" in (events[0].text or "")
+
+
+# ── Context estimate (D10b) ─────────────────────────────────
+
+
+class TestContextEstimate:
+    """DSH exposes no usage, so the nudge runs on prompt + reply characters / 4."""
+
+    def test_the_estimate_is_characters_over_four_rounded_up(self):
+        assert dsh_backend.estimate_tokens("") == 0
+        assert dsh_backend.estimate_tokens("abcd") == 1
+        assert dsh_backend.estimate_tokens("abcde") == 2
+
+    def test_the_window_follows_the_model_with_an_env_override(self, monkeypatch):
+        monkeypatch.delenv("CCDB_DSH_CONTEXT_WINDOW", raising=False)
+        assert dsh_backend.context_window_for("deepseek-v4-flash") == 128_000
+        assert dsh_backend.context_window_for("glm-5.3") == 200_000
+        assert dsh_backend.context_window_for("mystery") == dsh_backend.DEFAULT_CONTEXT_WINDOW
+        monkeypatch.setenv("CCDB_DSH_CONTEXT_WINDOW", "64000")
+        assert dsh_backend.context_window_for("deepseek-v4-flash") == 64_000
+        monkeypatch.setenv("CCDB_DSH_CONTEXT_WINDOW", "lots")
+        assert dsh_backend.context_window_for("deepseek-v4-flash") == 128_000
+
+    async def test_the_closing_event_carries_an_accumulating_estimate(self, monkeypatch):
+        runner = DshRunner(model="deepseek-v4-flash")
+        runtime = FakeRuntime(FakeSession())
+        monkeypatch.setattr(runner, "_ensure_runtime", lambda: runtime)
+        session_id, _ = runner._session_for_turn(None, runner._runtime_key())
+        runtime.session.notifications = [_assistant_text(session_id, "y" * 400)]
+
+        first = (await _collect(runner, "x" * 100, session_id))[-1]
+        runtime.session.notifications = [_assistant_text(session_id, "y" * 400)]
+        second = (await _collect(runner, "x" * 100, session_id))[-1]
+
+        assert first.is_complete and first.context_estimated is True
+        assert first.context_window == 128_000
+        prompt_tokens = dsh_backend.estimate_tokens(runner._with_standing_instruction("x" * 100))
+        assert first.input_tokens == prompt_tokens + 100
+        assert second.input_tokens == 2 * (prompt_tokens + 100)
+        assert first.cache_read_tokens is None and first.cache_creation_tokens is None
+
+    async def test_a_fresh_session_starts_its_estimate_at_zero(self, monkeypatch):
+        runner = DshRunner(model="deepseek-v4-flash")
+        monkeypatch.setattr(runner, "_ensure_runtime", lambda: FakeRuntime(FakeSession()))
+
+        first = (await _collect(runner, "x" * 400))[-1]
+        other = (await _collect(runner, "x" * 400))[-1]
+
+        assert first.session_id != other.session_id
+        assert first.input_tokens == other.input_tokens
+
+    async def test_an_error_turn_still_reports_the_estimate(self, monkeypatch):
+        runner = DshRunner(model="deepseek-v4-flash")
+        session = FakeSession(error=RuntimeError("boom"))
+        monkeypatch.setattr(runner, "_ensure_runtime", lambda: FakeRuntime(session))
+
+        final = (await _collect(runner, "hello"))[-1]
+
+        assert final.error and final.context_estimated is True
+        assert final.context_window == 128_000

@@ -18,6 +18,7 @@ def _make_record(
     model: str | None = "sonnet",
     context_window: int | None = None,
     context_used: int | None = None,
+    backend: str | None = None,
 ) -> SessionRecord:
     return SessionRecord(
         thread_id=thread_id,
@@ -26,6 +27,7 @@ def _make_record(
         model=model,
         origin=origin,
         summary=summary,
+        backend=backend,
         context_window=context_window,
         context_used=context_used,
         created_at="2026-02-19 10:00:00",
@@ -180,6 +182,26 @@ class TestContextCommand:
         embed = call_args.kwargs.get("embed")
         assert embed is not None
         assert "67" in embed.description  # 134000/200000 = 67%
+        assert "estimate" not in embed.description.lower()
+
+    async def test_context_on_dsh_is_labelled_an_estimate(self):
+        """D10b: DSH reports no usage, so its figure is characters / 4 — say so."""
+        from claude_discord.cogs.session_manage import SessionManageCog
+
+        bot = MagicMock()
+        repo = MagicMock()
+        repo.get = AsyncMock(
+            return_value=_make_record(context_window=128000, context_used=64000, backend="dsh")
+        )
+        cog = SessionManageCog(bot=bot, repo=repo)
+
+        interaction = _make_thread_interaction()
+        await cog.context_show.callback(cog, interaction)
+
+        embed = interaction.response.send_message.call_args.kwargs.get("embed")
+        assert embed is not None
+        assert "50%" in embed.description
+        assert "estimate" in embed.description.lower()
 
 
 class TestUsageCommand:
