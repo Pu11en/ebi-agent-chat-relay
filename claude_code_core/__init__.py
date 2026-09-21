@@ -75,6 +75,15 @@ from .gowork_plan import (
     parse_plan_tree,
     render_plan_manifest,
 )
+from .gowork_state import (
+    BuildState,
+    StaleAttemptError,
+    TaskAttempt,
+    open_build_state,
+)
+from .gowork_state import (
+    TaskStatus as GoworkTaskStatus,
+)
 from .memory_surface import MemorySurface
 
 # Parser
@@ -175,6 +184,11 @@ __all__ = [
     "PlanIdentity",
     "PlanTree",
     "PlanValidationError",
+    "BuildState",
+    "StaleAttemptError",
+    "TaskAttempt",
+    "GoworkTaskStatus",
+    "open_build_state",
     "Requirement",
     "TaskAssignment",
     "load_plan_tree",
