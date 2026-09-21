@@ -7,6 +7,7 @@ Class-level fixtures with the same name take precedence (pytest scoping rules).
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -53,6 +54,16 @@ def _isolate_operator_statusline(monkeypatch: pytest.MonkeyPatch) -> None:
         "read_statusline_command",
         lambda settings_path=None: original(settings_path) if settings_path else None,
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_capacity_recovery() -> Iterator[None]:
+    """A coordinator installed by one test (e.g. setup_bridge) must not make the
+    next test's scripted "429" wait thirty real seconds for a retry."""
+    yield
+    from claude_discord.cogs import _run_helper
+
+    _run_helper.configure_capacity_recovery(None)
 
 
 @pytest.fixture

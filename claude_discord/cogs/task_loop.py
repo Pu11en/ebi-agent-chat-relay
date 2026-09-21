@@ -33,6 +33,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
+from claude_code_core.capacity import BackendFailure, classify_failure
+from claude_code_core.capacity_policy import FallbackTarget, RecoveryStatus, RecoveryTracker
 from claude_code_core.gowork_blockers import BlockerLedger
 from claude_code_core.gowork_friction import FrictionEvent, append_friction
 from claude_code_core.gowork_handoff import (
@@ -120,7 +122,7 @@ from claude_code_core.work_copy import (
 )
 
 from ..backend_settings import ALL_BACKENDS
-from ._run_helper import parallel_limit, run_capacity_ticks
+from ._run_helper import capacity_coordinator, parallel_limit, run_capacity_ticks
 
 if TYPE_CHECKING:
     from .claude_chat import ClaudeChatCog
@@ -541,6 +543,14 @@ class _Running:
     groups: list[list[str]] = field(default_factory=list)
     #: On a usage limit, switch to this AI by itself instead of asking.
     fallback: tuple[str, str | None] | None = None
+
+
+@dataclass
+class _CapacityWait:
+    """A build's live capacity recovery: the tracker and the one status message."""
+
+    tracker: RecoveryTracker
+    message: discord.Message | None = None
 
 
 def _recap_line(text: str | None) -> str | None:
@@ -3146,8 +3156,37 @@ class TaskLoopCog(commands.Cog):
                 await sub.delete()
         return results
 
+    def _capacity_waits(self) -> dict[int, _CapacityWait]:
+        """Per-build recovery state, keyed by worker thread (created on first use)."""
+        waits: dict[int, _CapacityWait] | None = getattr(self, "_capacity_wait_state", None)
+        if waits is None:
+            waits = {}
+            self._capacity_wait_state = waits
+        return waits
+
+    async def _show_capacity_status(self, running: _Running, status: RecoveryStatus) -> None:
+        """One live line per build for capacity waits, edited in place (never repeated)."""
+        wait = self._capacity_waits().get(running.thread.id)
+        if wait is None:
+            return
+        line = f"-# {status.line}"
+        if wait.message is None:
+            with contextlib.suppress(discord.HTTPException):
+                wait.message = await running.thread.send(line)
+            return
+        try:
+            await wait.message.edit(content=line)
+        except discord.HTTPException:
+            wait.message = None
+
     async def _limit_hit(self, running: _Running, message: str) -> bool:
-        """The build's AI hit a usage limit: ask in its thread to switch AI or wait.
+        """The build's AI could not answer: wait, switch, or ask, per the shared policy.
+
+        Temporary saturation and rate limiting go through the same recovery
+        rules as an interactive turn (``claude_code_core.capacity_policy``):
+        the round waits and runs again, and the build switches only to the
+        fallback it was started with. Quota, login and an exhausted budget
+        reach the person: the build asks in its thread to switch AI or wait.
 
         True once another AI is set for the worker thread or the wait is over;
         False when nobody answered (the build then parks like any pause).
@@ -3155,12 +3194,52 @@ class TaskLoopCog(commands.Cog):
         thread = running.thread
         settings = getattr(self._chat(), "_backend_settings", None)
         current = None
+        harness: str | None = None
+        model: str | None = None
         if settings is not None:
             with contextlib.suppress(Exception):
                 harness = await settings.current_backend(thread.id)
                 model = await settings.current_model(harness, thread.id)
                 current = " · ".join(x for x in (harness, model) if x)
-                running.limited.add(harness)  # the step picker leaves it out from now on
+        outcome = classify_failure(
+            BackendFailure(error=message, backend=harness or "", model=model or "")
+        )
+        coordinator = capacity_coordinator()
+        if outcome.retryable and coordinator is not None:
+            waits = self._capacity_waits()
+            wait = waits.get(thread.id)
+            if wait is None or wait.tracker.backend != (harness or ""):
+                chain: tuple[FallbackTarget, ...] = ()
+                fb = running.fallback
+                if fb is not None and not running.fallback_used and fb[0] != harness:
+                    chain = (FallbackTarget(fb[0], fb[1], authority="task"),)
+                wait = waits[thread.id] = _CapacityWait(
+                    RecoveryTracker(
+                        coordinator.policy, backend=harness or "", model=model, chain=chain
+                    )
+                )
+            decision = wait.tracker.next(outcome)
+            logger.info("gowork capacity thread=%s %s", thread.id, decision.status.public_view())
+            await self._show_capacity_status(running, decision.status)
+            if decision.action == "retry":
+                self._queue_waiting(running, "waiting: its AI is at capacity")
+                await coordinator.wait(decision.delay_seconds)
+                running.waiting_for_person = False
+                return True
+            if decision.action == "fallback" and decision.target is not None and settings:
+                target = decision.target
+                running.fallback_used = True  # once: if it runs out too, ask the person
+                if harness:
+                    running.limited.add(harness)
+                await settings.set_backend(target.backend, thread_id=thread.id)
+                if target.model:
+                    await settings.set_model(target.backend, target.model, thread_id=thread.id)
+                waits.pop(thread.id, None)
+                return True
+            waits.pop(thread.id, None)
+            # Exhausted or ambiguous: fall through and ask, like a quota limit.
+        if harness:
+            running.limited.add(harness)  # the step picker leaves it out from now on
         fb = running.fallback
         if fb is not None and settings is not None:
             fb_label = " · ".join(x for x in fb if x)
@@ -3182,9 +3261,9 @@ class TaskLoopCog(commands.Cog):
             "It didn't count as a try. Type a letter to switch AI, or **wait**:",
             "**A)** Wait, and try the same AI again in 30 minutes",
         ]
-        for i, (harness, model, note) in enumerate(options, start=1):
+        for i, (harness_opt, model_opt, note) in enumerate(options, start=1):
             tail = f" — {note}" if note else ""
-            lines.append(f"**{choice_letter(i)})** {harness} · `{model}`{tail}")
+            lines.append(f"**{choice_letter(i)})** {harness_opt} · `{model_opt}`{tail}")
         for chunk in _chunks(lines):
             with contextlib.suppress(discord.HTTPException):
                 await thread.send(chunk)
@@ -3204,12 +3283,14 @@ class TaskLoopCog(commands.Cog):
                 with contextlib.suppress(discord.HTTPException):
                     await thread.send("Type **wait**, or the letter of the AI to switch to.")
                 continue
-            harness, model = picked
-            await settings.set_backend(harness, thread_id=thread.id)
-            if model:
-                await settings.set_model(harness, model, thread_id=thread.id)
+            harness_pick, model_pick = picked
+            await settings.set_backend(harness_pick, thread_id=thread.id)
+            if model_pick:
+                await settings.set_model(harness_pick, model_pick, thread_id=thread.id)
             with contextlib.suppress(discord.HTTPException):
-                await thread.send(f"-# 🔀 Switched to {harness}{f' · {model}' if model else ''}.")
+                await thread.send(
+                    f"-# 🔀 Switched to {harness_pick}{f' · {model_pick}' if model_pick else ''}."
+                )
             return True
 
     @app_commands.command(name="gowork", description="Work through the plan, one task at a time")

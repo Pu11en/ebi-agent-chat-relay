@@ -258,6 +258,73 @@ async def test_queued_sessions_have_separate_filter_and_capacity(
     assert [s["thread_id"] for s in (await response.json())["sessions"]] == [1]
 
 
+async def test_sessions_api_exposes_capacity_recovery_without_prompts(
+    api_client: TestClient, bot: MagicMock
+) -> None:
+    """Task 4.3: recovery state is a separate, non-sensitive field of capacity."""
+    from claude_code_core.capacity_policy import RecoveryPolicy
+    from claude_discord.capacity_recovery import (
+        AttemptResult,
+        AttemptTarget,
+        CapacityRecoveryCoordinator,
+        TurnSubmission,
+    )
+    from claude_discord.cogs import _run_helper
+
+    response = await api_client.get("/api/sessions")
+    body = await response.json()
+    assert body["capacity"]["recovering"] == 0
+    assert body["capacity"]["recovery"] == []
+
+    import asyncio
+
+    hold = asyncio.Event()
+
+    async def sleep(_seconds: float) -> None:
+        await hold.wait()
+
+    coordinator = CapacityRecoveryCoordinator(
+        policy=RecoveryPolicy(min_delay_seconds=1, jitter_ratio=0.0), sleep=sleep
+    )
+    _run_helper.configure_capacity_recovery(coordinator)
+
+    async def attempt(target: AttemptTarget) -> AttemptResult:
+        if target.attempt == 1:
+            return AttemptResult(error="model is at capacity: secret-diagnostic-xyz")
+        return AttemptResult(text="done")
+
+    turn = asyncio.create_task(
+        coordinator.run_turn(
+            TurnSubmission(
+                turn_key="discord:7:k",
+                frontend="discord",
+                thread_id=7,
+                session_id=None,
+                prompt="Top secret prompt",
+                backend="claude",
+                model="opus",
+            ),
+            attempt,
+        )
+    )
+    while not coordinator.snapshot():
+        await asyncio.sleep(0)
+
+    response = await api_client.get("/api/sessions")
+    body = await response.json()
+    assert body["capacity"]["recovering"] == 1
+    (view,) = body["capacity"]["recovery"]
+    assert view["thread_id"] == 7
+    assert view["phase"] == "retrying"
+    assert view["category"] == "model_saturated"
+    assert view["attempt"] == 1
+    assert "Top secret prompt" not in repr(body)
+    assert "secret-diagnostic" not in repr(body)
+
+    hold.set()
+    assert (await turn).kind == "accepted"
+
+
 async def test_get_sessions_without_session_repo_returns_503(db_path: str, bot: MagicMock) -> None:
     notif_repo = NotificationRepository(db_path)
     await notif_repo.init_db()

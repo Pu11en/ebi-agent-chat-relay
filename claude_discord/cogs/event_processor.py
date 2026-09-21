@@ -28,6 +28,7 @@ from claude_code_core.approvals import (
     permission_result,
     plan_result,
 )
+from claude_code_core.context_nudge import context_label
 from claude_code_core.frontend import (
     ActivitySpec,
     ChoicePrompt,
@@ -125,10 +126,24 @@ def _completion_fields(event: StreamEvent, runner: object) -> tuple[tuple[str, s
         fields.append(("Cost", f"${event.cost_usd:.4f}"))
     if event.input_tokens is not None and event.output_tokens is not None:
         fields.append(("Tokens", f"{event.input_tokens} in · {event.output_tokens} out"))
+    if event.context_window and event.input_tokens is not None:
+        used = (
+            event.input_tokens + (event.cache_read_tokens or 0) + (event.cache_creation_tokens or 0)
+        )
+        pct = min(100.0, used * 100 / event.context_window)
+        fields.append(("Context", context_label(pct, backend, estimated=event.context_estimated)))
     return tuple(fields)
 
 
 _TIMEOUT_PATTERN = re.compile(r"Timed out after (\d+) seconds")
+
+
+def _is_capacity_outcome(error: str) -> bool:
+    """True when the classifier recognises the error as a capacity category."""
+    from claude_code_core.capacity import BackendFailure, CapacityCategory, classify_failure
+
+    outcome = classify_failure(BackendFailure(error=error))
+    return outcome.category is not CapacityCategory.PERMANENT_ERROR
 
 
 def _error_notice(error: str) -> Notice:
@@ -590,8 +605,13 @@ class EventProcessor:
             # error field, not a raised exception). Capture it so result_sink
             # consumers report a real error instead of an empty "done".
             self._final_error = event.error
-            await self._config.surface.send_notice(_error_notice(event.error))
-            await self._config.surface.set_status(StatusKind.ERROR)
+            # A classified capacity outcome (saturation, rate limit, quota,
+            # login) belongs to the recovery status when a coordinator owns this
+            # run: one live line, not an error embed per attempt. Unrecognised
+            # errors keep the embed — that is the diagnostic the user needs.
+            if not (self._config.recovery_presents_errors and _is_capacity_outcome(event.error)):
+                await self._config.surface.send_notice(_error_notice(event.error))
+                await self._config.surface.set_status(StatusKind.ERROR)
         else:
             # Post final result text only if no assistant text was already sent.
             response_text = event.text

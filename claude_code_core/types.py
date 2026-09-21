@@ -229,6 +229,9 @@ class StreamEvent:
     cache_read_tokens: int | None = None
     cache_creation_tokens: int | None = None
     context_window: int | None = None
+    #: True when the token figures are a characters/4 estimate (a backend that
+    #: reports no usage), so every surface that shows a percentage can say so.
+    context_estimated: bool = False
     error: str | None = None
     rate_limit_info: RateLimitInfo | None = None
     hook_event: HookEvent | None = None

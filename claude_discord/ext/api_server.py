@@ -1631,12 +1631,19 @@ class ApiServer:
             thread_names=self._thread_names(thread_ids),
         )
 
-        from ..cogs._run_helper import session_limit
+        from ..cogs._run_helper import capacity_coordinator, session_limit
 
+        # Provider recovery is reported apart from relay admission: "queued" is
+        # a local slot wait, "recovery" is a turn the provider could not answer
+        # yet. Each entry is category and timing only — never the prompt.
+        coordinator = capacity_coordinator()
+        recovery = list(coordinator.snapshot().values()) if coordinator is not None else []
         capacity = {
             "limit": session_limit(),
             "running": sum(v["state"] == STATE_RUNNING for v in views),
             "queued": sum(v["state"] == "queued" for v in views),
+            "recovering": len(recovery),
+            "recovery": recovery,
         }
         state_filter = request.rel_url.query.get("state")
         if state_filter in {STATE_RUNNING, "queued", STATE_HISTORY}:

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from claude_code_core.backend import SessionBackend
+from claude_code_core.capacity_policy import FallbackTarget
 from claude_code_core.frontend import ConversationSurface
 
 from ..claude.types import ImageData
@@ -133,6 +134,22 @@ class RunConfig:
     slot_build_id: str = ""
     # How many other tasks this one unblocks; the controller prefers higher.
     slot_unblocks: int = 0
+
+    # Model-capacity recovery (claude_discord.capacity_recovery). A turn keeps
+    # its key across retries and restarts; the loader passes the claim token it
+    # already holds so the coordinator continues that turn instead of a new one.
+    # ``fallback_chain`` is the explicitly authorized chain captured for this
+    # turn; empty falls back to the computer-wide chain configured in
+    # ``_run_helper`` (CCDB_CAPACITY_FALLBACK). ``capacity_recovery=False`` runs
+    # one attempt only, as before the coordinator existed.
+    recovery_turn_key: str | None = None
+    recovery_claim_token: str | None = None
+    fallback_chain: tuple[FallbackTarget, ...] = ()
+    capacity_recovery: bool = True
+    # Set by the run helper while a coordinator owns this run: the processor then
+    # leaves recoverable capacity errors to the recovery status instead of
+    # posting an error embed per attempt.
+    recovery_presents_errors: bool = False
 
     # Prevent accidental field mutation — RunConfig is a value object.
     # Use dataclasses.replace() to create modified copies.

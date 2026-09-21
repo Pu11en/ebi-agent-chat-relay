@@ -87,16 +87,20 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DEFAULT_CONTEXT_WINDOW",
     "DEFAULT_MODEL",
     "DEFAULT_PROVIDER",
     "DEFAULT_PATCH_CONTENT",
+    "MODEL_CONTEXT_WINDOWS",
     "MODEL_PROVIDER_PREFIXES",
     "DEFAULT_PATCH_PATH",
     "SDK_EXTRA_HINT",
     "DshRunner",
+    "context_window_for",
     "default_dsh_home",
     "dsh_sdk_available",
     "ensure_patch_file",
+    "estimate_tokens",
     "reset_runtimes",
     "resolve_patch_path",
     "resolve_provider",
@@ -123,6 +127,18 @@ MODEL_PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
 #: Reasoning effort levels the DeepSeek adapter accepts.
 VALID_EFFORTS = frozenset({"low", "medium", "high"})
 
+#: The SDK exposes no usage, so context is *estimated*: characters / 4 of
+#: everything sent and everything said, accumulated per session, against the
+#: model's window. Windows are a prefix table (first match wins) with
+#: ``CCDB_DSH_CONTEXT_WINDOW`` overriding all of them; unknown models get the
+#: default. Every figure derived from this is labelled an estimate.
+DEFAULT_CONTEXT_WINDOW = 128_000
+MODEL_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("glm", 200_000),
+    ("deepseek", 128_000),
+)
+_CHARS_PER_TOKEN = 4
+
 #: Where the extra-route patch layer lives when nothing overrides it.
 DEFAULT_PATCH_PATH = (
     Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -130,6 +146,24 @@ DEFAULT_PATCH_PATH = (
     / "dsh"
     / "providers.patch.yml"
 )
+
+
+def estimate_tokens(text: str) -> int:
+    """Characters / 4, rounded up — the only usage figure the harness allows."""
+    return -(-len(text) // _CHARS_PER_TOKEN) if text else 0
+
+
+def context_window_for(model: str, env: Mapping[str, str] | None = None) -> int:
+    """The window the estimate is measured against."""
+    source = os.environ if env is None else env
+    raw = (source.get("CCDB_DSH_CONTEXT_WINDOW") or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    name = (model or "").split("/")[-1].lower()
+    for prefix, window in MODEL_CONTEXT_WINDOWS:
+        if name.startswith(prefix):
+            return window
+    return DEFAULT_CONTEXT_WINDOW
 
 
 def resolve_patch_path(env: Mapping[str, str] | None = None) -> Path:
@@ -312,6 +346,9 @@ _RUNTIMES_LOCK = threading.Lock()
 _LIVE_SESSIONS: dict[str, tuple[str, str, str, str]] = {}
 _LIVE_SESSIONS_LOCK = threading.Lock()
 
+# Estimated tokens each live session has accumulated (prompt + reply, chars/4).
+_SESSION_ESTIMATES: dict[str, int] = {}
+
 # Guards the momentary environment scrub around runtime startup.
 _ENVIRON_LOCK = threading.Lock()
 
@@ -323,6 +360,7 @@ def reset_runtimes() -> None:
         _RUNTIMES.clear()
     with _LIVE_SESSIONS_LOCK:
         _LIVE_SESSIONS.clear()
+        _SESSION_ESTIMATES.clear()
     for entry in entries:
         harness = entry.harness
         if harness is not None:
@@ -430,7 +468,15 @@ class DshRunner:
         fresh = f"ccdb-{uuid.uuid4().hex}"
         with _LIVE_SESSIONS_LOCK:
             _LIVE_SESSIONS[fresh] = runtime_key
+            _SESSION_ESTIMATES[fresh] = 0
         return fresh, True
+
+    def _record_estimate(self, session_id: str, tokens: int) -> int:
+        """Add this turn's estimate to the session's running total; return the total."""
+        with _LIVE_SESSIONS_LOCK:
+            total = _SESSION_ESTIMATES.get(session_id, 0) + tokens
+            _SESSION_ESTIMATES[session_id] = total
+        return total
 
     def _bind_coordination_values(self, text: str) -> str:
         """Bind the relay's shell variables to this session's literal values.
@@ -569,6 +615,7 @@ class DshRunner:
             yield self._error_event(dsh_session, "Empty prompt")
             return
         turn_prompt = self._with_standing_instruction(prompt)
+        estimated = estimate_tokens(turn_prompt)
 
         try:
             runtime = await asyncio.to_thread(self._ensure_runtime)
@@ -615,6 +662,9 @@ class DshRunner:
                     error = f"DeepSeek Harness run failed: {item}"
                     break
                 for event in self._map_notification(item, dsh_session):
+                    estimated += estimate_tokens(event.text or "") + estimate_tokens(
+                        event.thinking or ""
+                    )
                     yield event
                 if self._cancelled.is_set():
                     break
@@ -640,7 +690,11 @@ class DshRunner:
 
         if self._cancelled.is_set() and error is None:
             error = "Stopped by the user"
-        yield self._final_event(dsh_session, error=error)
+        final = self._final_event(dsh_session, error=error)
+        final.context_window = context_window_for(self.model)
+        final.input_tokens = self._record_estimate(dsh_session, estimated)
+        final.context_estimated = True
+        yield final
 
     async def interrupt(self) -> None:
         """End the Discord-side turn now.
