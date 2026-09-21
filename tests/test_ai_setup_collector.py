@@ -46,6 +46,7 @@ from claude_discord.ai_setup_inventory import (
     EffectiveScope,
     Freshness,
     HarnessAvailability,
+    InventoryDiagnostic,
     InventoryItem,
     InventorySource,
     ItemIdentity,
@@ -243,9 +244,42 @@ def test_collect_keeps_adapter_supplied_diagnostics() -> None:
     note = safe_diagnostic("claude-home", DiagnosticSeverity.WARNING, "One folder was unreadable")
     result = collect(adapter("claude-home", item(), diagnostics=(note,)))
 
-    assert note in result.snapshot.diagnostics
+    kept = result.snapshot.diagnostics
+    assert [(entry.source_key, entry.severity, entry.message) for entry in kept] == [
+        (note.source_key, note.severity, note.message)
+    ]
+    assert kept[0].computer == COMPUTER  # stamped by the run when the adapter left it out
     assert result.has_errors is False
     assert result.is_complete is False
+
+
+def test_adapter_supplied_diagnostics_are_redacted_before_they_are_stored() -> None:
+    """An adapter may hand over a raw error string; it must not reach a snapshot as-is."""
+    raw = InventoryDiagnostic(
+        source_key="claude-home",
+        severity=DiagnosticSeverity.ERROR,
+        message=f"connector rejected credential {LEAKED_TOKEN}",
+    )
+    result = collect(adapter("claude-home", item(), diagnostics=(raw,)))
+
+    stored = result.snapshot.diagnostics
+    assert len(stored) == 1
+    assert LEAKED_TOKEN not in stored[0].message
+    assert "connector rejected credential" in stored[0].message
+    assert stored[0].severity is DiagnosticSeverity.ERROR
+    assert stored[0].source_key == "claude-home"
+    assert stored[0].computer == COMPUTER
+    assert stored[0].occurred_at == NOW
+    outcome = result.outcome("claude-home")
+    assert outcome is not None
+    assert LEAKED_TOKEN not in outcome.diagnostics[0].message
+
+
+def test_adapter_diagnostics_that_are_not_diagnostics_are_reported_not_stored() -> None:
+    result = collect(adapter("claude-home", item(), diagnostics=("just a string",)))
+
+    assert all(isinstance(entry, InventoryDiagnostic) for entry in result.snapshot.diagnostics)
+    assert any("not an inventory diagnostic" in entry.message for entry in result.diagnostics)
 
 
 # ---------------------------------------------------------------------------
