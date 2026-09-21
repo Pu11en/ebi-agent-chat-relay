@@ -34,7 +34,7 @@ from claude_discord.database.capacity_recovery_repo import (
 )
 from claude_discord.database.models import init_db
 
-SATURATED = "API Error: 529 {\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}"
+SATURATED = 'API Error: 529 {"type":"overloaded_error","message":"Overloaded"}'
 QUOTA = "You've hit your usage limit · resets 7pm"
 
 

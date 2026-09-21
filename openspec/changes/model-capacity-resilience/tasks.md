@@ -31,7 +31,7 @@ Try: `uv run pytest tests/test_capacity_recovery.py -q`
 
 - [x] 5.1 Add restart, late-response race, exhausted-budget, authorized-fallback, and no-authority integration tests; verify all complete without duplicate model execution or duplicate Discord answers.
 - [x] 5.2 Remove the duplicate string-only `/gowork` capacity path after the shared coordinator covers its behavior; verify existing usage-limit and relay-admission tests remain green.
-- [ ] 5.3 Run `uv run ruff check claude_discord tests`, `uv run ruff format --check claude_discord tests`, `uv run pyright claude_discord`, and the full test suite; record any unrelated pre-existing failure separately.
+- [x] 5.3 Run `uv run ruff check claude_discord tests`, `uv run ruff format --check claude_discord tests`, `uv run pyright claude_discord`, and the full test suite; record any unrelated pre-existing failure separately.
 
 ## How to try it
 
