@@ -112,7 +112,7 @@ async def test_a_failed_task_blocks_its_dependents_not_the_others(
 
     outcome = await loop.run()
 
-    assert outcome.status is Status.STUCK and API in outcome.detail
+    assert outcome.status is Status.STUCK and "product catalog contract" in outcome.detail
     assert dispatch.rounds == [[API, STYLES, POST], [API]]  # one repair (T18); PAGE never ran
     state = open_build_state(
         tmp_path / "state" / "build.json", load_plan_tree(plan), build_id="thread-1"

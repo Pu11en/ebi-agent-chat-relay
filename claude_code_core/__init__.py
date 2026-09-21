@@ -79,6 +79,7 @@ from .gowork_plan import (
     parse_plan_tree,
     render_plan_manifest,
 )
+from .gowork_report import render_blocker_question, render_completion, render_progress
 from .gowork_resources import (
     HostProbe,
     Pressure,
@@ -208,6 +209,9 @@ __all__ = [
     "open_build_state",
     "ReadyTask",
     "HostProbe",
+    "render_blocker_question",
+    "render_completion",
+    "render_progress",
     "AdmissionController",
     "Blocker",
     "BlockerLedger",

@@ -35,6 +35,7 @@ from enum import Enum
 from pathlib import Path
 
 from claude_code_core.gowork_plan import PlanValidationError, has_manifest, load_plan_tree
+from claude_code_core.gowork_report import render_completion, render_progress
 from claude_code_core.gowork_schedule import ReadyTask, ready_tasks
 from claude_code_core.gowork_state import (
     BuildState,
@@ -510,6 +511,7 @@ class TaskLoop:
         on_result: Callable[[str, str, str], Awaitable[None]] | None = None,
         review: Callable[[str, str | None], Awaitable[str | None]] | None = None,
         max_parallel: Callable[[], int] | None = None,
+        project_name: str = "",
         manifest_worker: ManifestWorker | None = None,
         after_manifest_result: Callable[[ManifestResult], Awaitable[None]] | None = None,
         reconcile: Callable[[BuildState], Awaitable[None]] | None = None,
@@ -545,6 +547,8 @@ class TaskLoop:
         self._notes: list[str] = []
         #: The multi-plan path (T11b): a manifest plan is built from its ledger.
         self._manifest_worker = manifest_worker
+        #: How the person knows this build in messages (T22); the folder name by default.
+        self.project_name = project_name or repo_dir.name
         #: Runs after a worker's result is on disk (T14: archive its thread, never before).
         self._after_manifest_result = after_manifest_result
         #: Salvages attempts a crash left running (T17); anything still running after
@@ -617,9 +621,8 @@ class TaskLoop:
                     for task in ready:
                         state.begin(task.task_id)
                         in_flight[task.task_id] = asyncio.ensure_future(self._manifest_worker(task))
-                    await self._report(
-                        f"⚡ Started {len(ready)} task(s) — " + ", ".join(t.task_id for t in ready)
-                    )
+                    started = "; ".join(tree.task(t.task_id).outcome[:80] for t in ready)
+                    await self._report(f"⚡ Started {len(ready)} task(s): {started}")
                 if not in_flight:
                     return await self._manifest_outcome(state, rounds)
 
@@ -637,6 +640,9 @@ class TaskLoop:
                         logger.warning("gowork: worker for %s raised", task_id, exc_info=exc)
                         result = ManifestResult(task_id, False, f"the worker failed: {exc}")
                     await self._record_manifest_result(state, result)
+                    await self._report(
+                        render_progress(state, project=self.project_name, goal=self._goal())
+                    )
                     if self._after_manifest_result is not None:
                         try:
                             await self._after_manifest_result(result)
@@ -720,6 +726,25 @@ class TaskLoop:
                 f"🔧 {result.task_id} failed — trying once more with the reason: {reason[:200]}"
             )
 
+    def _goal(self) -> str | None:
+        try:
+            goal, _done = plan_goal(self.plan_path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            return None
+        return goal
+
+    def manifest_summary(self) -> str | None:
+        """The finished (or stuck) build in plain words, from the ledger (T22)."""
+        if self.state_path is None or not self.state_path.is_file():
+            return None
+        try:
+            state = open_build_state(
+                self.state_path, load_plan_tree(self.plan_path), build_id=self.build_id
+            )
+        except (PlanValidationError, StaleAttemptError, OSError):
+            return None
+        return render_completion(state, project=self.project_name, goal=self._goal())
+
     async def _manifest_outcome(self, state: BuildState, rounds: int) -> LoopOutcome:
         records = state.records
         if all(r.accepted for r in records):
@@ -729,8 +754,12 @@ class TaskLoop:
             return LoopOutcome(Status.COMPLETE, rounds=rounds)
         blocked = [r for r in records if r.status is TaskStatus.BLOCKED]
         if blocked:
-            lines = "; ".join(f"{r.task_id}: {r.reason or 'blocked'}" for r in blocked)
-            await self._report(f"🛑 Stuck — {len(blocked)} task(s) blocked: {lines}")
+            await self._report(
+                render_completion(state, project=self.project_name, goal=self._goal())
+            )
+            lines = "; ".join(
+                f"{state.tree.task(r.task_id).outcome}: {r.reason or 'blocked'}" for r in blocked
+            )
             return LoopOutcome(Status.STUCK, f"blocked: {lines}", rounds)
         waiting = [r.task_id for r in records if not r.accepted]
         detail = "nothing is ready and nothing is running: " + ", ".join(waiting)

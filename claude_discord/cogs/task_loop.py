@@ -46,6 +46,7 @@ from claude_code_core.gowork_records import (
     read_records,
     track_record,
 )
+from claude_code_core.gowork_report import render_blocker_question
 from claude_code_core.gowork_schedule import ReadyTask
 from claude_code_core.gowork_state import open_build_state
 from claude_code_core.loop_store import LoopRecord, LoopStore
@@ -1346,18 +1347,29 @@ class TaskLoopCog(commands.Cog):
                 "-# 🏁 Finished. The card and the **looks good** question are back in the "
                 "thread you started this from; ask me anything here."
             )
+        summary = running.loop.manifest_summary()
         with contextlib.suppress(discord.HTTPException):
-            await target.send(
-                f"🏁 **{running.repo_dir.name} is finished**{mention}",
-                embed=finished_card(
-                    running.repo_dir.name,
-                    checked,
-                    running.recaps or [],
-                    results,
-                    proposed,
-                    lessons,
-                ),
-            )
+            if summary is not None:
+                # A manifest build's card comes from its ledger (T22): what got done,
+                # what it delivers, how it was checked, what is worth knowing.
+                await target.send(
+                    f"🏁 **{running.repo_dir.name} is finished**{mention}\n{summary}"[:1900],
+                    embed=finished_card(
+                        running.repo_dir.name, checked, [], results, proposed, lessons
+                    ),
+                )
+            else:
+                await target.send(
+                    f"🏁 **{running.repo_dir.name} is finished**{mention}",
+                    embed=finished_card(
+                        running.repo_dir.name,
+                        checked,
+                        running.recaps or [],
+                        results,
+                        proposed,
+                        lessons,
+                    ),
+                )
         await self._archive_finished_worker_thread(running)
 
         def is_verdict(text: str) -> bool:
@@ -2534,10 +2546,12 @@ class TaskLoopCog(commands.Cog):
             return  # running, accepted, or about to be repaired on its own
         if _is_interrupted(record.reason or ""):
             return  # the restart message already told the person; T21 routes the reply
-        question = (
-            f"❓ **{running.repo_dir.name}** — task `{task_id}` is stuck: {record.reason}\n"
-            "Reply to this message with **retry**, **skip**, or what to change."
+        goal, _done = plan_goal(
+            running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+            if running.copy is not None
+            else ""
         )
+        question = render_blocker_question(state, task_id, project=running.repo_dir.name, goal=goal)
         blocker = self._blockers.open(
             running.build_id,
             task_id,

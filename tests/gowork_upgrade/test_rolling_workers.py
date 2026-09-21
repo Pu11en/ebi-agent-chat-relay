@@ -102,7 +102,7 @@ async def test_a_worker_that_raises_blocks_only_its_task(plan: Path, tmp_path: P
     worker = FakeWorker({}, raise_for={API})
     outcome = await _loop(plan, tmp_path, worker).run()
 
-    assert outcome.status is Status.STUCK and API in outcome.detail
+    assert outcome.status is Status.STUCK and "product catalog contract" in outcome.detail
     state = _state(plan, tmp_path)
     assert state[API].status is TaskStatus.BLOCKED and "worker process died" in (
         state[API].reason or ""
@@ -259,7 +259,7 @@ async def test_a_failure_gets_exactly_one_automatic_repair(plan: Path, tmp_path:
     state = _state(plan, tmp_path)
     assert state[API].status is TaskStatus.BLOCKED and state[API].attempt == 2
     assert state[API].lineage_repairs == 1 and "try 2" in (state[API].reason or "")
-    assert outcome.status is Status.STUCK and API in outcome.detail
+    assert outcome.status is Status.STUCK and "product catalog contract" in outcome.detail
     assert state.accepted_tasks() == (STYLES, POST)  # independent work continued
 
 

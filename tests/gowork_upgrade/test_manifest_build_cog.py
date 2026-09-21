@@ -514,7 +514,7 @@ async def test_a_stuck_task_becomes_one_durable_question(repo: Path) -> None:
     assert api["status"] == "blocked" and api["attempt"] == 2  # the one repair was used
 
     questions = [t for t in posted if t.startswith("❓")]
-    assert len(questions) == 1 and "product.catalog-api" in questions[0]
+    assert len(questions) == 1 and "Publish the checked product catalog contract" in questions[0]
     assert "Reply to this message" in questions[0]
     blockers = cog._blockers.unresolved(build_id=f"thread-{worker.id}")
     assert len(blockers) == 1
@@ -574,8 +574,8 @@ async def test_replies_resolve_only_their_own_blocker(repo: Path) -> None:
         await asyncio.sleep(0.01)
     questions = {m.id: m.content for m in posted if m.content.startswith("❓")}
     assert len(questions) == 2
-    api_q = next(mid for mid, text in questions.items() if "product.catalog-api" in text)
-    post_q = next(mid for mid, text in questions.items() if "marketing.launch-post" in text)
+    api_q = next(mid for mid, text in questions.items() if "product catalog contract" in text)
+    post_q = next(mid for mid, text in questions.items() if "launch announcement" in text)
     build_id = f"thread-{worker.id}"
 
     # Not a reply to a question: the normal rules (here: nothing pending) → not claimed.
