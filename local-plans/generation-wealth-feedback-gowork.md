@@ -62,7 +62,7 @@ Expected final files:
   - Keep the language plain and useful, not academic.
   - Write `answerable-themes.md` and update `status.json`.
 
-- [ ] Draft the long feedback report.
+- [x] Draft the long feedback report.
   - Build a report that can become the PDF.
   - Suggested structure: executive summary, source coverage, top feedback themes, direct answer opportunities, draft answers Drew can use, unanswered gaps, next recommended actions.
   - Make it long enough to be genuinely useful, but organized so Drew can skim it.
