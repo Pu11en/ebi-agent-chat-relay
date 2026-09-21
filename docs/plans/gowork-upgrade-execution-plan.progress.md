@@ -547,3 +547,28 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `0f007c7`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (447 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T23 — Automatically integrate each checked local build
+
+- `work_copy.integrate_build(copy, check=…)` → `IntegrationResult(ok, message, commit,
+  check_output)`: under `integration_lock(repo)` (one asyncio lock per project) — scratch
+  detached worktree at the project's HEAD → `git merge` the build branch there (a clash aborts
+  and names the files; both sides kept) → the plan's check runs in the scratch checkout, never
+  in the person's working tree → if the project's HEAD is unchanged, `git merge --ff-only`
+  moves the project forward; git refuses to overwrite an unsaved edit or an untracked file,
+  which is reported with the file names. Success removes the build's copy; every failure keeps
+  it for repair. There is no push, PR or deploy anywhere in the path.
+- Cog: `_keep_build()` — "looks good" and "wrap up" on a manifest build integrate this way with
+  the plan's `Check:` line ("use the build's version" still takes the legacy path on request);
+  checkbox builds keep `keep_work`. A refusal posts "I couldn't keep it yet: …" with the check's
+  last lines and leaves the build parked — the bounded repair is the person's reply.
+- Tests: `tests/test_work_copy.py` (+5: two builds for one project land in turn; unrelated
+  unsaved and untracked edits survive uncommitted; an unsaved edit the build also changes
+  blocks instead of overwriting; a conflict blocks and keeps both sides with a clean project;
+  a failing combined check blocks before the project changes and cleans the scratch),
+  `test_manifest_build_cog.py` (+2: "looks good" lands the build locally with the person's
+  notes intact and no remote; a project check that fails on the combined result keeps the
+  build and tells the person).
+- Implementation commit: `5c8f4fe`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (449 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).

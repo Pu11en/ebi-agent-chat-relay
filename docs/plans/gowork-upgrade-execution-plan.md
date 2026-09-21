@@ -224,7 +224,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: fixtures understandable without chat history; all-blocked lists issues, not
   success; no invented results, unexplained technical labels or routine full-plan cards.
 
-- [ ] T23: Execution spine, only after T22: automatically integrate each checked local build.
+- [x] T23: Execution spine, only after T22: automatically integrate each checked local build.
   Scope: work_copy final integration and per-project integration lock. Combine completed
   builds locally while others continue; preserve existing tracked/untracked edits, check
   the exact combined result, and block conflicts instead of forcing overwrite.
