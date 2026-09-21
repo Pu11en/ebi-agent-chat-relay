@@ -103,3 +103,27 @@
   `ruff format --check`, `pyright claude_code_core/gowork_schedule.py` (0 errors).
 - Open: T07 measures resource pressure; the `limit` argument is where T08–T10 plug adaptive
   capacity in.
+
+## T07 — Sample host and worker resource pressure
+
+- New `claude_code_core/gowork_resources.py` (standard library only — no psutil in the
+  dependency set, and a justified small adapter beats a new runtime dependency):
+  `ResourceSnapshot` (memory total/available/used, swap used, cpu count/load, disk free,
+  cgroup v2 memory/cpu limits) with `missing` naming every unreadable field and
+  `effective_*` properties that respect container limits; `pressure_of()` → healthy /
+  constrained / critical / **unknown** (any missing reading is unknown, never healthy);
+  `workers_that_fit()` → `None` when memory is unknown (callers must not read that as room);
+  `WorkerPeaks` tracks each worker's observed peak including descendants and sizes new
+  workers for the biggest recent one (default 1500 MB before any observation);
+  `HostProbe` reads `/proc/meminfo`, `/proc/loadavg`, `/sys/fs/cgroup/{memory,cpu}.max`,
+  `shutil.disk_usage`, `GlobalMemoryStatusEx` on Windows, and sums VmRSS over a process
+  tree via `/proc` (`None` on Windows — reported, not guessed).
+- Tests: `tests/gowork_upgrade/test_resources.py` (9): injectable healthy / constrained /
+  critical / unavailable / partial snapshots, container caps, descendant peaks, and the real
+  probe returning a snapshot whose unreadable fields are named.
+- Measured on David's machine: 31 371 MB total, 7 727 MB available, swap and load unknown →
+  pressure `unknown`, which is the conservative answer T09 must handle.
+- Implementation commit: `822ac82`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (366 passed), `ruff check`,
+  `ruff format --check`, `pyright claude_code_core/gowork_resources.py` (0 errors).
+- Open: T08 builds the admission controller on `workers_that_fit` + `WorkerPeaks`.

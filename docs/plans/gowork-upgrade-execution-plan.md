@@ -98,7 +98,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: website waits for product input while independent marketing proceeds; a failed,
   unfinished or stale dependency never releases children, including across repositories.
 
-- [ ] T07: Execution spine, only after T06: sample host and worker resource pressure.
+- [x] T07: Execution spine, only after T06: sample host and worker resource pressure.
   Scope: read-only resource adapter, using established dependencies or a justified small
   adapter. Measure available memory, CPU, swap and disk; respect container/host limits;
   account for worker descendants such as tests/browsers and observed resource peaks.
