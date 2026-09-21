@@ -17,7 +17,7 @@ Try: `make dev-on`
 
 - [x] 3.1 **Depends on 1.1–2.1; owner: setup interface** — Construct one catalog service in `setup_bridge`, expose it through `BridgeComponents`, and retain backward-compatible defaults; verify setup tests show built-in and custom consumers receive the same instance.
 - [x] 3.2 **Owner: REST interface** — Add authenticated bounded list/search/resolve catalog operations to `claude_discord/ext/api_server.py`; verify API tests reject malformed/untrusted requests and never return project contents.
-- [ ] 3.3 **Depends on 3.2; owner: harness adapter** — Add a local structured catalog query command/helper shared by Claude, Codex, and DSH with only a concise invocation hint in session context; verify runner tests show no full catalog or folder tree in unrelated prompts.
+- [x] 3.3 **Depends on 3.2; owner: harness adapter** — Add a local structured catalog query command/helper shared by Claude, Codex, and DSH with only a concise invocation hint in session context; verify runner tests show no full catalog or folder tree in unrelated prompts.
 
 ## 4. Discord and Handoff Integration
 
