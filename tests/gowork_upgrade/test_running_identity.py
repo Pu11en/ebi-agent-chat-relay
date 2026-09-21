@@ -106,7 +106,7 @@ def _channel() -> MagicMock:
 
 
 async def _settle(cog: TaskLoopCog, count: int) -> None:
-    for _ in range(500):
+    for _ in range(3000):  # two real builds with git side copies can take a while
         if len(cog.running) == count and all(r.in_review or r.task is None for r in cog.running):
             return
         await asyncio.sleep(0.01)
@@ -145,7 +145,7 @@ async def test_stopping_one_build_leaves_the_other_alone(repo: Path) -> None:
     message = MagicMock()
     message.channel.id = a.id
     message.content = "looks good"
-    for _ in range(500):  # wait for build A's verdict question, then answer it
+    for _ in range(3000):  # wait for build A's verdict question, then answer it
         waiter = cog._waiters.get(a.id)
         if waiter is not None and not waiter.done() and cog.take_message(message):
             break

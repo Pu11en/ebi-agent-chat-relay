@@ -578,6 +578,23 @@ class TaskLoop:
                     await self._report(f"🛑 The plan can't be built as written: {exc}")
                     return LoopOutcome(Status.STUCK, str(exc), rounds)
 
+                if state.last_sync:
+                    sync = state.last_sync
+                    plans = ", ".join(f"{p} → v{v}" for p, v in sync.changed_plans.items())
+                    await self._report(
+                        f"📝 Plan changed ({plans}): "
+                        + (
+                            f"{len(sync.reworked_tasks)} task(s) will be reworked at the new "
+                            f"version ({', '.join(sync.reworked_tasks)}); their dependents wait"
+                            if sync.reworked_tasks
+                            else "nothing built so far is affected"
+                        )
+                        + (
+                            f"; new task(s): {', '.join(sync.added_tasks)}"
+                            if sync.added_tasks
+                            else ""
+                        )
+                    )
                 if not reconciled:
                     reconciled = True
                     await self._reconcile_interrupted(state)
@@ -680,7 +697,15 @@ class TaskLoop:
                 checks=result.checks or ("the worker reported DONE",),
             )
         if result.ok and result.commit:
-            state.accept(result.task_id, attempt)
+            try:
+                state.accept(result.task_id, attempt)
+            except StaleAttemptError as exc:
+                # The plan changed underneath this attempt (T19): the work is kept, and a
+                # user-directed rework — not a repair — follows at the new version.
+                state.rework(result.task_id, str(exc))
+                await self._result(result.task_id, "reworked", str(exc))
+                await self._report(f"📝 {result.task_id} finished, but the plan changed: {exc}")
+                return
             await self._result(result.task_id, "done", result.detail)
             return
         reason = result.detail or "the worker did not finish"

@@ -98,6 +98,10 @@ class TaskAttempt:
     lineage_repairs: int = 0
     #: Why the previous attempt was blocked, for the next attempt's handoff.
     previous_failure: str | None = None
+    #: Set when this attempt exists because the plan changed (T19), not because work failed.
+    rework_reason: str | None = None
+    #: The previous attempt's result commit, so a rework adjusts instead of restarting.
+    previous_commit: str | None = None
 
     def to_json(self) -> dict:
         return {
@@ -121,6 +125,8 @@ class TaskAttempt:
             "base_commit": self.base_commit,
             "lineage_repairs": self.lineage_repairs,
             "previous_failure": self.previous_failure,
+            "rework_reason": self.rework_reason,
+            "previous_commit": self.previous_commit,
         }
 
     @classmethod
@@ -147,6 +153,8 @@ class TaskAttempt:
                 base_commit=value.get("base_commit"),
                 lineage_repairs=int(value.get("lineage_repairs", 0)),
                 previous_failure=value.get("previous_failure"),
+                rework_reason=value.get("rework_reason"),
+                previous_commit=value.get("previous_commit"),
             )
         except (KeyError, ValueError, TypeError) as exc:
             raise StaleAttemptError(f"unreadable task attempt in the build state: {value}") from exc
@@ -156,6 +164,18 @@ def attempt_id(build_id: str, task_id: str, attempt: int) -> str:
     return f"{build_id}:{task_id}:{attempt}"
 
 
+@dataclass(frozen=True, slots=True)
+class SyncReport:
+    """What an edited plan changed in the ledger (T19)."""
+
+    changed_plans: dict[str, int]
+    reworked_tasks: tuple[str, ...]
+    added_tasks: tuple[str, ...]
+
+    def __bool__(self) -> bool:
+        return bool(self.changed_plans or self.reworked_tasks or self.added_tasks)
+
+
 class BuildState:
     """One build's task ledger on disk, safe to reopen at any moment."""
 
@@ -163,6 +183,7 @@ class BuildState:
         self.path = path
         self.tree = tree
         self._document = document
+        self.last_sync = SyncReport({}, (), ())
 
     @property
     def build_id(self) -> str:
@@ -184,8 +205,14 @@ class BuildState:
 
     @property
     def records(self) -> tuple[TaskAttempt, ...]:
+        """Every task of the current plan tree (a task an edit removed is kept but not listed)."""
         self._reload()
-        return tuple(TaskAttempt.from_json(v) for v in self._document["tasks"].values())
+        current = {task.task_id for task in self.tree.tasks}
+        return tuple(
+            TaskAttempt.from_json(v)
+            for key, v in self._document["tasks"].items()
+            if not current or key in current
+        )
 
     def __getitem__(self, task_id: str) -> TaskAttempt:
         self._reload()
@@ -366,6 +393,77 @@ class BuildState:
             if r.thread_id is not None and not r.archived and r.status in settled
         )
 
+    def rework(self, task_id: str, reason: str) -> TaskAttempt:
+        """A fresh attempt because the plan changed (T19) — not a repair: the repair budget
+        and the previous result are both kept."""
+        record = self[task_id]
+        if record.status is TaskStatus.RUNNING:
+            raise StaleAttemptError(f"task '{task_id}' is still running; finish it first")
+        fresh = replace(
+            self._next_attempt(record, record.lineage_repairs),
+            previous_failure=None,
+            rework_reason=_text("reason", reason),
+            previous_commit=record.result_commit or record.previous_commit,
+        )
+        return self._apply(task_id, fresh, "reworked", reason=reason)
+
+    def sync_tree(self, tree: PlanTree) -> SyncReport:
+        """Take an edited plan on board immediately (T19).
+
+        New plan versions are saved before anything else happens; a task accepted (or
+        finished) at an older version gets a rework attempt; tasks the edit added appear
+        pending. Nothing already built is discarded.
+        """
+        self._reload()
+        self.tree = tree
+        changed: dict[str, int] = {}
+        for plan in tree.plans:
+            known = self._document["plan_versions"].get(plan.plan_id)
+            if known != plan.version:
+                changed[plan.plan_id] = plan.version
+                self._document["plan_versions"][plan.plan_id] = plan.version
+        added: list[str] = []
+        now = _now()
+        for task in tree.tasks:
+            if task.task_id not in self._document["tasks"]:
+                self._document["tasks"][task.task_id] = TaskAttempt(
+                    task_id=task.task_id,
+                    plan_id=task.plan_id,
+                    plan_version=task.plan_version,
+                    attempt=1,
+                    attempt_id=attempt_id(self.build_id, task.task_id, 1),
+                    owned_files=task.owned_files,
+                    owned_resources=task.owned_resources,
+                    updated_at=now,
+                ).to_json()
+                added.append(task.task_id)
+        if changed or added:
+            self._document["events"].append(
+                {"at": now, "task": None, "change": "plan-edit", "plans": changed, "added": added}
+            )
+            self._write()
+        reworked: list[str] = []
+        for task in tree.tasks:
+            record = self[task.task_id]
+            if task.plan_id not in changed:
+                continue
+            if record.status is TaskStatus.PENDING and record.plan_version != task.plan_version:
+                # Not started yet: it simply runs at the new version.
+                self._apply(
+                    task.task_id, replace(record, plan_version=task.plan_version), "version"
+                )
+                continue
+            if record.status in (TaskStatus.ACCEPTED, TaskStatus.FINISHED):
+                self.rework(
+                    task.task_id,
+                    f"the plan '{task.plan_id}' changed to version {changed[task.plan_id]} "
+                    f"after this was built at version {record.plan_version}",
+                )
+                reworked.append(task.task_id)
+        report = SyncReport(changed, tuple(reworked), tuple(added))
+        self.last_sync = report
+        return report
+
     def note_plan_version(self, plan_id: str, version: int) -> None:
         """Requirements changed: remember the new version so old attempts cannot be accepted."""
         self._reload()
@@ -473,4 +571,6 @@ def open_build_state(path: Path, tree: PlanTree, *, build_id: str) -> BuildState
     for key in ("tasks", "events", "plan_versions"):
         if not isinstance(document.get(key), (dict, list)):
             raise StaleAttemptError(f"the build state at {path} has no '{key}' section")
-    return BuildState(path, tree, document)
+    state = BuildState(path, tree, document)
+    state.sync_tree(tree)
+    return state

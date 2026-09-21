@@ -314,3 +314,48 @@ async def test_interruptions_and_cancellations_do_not_spend_the_repair(
     await _loop(plan, tmp_path, Cancelled({})).run()
     state = _state(plan, tmp_path)
     assert state[API].status is TaskStatus.BLOCKED and state[API].lineage_repairs == 0
+
+
+def _bump_product(plan: Path) -> None:
+    text = plan.read_text(encoding="utf-8")
+    text = text.replace('"id": "product", "version": 2', '"id": "product", "version": 3')
+    text = text.replace(
+        '"plan_id": "product",\n      "plan_version": 2',
+        '"plan_id": "product",\n      "plan_version": 3',
+    )
+    plan.write_text(text, encoding="utf-8")
+
+
+async def test_a_mid_build_plan_change_reworks_only_the_affected_tasks(
+    plan: Path, tmp_path: Path
+) -> None:
+    """T19: the person edits the product plan while its task runs. The current attempt
+    finishes and is kept, a rework attempt (not a repair) follows at the new version, the
+    dependent page waits for it, and the other plans' tasks keep moving."""
+
+    class EditsPlanOnce(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__({API: 0.05, STYLES: 0.05, POST: 0.05, PAGE: 0.02})
+            self.api_attempts: list[tuple[int, str | None, str | None]] = []
+
+        async def __call__(self, task: ReadyTask) -> ManifestResult:
+            if task.task_id == API:
+                record = _state(plan, tmp_path)[API]
+                self.api_attempts.append(
+                    (record.attempt, record.rework_reason, record.previous_commit)
+                )
+                if record.attempt == 1:
+                    _bump_product(plan)  # the plan changes while the first attempt works
+            return await super().__call__(task)
+
+    worker = EditsPlanOnce()
+    outcome = await _loop(plan, tmp_path, worker).run()
+
+    assert outcome.status is Status.COMPLETE
+    assert [a[0] for a in worker.api_attempts] == [1, 2]
+    assert worker.api_attempts[1][1] and "version 3" in worker.api_attempts[1][1]  # a rework
+    assert worker.api_attempts[1][2] == f"c-{API}"  # the kept result of attempt 1
+    state = _state(plan, tmp_path)
+    assert state[API].accepted and state[API].plan_version == 3 and state[API].lineage_repairs == 0
+    assert worker.started[PAGE] >= worker.finished[API]  # PAGE waited for the reworked API
+    assert list(worker.started).count(STYLES) == 1 and list(worker.started).count(POST) == 1

@@ -22,6 +22,8 @@ from claude_code_core.gowork_state import (
 FIXTURES = Path(__file__).parent / "fixtures"
 API = "product.catalog-api"
 PAGE = "website.catalog-page"
+STYLES = "website.page-styles"
+POST = "marketing.launch-post"
 
 
 @pytest.fixture
@@ -200,3 +202,80 @@ def test_the_repair_budget_follows_the_task_across_attempts(state: BuildState) -
     with pytest.raises(StaleAttemptError):
         state.repair(PAGE)  # nothing failed there
     assert first.attempt_id != repaired.attempt_id != manual.attempt_id
+
+
+def _bump(plan: Path, plan_id: str, old: int, new: int) -> None:
+    text = plan.read_text(encoding="utf-8")
+    text = text.replace(
+        f'"id": "{plan_id}", "version": {old}', f'"id": "{plan_id}", "version": {new}'
+    )
+    text = text.replace(
+        f'"plan_id": "{plan_id}",\n      "plan_version": {old}',
+        f'"plan_id": "{plan_id}",\n      "plan_version": {new}',
+    )
+    plan.write_text(text, encoding="utf-8")
+
+
+def test_a_plan_edit_is_saved_at_once_and_stale_acceptances_become_rework(
+    state: BuildState, tmp_path: Path
+) -> None:
+    """T19: the new version is recorded immediately; work accepted at the old version is
+    reworked (not repaired), its result kept; unrelated plans are untouched."""
+    attempt = state.begin(API)
+    state.submit_result(API, attempt.attempt_id, commit="abc", checks=["ok"])
+    state.accept(API, attempt.attempt_id)
+    state.begin(POST)
+    state.block(POST, "failed")
+    state.repair(POST)  # POST has used its repair; a rework must not give it back
+
+    plan = tmp_path / "master-plan.md"
+    _bump(plan, "product", 2, 3)
+    _bump(plan, "marketing", 1, 2)
+    report = state.sync_tree(load_plan_tree(plan))
+
+    assert report.changed_plans == {"product": 3, "marketing": 2}
+    assert set(report.reworked_tasks) == {API}  # accepted at v2, now stale
+    assert state.plan_version("product") == 3
+    api = state[API]
+    assert api.status is TaskStatus.PENDING and api.attempt == 2 and api.plan_version == 3
+    assert api.rework_reason and "version 3" in api.rework_reason
+    assert api.previous_commit == "abc" and api.previous_failure is None
+    assert api.lineage_repairs == 0 and state.repairs_left(API) == 1  # rework is not repair
+    assert state[POST].lineage_repairs == 1 and state[POST].plan_version == 2  # pending, moved on
+    assert state[PAGE].status is TaskStatus.PENDING and state[STYLES].plan_version == 4
+    again = open_build_state(state.path, load_plan_tree(plan), build_id="thread-11")
+    assert again.plan_version("product") == 3 and again[API].attempt == 2
+
+
+def test_a_finished_result_at_an_old_version_cannot_be_accepted_but_is_kept(
+    state: BuildState, tmp_path: Path
+) -> None:
+    attempt = state.begin(API)
+    state.submit_result(API, attempt.attempt_id, commit="abc", checks=["ok"])
+    plan = tmp_path / "master-plan.md"
+    _bump(plan, "product", 2, 3)
+    state.sync_tree(load_plan_tree(plan))
+
+    with pytest.raises(StaleAttemptError):  # the finished attempt is stale: never accepted
+        state.accept(API, attempt.attempt_id)
+    reworked = state[API]  # sync already opened the rework attempt
+    assert reworked.attempt == 2 and reworked.previous_commit == "abc"
+    assert reworked.rework_reason and "version 3" in reworked.rework_reason
+    assert any(e.get("change") == "finished" and e.get("commit") == "abc" for e in state.events)
+
+
+def test_new_tasks_in_an_edited_plan_appear_pending(state: BuildState, tmp_path: Path) -> None:
+    plan = tmp_path / "master-plan.md"
+    text = plan.read_text(encoding="utf-8").replace(
+        '"tasks": [',
+        '"tasks": [\n    {"id": "marketing.press-kit", "plan_id": "marketing", "plan_version": 1, '
+        '"outcome": "Assemble the press kit", "dependencies": [], "owned_files": ["kit/"], '
+        '"owned_resources": [], "required_inputs": ["REQ-LAUNCH-POST"], "output": "a kit", '
+        '"acceptance_check": "true", "source_requirement": "REQ-LAUNCH-POST"},',
+        1,
+    )
+    plan.write_text(text, encoding="utf-8")
+    report = state.sync_tree(load_plan_tree(plan))
+    assert report.added_tasks == ("marketing.press-kit",)
+    assert state["marketing.press-kit"].status is TaskStatus.PENDING
+    assert "marketing.press-kit" in [r.task_id for r in state.records]
