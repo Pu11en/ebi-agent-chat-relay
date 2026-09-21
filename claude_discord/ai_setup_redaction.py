@@ -212,10 +212,17 @@ _PROVIDER_TOKEN = re.compile(
     )""",
     re.VERBOSE,
 )
+# A name may sit inside quotes — ``"api_key": "…"`` is how JSON spells an
+# assignment — and the quote is kept out of the name so the credential test
+# sees ``api_key``, not ``"api_key"``.
 _ASSIGNMENT = re.compile(
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)(?P<gap>\s*[:=]\s*)"
-    r"""(?P<value>"[^"\n]*"|'[^'\n]*'|[^\s,;]+)""",
+    r"""(?P<open>["']?)(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)(?P<close>["']?)(?P<gap>\s*[:=]\s*)"""
+    r"""(?P<value>"[^"\n]*"|'[^'\n]*'|[^\s,;{}\[\]"']+)""",
 )
+# ``?api_key=…`` and ``#access_token=…``: a URL's own assignments.  They have to
+# be handled before the generic pass, whose ``scheme:`` match would otherwise
+# swallow the whole URL as one harmless value.
+_URL_PARAMETER = re.compile(r"(?P<lead>[?&#])(?P<name>[A-Za-z0-9_.\-]+)=(?P<value>[^&#\s\"']*)")
 # Random-looking candidates only: no path separators, so a long directory name
 # is never mistaken for a credential.
 _ENTROPY_CANDIDATE = re.compile(r"[A-Za-z0-9+_=\-]{28,}")
@@ -245,6 +252,8 @@ def _looks_random(value: str) -> bool:
 
 def _assignment_reason(text: str) -> RedactionReason | None:
     """Environment assignments first: their values never leave this module."""
+    if any(is_secret_name(match.group("name")) for match in _URL_PARAMETER.finditer(text)):
+        return RedactionReason.SECRET_VALUE
     matches = list(_ASSIGNMENT.finditer(text))
     if any(_is_environment_name(match.group("name")) for match in matches):
         return RedactionReason.ENVIRONMENT_VALUE
@@ -278,7 +287,14 @@ def contains_secret(value: str) -> bool:
 def _redact_assignment(match: re.Match[str]) -> str:
     name = match.group("name")
     if _is_environment_name(name) or is_secret_name(name):
-        return f"{name}{match.group('gap')}{REDACTED}"
+        return f"{match.group('open')}{name}{match.group('close')}{match.group('gap')}{REDACTED}"
+    return match.group(0)
+
+
+def _redact_url_parameter(match: re.Match[str]) -> str:
+    name = match.group("name")
+    if is_secret_name(name):
+        return f"{match.group('lead')}{name}={REDACTED}"
     return match.group(0)
 
 
@@ -299,6 +315,7 @@ def redact_text(value: str) -> str:
     text = _PROVIDER_TOKEN.sub(REDACTED, text)
     text = _JWT.sub(REDACTED, text)
     text = _BEARER.sub(REDACTED, text)
+    text = _URL_PARAMETER.sub(_redact_url_parameter, text)
     text = _ASSIGNMENT.sub(_redact_assignment, text)
     return _ENTROPY_CANDIDATE.sub(_redact_entropy, text)
 

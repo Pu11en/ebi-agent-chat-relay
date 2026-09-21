@@ -7,6 +7,7 @@ from .claude_chat import ClaudeChatCog
 from .collision_watch import CollisionWatchCog
 from .context_links import ContextLinksCog
 from .event_processor import EventProcessor
+from .my_ai_setup import MyAISetupCog
 from .notification_dispatch import NotificationDispatchCog
 from .ollama_command import OllamaCommandCog
 from .project_launcher import ProjectLauncherCog
@@ -20,6 +21,7 @@ from .webhook_trigger import WebhookTriggerCog
 
 __all__ = [
     "AgentHandoffCog",
+    "MyAISetupCog",
     "AutoUpgradeCog",
     "ClaudeChatCog",
     "CollisionWatchCog",

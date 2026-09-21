@@ -608,7 +608,9 @@ class InventoryCollector:
         diagnostics: list[InventoryDiagnostic] = []
         if failure is not None:
             diagnostics.append(failure)
-        diagnostics.extend(result.diagnostics)
+        diagnostics.extend(
+            _sanitize_diagnostic(registration, context, entry) for entry in result.diagnostics
+        )
         accepted: list[InventoryItem] = []
         for item in result.items:
             kept, rejection = self._screen(registration, item, context)
@@ -677,6 +679,33 @@ def _invoke(
             f"{type(result).__name__} instead of an inventory result",
         )
     return result, None
+
+
+def _sanitize_diagnostic(
+    registration: AdapterRegistration, context: CollectionContext, entry: object
+) -> InventoryDiagnostic:
+    """Rebuild an adapter's diagnostic through the redactor before it is kept.
+
+    ``InventoryDiagnostic`` only guarantees *shape* (one bounded line); an
+    adapter that wraps a raw error string in one has not scrubbed its value.
+    Every message is therefore passed through :func:`safe_diagnostic` here, and
+    a computer or time the adapter left out is filled in from this run.
+    """
+    if not isinstance(entry, InventoryDiagnostic):
+        return context.diagnostic(
+            registration.primary_source_key,
+            DiagnosticSeverity.WARNING,
+            f"The {registration.name} inventory source reported "
+            f"{type(entry).__name__}, which is not an inventory diagnostic, and it was dropped",
+        )
+    return safe_diagnostic(
+        entry.source_key,
+        entry.severity,
+        entry.message,
+        computer=entry.computer or context.computer,
+        identity=entry.identity,
+        occurred_at=entry.occurred_at or context.collected_at,
+    )
 
 
 def _failure_diagnostic(

@@ -231,6 +231,55 @@ def test_redact_text_drops_url_credentials_but_keeps_the_host() -> None:
     assert "db.internal" in scrubbed
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://api.internal/v1?api_key=abc123def",
+        "https://api.internal/v1?x=1&token=abc123def&y=2",
+        "https://api.internal/v1#access_token=abc123def",
+        "connector failed: GET https://host/hook?secret=abc123def returned 401",
+    ],
+)
+def test_secrets_inside_a_url_query_or_fragment_are_redacted(value: str) -> None:
+    """A ``scheme:`` looks like an assignment and used to swallow the whole URL."""
+    assert secret_reason(value) is not None
+    scrubbed = redact_text(value)
+    assert "abc123def" not in scrubbed
+    assert REDACTED in scrubbed
+    assert "api.internal" in scrubbed or "host" in scrubbed
+
+
+def test_url_credentials_are_redacted_even_after_an_assignment_prefix() -> None:
+    scrubbed = redact_text("remote.url=https://drew:tok_abc@git.internal/repo.git")
+    assert "tok_abc" not in scrubbed
+    assert "git.internal" in scrubbed
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '"api_key": "hunter2"',
+        '{"api_key": "hunter2", "name": "docs"}',
+        '"apiKey":"hunter2"',
+        "'secret': 'hunter2'",
+        '{"headers": {"Authorization": "Bearer hunter2"}}',
+        '"password" = "hunter2"',
+    ],
+)
+def test_json_quoted_credential_keys_are_redacted(value: str) -> None:
+    """A JSON key sits inside quotes; the bare-name assignment pattern missed it."""
+    assert secret_reason(value) is not None
+    scrubbed = redact_text(value)
+    assert "hunter2" not in scrubbed
+    assert REDACTED in scrubbed
+
+
+def test_json_quoted_ordinary_keys_survive() -> None:
+    value = '{"name": "docs", "enabled": true, "path": "~/.claude/skills"}'
+    assert secret_reason(value) is None
+    assert redact_text(value) == value
+
+
 # --------------------------------------------------------------------------
 # Bounded, single-line, secret-free display text
 # --------------------------------------------------------------------------
