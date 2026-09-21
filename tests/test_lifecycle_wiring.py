@@ -219,9 +219,7 @@ class TestCloseCommand:
         assert surface.archived == []
         assert "inside a session thread" in event.response.send_message.call_args.args[0]
 
-    async def test_close_without_a_lifecycle_service_declines_and_never_deletes(
-        self, repo, chat
-    ):
+    async def test_close_without_a_lifecycle_service_declines_and_never_deletes(self, repo, chat):
         cog = SurfaceCommandsCog(
             MagicMock(), surface=CommandSurface.for_control_centers(CONTROL), repo=repo, chat=chat
         )
@@ -241,9 +239,7 @@ class TestRestartAndReopen:
         assert outcome.is_pending
         # "Restart": a fresh service over the same database, no turn running.
         fresh_chat = SimpleNamespace(_active_runners={}, _active_tasks={})
-        after = SessionLifecycleService(
-            repo, surface=surface, turns=ChatTurnActivity(fresh_chat)
-        )
+        after = SessionLifecycleService(repo, surface=surface, turns=ChatTurnActivity(fresh_chat))
         results = await after.reconcile_pending_closes()
         assert [r.state for r in results] == [CloseState.CLOSED]
         assert surface.archived == [THREAD]
@@ -257,9 +253,7 @@ class TestRestartAndReopen:
         assert record is not None and record.is_open
         assert outcome.resume_session_id == "sess-1"
 
-    async def test_reopen_under_a_different_harness_does_not_hand_over_the_id(
-        self, cog, repo
-    ):
+    async def test_reopen_under_a_different_harness_does_not_hand_over_the_id(self, cog, repo):
         await repo.save(THREAD, "sess-1", working_dir="/tmp/project", backend="claude")
         await cog.close_command.callback(cog, thread_interaction())
         outcome = await cog.lifecycle.reopen(THREAD, backend="codex")

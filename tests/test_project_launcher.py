@@ -897,9 +897,7 @@ async def test_sessions_search_narrows_by_title(cog, tmp_path):
     assert [o.value for o in options] == ["2"]
 
 
-async def test_sessions_open_unarchives_and_links_without_touching_the_conversation(
-    cog, tmp_path
-):
+async def test_sessions_open_unarchives_and_links_without_touching_the_conversation(cog, tmp_path):
     live = _live_thread(2, "Closed", archived=True)
     cog.bot.fetch_channel = AsyncMock(return_value=live)
     cog.repo.get.return_value = _record(2, str(tmp_path), closed=True)

@@ -26,7 +26,7 @@ Try: `uv run python -m claude_discord.main`
 ## 4. Registration, migration, and verification
 
 - [x] 4.1 Register `/new`, `/sessions`, `/settings`, `/session`, and `/close`, make `/help` location-aware, and fail closed for commands used in the wrong place while leaving old registrations intact; owner: setup/command adapters and `tests/test_help_sync.py`; depends on sections 2 and 3; verify new and legacy commands coexist in the test command tree.
-- [ ] 4.2 Run the full command-surface check plus `uv run ruff check claude_discord/ tests/` and `uv run pyright claude_discord/`, repair only in-scope failures, and verify the security checklist for Cog/subprocess changes; owner: integration fixes only; depends on 4.1.
+- [x] 4.2 Run the full command-surface check plus `uv run ruff check claude_discord/ tests/` and `uv run pyright claude_discord/`, repair only in-scope failures, and verify the security checklist for Cog/subprocess changes; owner: integration fixes only; depends on 4.1.
 - [ ] 4.3 Enable the local dev worktree and complete the three Discord checks below without retiring old commands; owner: no source expansion; depends on 4.2; verify Drew records acceptance or concrete fixes.
 - [ ] 4.4 After recorded acceptance only, remove superseded command registrations and old launcher buttons without deleting service code or stored state, then rerun Check; owner: command registration/help tests; depends on 4.3; verify the final registered union is exactly eight commands.
 
