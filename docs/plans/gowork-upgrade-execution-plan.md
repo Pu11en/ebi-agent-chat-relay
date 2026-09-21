@@ -140,7 +140,7 @@ new code merely because this build edits it. Report that boundary honestly.
     the legacy "one checkbox plan per project, switch on a new start" behaviour stays for
     checkbox plans. Proof: two manifest plans in one project run at once; a repeated start
     returns the existing thread with no new attempt; stopping one leaves the other alone.
-  - [ ] T11b: manifest dispatch. When a plan carries a `gowork-plan` manifest, the loop
+  - [x] T11b: manifest dispatch. When a plan carries a `gowork-plan` manifest, the loop
     dispatches `ready_tasks()` from the T05 ledger instead of checkbox grouping: one work
     copy per project, one side copy + worker thread per task, `begin` before the worker
     starts, `submit_result` with the side copy's commit and check output, `accept` after

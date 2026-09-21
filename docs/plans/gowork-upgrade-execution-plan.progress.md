@@ -232,3 +232,37 @@
   `pyright claude_discord/cogs/task_loop.py` (0 errors).
 - Open: T11b makes a manifest build dispatch its tasks from the ledger; until then a
   manifest plan runs its checkbox lines like a legacy plan.
+
+## T11b — Manifest dispatch
+
+- Core (`claude_code_core/task_loop.py`): `TaskLoop(manifest_dispatch=, state_path=,
+  build_id=)`; `run()` takes the manifest path when the plan has a `gowork-plan` fence.
+  `_run_manifest()`: load tree → open ledger → `ready_tasks(limit=max_parallel())` → `begin`
+  each → dispatch → `submit_result` + `accept` (result commit + checks) or `block` (reason) →
+  repeat; COMPLETE when all accepted, STUCK naming the blocked tasks, invalid manifests stop
+  with the validation message. `ManifestResult` carries task id, ok, detail, commit, checks.
+  `manifest_worker_prompt()` gives a worker its assignment (outcome, owned files/resources,
+  inputs, expected output, acceptance check, source requirement; T12 turns it into a
+  persisted handoff).
+- Cog (`claude_discord/cogs/task_loop.py`): `_dispatch_manifest()` — per task: the project's
+  work copy (`_project_copy()`: the build's own copy when the project sits in it, else a
+  `create_project_copy()` of that repository, made once under a lock), a side copy branched
+  from it, a worker thread, `run_fresh_turn(slot_kind="task", slot_unblocks=<dependents>)`,
+  then under the build's git lock: side has new work → merge → `head_commit()` is the result
+  commit; otherwise the side copy is removed and the task reports why. Ledger lives at
+  `<gowork state dir>/builds/<build_id>.json`.
+- `claude_code_core/work_copy.py`: `create_project_copy()`, `head_commit()`.
+- Tests: `tests/gowork_upgrade/test_manifest_dispatch.py` (6, core with a fake dispatcher:
+  two projects progress while the dependent waits; a failed task blocks only its dependents;
+  reopening carries on from the ledger; stop; parallel limit; invalid manifest),
+  `tests/gowork_upgrade/test_manifest_build_cog.py` (1, real git repo + fake workers: all four
+  tasks accepted with result commits, each task's work landed in its project folder inside the
+  build's copy, the project itself untouched, three tasks ran at once and the dependent ran
+  only after product was accepted), `tests/test_work_copy.py` (+1). T11a's tests were updated
+  for the project folders and worker threads the manifest path now creates.
+- Implementation commit: `71f90d2`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (400 passed), `ruff check`,
+  `ruff format --check`, `pyright` on the three touched modules (0 errors).
+- Open: results are accepted on merge (T15/T16 add combined checks and evidence gates);
+  merges are serialized in memory per build (T15 makes integration durable); a failed task is
+  blocked at once (T18 adds the single repair attempt).
