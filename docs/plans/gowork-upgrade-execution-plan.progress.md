@@ -810,3 +810,55 @@ T11 is complete (T11a–T11c).
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (505 passed), `ruff check`,
   `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors). No model, network or
   paid agent is involved anywhere in the evaluator.
+
+## T31 — Repeatable offline Go Work practice command
+
+- New `claude_discord/gowork_demo.py` — `uv run python -m claude_discord.gowork_demo`
+  (`--root DIR` keeps the folder; the plan's `Try:` line and "How to Try It" now name it).
+  Real: `TaskLoopCog`, the core loop, the T05 ledger, T11b side copies in a temporary git
+  repository, T08's `AdmissionController`, T09's `CapacityPolicy`, T10's `_run_helper`
+  admission path, T20/T21 blockers, T23/T24 integration. Fake: workers (a `SessionBackend`
+  whose "session" writes one file, commits it and waits at a gate the script opens — through
+  `run_claude_with_config`, so every worker holds a real admission slot), the host probe
+  (readings the script sets) and Discord (recorded threads/messages, `bot.get_channel`).
+  Two plans are exported with T27 (`export_plan`) into one repository: *launch* (control,
+  product, website, marketing; the catalog page depends on the contract; the contract's
+  acceptance check fails once, the announcement's fails twice) and *content* (nine
+  independent help pages in `docs`). The script then opens gates in a fixed order and
+  checks, in this order: two plans in several projects; dependency wait; one repair; fair
+  turns (the first freed slot goes to the waiting build, both builds' turns in
+  `admission.json`); more than ten adaptive admissions (three healthy ticks: 4 → 16, eleven
+  workers running at once); pressure pauses starts (900 MB free) and recovery resumes;
+  archive before a sibling finishes (page 01's thread archived, never deleted, while page
+  02's runs); mid-build plan change (website v4 → v5 in the build's copy while styling runs:
+  kept, then a rework at v5, not a repair); direct-reply blocker (one question after the
+  repair; a non-reply and a stranger's reply change nothing; a direct "retry" starts attempt
+  3); restart keeps finished work (both driver tasks cancelled with nine committed workers
+  mid-flight, a new cog `resume_all()`s, everything salvaged, nothing rerun); automatic
+  checked completion (17 files landed in the project, two "Kept" messages, no reply, no
+  remote, every worker thread archived, none deleted). Exit 0 only when all eleven were
+  seen; a `DemoError` names the first failure and exits 1; the output is one `✓ what: why`
+  line per behaviour plus the pending limitations (not the live bot; fake workers; the edit
+  is applied to the build's copy; the quick AI is stubbed; readings are set). ~7–10 s.
+- Regressions the demo found and this task fixed: (1) `BuildState._next_attempt` dropped
+  the previous attempt's `thread_id`, so after a repair, rework or retry the earlier worker
+  thread was never archived — `TaskAttempt.earlier_threads` now carries them,
+  `unarchived_threads()` lists them whatever the task's status, `mark_archived(task,
+  thread_id=…)` clears one, and the cog archives every thread a task owes; old ledgers load
+  with an empty list. (2) `retry_archives` was documented "after a restart, or at the end"
+  but nothing called it at the end, so threads of work salvaged by a restart (T17 accepts
+  outside the after-result hook) stayed open — `_wrap_up` now calls it for manifest builds.
+  The T14 cog test now fails the archive twice (hook, then end-of-build retry) so the
+  restart retry it proves is still the one that finishes.
+- Tests: `tests/gowork_upgrade/test_practice_demo.py` (3): the demo observes every
+  behaviour in `BEHAVIOURS`, prints the limitations and under 60 lines, exit 0; a scheduler
+  that releases dependents early (`gowork_schedule._releases` patched) makes it exit 1
+  naming "dependency wait"; the plan's `Try:` line is the demo command;
+  `test_task_state.py` (+1: an earlier attempt's thread is listed until archived across
+  repair, rework and retry, and survives reopen); `test_manifest_build_cog.py` archive test
+  adapted as above.
+- Implementation commit: see the T31 line in `git log`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (509 passed), `ruff check`,
+  `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors). Security: the demo
+  runs `git` and the acceptance checks as argv lists (no shell); the only file it writes are
+  under its own temporary root; `_quick_ai` is stubbed so no `claude -p` is spawned.

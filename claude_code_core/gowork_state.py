@@ -102,6 +102,9 @@ class TaskAttempt:
     rework_reason: str | None = None
     #: The previous attempt's result commit, so a rework adjusts instead of restarting.
     previous_commit: str | None = None
+    #: Worker threads of earlier attempts that were never archived (T14 across a repair,
+    #: rework or retry): still to be archived, whatever this attempt's status.
+    earlier_threads: tuple[int, ...] = ()
 
     def to_json(self) -> dict:
         return {
@@ -127,6 +130,7 @@ class TaskAttempt:
             "previous_failure": self.previous_failure,
             "rework_reason": self.rework_reason,
             "previous_commit": self.previous_commit,
+            "earlier_threads": list(self.earlier_threads),
         }
 
     @classmethod
@@ -155,6 +159,7 @@ class TaskAttempt:
                 previous_failure=value.get("previous_failure"),
                 rework_reason=value.get("rework_reason"),
                 previous_commit=value.get("previous_commit"),
+                earlier_threads=tuple(int(t) for t in value.get("earlier_threads") or ()),
             )
         except (KeyError, ValueError, TypeError) as exc:
             raise StaleAttemptError(f"unreadable task attempt in the build state: {value}") from exc
@@ -355,6 +360,8 @@ class BuildState:
             owned_resources=record.owned_resources,
             lineage_repairs=lineage_repairs,
             previous_failure=record.reason,
+            earlier_threads=record.earlier_threads
+            + ((record.thread_id,) if record.thread_id is not None and not record.archived else ()),
         )
 
     def retry_after_block(self, task_id: str, reason: str) -> TaskAttempt:
@@ -377,21 +384,32 @@ class BuildState:
             "thread",
         )
 
-    def mark_archived(self, task_id: str) -> TaskAttempt:
-        """The worker thread was archived (idempotent)."""
+    def mark_archived(self, task_id: str, *, thread_id: int | None = None) -> TaskAttempt:
+        """The worker thread was archived (idempotent).
+
+        Without *thread_id* (or with the current attempt's) the current attempt is
+        marked; an earlier attempt's thread is simply dropped from the list.
+        """
         record = self[task_id]
+        if thread_id is not None and thread_id in record.earlier_threads:
+            left = tuple(t for t in record.earlier_threads if t != thread_id)
+            return self._apply(task_id, replace(record, earlier_threads=left), "archived")
+        if thread_id is not None and thread_id != record.thread_id:
+            return record  # not a thread this task knows about
         if record.archived:
             return record
         return self._apply(task_id, replace(record, archived=True), "archived")
 
     def unarchived_threads(self) -> tuple[tuple[str, int], ...]:
-        """Settled tasks whose worker thread still awaits its archive."""
+        """Worker threads still awaiting their archive: every earlier attempt's, and the
+        current attempt's once the task has settled."""
         settled = (TaskStatus.FINISHED, TaskStatus.ACCEPTED, TaskStatus.BLOCKED)
-        return tuple(
-            (r.task_id, r.thread_id)
-            for r in self.records
-            if r.thread_id is not None and not r.archived and r.status in settled
-        )
+        pending: list[tuple[str, int]] = []
+        for r in self.records:
+            pending.extend((r.task_id, t) for t in r.earlier_threads)
+            if r.thread_id is not None and not r.archived and r.status in settled:
+                pending.append((r.task_id, r.thread_id))
+        return tuple(pending)
 
     def rework(self, task_id: str, reason: str) -> TaskAttempt:
         """A fresh attempt because the plan changed (T19) — not a repair: the repair budget

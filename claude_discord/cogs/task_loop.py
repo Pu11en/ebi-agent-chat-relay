@@ -1406,6 +1406,11 @@ class TaskLoopCog(commands.Cog):
                     ),
                 )
         await self._archive_finished_worker_thread(running)
+        if summary is not None:
+            # Worker threads settled outside the after-result hook (work salvaged by a
+            # restart, T17) are still open: archive them now, never delete (T14).
+            with contextlib.suppress(Exception):
+                await self.retry_archives(running)
 
         if summary is not None and not fails and not proposed:
             # T24: a manifest build whose own checks passed does not wait for
@@ -2772,22 +2777,23 @@ class TaskLoopCog(commands.Cog):
         except Exception:
             logger.warning("gowork: can't read the build ledger to archive", exc_info=True)
             return
-        pending = dict(state.unarchived_threads())
-        thread_id = pending.get(task_id)
-        if thread_id is None or thread_id == running.worker_thread_id:
-            return  # nothing to do, or the build's own thread (never archived)
-        thread: Any = self.bot.get_channel(thread_id)
-        if thread is None:
-            with contextlib.suppress(Exception):
-                thread = await self.bot.fetch_channel(thread_id)
-        if thread is None:
-            return  # gone or unreachable: the ledger keeps it for the next try
-        try:
-            await thread.edit(archived=True)
-        except Exception:
-            logger.info("gowork: archiving thread %s failed; will retry", thread_id)
-            return
-        state.mark_archived(task_id)
+        # Every thread the task still owes an archive: earlier attempts' (a repair, rework
+        # or retry opened a new one) and, once settled, the current attempt's.
+        for owed_task, thread_id in state.unarchived_threads():
+            if owed_task != task_id or thread_id == running.worker_thread_id:
+                continue  # another task, or the build's own thread (never archived)
+            thread: Any = self.bot.get_channel(thread_id)
+            if thread is None:
+                with contextlib.suppress(Exception):
+                    thread = await self.bot.fetch_channel(thread_id)
+            if thread is None:
+                continue  # gone or unreachable: the ledger keeps it for the next try
+            try:
+                await thread.edit(archived=True)
+            except Exception:
+                logger.info("gowork: archiving thread %s failed; will retry", thread_id)
+                continue
+            state.mark_archived(task_id, thread_id=thread_id)
 
     async def retry_archives(self, running: _Running) -> int:
         """Archive every settled worker thread still open (after a restart, or at the end)."""

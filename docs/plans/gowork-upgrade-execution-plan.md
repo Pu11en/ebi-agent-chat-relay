@@ -1,7 +1,7 @@
 # Go Work Upgrade: Fresh-Session Execution Plan
 
 Check: uv run python scripts/check_gowork_upgrade.py
-Try: uv run python scripts/check_gowork_upgrade.py
+Try: uv run python -m claude_discord.gowork_demo
 Goal: Preserve Drew's detailed, question-led planning while Go Work executes several projects with resource-aware workers, explicit dependencies, recoverable results and automatic local completion.
 Done when: All tasks below pass offline regression checks and the final simulated practice run proves multi-project dependencies, adaptive capacity above ten, bounded repair, direct-reply blockers, restart recovery, changed requirements and automatic completion without a looks-good gate.
 
@@ -282,7 +282,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: executable validation and rendered examples identify exact failures and coverage;
   copied upstream content retains required license notices.
 
-- [ ] T31: Execution spine, only after T30: provide a repeatable offline Go Work practice command.
+- [x] T31: Execution spine, only after T30: provide a repeatable offline Go Work practice command.
   Scope: simulated integration demo spanning actual coordinator/adapters with fake workers,
   machine readings and Discord. Two plans in multiple projects, dependency waits, >10
   adaptive admissions, fair turns, one repair, direct-reply blocker, restart, midbuild edit,
@@ -301,12 +301,17 @@ new code merely because this build edits it. Report that boundary honestly.
 
 ## How to Try It
 
-- Now: Try runs existing offline Go Work tests; this is a baseline, not the new experience.
-- Once T31 exists, run the updated Try command and look for independent work progressing
-  while a task needing another result waits; simulated load changes the allowed worker count.
+- Once T31 exists, run `uv run python -m claude_discord.gowork_demo` (the Try line above;
+  `--root DIR` keeps the folder). It builds two plans in a temporary repository with the
+  real coordinator, fake workers and fake host readings, prints one `✓ what: why` line per
+  behaviour and exits 0 only when all eleven were seen (about 10 seconds; 1 names the first
+  failure). Look for independent work progressing while a task needing another result
+  waits; simulated load changes the allowed worker count (4 → 16, then paused at 900 MB free).
 - Check that a finished worker closes before a slow sibling and its result/history remain.
 - Check that one failed repair produces a specific question; only a direct reply resolves
-  it, and successful work finishes without looks good. These three checks take about 30 seconds.
+  it, and successful work finishes without looks good. The output ends with the pending
+  limitations — read them: this is a practice run on this computer, not the live bot.
+- Before T31, the Check (offline Go Work tests) was the baseline, not the new experience.
 
 No website is part of this upgrade, so there is no localhost page. The demo must be offline
 and finish promptly. Keep Check standalone and under two minutes; it must discover new

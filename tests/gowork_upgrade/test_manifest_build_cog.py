@@ -146,6 +146,7 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
     channel.id = 1
     channel.send = AsyncMock()
     archived_after: dict[int, str] = {}
+    failures: list[int] = []
 
     def make_edit(thread: MagicMock):  # noqa: ANN202
         async def edit(**kwargs: object) -> None:
@@ -156,8 +157,11 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
                     ).read_text()
                 )
                 task = next(t for t in ledger["tasks"].values() if t.get("thread_id") == thread.id)
-                if thread.id == threads[2].id and thread.id not in archived_after:
-                    archived_after[thread.id] = "failed once"
+                if thread.id == threads[2].id and len(failures) < 2:
+                    # Fails from the after-save hook and again from the end-of-build retry,
+                    # so only a restart's retry can finish it.
+                    failures.append(thread.id)
+                    archived_after.setdefault(thread.id, "failed")
                     raise discord.HTTPException(MagicMock(status=500), "boom")
                 archived_after[thread.id] = task["status"]  # what was on disk at archive time
 
@@ -182,7 +186,8 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
             break
         await asyncio.sleep(0.01)
 
-    assert set(archived_after.values()) == {"accepted", "failed once"}  # saved before archived
+    assert set(archived_after.values()) == {"accepted", "failed"}  # saved before archived
+    assert failures == [threads[2].id, threads[2].id]  # the hook, then the end-of-build retry
     # The build's own thread is only ever archived by the finish flow (with its reason),
     # never by the per-task archive; the planning channel is never touched.
     assert all(
