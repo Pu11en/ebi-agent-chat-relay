@@ -1773,6 +1773,7 @@ class ApiServer:
                 result_sink=_project_lookup_result_sink if from_thread is not None else None,
                 backend=lookup_backend,
                 model=lookup_model,
+                read_only=True,  # a lookup never edits: enforced in argv, not by the prompt
             )
         except Exception:
             logger.exception("project lookup spawn_session failed")

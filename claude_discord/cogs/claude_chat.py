@@ -48,6 +48,7 @@ from ..discord_ui.thread_context import DEFAULT_DAYS, build_recent_transcript
 from ..discord_ui.thread_dashboard import ThreadState, ThreadStatusDashboard
 from ..discord_ui.thread_renamer import suggest_title
 from ..discord_ui.views import RewindSelectView, StopView
+from ..handoff_authority import restrict_to_read_only
 from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
 from ..handoff_sender import build_project_lookup_handoff_event, send_project_lookup_handoff
@@ -668,6 +669,7 @@ class ClaudeChatCog(commands.Cog):
         resume: bool = False,
         backend: str | None = None,
         model: str | None = None,
+        read_only: bool = False,
     ) -> None:
         """Run one handoff turn inside an existing thread, without waiting for it.
 
@@ -676,7 +678,13 @@ class ClaudeChatCog(commands.Cog):
         session (an explicitly selected existing session); otherwise the turn
         starts fresh. The working directory and harness are pinned before the
         run so a restart cannot fall back to another project or model.
+        ``read_only`` restricts the worker's tool set in argv (not just in the
+        prompt); it raises before anything is posted when the backend cannot
+        honour that, so the executor fails the job visibly instead of running
+        it unrestricted.
         """
+        if read_only:
+            await self._require_read_only_capable_backend(int(thread.id), backend)
         seed_message = await thread.send(f"🤝 Handoff turn ({'resume' if resume else 'fresh'})")
         if working_dir is not None:
             await self.repo.ensure_working_dir(int(thread.id), working_dir)
@@ -700,8 +708,28 @@ class ClaudeChatCog(commands.Cog):
                 working_dir_override=working_dir,
                 result_sink=result_sink,
                 lounge=False,
+                read_only=read_only,
             )
         )
+
+    async def _require_read_only_capable_backend(
+        self, thread_id: int | None, backend: str | None
+    ) -> None:
+        """Raise unless the backend this run will use can restrict its tools.
+
+        Only ``ClaudeRunner`` exposes the available-tool set (``--tools``); a
+        read-only handoff on any other backend would run with every tool and
+        a prompt asking nicely, which is not enforcement.
+        """
+        settings = self._backend_settings
+        if settings is not None:
+            chosen = backend or await settings.current_backend(thread_id)
+        else:
+            chosen = "claude" if hasattr(self.runner, "tools") else "unknown"
+        if chosen != "claude":
+            raise RuntimeError(
+                f"read-only handoff refused: backend {chosen!r} cannot restrict its tool set"
+            )
 
     def _is_no_mention_scope(self, channel: discord.abc.MessageableChannel) -> bool:
         """Return whether *channel* is one ccdb was invited to speak in freely.
@@ -1341,6 +1369,7 @@ class ClaudeChatCog(commands.Cog):
         working_dir: str | None = None,
         backend: str | None = None,
         model: str | None = None,
+        read_only: bool = False,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -1384,10 +1413,15 @@ class ClaudeChatCog(commands.Cog):
             backend: Optional harness to pin to the new thread before its first
                         run (e.g. ``"claude"`` for a cheap helper worker).
             model: Optional model for *backend*; ignored without *backend*.
+            read_only: Restrict the worker to a read-only tool set in argv
+                        (a handoff with ``edit: false``). Raises before the
+                        thread is created when the backend cannot honour it.
 
         Returns:
             The newly created :class:`discord.Thread`.
         """
+        if read_only and auto_start:
+            await self._require_read_only_capable_backend(None, backend)
         default_working_dir = getattr(self.runner, "working_dir", None)
         effective_working_dir = working_dir or (
             default_working_dir if isinstance(default_working_dir, str) else None
@@ -1439,6 +1473,7 @@ class ClaudeChatCog(commands.Cog):
                     fork=fork,
                     result_sink=result_sink,
                     working_dir_override=effective_working_dir,
+                    read_only=read_only,
                 )
             )
         return thread
@@ -1986,6 +2021,7 @@ class ClaudeChatCog(commands.Cog):
         lounge: bool = True,
         slot: tuple[str, str, int] = ("chat", "", 0),
         recovery: tuple[str, str] | None = None,
+        read_only: bool = False,
     ) -> None:
         """Execute Claude Code CLI and stream results to the thread.
 
@@ -2060,6 +2096,10 @@ class ClaudeChatCog(commands.Cog):
                 working_dir_override=working_dir_override,
                 effort_override=effort_override,
             )
+            if read_only:
+                # A read-only handoff: the tool set is cut in argv, not asked
+                # for in the prompt. Raises rather than run unrestricted.
+                restrict_to_read_only(runner)
             # Register as the sole active run BEFORE releasing the lock. Track
             # the task too so a later eviction can await our cleanup.
             self._active_runners[thread.id] = runner

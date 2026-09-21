@@ -22,6 +22,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from claude_code_core.handoffs.protocol import AuthorityScope, HandoffCapability, HandoffTask
 
@@ -262,10 +263,40 @@ def describe_scope(scope: AuthorityScope) -> str:
     return " · ".join(parts)
 
 
+# The built-in tools a read-only worker gets, and nothing else. This is the
+# enforcement behind ``edit: false``: it reaches the CLI as ``--tools``, which
+# limits the *available* set (``--allowedTools`` only pre-approves and would
+# leave Edit auto-accepted under acceptEdits). Bash is out because a shell
+# cannot be made read-only; WebFetch is out because a read-only task has no
+# business reaching the network. ``edit_paths`` has no CLI equivalent and is
+# prompt text only — see docs/plans/v4.1.0-decisions.md, E2.
+READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob", "LS")
+
+
+def restrict_to_read_only(runner: Any) -> None:
+    """Pin ``runner`` to :data:`READ_ONLY_TOOLS`, or refuse.
+
+    Only a backend that exposes the available-tool set can be restricted;
+    anything else raises rather than running a "read-only" worker with its
+    normal tools. MCP servers are cut too: a read-only job must not reach the
+    operator's mail or cloud tools through ToolSearch.
+    """
+    if not hasattr(runner, "tools"):
+        raise RuntimeError(
+            "read-only handoff refused: this backend cannot restrict its tool set; "
+            "run read-only handoffs on the claude backend"
+        )
+    tools = list(READ_ONLY_TOOLS)
+    runner.tools = tools
+    runner.allowed_tools = list(tools)
+    runner.strict_mcp_config = True
+
+
 __all__ = [
     "CAPABILITY_FOR_ACTION",
     "ENV_ALLOW_EDIT",
     "ENV_CAPABILITIES",
+    "READ_ONLY_TOOLS",
     "ActionKind",
     "AuthorityDecision",
     "RecipientPolicy",
@@ -274,4 +305,5 @@ __all__ = [
     "classify_goal",
     "describe_scope",
     "intersect",
+    "restrict_to_read_only",
 ]

@@ -87,6 +87,7 @@ async def test_project_lookup_endpoint_spawns_worker_in_projects_root(
         assert "Pinterest keyword" in thread_name
         assert cog.spawn_session.await_args.kwargs["backend"] == "claude"
         assert cog.spawn_session.await_args.kwargs["model"] == "haiku"
+        assert cog.spawn_session.await_args.kwargs["read_only"] is True
     finally:
         await client.close()
 

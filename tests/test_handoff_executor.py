@@ -273,6 +273,7 @@ class FakeChat:
         resume: bool = False,
         backend: str | None = None,
         model: str | None = None,
+        read_only: bool = False,
     ) -> None:
         if self.fail_spawn:
             raise RuntimeError("harness unavailable")
@@ -285,6 +286,7 @@ class FakeChat:
                 "resume": resume,
                 "backend": backend,
                 "model": model,
+                "read_only": read_only,
             }
         )
 
