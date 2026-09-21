@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from claude_code_core.handoffs.state import HandoffState, HandoffTrigger, apply
 
 from .database.handoff_repo import HandoffRepository
+from .handoff_return import record_and_deliver_handoff_result
 from .project_lookup_worker import (
     build_project_lookup_prompt,
     project_lookup_thread_name,
@@ -29,6 +30,7 @@ class _ChatSpawner(Protocol):
         thread_name: str | None = None,
         auto_start: bool = True,
         working_dir: str | None = None,
+        result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None,
     ) -> Awaitable[Any]: ...
 
 
@@ -94,12 +96,35 @@ async def execute_ready_handoff_tasks(
             from_agent=task.sender,
             from_thread=task.origin.thread_id,
         )
+        bot = getattr(chat, "bot", None)
+
+        async def _result_sink(
+            text: str | None,
+            error: str | None,
+            *,
+            task_id: str = task.task_id,
+            recipient: str = agent_id,
+            sink_bot: Any = bot,
+        ) -> None:
+            if sink_bot is None:
+                logger.warning("handoff %s finished but no bot is available for return", task_id)
+                return
+            await record_and_deliver_handoff_result(
+                repo=repo,
+                bot=sink_bot,
+                task_id=task_id,
+                local_agent_id=recipient,
+                text=text,
+                error=error,
+            )
+
         worker_thread = await chat.spawn_session(
             parent_channel,
             prompt,
             thread_name=project_lookup_thread_name(task.goal),
             auto_start=True,
             working_dir=lookup_root,
+            result_sink=_result_sink,
         )
         thread_id = int(worker_thread.id)
         await repo.set_job_thread(task.task_id, agent_id, thread_id)
