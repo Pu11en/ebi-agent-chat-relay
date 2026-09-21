@@ -1,3 +1,5 @@
+Goal: Drew has one PDF on Generation Wealth that lists what he asked for or complained about in the local transcripts (Sept 18, 2026 onward), each item tied to its source transcript with a date, plus a ready-to-send draft reply for each.
+Done when: `python3 "/home/drewp/main-projects/automate 247/generation-wealth-feedback/check_progress.py"` passes and `/home/drewp/main-projects/automate 247/generation-wealth-feedback/Generation-Wealth-feedback.pdf` opens, showing a short top-asks list where every entry has a source and date and a draft reply.
 Check: python3 "/home/drewp/main-projects/automate 247/generation-wealth-feedback/check_progress.py"
 Try: open "/home/drewp/main-projects/automate 247/generation-wealth-feedback/Generation-Wealth-feedback.pdf"
 Open: local file PDF, no web server needed
