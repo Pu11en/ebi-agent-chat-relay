@@ -32,3 +32,24 @@ file sandbox mounts read-only, so `git commit` fails there. The workspace now ca
 own writable `.git` directory (objects + refs copied in from the read-only repo, `origin`
 re-added), so commits succeed inside the workspace and history is preserved from
 `6a91e31`. This was the blocker the previous attempt hit; it is now gone.
+
+## Task 1 fix-up: Check line made runner-proof
+
+The round-1 DONE was rejected because the plan's `Check:` line chained three commands
+with `&&`, and the build runner executes the Check line as a single command invocation —
+the tail (`ruff format --check ...`) was fed to pytest, which died with
+`unrecognized arguments: --check`.
+
+What changed:
+
+- New `scripts/pr22-gate.sh` runs the whole gate (targeted pytest via
+  `test-clean-env.sh`, then `ruff check`, then `ruff format --check`) as one script.
+- The plan's `Check:` line is now just `Check: scripts/pr22-gate.sh` — no `&&`, nothing
+  to mis-parse.
+- The script falls back to a repo-local uv cache (`.uvcache/`, gitignored) when the
+  default `~/.cache/uv` is read-only, which is exactly what a sandboxed runner hits.
+
+Proof: `scripts/pr22-gate.sh` → `385 passed in 47.04s`, `All checks passed!`,
+`528 files already formatted`, exit 0.
+
+Commit: `218f044`.
