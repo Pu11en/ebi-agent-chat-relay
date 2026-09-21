@@ -22,70 +22,7 @@ from extensions.harness_audit.discovery import (
     discover,
 )
 from extensions.harness_audit.models import Harness, RedactionStatus, Scope, SourceKind
-
-FAKE_KEY = "sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKE0000"
-FAKE_NUMERIC_PASSWORD = "48213907"  # noqa: S105 - fixture, not a credential
-
-
-def write(path: Path, text: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
-    return path
-
-
-def fake_home(tmp_path: Path) -> DiscoveryRoots:
-    """A sanitized DrewAI-style home: canonical ~/AGENTS.md plus harness links."""
-    home = tmp_path / "home"
-    write(home / "AGENTS.md", "# Global rules\n\nAlways run the tests.\n")
-    write(
-        home / ".claude" / "settings.json",
-        json.dumps(
-            {
-                "permissions": {"allow": ["Bash(git:*)"], "deny": ["Read(.env)"]},
-                "env": {"ANTHROPIC_API_KEY": FAKE_KEY, "EDITOR": "vim"},
-                "hooks": {
-                    "PreToolUse": [
-                        {"matcher": "Bash", "hooks": [{"type": "command", "command": "lint"}]}
-                    ]
-                },
-                "model": "opus",
-            }
-        ),
-    )
-    write(
-        home / ".claude" / "skills" / "deploy" / "SKILL.md",
-        "---\nname: deploy\ndescription: Deploy the bot\n---\n\nSteps for ebi-agent-chat-relay.\n",
-    )
-    write(home / ".claude" / "commands" / "verify.md", "Run the full verification.\n")
-    write(
-        home / ".claude.json",
-        json.dumps({"mcpServers": {"github": {"command": "gh-mcp"}}, "numStartups": 3}),
-    )
-    write(
-        home / ".codex" / "config.toml",
-        'model = "gpt-5-codex"\nmodel_reasoning_effort = "high"\n'
-        f'db_password = "{FAKE_NUMERIC_PASSWORD}"\n[mcp_servers.github]\ncommand = "gh-mcp"\n',
-    )
-    write(
-        home / ".codex" / "skills" / "release" / "SKILL.md",
-        "---\nname: release\ndescription: Cut a release\n---\n\nRelease steps.\n",
-    )
-    project = home / "projects" / "relay"
-    write(project / "CLAUDE.md", "# Relay project\n\nUse uv.\n")
-    write(project / "AGENTS.md", "# Relay project\n\nUse uv.\n")
-    write(project / ".claude" / "commands" / "verify.md", "Project verify.\n")
-    return DiscoveryRoots(
-        home=home,
-        claude_home=home / ".claude",
-        codex_home=home / ".codex",
-        project_dir=project,
-        known_projects=("relay", "ebi-agent-chat-relay"),
-        links={
-            home / ".claude" / "CLAUDE.md": home / "AGENTS.md",
-            home / ".codex" / "AGENTS.md": home / "AGENTS.md",
-        },
-        modes={home / ".claude" / "settings.json": 0o600, home / "AGENTS.md": 0o644},
-    )
+from tests.harness_audit_fixtures import FAKE_KEY, FAKE_NUMERIC_PASSWORD, fake_home, write
 
 
 def snapshot(root: Path) -> dict[str, str]:
