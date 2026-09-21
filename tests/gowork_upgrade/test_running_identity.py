@@ -137,22 +137,29 @@ async def test_starting_a_running_plan_names_that_build_and_opens_nothing(repo: 
 
 
 async def test_stopping_one_build_leaves_the_other_alone(repo: Path) -> None:
+    # Both plans' checks fail, so both builds park on their questions instead of ending.
+    stuck = re.sub(
+        r'"acceptance_check": "[^"]*"',
+        f'"acceptance_check": "{_PY} -c exit(1)"',
+        _passing_manifest(),
+    )
+    (repo / "PLAN-A.md").write_text(stuck.replace("Launch the business", "Plan A"))
+    (repo / "PLAN-B.md").write_text(stuck.replace("Launch the business", "Plan B"))
+    _git(repo, "commit", "-qam", "stuck plans")
     cog, _chat, _threads = _cog()
     a = await cog.start_loop(_channel(), str(repo / "PLAN-A.md"))
     b = await cog.start_loop(_channel(), str(repo / "PLAN-B.md"))
-    await _settle(cog, 2)
+    for _ in range(3000):
+        if len(cog.running) == 2 and all(r.parked for r in cog.running):
+            break
+        await asyncio.sleep(0.01)
+    assert {r.build_id for r in cog.running} == {f"thread-{a.id}", f"thread-{b.id}"}
 
     message = MagicMock()
     message.channel.id = a.id
-    message.content = "looks good"
-    for _ in range(3000):  # wait for build A's verdict question, then answer it
-        waiter = cog._waiters.get(a.id)
-        if waiter is not None and not waiter.done() and cog.take_message(message):
-            break
-        await asyncio.sleep(0.01)
-    else:
-        raise AssertionError("build A never asked for a verdict")
-    for _ in range(500):
+    message.content = "close"
+    assert cog.take_message(message)
+    for _ in range(3000):
         if {r.build_id for r in cog.running} == {f"thread-{b.id}"}:
             break
         await asyncio.sleep(0.01)

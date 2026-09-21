@@ -464,6 +464,21 @@ class BuildState:
         self.last_sync = report
         return report
 
+    @property
+    def integrated_commit(self) -> str | None:
+        """Set once the whole build landed in the project (T24): never integrate twice."""
+        self._reload()
+        value = self._document.get("integrated")
+        return str(value["message"]) if isinstance(value, dict) else None
+
+    def mark_integrated(self, message: str) -> None:
+        self._reload()
+        if self._document.get("integrated"):
+            return
+        self._document["integrated"] = {"at": _now(), "message": message[:MAX_TEXT_CHARS]}
+        self._document["events"].append({"at": _now(), "task": None, "change": "integrated"})
+        self._write()
+
     def note_plan_version(self, plan_id: str, version: int) -> None:
         """Requirements changed: remember the new version so old attempts cannot be accepted."""
         self._reload()

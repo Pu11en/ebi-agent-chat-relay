@@ -93,26 +93,27 @@ async def test_manifest_build_runs_projects_together_and_accepts_every_task(repo
     channel.send = AsyncMock()
 
     worker = await cog.start_loop(channel, str(repo / "PLAN.md"))
-    for _ in range(1000):
-        if cog.running and cog.running[0].in_review:
+    running = cog.running[0]
+    for _ in range(2000):
+        if not cog.running:
             break
         await asyncio.sleep(0.01)
-    running = cog.running[0]
-    assert running.in_review, "the build should be waiting for the verdict"
+    assert not cog.running, "a verified manifest build ends on its own (T24)"
 
     ledger = json.loads(
         (cog._store.path.with_name("builds") / f"thread-{worker.id}.json").read_text()
     )
     assert {t["status"] for t in ledger["tasks"].values()} == {"accepted"}
     assert all(t["result_commit"] for t in ledger["tasks"].values())
+    assert ledger.get("integrated")  # landed in the project, recorded once
 
-    # Every task's work landed in the build's copy, inside its own project folder.
+    # Every task's work landed in the project, inside its own folder (T23/T24).
     copy = running.copy
-    assert copy is not None
-    assert len(list((copy.path / "product").glob("work-*.txt"))) == 1
-    assert len(list((copy.path / "website").glob("work-*.txt"))) == 2
-    assert len(list((copy.path / "marketing").glob("work-*.txt"))) == 1
-    assert not list((repo / "product").glob("work-*.txt"))  # the project itself is untouched
+    assert copy is not None and not copy.path.exists()  # the copy was cleaned up
+    assert len(list((repo / "product").glob("work-*.txt"))) == 1
+    assert len(list((repo / "website").glob("work-*.txt"))) == 2
+    assert len(list((repo / "marketing").glob("work-*.txt"))) == 1
+    assert _git(repo, "remote").strip() == ""  # nowhere to push, nothing pushed
 
     # product and marketing ran at the same time; the website page waited for product.
     starts = dict(worked[:3])
@@ -175,11 +176,11 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
     )
 
     worker = await cog.start_loop(channel, str(repo / "PLAN.md"))
-    for _ in range(1000):
-        if cog.running and cog.running[0].in_review:
+    running = cog.running[0]
+    for _ in range(2000):
+        if not cog.running:
             break
         await asyncio.sleep(0.01)
-    running = cog.running[0]
 
     assert set(archived_after.values()) == {"accepted", "failed once"}  # saved before archived
     # The build's own thread is only ever archived by the finish flow (with its reason),
@@ -190,7 +191,7 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
         if c.kwargs.get("archived")
     )
     assert not hasattr(channel, "edit") or not channel.edit.called
-    for thread in threads:
+    for thread in threads[1:]:  # task worker threads are archived, never deleted
         thread.delete.assert_not_called()
 
     ledger = json.loads(
@@ -204,7 +205,7 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
         (cog._store.path.with_name("builds") / f"thread-{worker.id}.json").read_text()
     )
     assert all(t["archived"] for t in ledger["tasks"].values())
-    assert chat.run_fresh_turn.await_count == 4  # four workers, none rerun by the retry
+    assert chat.run_fresh_turn.await_count == 4  # four workers; nothing rerun by the retry
 
 
 async def test_combined_check_failure_blocks_the_task_and_its_dependents(repo: Path) -> None:
@@ -296,7 +297,9 @@ def _plan_with_mode(repo: Path, text: str | None = None) -> None:
 async def _run_until_settled(cog: TaskLoopCog, channel: MagicMock, plan: Path):  # noqa: ANN202
     worker = await cog.start_loop(channel, str(plan), mode=getattr(cog, "_test_mode", None))
     for _ in range(1500):
-        if cog.running and (cog.running[0].in_review or cog.running[0].waiting_for_person):
+        if not cog.running:
+            break  # a verified manifest build ends on its own (T24)
+        if cog.running[0].in_review or cog.running[0].waiting_for_person or cog.running[0].parked:
             break
         await asyncio.sleep(0.01)
     return worker, json.loads(
@@ -616,32 +619,23 @@ async def test_replies_resolve_only_their_own_blocker(repo: Path) -> None:
     assert len(cog._blockers.unresolved(build_id=build_id)) == 1  # the retried task asked again
 
 
-async def test_looks_good_integrates_the_exact_combined_result_locally(repo: Path) -> None:
-    """T23: the finished manifest build is combined into the project through the locked
-    integration with the plan's own check; the person's unsaved notes survive; nothing is
-    pushed (the project has no remote to push to)."""
+async def test_a_verified_build_integrates_itself_locally(repo: Path) -> None:
+    """T23/T24: the finished manifest build is combined into the project through the locked
+    integration with the plan's own check, without a looks-good reply; the person's unsaved
+    notes survive; nothing is pushed (the project has no remote to push to)."""
     _plan_with_mode(repo, f"Check: `{_PY} -c pass`\n\n" + _passing_manifest())
     cog, _chat, _threads, _worked = _cog()
     cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
     channel = _channel()
     (repo / "notes.txt").write_text("private\n")  # untracked, stays untouched
-    worker, ledger = await _run_until_settled(cog, channel, repo / "PLAN.md")
+    _worker, ledger = await _run_until_settled(cog, channel, repo / "PLAN.md")
     assert {t["status"] for t in ledger["tasks"].values()} == {"accepted"}
-
-    message = MagicMock()
-    message.channel.id = worker.id
-    message.content = "looks good"
-    for _ in range(1500):
-        waiter = cog._waiters.get(worker.id)
-        if waiter is not None and not waiter.done() and cog.take_message(message):
-            break
-        await asyncio.sleep(0.01)
     for _ in range(1500):
         if not cog.running:
             break
         await asyncio.sleep(0.01)
 
-    assert not cog.running
+    assert not cog.running  # no "looks good" was needed (T24)
     assert len(list((repo / "product").glob("work-*.txt"))) == 1  # the build landed
     assert (repo / "notes.txt").read_text() == "private\n"
     assert _git(repo, "remote").strip() == ""
@@ -657,24 +651,20 @@ async def test_a_failing_project_check_keeps_the_build_for_repair(repo: Path) ->
     cog, _chat, _threads, _worked = _cog()
     cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
     channel = _channel()
-    worker, _ledger = await _run_until_settled(cog, channel, repo / "PLAN.md")
+    worker = await cog.start_loop(channel, str(repo / "PLAN.md"))
     running = cog.running[0]
     assert running.copy is not None
+    # While the workers are busy, the project moves on in a way that breaks the check.
     (repo / "fail-here").write_text("x\n")
     _git(repo, "add", "fail-here")
     _git(repo, "commit", "-qm", "the project moved on in a way that breaks the check")
-
-    message = MagicMock()
-    message.channel.id = worker.id
-    message.content = "looks good"
-    for _ in range(1500):
-        waiter = cog._waiters.get(worker.id)
-        if waiter is not None and not waiter.done() and cog.take_message(message):
+    for _ in range(2000):
+        if not cog.running or cog.running[0].in_review:
             break
         await asyncio.sleep(0.01)
-    await asyncio.sleep(0.5)
 
-    assert cog.running and running.copy.path.exists()  # the build is kept
+    assert cog.running and running.copy.path.exists()  # the build is kept, waiting
     assert not list((repo / "product").glob("work-*.txt"))  # the project was not changed
     posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
-    assert "couldn't keep it yet" in posted and "fails its check" in posted
+    assert "couldn't add" in posted and "fails its check" in posted
+    assert worker.id == running.worker_thread_id

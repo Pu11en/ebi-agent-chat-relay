@@ -1373,6 +1373,13 @@ class TaskLoopCog(commands.Cog):
                 )
         await self._archive_finished_worker_thread(running)
 
+        if summary is not None and not fails and not proposed:
+            # T24: a manifest build whose own checks passed does not wait for
+            # "looks good" — it lands in the project now, or says exactly why not.
+            outcome = await self._auto_integrate(running, target, mention)
+            if outcome is not None:
+                return outcome
+
         def is_verdict(text: str) -> bool:
             """Keep, throw away or a bare "fix". Anything else is a normal chat."""
             return (
@@ -1619,6 +1626,40 @@ class TaskLoopCog(commands.Cog):
             return None
         finally:
             running.in_review = False
+
+    async def _auto_integrate(self, running: _Running, target: Any, mention: str) -> str | None:
+        """Integrate a verified manifest build without a looks-good gate (T24).
+
+        Returns "kept" when it landed; None when it could not (the caller then waits
+        for the person as before, with the reason already posted). Idempotent: a build
+        the ledger says was integrated is never integrated, reposted or reopened again.
+        """
+        assert running.copy is not None
+        try:
+            state = self._build_state(running)
+        except Exception:
+            return None
+        if state.integrated_commit:
+            with contextlib.suppress(Exception):
+                await running.thread.delete()
+            return "kept"
+        ok, message = await self._keep_build(running)
+        if not ok:
+            with contextlib.suppress(discord.HTTPException):
+                await target.send(
+                    f"⚠️ I couldn't add {running.repo_dir.name} to your project yet: {message}\n"
+                    f"The build is safe on branch `{running.copy.branch}`. Sort that out and "
+                    "type **looks good**, or **throw it away**."
+                )
+            return None
+        with contextlib.suppress(Exception):
+            state.mark_integrated(message)
+        self._queue_note(running, "kept in your project ✅")
+        with contextlib.suppress(discord.HTTPException):
+            await target.send(f"✅ Kept{mention}: {message}. I cleaned up the worker thread.")
+        with contextlib.suppress(Exception):
+            await running.thread.delete()
+        return "kept"
 
     async def _keep_build(
         self, running: _Running, *, prefer_build: bool = False
@@ -2459,7 +2500,10 @@ class TaskLoopCog(commands.Cog):
     def _build_state(self, running: _Running):  # noqa: ANN202
         assert running.copy is not None
         builds = self._store.path.with_name("builds")
-        tree = load_plan_tree(running.copy.plan_path)
+        plan_path = running.copy.plan_path
+        if not plan_path.is_file():  # the copy was integrated and removed: the plan is home
+            plan_path = running.copy.source_repo / plan_path.relative_to(running.copy.path)
+        tree = load_plan_tree(plan_path)
         return open_build_state(
             builds / f"{running.build_id}.json", tree, build_id=running.build_id
         )
