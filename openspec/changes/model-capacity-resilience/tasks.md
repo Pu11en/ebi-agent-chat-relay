@@ -18,8 +18,8 @@ Try: `uv run pytest tests/test_capacity_recovery.py -q`
 
 - [x] 3.1 Add failing policy tests for bounded exponential backoff, retry-after clamping, jitter bounds, total recovery deadline, and ambiguous partial output; verify they fail before orchestration is added.
 - [x] 3.2 Implement one coordinator around complete backend attempts with a stable turn key and accepted-result guard; verify retry and late-result race tests pass.
-- [ ] 3.3 Capture explicit fallback chains at submission and migrate the existing `/gowork` single fallback into a one-entry chain; verify no unconfigured provider is ever selected.
-- [ ] 3.4 Integrate the coordinator with interactive run orchestration and automated task-loop result handling; verify identical capacity outcomes keep both kinds of task pending.
+- [x] 3.3 Capture explicit fallback chains at submission and migrate the existing `/gowork` single fallback into a one-entry chain; verify no unconfigured provider is ever selected.
+- [x] 3.4 Integrate the coordinator with interactive run orchestration and automated task-loop result handling; verify identical capacity outcomes keep both kinds of task pending.
 
 ## 4. Visible status and operations
 
@@ -30,7 +30,7 @@ Try: `uv run pytest tests/test_capacity_recovery.py -q`
 ## 5. Integration and cleanup
 
 - [ ] 5.1 Add restart, late-response race, exhausted-budget, authorized-fallback, and no-authority integration tests; verify all complete without duplicate model execution or duplicate Discord answers.
-- [ ] 5.2 Remove the duplicate string-only `/gowork` capacity path after the shared coordinator covers its behavior; verify existing usage-limit and relay-admission tests remain green.
+- [x] 5.2 Remove the duplicate string-only `/gowork` capacity path after the shared coordinator covers its behavior; verify existing usage-limit and relay-admission tests remain green.
 - [ ] 5.3 Run `uv run ruff check claude_discord tests`, `uv run ruff format --check claude_discord tests`, `uv run pyright claude_discord`, and the full test suite; record any unrelated pre-existing failure separately.
 
 ## How to try it

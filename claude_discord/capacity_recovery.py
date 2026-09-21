@@ -199,6 +199,12 @@ class CapacityRecoveryCoordinator:
     def store(self) -> CapacityRecoveryRepository | None:
         return self._store
 
+    async def wait(self, seconds: float) -> None:
+        """Sleep through the coordinator's clock, so callers that drive their
+        own attempts (``/gowork``) wait the way an interactive turn does."""
+        if seconds > 0:
+            await self._sleep(seconds)
+
     def snapshot(self) -> dict[str, dict[str, object]]:
         """Live recovery state per turn key: category and timing, never prompts."""
         return {

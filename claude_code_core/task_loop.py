@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from claude_code_core.capacity import BackendFailure, CapacityCategory, classify_failure
 from claude_code_core.child_env import STRIPPED_ENV_KEYS
 from claude_code_core.gowork_friction import (
     FrictionEvent,
@@ -83,34 +84,38 @@ class Status(Enum):
     NONE = "NONE"
 
 
-_LIMIT_RE = re.compile(
-    r"(session|usage|weekly|daily|hourly|5-hour) limit|limit (reached|exceeded)|hit your .*limit|"
-    r"exceeded your current quota|quota exceeded|insufficient_quota|too many requests|\b429\b",
-    re.IGNORECASE,
-)
-#: In the AI's own reply only the provider's wording counts: a worker building rate
-#: limiting, or hitting "recursion limit exceeded", is doing its job, not out of quota.
-_LIMIT_IN_REPLY_RE = re.compile(
-    r"(session|usage|weekly|daily|5-hour) limit|hit your .*limit|"
-    r"exceeded your current quota|insufficient_quota",
-    re.IGNORECASE,
+#: Categories that must reach the person (or the recovery policy) instead of
+#: counting as a failed try: the task itself said nothing about them.
+_LIMIT_CATEGORIES = frozenset(
+    {
+        CapacityCategory.MODEL_SATURATED,
+        CapacityCategory.PROVIDER_RATE_LIMITED,
+        CapacityCategory.QUOTA_EXHAUSTED,
+        CapacityCategory.AUTHENTICATION_FAILED,
+    }
 )
 
 
 def usage_limit_message(text: str | None, error: str | None) -> str | None:
-    """The provider's "you've hit your limit" line, or None for an ordinary result.
+    """The provider's own "no answer" line, or None for an ordinary result.
 
-    A limit says nothing about the task, so it must never count as a failed try.
-    A reply that ends with a status line is real work, even if it mentions limits.
+    Read through the shared capacity classifier so ``/gowork`` and interactive
+    chat agree on what counts: saturation, rate limiting, quota and login all
+    do; a reply that ends with a status line is real work even if it mentions
+    limits, and a worker writing *about* limits is doing its job.
     """
-    for line in (error or "").splitlines():
-        if _LIMIT_RE.search(line):
+    if not (error and error.strip()) and parse_status(text)[0] is not Status.NONE:
+        return None
+    outcome = classify_failure(BackendFailure(error=error, text=text))
+    if outcome.category not in _LIMIT_CATEGORIES:
+        return None
+    source = error if error and error.strip() else (text or "")
+    for line in source.splitlines():
+        if not line.strip():
+            continue
+        if classify_failure(BackendFailure(error=line)).category in _LIMIT_CATEGORIES:
             return line.strip()[:300]
-    if parse_status(text)[0] is Status.NONE:
-        for line in (text or "").splitlines():
-            if _LIMIT_IN_REPLY_RE.search(line):
-                return line.strip()[:300]
-    return None
+    return source.strip().splitlines()[0][:300] if source.strip() else outcome.user_detail
 
 
 def parse_status(text: str | None) -> tuple[Status, str]:
