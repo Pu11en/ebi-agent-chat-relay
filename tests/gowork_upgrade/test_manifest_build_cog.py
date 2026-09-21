@@ -485,3 +485,43 @@ async def test_a_restart_keeps_finished_work_and_never_reruns_or_reassigns(repo:
     assert (
         len(worked_prompts) == 1 and "website.catalog-page" in worked_prompts[0]
     )  # only the page ran
+
+
+async def test_a_stuck_task_becomes_one_durable_question(repo: Path) -> None:
+    """T20: after the repair is spent, one question is posted, recorded with its message id,
+    tied to this build and attempt; recovery never posts it twice."""
+    failing = re.sub(
+        r'"acceptance_check": "[^"]*"',
+        f'"acceptance_check": "{_PY} -c exit(1)"',
+        _passing_manifest(),
+        count=1,  # product.catalog-api's check always fails
+    )
+    _plan_with_mode(repo, failing)
+    cog, _chat, _threads, _worked = _cog()
+    cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    channel = _channel()
+    posted = []
+
+    async def send(text: str, **_k: object) -> MagicMock:
+        message = MagicMock()
+        message.id = 5000 + len(posted)
+        posted.append(text)
+        return message
+
+    channel.send = AsyncMock(side_effect=send)
+    worker, ledger = await _run_until_settled(cog, channel, repo / "PLAN.md")
+    api = ledger["tasks"]["product.catalog-api"]
+    assert api["status"] == "blocked" and api["attempt"] == 2  # the one repair was used
+
+    questions = [t for t in posted if t.startswith("❓")]
+    assert len(questions) == 1 and "product.catalog-api" in questions[0]
+    assert "Reply to this message" in questions[0]
+    blockers = cog._blockers.unresolved(build_id=f"thread-{worker.id}")
+    assert len(blockers) == 1
+    blocker = blockers[0]
+    assert blocker.task_id == "product.catalog-api" and blocker.attempt_id == api["attempt_id"]
+    assert blocker.message_id == 5000 + posted.index(questions[0])
+    assert cog._blockers.by_message(blocker.message_id).build_id == f"thread-{worker.id}"  # type: ignore[union-attr]
+
+    assert await cog.repost_blockers(cog.running[0]) == 0  # already on Discord: not again
+    assert len([t for t in posted if t.startswith("❓")]) == 1

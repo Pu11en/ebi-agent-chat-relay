@@ -65,6 +65,7 @@ from .frontend import (
     derive_thread_key,
 )
 from .gowork_admission import AdmissionController, AdmissionSnapshot, Reservation
+from .gowork_blockers import Blocker, BlockerLedger
 from .gowork_capacity import CapacityDecision, CapacityPolicy
 from .gowork_handoff import WorkerHandoff, build_handoff, persist_handoff, render_worker_prompt
 from .gowork_plan import (
@@ -208,6 +209,8 @@ __all__ = [
     "ReadyTask",
     "HostProbe",
     "AdmissionController",
+    "Blocker",
+    "BlockerLedger",
     "CapacityDecision",
     "CapacityPolicy",
     "AdmissionSnapshot",

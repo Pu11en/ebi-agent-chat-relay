@@ -33,6 +33,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
+from claude_code_core.gowork_blockers import BlockerLedger
 from claude_code_core.gowork_handoff import (
     build_handoff,
     persist_handoff,
@@ -444,6 +445,10 @@ def _check_argv(command: str) -> list[str]:
         return []
 
 
+def _is_interrupted(reason: str) -> bool:
+    return "interrupted by a restart" in reason.lower()
+
+
 def _side_name(task_id: str, attempt: int) -> str:
     """One side copy per attempt, so a repair never destroys the clashing version it fixes."""
     return f"{task_id}-a{attempt}"
@@ -602,6 +607,8 @@ class TaskLoopCog(commands.Cog):
         #: Running builds on disk, so a bot restart resumes them.
         self._store = store or LoopStore()
         self._project_copy_lock = asyncio.Lock()
+        #: Every build's open questions (T20), beside the loop store.
+        self._blockers = BlockerLedger(self._store.path.with_name("gowork-blockers.json"))
         #: Channels/threads waiting for the person's next typed message.
         self._waiters: dict[int, asyncio.Future[str]] = {}
         #: Waiters that only take a matching reply; anything else goes to the chat.
@@ -996,9 +1003,7 @@ class TaskLoopCog(commands.Cog):
             run_group=lambda steps: self._run_group(holder[0], steps),
             max_parallel=parallel_limit,
             manifest_worker=lambda task: self._run_manifest_task(holder[0], task),
-            after_manifest_result=lambda result: self._archive_worker_thread(
-                holder[0], result.task_id
-            ),
+            after_manifest_result=lambda result: self._after_manifest_result(holder[0], result),
             reconcile=lambda state: self._reconcile_interrupted(holder[0], state),
             state_path=self._store.path.with_name("builds") / f"{record.build_id}.json",
             build_id=record.build_id,
@@ -1072,6 +1077,8 @@ class TaskLoopCog(commands.Cog):
             ):
                 with contextlib.suppress(Exception):
                     await self.retry_archives(running)
+                with contextlib.suppress(Exception):
+                    await self.repost_blockers(running)
         return resumed
 
     async def _tell_orphaned(self, record: LoopRecord) -> None:
@@ -2408,6 +2415,60 @@ class TaskLoopCog(commands.Cog):
         return open_build_state(
             builds / f"{running.build_id}.json", tree, build_id=running.build_id
         )
+
+    async def _after_manifest_result(self, running: _Running, result: ManifestResult) -> None:
+        """After a result is saved: archive its thread (T14) and, if the task is now a
+        blocker, ask the person one durable question (T20)."""
+        await self._archive_worker_thread(running, result.task_id)
+        with contextlib.suppress(Exception):
+            await self._post_blocker_if_stuck(running, result.task_id)
+
+    async def _post_blocker_if_stuck(self, running: _Running, task_id: str) -> None:
+        """A task blocked with no automatic repair left is a question for a person."""
+        state = self._build_state(running)
+        record = state[task_id]
+        if record.status.value != "blocked" or state.repairs_left(task_id) > 0:
+            return  # running, accepted, or about to be repaired on its own
+        if _is_interrupted(record.reason or ""):
+            return  # the restart message already told the person; T21 routes the reply
+        question = (
+            f"❓ **{running.repo_dir.name}** — task `{task_id}` is stuck: {record.reason}\n"
+            "Reply to this message with **retry**, **skip**, or what to change."
+        )
+        blocker = self._blockers.open(
+            running.build_id,
+            task_id,
+            record.attempt_id,
+            plan_id=record.plan_id,
+            plan_version=record.plan_version,
+            channel_id=running.report_channel_id,
+            question=question,
+        )
+        if blocker.message_id is None:
+            await self._post_blocker(running, blocker.blocker_id, question)
+
+    async def _post_blocker(self, running: _Running, blocker_id: str, question: str) -> None:
+        target: Any = running.report_target or self.bot.get_channel(running.report_channel_id)
+        if target is None:
+            return
+        try:
+            message = await target.send(question)
+        except Exception:
+            logger.info("gowork: posting a blocker question failed; will retry on resume")
+            return
+        message_id = getattr(message, "id", None)
+        if isinstance(message_id, int):
+            self._blockers.note_posted(
+                blocker_id, channel_id=running.report_channel_id, message_id=message_id
+            )
+
+    async def repost_blockers(self, running: _Running) -> int:
+        """After a restart: post every question that never reached Discord (T20)."""
+        count = 0
+        for blocker in self._blockers.unposted(build_id=running.build_id):
+            await self._post_blocker(running, blocker.blocker_id, blocker.question)
+            count += 1
+        return count
 
     async def _archive_worker_thread(self, running: _Running, task_id: str) -> None:
         """Archive one task's worker thread after its result is saved (T14). Never delete."""
