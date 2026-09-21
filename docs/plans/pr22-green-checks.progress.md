@@ -180,3 +180,34 @@ Proof:
 - `uv run pyright claude_discord/` → 0 errors, 0 warnings.
 - Plan `Check:` (`scripts/pr22-gate.sh`) → `386 passed`, `All checks passed!`
   (ruff), `529 files already formatted`.
+
+## 6: Full local gate
+
+What changed: no code — this task is the verification pass. The HANDOFF section of
+`docs/plans/v4.1.0-finish-all-builds.progress.md` was updated with what changed since the
+handoff (3.12 hang fix, flaky lock test, CodeQL fixes) and the final gate numbers.
+
+Proof (head `a2e094e`, clean env via `scripts/test-clean-env.sh` / unset DISCORD_*/CCDB_*):
+
+- Default Python (3.13.12): `1 failed, 5831 passed in 122.97s`. The one failure is
+  `tests/test_harness_audit_rules.py::test_every_finding_cites_local_evidence_and_official_guidance_when_required`
+  — it audits this machine's live `~/.claude` files (a finding on Drew's local
+  `~/.claude/commands/verify.md` has no vendor sources); environment-specific, expected
+  green in CI. Same single failure on both Pythons.
+- Python 3.12 (`.venv312`, 3.12.13, `--timeout=300`): `1 failed, 5831 passed in 125.06s`
+  — same environment-only failure, **no hang** (the original CI blocker).
+- `uv run ruff check claude_discord/ claude_code_core/ tests/` → `All checks passed!`
+- `uv run ruff format --check ...` → `529 files already formatted`
+- `uv run pyright claude_discord/` → `0 errors, 0 warnings, 0 informations`
+- Plan `Check:` (`scripts/pr22-gate.sh`, with `UV_CACHE_DIR=.uvcache` because the sandbox
+  mounts `~/.cache/uv` read-only) → `386 passed`, `All checks passed!`,
+  `529 files already formatted`, exit 0.
+- The two `tests/test_setup.py` MagicMock failures recorded in task 4's notes no longer
+  reproduce on this head.
+
+Left open: task 7 (push + watch `gh pr checks 22` + dismiss the two test-only CodeQL
+alerts: `tests/harness_audit_fixtures.py:30` and `tests/test_agui_backend.py:388`, reasons
+recorded in the plan) — waits for Drew's yes. The harness-audit test failure above is
+sandbox-only; if it ever fails in CI it is a real finding about the runner's `~/.claude`.
+
+Commit: (this commit)

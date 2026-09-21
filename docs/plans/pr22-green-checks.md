@@ -85,7 +85,7 @@ and only after Drew says yes (GitHub is always last).
     client refuses to follow redirects while carrying an Authorization header; the
     target is not user-controlled.
 
-- [ ] 6. Full local gate. Default Python: `scripts/test-clean-env.sh`,
+- [x] 6. Full local gate. Default Python: `scripts/test-clean-env.sh`,
   `uv run ruff check`, `uv run ruff format --check`, `uv run pyright claude_discord/`; then the
   full suite again under 3.12 (`.venv312`). Update the HANDOFF section of
   `docs/plans/v4.1.0-finish-all-builds.progress.md` with what changed and what is left.
