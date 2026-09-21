@@ -47,7 +47,7 @@ from ..discord_ui.thread_renamer import suggest_title
 from ..discord_ui.views import RewindSelectView, StopView
 from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
-from ..handoff_sender import send_project_lookup_handoff
+from ..handoff_sender import build_project_lookup_handoff_event, send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ._run_helper import run_claude_with_config
@@ -433,6 +433,14 @@ class ClaudeChatCog(commands.Cog):
         if trigger is None:
             return False
 
+        # A configured handoff channel is the durable route: the job is
+        # stored, visible in one thread, and survives the recipient being away.
+        handoff_cog: Any = self.bot.cogs.get("AgentHandoffCog")
+        if handoff_cog is not None and await self._send_handoff_via_cog(
+            handoff_cog, message, trigger
+        ):
+            return True
+
         try:
             route = parse_agent_routes(os.getenv("CCDB_AGENT_ROUTES")).resolve(trigger.agent_id)
         except (KeyError, ValueError):
@@ -469,6 +477,22 @@ class ClaudeChatCog(commands.Cog):
             destination=destination_sender,
             sender_agent_id=sender_agent_id,
         )
+        with contextlib.suppress(Exception):
+            await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}")
+        return True
+
+    async def _send_handoff_via_cog(self, handoff_cog: Any, message: Any, trigger: Any) -> bool:
+        """Hand the lookup to a configured peer through ``AgentHandoffCog``."""
+        try:
+            event = build_project_lookup_handoff_event(
+                trigger,
+                origin_message=message,
+                sender_agent_id=handoff_cog.config.local_agent_id,
+            )
+            await handoff_cog.send_task(event)
+        except (ValueError, RuntimeError):
+            logger.info("handoff channel could not take the lookup; trying routes", exc_info=True)
+            return False
         with contextlib.suppress(Exception):
             await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}")
         return True

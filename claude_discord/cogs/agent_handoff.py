@@ -29,10 +29,15 @@ from typing import TYPE_CHECKING, Any
 from discord.ext import commands, tasks
 
 from claude_code_core.handoffs.protocol import HandoffEvent, HandoffEventKind, HandoffTask
-from claude_code_core.handoffs.state import HandoffJob
+from claude_code_core.handoffs.state import HandoffJob, HandoffStateError, apply_event
 
 from ..handoff_config import HandoffConfig, HandoffTrustError
-from ..handoff_discord import ensure_job_thread, parse_event_message
+from ..handoff_discord import (
+    ensure_job_thread,
+    parse_event_message,
+    post_task_starter,
+    short_task_id,
+)
 from ..handoff_executor import HandoffExecutor, build_handoff_executor
 from ..handoff_messages import HandoffEnvelopeError
 from ..handoff_progress import HandoffProgressPoster
@@ -47,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 
 SCAN_LIMIT = 200
+MAX_ORIGIN_LINE_CHARS = 400
 DELIVERY_INTERVAL_SECONDS = 60
 
 
@@ -186,14 +192,104 @@ class AgentHandoffCog(commands.Cog):
     async def _receive_event(
         self, message: Any, event: HandoffEvent, now: datetime
     ) -> HandoffReceipt | None:
-        """Non-task events are recorded for the audit trail; they never start work."""
-        job = await self._repo.get_job(event.task_id, self._config.local_agent_id)
-        if job is None:
-            logger.info("handoff event %s for unknown task %s", event.event_id, event.task_id)
-            return None
+        """Ack, state, question, answer and result events: mirrored, never executed.
+
+        Two ledgers can hold this task id. As the *origin* we hold
+        ``(task_id, recipient=event.sender)`` for a task we created, and the
+        sender's events move that mirror. As the *recipient* we hold
+        ``(task_id, local)``, and nothing a remote agent says may move it —
+        only the task's own sender may add a question or an answer to it.
+        """
+        local = self._config.local_agent_id
+        origin_job = await self._repo.get_job(event.task_id, event.sender)
+        origin_task = await self._repo.get_task(event.task_id, event.sender)
+        if origin_job is not None and origin_task is not None and origin_task.sender == local:
+            return await self._mirror_for_origin(origin_task, origin_job, event, now)
+
+        own_job = await self._repo.get_job(event.task_id, local)
+        own_task = await self._repo.get_task(event.task_id, local)
+        if own_job is not None and own_task is not None:
+            if event.sender != own_task.sender or event.kind not in (
+                HandoffEventKind.QUESTION,
+                HandoffEventKind.ANSWER,
+            ):
+                logger.warning(
+                    "refusing %s event %s from %s about a job this agent owns",
+                    event.kind.value,
+                    event.event_id,
+                    event.sender,
+                )
+                return None
+            duplicate = not await self._repo.record_event(event)
+            return HandoffReceipt(event=event, job=own_job, created=False, duplicate=duplicate)
+
+        logger.info("handoff event %s for unknown task %s", event.event_id, event.task_id)
+        return None
+
+    async def _mirror_for_origin(
+        self, task: HandoffTask, job: HandoffJob, event: HandoffEvent, now: datetime
+    ) -> HandoffReceipt:
         if not await self._repo.record_event(event):
             return HandoffReceipt(event=event, job=job, created=False, duplicate=True)
-        return HandoffReceipt(event=event, job=job, created=False)
+        try:
+            transition = apply_event(job, event, now=now)
+        except HandoffStateError as exc:
+            logger.info("handoff %s: %s not applied (%s)", task.task_id, event.kind.value, exc)
+            return HandoffReceipt(event=event, job=job, created=False)
+        current = job
+        if transition.changed and await self._repo.save_transition(transition):
+            current = transition.job
+        await self._tell_origin(task, event)
+        return HandoffReceipt(event=event, job=current, created=False)
+
+    async def _tell_origin(self, task: HandoffTask, event: HandoffEvent) -> None:
+        """Acks and questions go to the origin conversation as prose.
+
+        Blockers and results are delivered there by the recipient itself (its
+        outbox), so posting them again here would double every result.
+        """
+        sid = short_task_id(task.task_id)
+        if event.kind is HandoffEventKind.ACK:
+            goal = " ".join(task.goal.split())[:MAX_ORIGIN_LINE_CHARS]
+            text = f"🤝 {event.sender} accepted handoff `{sid}`: {goal}"
+        elif event.kind is HandoffEventKind.QUESTION:
+            question = " ".join(str(event.payload.get("question", "")).split())
+            text = (
+                f"❓ {event.sender} asks about handoff `{sid}`: {question[:MAX_ORIGIN_LINE_CHARS]}"
+            )
+        else:
+            return
+        target = await self.lookup_channel(task.reply_to.thread_id or task.reply_to.channel_id)
+        if target is None or not hasattr(target, "send"):
+            logger.warning("handoff %s origin is unreachable for %s", task.task_id, event.kind)
+            return
+        try:
+            await target.send(text)
+        except Exception:
+            logger.warning("could not post handoff %s to the origin", event.kind, exc_info=True)
+
+    # -- sending -------------------------------------------------------------
+
+    async def send_task(
+        self, event: HandoffEvent, *, now: datetime | None = None
+    ) -> tuple[Any, Any]:
+        """Hand a task to a peer: ledger first, then one starter and its thread."""
+        task = event.task
+        if event.kind is not HandoffEventKind.TASK or task is None:
+            raise ValueError("only a task event can be sent as a handoff")
+        if task.sender != self._config.local_agent_id:
+            raise ValueError(f"task sender {task.sender!r} is not this agent")
+        if self._config.bot_for_agent(task.recipient) is None:
+            raise ValueError(f"recipient {task.recipient!r} is not a configured peer")
+        stamp = (now or datetime.now(UTC)).astimezone(UTC)
+        channel = await self.lookup_channel(self._config.channel_id)
+        if channel is None or not hasattr(channel, "send"):
+            raise RuntimeError(f"handoff channel {self._config.channel_id} is unreachable")
+        await self._repo.record_task(task, now=stamp)
+        await self._repo.record_event(event)
+        starter, thread = await post_task_starter(channel, event)
+        await self._repo.set_job_thread(task.task_id, task.recipient, int(thread.id))
+        return starter, thread
 
     async def _remember_job_thread(self, message: Any, task: HandoffTask) -> None:
         """Bind the job to its thread: the one on the starter, or the one we are in."""

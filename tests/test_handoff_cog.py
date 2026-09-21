@@ -883,3 +883,237 @@ class TestOutboxDelivery:
             await cog.cog_unload()
         await asyncio.sleep(0.05)
         assert not cog.delivery_loop.is_running()
+
+
+# ---------------------------------------------------------------------------
+# Origin side: sending, acks, blockers, results (task 4.2)
+# ---------------------------------------------------------------------------
+
+RESULT_ID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+RESULT_ID_2 = "bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb"
+
+
+def _remote_event(
+    kind: p.HandoffEventKind,
+    *,
+    sender: str = "drewai",
+    sequence: int = 1,
+    payload: dict[str, str | int | bool] | None = None,
+    event_id: str = RESULT_ID,
+    task_id: str = TASK_ID,
+) -> p.HandoffEvent:
+    return make_event(
+        kind,
+        sender=sender,
+        recipient="david",
+        sequence=sequence,
+        payload=payload,
+        event_id=event_id,
+        task_id=task_id,
+    )
+
+
+def _in_thread(channel: FakeChannel, thread: FakeThread, event: p.HandoffEvent, author_id: int):
+    return FakeMessage(
+        8000 + event.sequence,
+        render_event_message(event),
+        author_id=author_id,
+        channel=thread,
+        guild=channel.guild,
+    )
+
+
+async def _sent_task(repo: HandoffRepository, channel: FakeChannel, cog: AgentHandoffCog):
+    """David hands a task to drewai; returns the task event and its job thread."""
+    task = make_task("david", "drewai")
+    event = make_task_event(task)
+    starter, thread = await cog.send_task(event, now=NOW)
+    channel.threads[6006] = FakeThread(6006, "origin")
+    return event, thread
+
+
+class TestOriginSide:
+    @pytest.mark.asyncio
+    async def test_send_task_posts_one_starter_and_records_the_created_task(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        event, thread = await _sent_task(repo, channel, cog)
+
+        assert len(channel.messages) == 1
+        assert parse_event_message(channel.messages[0].content) == event
+        assert thread.name == job_thread_name(TASK_ID)
+        job = await repo.get_job(TASK_ID, "drewai")
+        assert job is not None and job.state is HandoffState.ACCEPTED
+        assert await repo.get_job_thread(TASK_ID, "drewai") == thread.id
+        assert await repo.has_event(event.event_id)
+
+    @pytest.mark.asyncio
+    async def test_ack_from_the_recipient_reaches_the_origin_conversation(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        _event, thread = await _sent_task(repo, channel, cog)
+        ack = _remote_event(p.HandoffEventKind.ACK, payload={"note": "accepted"})
+
+        receipt = await cog.handle_message(_in_thread(channel, thread, ack, DREWAI_BOT), now=NOW)
+
+        assert receipt is not None and receipt.created is False
+        origin = channel.threads[6006]
+        assert len(origin.sent) == 1
+        assert "drewai" in origin.sent[0] and "6d9f6ad0" in origin.sent[0]
+        assert parse_event_message(origin.sent[0]) is None
+
+    @pytest.mark.asyncio
+    async def test_blocked_and_result_are_mirrored_into_the_origin_ledger(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        _event, thread = await _sent_task(repo, channel, cog)
+        blocked = _remote_event(
+            p.HandoffEventKind.STATE,
+            sequence=2,
+            payload={"state": "blocked", "note": "needs edit authority"},
+            event_id=RESULT_ID,
+        )
+        await cog.handle_message(_in_thread(channel, thread, blocked, DREWAI_BOT), now=NOW)
+        job = await repo.get_job(TASK_ID, "drewai")
+        assert job is not None and job.state is HandoffState.BLOCKED
+
+        result = _remote_event(
+            p.HandoffEventKind.RESULT,
+            sequence=3,
+            payload={"outcome": "completed", "summary": "Found it"},
+            event_id=RESULT_ID_2,
+        )
+        await cog.handle_message(_in_thread(channel, thread, result, DREWAI_BOT), now=NOW)
+        job = await repo.get_job(TASK_ID, "drewai")
+        assert job is not None and job.state is HandoffState.COMPLETED
+        # The recipient delivers blockers and results to the origin itself; the
+        # origin bot mirrors them without posting a second copy.
+        assert channel.threads[6006].sent == []
+        assert await repo.count_tasks() == 1
+
+    @pytest.mark.asyncio
+    async def test_duplicate_and_late_results_are_idempotent(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        _event, thread = await _sent_task(repo, channel, cog)
+        result = _remote_event(
+            p.HandoffEventKind.RESULT,
+            sequence=2,
+            payload={"outcome": "completed", "summary": "Found it"},
+        )
+        message = _in_thread(channel, thread, result, DREWAI_BOT)
+
+        first = await cog.handle_message(message, now=NOW)
+        second = await cog.handle_message(message, now=NOW)
+        late = _remote_event(
+            p.HandoffEventKind.STATE,
+            sequence=1,
+            payload={"state": "running"},
+            event_id=RESULT_ID_2,
+        )
+        third = await cog.handle_message(_in_thread(channel, thread, late, DREWAI_BOT), now=NOW)
+
+        assert first is not None and not first.duplicate
+        assert second is not None and second.duplicate
+        assert third is not None
+        job = await repo.get_job(TASK_ID, "drewai")
+        assert job is not None and job.state is HandoffState.COMPLETED, "terminal stays terminal"
+        events = await repo.list_events(TASK_ID)
+        assert [e.event_id for e in events if e.kind is p.HandoffEventKind.RESULT] == [RESULT_ID]
+
+    @pytest.mark.asyncio
+    async def test_a_result_never_becomes_a_task(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        thread = FakeThread(4242, "handoff-unknown")
+        channel.threads[4242] = thread
+        stray = _remote_event(
+            p.HandoffEventKind.RESULT,
+            payload={"outcome": "completed", "summary": "Did a thing"},
+            task_id="9d9f6ad0-3c6e-4a1e-9f4a-2f2a1c0b7e99",
+        )
+        assert await cog.handle_message(_in_thread(channel, thread, stray, DREWAI_BOT)) is None
+        assert await repo.count_tasks() == 0
+        assert not await repo.has_event(stray.event_id)
+
+    @pytest.mark.asyncio
+    async def test_cross_origin_results_cannot_move_a_job_this_agent_is_working_on(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        """A remote claim about *our* job is recorded as noise, never applied."""
+        root = tmp_path / "drewp" / "main-projects"
+        root.mkdir(parents=True)
+        channel = FakeChannel()
+        cog = _cog(repo, channel, root)
+        _online_chat(cog)
+        starter = _starter(channel, make_task_event())  # drewai → david
+        await cog.handle_message(starter, now=NOW)
+        thread = channel.threads[4242]
+        forged = _remote_event(
+            p.HandoffEventKind.RESULT,
+            sender="imac",
+            payload={"outcome": "failed", "summary": "gave up"},
+        )
+        receipt = await cog.handle_message(_in_thread(channel, thread, forged, IMAC_BOT), now=NOW)
+
+        assert receipt is None
+        job = await repo.get_job(TASK_ID, "david")
+        assert job is not None and job.state is HandoffState.RUNNING
+        assert not await repo.has_event(forged.event_id)
+
+    @pytest.mark.asyncio
+    async def test_question_from_the_recipient_is_relayed_to_the_origin(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        _event, thread = await _sent_task(repo, channel, cog)
+        question = _remote_event(
+            p.HandoffEventKind.QUESTION, payload={"question": "Which branch should I read?"}
+        )
+        await cog.handle_message(_in_thread(channel, thread, question, DREWAI_BOT), now=NOW)
+        origin = channel.threads[6006]
+        assert len(origin.sent) == 1 and "Which branch" in origin.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_chat_cog_sends_lookups_through_the_handoff_cog_when_configured(
+        self, repo: HandoffRepository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+        for key, value in CONFIG_ENV.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.delenv("CCDB_AGENT_ROUTES", raising=False)
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        bot = cog.bot
+        bot.cogs["AgentHandoffCog"] = cog
+        origin_channel = SimpleNamespace(id=5005, parent_id=None, send=AsyncMock())
+        message = SimpleNamespace(
+            id=7,
+            content="Ask DrewAI to search Drew's projects for the Pinterest picker",
+            guild=FakeGuild(),
+            channel=origin_channel,
+            author=SimpleNamespace(id=777, bot=False),
+        )
+        chat = SimpleNamespace(bot=bot)
+        chat._send_handoff_via_cog = lambda *a: ClaudeChatCog._send_handoff_via_cog(chat, *a)  # type: ignore[arg-type]
+
+        handled = await ClaudeChatCog._try_send_drewai_lookup_handoff(chat, message)  # type: ignore[arg-type]
+
+        assert handled is True
+        assert len(channel.messages) == 1
+        event = parse_event_message(channel.messages[0].content)
+        assert event is not None and event.sender == "david" and event.recipient == "drewai"
+        assert await repo.get_job(event.task_id, "drewai") is not None
+        origin_channel.send.assert_awaited_once()
