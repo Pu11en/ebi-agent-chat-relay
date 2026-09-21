@@ -918,6 +918,33 @@ async def test_sessions_new_in_same_folder_creates_an_idle_thread(cog, tmp_path)
     cog.new_session.assert_awaited_once_with(event, str(tmp_path))
 
 
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.5: Settings entry view
+# ---------------------------------------------------------------------------
+
+
+async def test_settings_shows_only_supported_entries_and_runs_no_model(cog, monkeypatch):
+    from claude_discord.discord_ui.settings_home import SettingsEntry
+
+    monkeypatch.setenv("CCDB_SUPPORTED_HARNESSES", "claude")
+    monkeypatch.setenv("CCDB_COMPUTER_NAME", "Lenovo")
+    cog.chat.spawn_session = AsyncMock()
+    cog.chat._run_claude = AsyncMock()
+    opener = AsyncMock()
+    cog.settings_home.add(SettingsEntry("ai-setup", "My AI Setup", "Inventory", open=opener))
+    event = interaction()
+    await cog.show_settings(event)
+    kwargs = event.followup.send.call_args.kwargs
+    text = event.followup.send.call_args.args[0]
+    assert kwargs["ephemeral"] is True
+    assert "Lenovo" in text
+    assert "/switch" in text
+    assert "/ollama" not in text  # local harness is not configured here
+    assert [b.label for b in kwargs["view"].children] == ["My AI Setup"]
+    cog.chat.spawn_session.assert_not_awaited()
+    cog.chat._run_claude.assert_not_awaited()
+
+
 async def test_sessions_close_without_a_lifecycle_service_declines_safely(cog):
     cog.repo.delete = AsyncMock()
     event = interaction()

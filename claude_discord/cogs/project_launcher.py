@@ -24,6 +24,7 @@ from ..discord_ui.session_browser import (
     SessionBrowserView,
     browser_text,
 )
+from ..discord_ui.settings_home import SettingsHome, SupportedFeatures
 from ..project_creation import (
     ProjectCreationError,
     ProjectRoots,
@@ -547,6 +548,7 @@ class ProjectLauncherCog(commands.Cog):
         backend_settings: Any | None = None,
         backend_factory: Any | None = None,
         lifecycle: SessionLifecycleService | None = None,
+        settings_home: SettingsHome | None = None,
     ) -> None:
         self.bot = bot
         self.repo = repo
@@ -563,6 +565,7 @@ class ProjectLauncherCog(commands.Cog):
         # The shared close/reopen service. Absent, Sessions' Close declines and
         # Open only unarchives — it never falls back to deleting anything.
         self.lifecycle = lifecycle
+        self._settings_home = settings_home
         self._favorites_lock = asyncio.Lock()
         self._panel_lock = asyncio.Lock()
         self._view: LauncherView | None = None
@@ -760,13 +763,20 @@ class ProjectLauncherCog(commands.Cog):
         )
         await interaction.followup.send(close_outcome_text(outcome), ephemeral=True)
 
+    @property
+    def settings_home(self) -> SettingsHome:
+        """The Settings entries for this computer; other features `.add()` to it."""
+        if self._settings_home is None:
+            self._settings_home = SettingsHome(SupportedFeatures.detect())
+        return self._settings_home
+
     async def show_settings(self, interaction: discord.Interaction) -> None:
-        """Settings: this computer's supported configuration (task 2.5)."""
+        """Settings: only what this computer supports, and no model turn."""
         if not await self.authorize(interaction):
             return
-        await interaction.response.send_message(
-            "Settings for this computer are not available yet.", ephemeral=True
-        )
+        await interaction.response.defer(ephemeral=True)
+        text, view = self.settings_home.render(self.computer_name(), user_id=interaction.user.id)
+        await interaction.followup.send(text, view=view, ephemeral=True)
 
     def embed(self) -> discord.Embed:
         return discord.Embed(

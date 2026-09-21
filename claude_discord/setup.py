@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from .database.settings_repo import SettingsRepository
     from .database.summary_repo import ThreadSummaryRepository
     from .database.task_repo import TaskRepository
+    from .discord_ui.settings_home import SettingsHome
     from .ext.api_server import ApiServer
 
 from .deployment import DEFAULT_DATA_ROOT, DataLayout
@@ -75,6 +76,10 @@ class BridgeComponents:
     #: so a custom Cog scheduling a reminder lands in the same database the
     #: dispatcher reads.  A Cog that opens its own file writes into a void.
     notification_repo: NotificationRepository | None = None
+    #: The Settings entry list this computer shows. A custom Cog adds its own
+    #: entry with ``components.settings_home.add(SettingsEntry(...))`` — no
+    #: subclassing, no wiring. None when no channel is configured.
+    settings_home: SettingsHome | None = None
 
     def apply_to_api_server(self, api_server: ApiServer) -> None:
         """Wire all optional repos to an ApiServer instance.
@@ -539,24 +544,24 @@ async def setup_bridge(
     logger.info("Registered SessionManageCog")
 
     # --- SkillCommandCog (requires at least one channel ID) ---
+    launcher_cog: ProjectLauncherCog | None = None
     if _all_channel_ids:
         # Primary channel: prefer the explicit claude_channel_id, else pick from set
         _primary_channel_id = claude_channel_id or next(iter(_all_channel_ids))
-        await bot.add_cog(
-            ProjectLauncherCog(
-                bot,
-                session_repo,
-                settings_repo,
-                chat_cog,
-                channel_id=_primary_channel_id,
-                channel_ids=_all_channel_ids,
-                working_dir=runner.working_dir,
-                home_channel_id=_launcher_home_id,
-                session_channel_id=_launcher_session_id,
-                backend_settings=backend_settings,
-                backend_factory=backend_factory,
-            )
+        launcher_cog = ProjectLauncherCog(
+            bot,
+            session_repo,
+            settings_repo,
+            chat_cog,
+            channel_id=_primary_channel_id,
+            channel_ids=_all_channel_ids,
+            working_dir=runner.working_dir,
+            home_channel_id=_launcher_home_id,
+            session_channel_id=_launcher_session_id,
+            backend_settings=backend_settings,
+            backend_factory=backend_factory,
         )
+        await bot.add_cog(launcher_cog)
         skill_cog = SkillCommandCog(
             bot,
             repo=session_repo,
@@ -664,6 +669,7 @@ async def setup_bridge(
         ask_repo=ask_repo,
         usage_repo=usage_repo,
         handoff_repo=handoff_repo,
+        settings_home=launcher_cog.settings_home if launcher_cog is not None else None,
     )
 
     # Auto-wire repos to ApiServer and set runner.api_port if provided
