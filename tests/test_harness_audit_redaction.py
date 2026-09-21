@@ -270,6 +270,50 @@ def test_assert_no_secrets_refuses_text_that_still_carries_one() -> None:
         assert_no_secrets(f"api_key={FAKE_API_KEY}", field="bundle")
 
 
+def test_credential_header_value_stops_at_a_json_escaped_newline() -> None:
+    """A header followed by another line survives JSON: `\\n` ends the value.
+
+    Once redacted, ``Cookie: [redacted]\\nHost: x`` is serialized with a literal
+    backslash-n, and the fail-closed re-scan must recognize the placeholder as
+    the whole value rather than swallow the next header line and refuse its
+    own output.
+    """
+    detail = f"Cookie: {FAKE_COOKIE}\nHost: example.invalid"
+    item = InventoryItem(
+        item_id="claude-mcp-header",
+        target=DREWAI_CLAUDE,
+        kind=SourceKind.CONNECTOR,
+        label="mcp server headers",
+        sources=(ItemSource("~/.claude.json", Scope.GLOBAL, loaded_evidence(detail)),),
+        evidence=loaded_evidence(detail),
+    )
+    inventory = HarnessInventory(target=DREWAI_CLAUDE, collected_at=COLLECTED_AT, items=(item,))
+    bundle = build_redacted_bundle(
+        machine=Machine.DREWAI, created_at=COLLECTED_AT, inventories=(inventory,)
+    )
+    serialized = serialize_bundle(bundle)
+    assert "QWERTYfake123" not in serialized
+    assert "Host: example.invalid" in serialized
+    assert scan(serialized) == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        ("DB_PASSWORD=48213907", "48213907"),
+        ('"api_key": "31415926535"', "31415926535"),
+        ("pin_secret: 0042", "0042"),
+    ],
+)
+def test_a_purely_numeric_secret_value_is_still_a_secret(text: str, secret: str) -> None:
+    """A numeric password is a password; it must not skip the rule or the re-scan."""
+    result = redact_text(text, field="detail")
+    assert secret not in result.text
+    assert SECRET_PLACEHOLDER in result.text
+    with pytest.raises(RedactionError):
+        assert_no_secrets(text, field="bundle")
+
+
 # --------------------------------------------------------------------------- #
 # Environment
 # --------------------------------------------------------------------------- #
