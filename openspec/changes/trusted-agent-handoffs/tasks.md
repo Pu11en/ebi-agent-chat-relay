@@ -13,7 +13,7 @@ Try: `uv run python -m claude_discord.main`
 - [x] 2.1 Add strict per-instance handoff configuration for local agent id, guild, channel, and one-to-one trusted bot mappings, disabled unless complete; owner: a new `claude_discord/handoff_config.py` and tests; depends on 1.1; verify wrong guild/channel/author/recipient and webhook events fail closed.
 - [x] 2.2 Implement human-readable task starter and typed event rendering/parsing within Discord bounds; owner: a new `claude_discord/handoff_discord.py` and `tests/test_handoff_cog.py`; depends on 1.1 and 2.1; verify one starter/thread per task and no unbounded transcript is emitted.
 - [x] 2.3 Add a dedicated handoff Cog listener that accepts only configured protocol events in `agent-handoffs` while leaving the ordinary bot-message guard unchanged; owner: `claude_discord/cogs/agent_handoff.py` and focused tests; depends on 1.3 and 2.2; verify ordinary bot messages still start zero chat turns.
-- [ ] 2.4 Implement reconnect scanning of recent active/archived handoff starters and idempotent reconciliation into the local ledger; owner: the handoff Cog/repository tests only; depends on 2.3; verify an offline-addressed task is discovered once after startup.
+- [x] 2.4 Implement reconnect scanning of recent active/archived handoff starters and idempotent reconciliation into the local ledger; owner: the handoff Cog/repository tests only; depends on 2.3; verify an offline-addressed task is discovered once after startup.
 
 ## 3. Authority, project resolution, and execution
 

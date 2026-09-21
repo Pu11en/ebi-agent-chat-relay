@@ -651,3 +651,133 @@ class TestAgentHandoffCog:
         cog._handle_thread_reply.assert_not_awaited()
         cog._handle_new_conversation.assert_not_awaited()
         cog._handle_mention.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Reconnect scanning and reconciliation (task 2.4)
+# ---------------------------------------------------------------------------
+
+from claude_code_core.handoffs.state import HandoffTrigger, apply  # noqa: E402
+
+
+def _online_chat(cog: AgentHandoffCog) -> SimpleNamespace:
+    chat = SimpleNamespace(
+        bot=cog.bot, handoff_capacity_available=lambda: True, run_handoff_turn=AsyncMock()
+    )
+    cog.bot.cogs["ClaudeChatCog"] = chat
+    return chat
+
+
+class TestReconnect:
+    @pytest.mark.asyncio
+    async def test_offline_addressed_task_is_discovered_once_after_startup(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "drewp" / "main-projects"
+        root.mkdir(parents=True)
+        channel = FakeChannel()
+        starter = _starter(channel, make_task_event())
+        await starter.create_thread(name=job_thread_name(TASK_ID))  # the sender opened it
+        cog = _cog(repo, channel, root)
+        chat = _online_chat(cog)
+
+        first = await cog.reconcile_on_reconnect(now=NOW)
+        second = await cog.reconcile_on_reconnect(now=NOW)
+
+        assert first.discovered == [TASK_ID]
+        assert second.discovered == []
+        assert await repo.count_tasks() == 1
+        job = await repo.get_job(TASK_ID, "david")
+        assert job is not None and job.state is HandoffState.RUNNING
+        assert chat.run_handoff_turn.await_count == 1
+        thread = channel.threads[4242]
+        acks = [
+            e
+            for e in (parse_event_message(t) for t in thread.sent)
+            if e is not None and e.kind is p.HandoffEventKind.ACK
+        ]
+        assert len(acks) == 1
+
+    @pytest.mark.asyncio
+    async def test_archived_job_thread_is_fetched_and_reopened(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "drewp" / "main-projects"
+        root.mkdir(parents=True)
+        channel = FakeChannel()
+        starter = _starter(channel, make_task_event())
+        archived = FakeThread(4242, job_thread_name(TASK_ID), archived=True)
+        channel.threads[4242] = archived  # reachable by fetch, not on the cached message
+        starter.thread = None
+
+        async def create_thread(**_: object) -> FakeThread:
+            raise RuntimeError("already has a thread")
+
+        starter.create_thread = create_thread  # type: ignore[method-assign]
+        cog = _cog(repo, channel, root)
+        _online_chat(cog)
+
+        report = await cog.reconcile_on_reconnect(now=NOW)
+
+        assert report.discovered == [TASK_ID]
+        assert await repo.get_job_thread(TASK_ID, "david") == 4242
+        assert archived.archived is False
+        assert any("accepted" in text for text in archived.sent)
+
+    @pytest.mark.asyncio
+    async def test_running_job_is_requeued_and_resumed_once(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "drewp" / "main-projects"
+        root.mkdir(parents=True)
+        channel = FakeChannel()
+        starter = _starter(channel, make_task_event())
+        await starter.create_thread(name=job_thread_name(TASK_ID))
+        task = make_task()
+        await repo.record_task(task, now=NOW)
+        await repo.set_job_thread(TASK_ID, "david", 4242)
+        job = await repo.get_job(TASK_ID, "david")
+        assert job is not None
+        await repo.claim_attempt(TASK_ID, "david", attempt=1, now=NOW)
+        await repo.save_transition(apply(job, HandoffTrigger.START, now=NOW))
+        cog = _cog(repo, channel, root)
+        chat = _online_chat(cog)
+
+        report = await cog.reconcile_on_reconnect(now=NOW + timedelta(minutes=1))
+
+        assert report.requeued == [TASK_ID]
+        assert report.discovered == []
+        assert chat.run_handoff_turn.await_count == 1
+        assert len(await repo.list_attempts(TASK_ID, "david")) == 1
+        job = await repo.get_job(TASK_ID, "david")
+        assert job is not None and job.state is HandoffState.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_scan_is_bounded_by_the_retention_window(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        seen: dict[str, object] = {}
+        original = channel.history
+
+        def history(**kwargs: object):
+            seen.update(kwargs)
+            return original(**kwargs)  # type: ignore[arg-type]
+
+        channel.history = history  # type: ignore[method-assign]
+        cog = _cog(repo, channel, tmp_path)
+        _online_chat(cog)
+
+        await cog.reconcile_on_reconnect(now=NOW)
+
+        assert seen["after"] == NOW - cog.config.retention
+        assert isinstance(seen["limit"], int) and seen["limit"] <= 500
+
+    @pytest.mark.asyncio
+    async def test_on_ready_runs_reconciliation(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        cog = _cog(repo, FakeChannel(), tmp_path)
+        cog.reconcile_on_reconnect = AsyncMock()  # type: ignore[method-assign]
+        await cog.on_ready()
+        cog.reconcile_on_reconnect.assert_awaited_once()

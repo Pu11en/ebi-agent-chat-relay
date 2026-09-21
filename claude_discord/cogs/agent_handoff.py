@@ -45,6 +45,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+SCAN_LIMIT = 200
+
+
+@dataclass(frozen=True)
+class ReconnectReport:
+    """What startup reconciliation found and did."""
+
+    requeued: list[str]
+    discovered: list[str]
+
+
 @dataclass(frozen=True)
 class HandoffReceipt:
     """What the Cog did with one protocol message."""
@@ -88,6 +99,7 @@ class AgentHandoffCog(commands.Cog):
         )
         self._start_loops = start_loops
         self._run_lock = asyncio.Lock()
+        self._restart_reconciled = False
 
     @property
     def config(self) -> HandoffConfig:
@@ -193,6 +205,85 @@ class AgentHandoffCog(commands.Cog):
     async def _fetch(self, channel_id: int) -> Any:
         return await self.bot.fetch_channel(channel_id)
 
+    # -- reconnect -----------------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Every (re)connect reconciles: the scan is idempotent, so repeats are free."""
+        try:
+            await self.reconcile_on_reconnect()
+        except Exception:
+            logger.exception("handoff reconciliation failed")
+
+    async def reconcile_on_reconnect(self, *, now: datetime | None = None) -> ReconnectReport:
+        """Recover work addressed to this agent while it was away.
+
+        Two sources, both idempotent against the ledger: jobs stored as
+        ``running`` with no process behind them are requeued (same attempt),
+        and recent starters in the handoff channel that the ledger has never
+        seen are stored and acknowledged. Then one executor pass runs.
+
+        The restart part runs once per process. ``on_ready`` also fires on a
+        gateway reconnect, and a job that is genuinely running in *this*
+        process must not be requeued underneath itself.
+        """
+        stamp = (now or datetime.now(UTC)).astimezone(UTC)
+        requeued: list[str] = []
+        if not self._restart_reconciled:
+            self._restart_reconciled = True
+            requeued = [
+                job.task_id for job in await self._executor.reconcile_after_restart(now=stamp)
+            ]
+        discovered = await self._scan_starters(stamp)
+        await self.run_executor(now=stamp)
+        return ReconnectReport(requeued=requeued, discovered=discovered)
+
+    async def _scan_starters(self, now: datetime) -> list[str]:
+        channel: Any = await self.lookup_channel(self._config.channel_id)
+        if channel is None or not callable(getattr(channel, "history", None)):
+            logger.warning("handoff channel %s is not readable", self._config.channel_id)
+            return []
+        discovered: list[str] = []
+        local = self._config.local_agent_id
+        try:
+            async for message in channel.history(
+                limit=SCAN_LIMIT, after=now - self._config.retention, oldest_first=True
+            ):
+                task_id = await self._discover_starter(message, now, local)
+                if task_id is not None:
+                    discovered.append(task_id)
+        except Exception:
+            logger.warning("handoff starter scan failed", exc_info=True)
+        return discovered
+
+    async def _discover_starter(self, message: Any, now: datetime, local: str) -> str | None:
+        if not getattr(getattr(message, "author", None), "bot", False):
+            return None
+        try:
+            event = parse_event_message(getattr(message, "content", "") or "")
+        except HandoffEnvelopeError:
+            return None
+        if event is None or event.kind is not HandoffEventKind.TASK or event.task is None:
+            return None
+        if event.recipient != local:
+            return None
+        if await self._repo.get_job(event.task_id, local) is not None:
+            await self._remember_job_thread(message, event.task)
+            return None
+        try:
+            self._config.verify_inbound(message, event)
+        except HandoffTrustError as exc:
+            logger.warning("skipping untrusted starter %s: %s", message.id, exc)
+            return None
+        task = event.task
+        created, _job = await self._repo.record_task(task, now=now)
+        await self._repo.record_event(event)
+        await self._remember_job_thread(message, task)
+        if not created:
+            return None
+        await self._poster.announce_accepted(task, now=now)
+        return task.task_id
+
     # -- execution -----------------------------------------------------------
 
     async def run_executor(self, *, now: datetime | None = None) -> None:
@@ -209,4 +300,4 @@ class AgentHandoffCog(commands.Cog):
                 logger.exception("handoff executor pass failed")
 
 
-__all__ = ["AgentHandoffCog", "HandoffReceipt"]
+__all__ = ["AgentHandoffCog", "HandoffReceipt", "ReconnectReport"]
