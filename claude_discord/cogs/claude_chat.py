@@ -24,6 +24,7 @@ from discord.ext import commands
 
 from claude_code_core.backend import SessionBackend
 
+from ..agent_router import parse_agent_routes
 from ..backend_factory import BackendFactory
 from ..backend_settings import BackendSettings, session_is_resumable
 from ..claude.rewind import find_session_jsonl, parse_user_turns
@@ -43,6 +44,8 @@ from ..discord_ui.thread_context import DEFAULT_DAYS, build_recent_transcript
 from ..discord_ui.thread_dashboard import ThreadState, ThreadStatusDashboard
 from ..discord_ui.thread_renamer import suggest_title
 from ..discord_ui.views import RewindSelectView, StopView
+from ..handoff_sender import send_project_lookup_handoff
+from ..handoff_triggers import parse_drewai_lookup_trigger
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ._run_helper import run_claude_with_config
 from .context_nudge import ContextNudger
@@ -389,6 +392,9 @@ class ClaudeChatCog(commands.Cog):
         if isinstance(message.channel, discord.Thread):
             await self._ensure_thread_members(message.channel)
 
+        if await self._try_send_drewai_lookup_handoff(message):
+            return
+
         # Inside a no-mention channel (or a thread under it) everything is for
         # Claude, and the session model applies: a channel message opens a
         # thread, a thread message continues that thread's session.
@@ -413,6 +419,47 @@ class ClaudeChatCog(commands.Cog):
         except Exception:
             logger.warning("task loop failed to take a message", exc_info=True)
             return False
+
+    async def _try_send_drewai_lookup_handoff(self, message: discord.Message) -> bool:
+        """Send a natural DrewAI lookup request to its configured Discord route."""
+        trigger = parse_drewai_lookup_trigger(getattr(message, "content", ""))
+        if trigger is None:
+            return False
+
+        try:
+            route = parse_agent_routes(os.getenv("CCDB_AGENT_ROUTES")).resolve(trigger.agent_id)
+        except (KeyError, ValueError):
+            return False
+
+        if route.thread_id is None:
+            logger.info(
+                "DrewAI lookup trigger ignored because %s is not a Discord thread route",
+                trigger.agent_id,
+            )
+            return False
+
+        destination = self.bot.get_channel(route.thread_id)
+        if destination is None:
+            try:
+                destination = await self.bot.fetch_channel(route.thread_id)
+            except Exception:
+                logger.warning("Could not resolve DrewAI handoff route %s", route.thread_id)
+                return False
+        if not hasattr(destination, "send"):
+            logger.warning("DrewAI handoff route %s cannot receive messages", route.thread_id)
+            return False
+
+        sender_agent_id = os.getenv("CCDB_AGENT_ID", "").strip() or "ccdb"
+        destination_sender: Any = destination
+        await send_project_lookup_handoff(
+            trigger,
+            origin_message=message,
+            destination=destination_sender,
+            sender_agent_id=sender_agent_id,
+        )
+        with contextlib.suppress(Exception):
+            await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}")
+        return True
 
     def _is_no_mention_scope(self, channel: discord.abc.MessageableChannel) -> bool:
         """Return whether *channel* is one ccdb was invited to speak in freely.
