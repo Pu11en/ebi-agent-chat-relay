@@ -138,3 +138,25 @@ def test_the_coordinator_stays_free_of_discord():
     source = inspect.getsource(command_surface)
     assert "import discord" not in source
     assert "discord" not in vars(command_surface)
+
+
+def test_help_sections_describe_only_what_works_where_you_are():
+    from claude_discord.command_surface import help_sections
+
+    control = help_sections(SurfaceLocation.CONTROL_CENTER)
+    assert [name for name, _ in control] == ["Buttons", "Commands"]
+    buttons, commands = control[0][1], control[1][1]
+    assert [line.split("**")[1] for line in buttons] == ["New session", "Sessions", "Settings"]
+    assert [line.split("`")[1] for line in commands] == ["/new", "/sessions", "/settings", "/help"]
+
+    session = help_sections(SurfaceLocation.MANAGED_SESSION)
+    buttons, commands = session[0][1], session[1][1]
+    assert [line.split("**")[1] for line in buttons] == ["Switch", "Stop", "Session", "Close"]
+    assert [line.split("`")[1] for line in commands] == [
+        "/switch",
+        "/stop",
+        "/session",
+        "/close",
+        "/help",
+    ]
+    assert help_sections(SurfaceLocation.UNSUPPORTED) == []

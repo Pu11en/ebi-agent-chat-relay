@@ -15,12 +15,46 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..category_scope import category_allowed
+from ..command_surface import CONTROL_CENTER_BUTTONS, retirement_enabled
 from ..database.repository import SessionRepository
 from ..database.settings_repo import SettingsRepository
+from ..discord_ui.session_browser import (
+    SessionActions,
+    SessionBrowser,
+    SessionBrowserView,
+    browser_text,
+)
+from ..discord_ui.settings_home import SettingsHome, SupportedFeatures
+from ..project_creation import (
+    ProjectCreationError,
+    ProjectRoots,
+    clone_project,
+    create_project,
+)
+from ..session_lifecycle import CloseAuthorization, SessionLifecycleService, close_outcome_text
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 logger = logging.getLogger(__name__)
 _LIMIT = 25
+
+
+class _LauncherSessionActions:
+    """The cog's four session operations, bundled for the Sessions view."""
+
+    def __init__(self, cog: ProjectLauncherCog) -> None:
+        self.cog = cog
+
+    async def open(self, interaction: discord.Interaction, thread_id: int) -> None:
+        await self.cog.open_session(interaction, thread_id)
+
+    async def new_in_same_folder(self, interaction: discord.Interaction, folder: str) -> None:
+        await self.cog.new_in_same_folder(interaction, folder)
+
+    async def close(self, interaction: discord.Interaction, thread_id: int) -> None:
+        await self.cog.close_from_sessions(interaction, thread_id)
+
+    async def search(self, interaction: discord.Interaction, query: str) -> None:
+        await self.cog.show_sessions(interaction, query or None, edit=True)
 
 
 def directory(value: str) -> str:
@@ -74,6 +108,45 @@ class LauncherView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await self.cog.show_resume(interaction)
+
+
+class ControlRowView(discord.ui.View):
+    """The persistent bottom control row: New session, Sessions, Settings.
+
+    Labels come from :data:`CONTROL_CENTER_BUTTONS` so the row and `/help`
+    cannot drift. The buttons are stateless; each opens a personal, ephemeral
+    flow on the cog, so a row posted before a restart still works after it.
+    """
+
+    def __init__(self, cog: ProjectLauncherCog) -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+        openers = {
+            "new": cog.show_new_session,
+            "sessions": cog.show_sessions,
+            "settings": cog.show_settings,
+        }
+        for index, spec in enumerate(CONTROL_CENTER_BUTTONS):
+            button: discord.ui.Button[ControlRowView] = discord.ui.Button(
+                label=spec.label,
+                style=discord.ButtonStyle.primary if index == 0 else discord.ButtonStyle.secondary,
+                custom_id=f"ccdb:control:{spec.command}:v1",
+            )
+            button.callback = openers[spec.command]
+            self.add_item(button)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await self.cog.authorize(interaction)
+
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item
+    ) -> None:
+        logger.error("Control row action failed", exc_info=error)
+        text = "This action failed; please try again. Your existing sessions are unchanged."
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
 
 
 class PersonalView(LauncherView):
@@ -232,6 +305,106 @@ class FolderMenu(PersonalView):
         self.add_item(add)
 
 
+class CreateProjectModal(discord.ui.Modal, title="Create a project folder"):
+    name = discord.ui.TextInput(label="Folder name", max_length=80)
+
+    def __init__(self, cog: ProjectLauncherCog, user_id: int) -> None:
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            return
+        await self.cog.create_and_start(interaction, str(self.name))
+
+
+class CloneProjectModal(discord.ui.Modal, title="Clone a repository"):
+    repository = discord.ui.TextInput(label="Repository (owner/repo or https link)", max_length=300)
+    name = discord.ui.TextInput(label="Folder name (optional)", max_length=80, required=False)
+
+    def __init__(self, cog: ProjectLauncherCog, user_id: int) -> None:
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            return
+        await self.cog.create_and_start(
+            interaction, str(self.name), repository=str(self.repository)
+        )
+
+
+class NewSessionMenu(PersonalView):
+    """The New session choices: Favorites, Recent, Browse, Create, Clone.
+
+    Every choice ends in :meth:`ProjectLauncherCog.new_session`, which binds a
+    folder and posts a notice — it never starts a model turn.
+    """
+
+    def __init__(self, cog: ProjectLauncherCog, user_id: int) -> None:
+        super().__init__(cog, user_id)
+
+        async def create(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(CreateProjectModal(cog, user_id))
+
+        async def clone(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(CloneProjectModal(cog, user_id))
+
+        choices: list[tuple[str, discord.ButtonStyle, Any]] = [
+            ("Favorites", discord.ButtonStyle.primary, cog.show_favorite_pick),
+            ("Recent", discord.ButtonStyle.secondary, cog.show_recent_pick),
+            ("Browse", discord.ButtonStyle.secondary, cog.show_browse_choice),
+            ("Create", discord.ButtonStyle.secondary, create),
+            ("Clone", discord.ButtonStyle.secondary, clone),
+        ]
+        for label, style, opener in choices:
+            button: discord.ui.Button[NewSessionMenu] = discord.ui.Button(label=label, style=style)
+            button.callback = opener
+            self.add_item(button)
+
+
+class FolderPick(PersonalView):
+    """One select over known folders; choosing one creates the idle thread."""
+
+    def __init__(
+        self, cog: ProjectLauncherCog, user_id: int, folders: list[str], *, placeholder: str
+    ) -> None:
+        super().__init__(cog, user_id)
+        self.used = False
+        select = discord.ui.Select(
+            placeholder=placeholder,
+            options=[
+                discord.SelectOption(
+                    label=(Path(path).name or path)[:100],
+                    description=path[-100:],
+                    value=str(index),
+                )
+                for index, path in enumerate(folders[:_LIMIT])
+            ],
+        )
+
+        async def choose(interaction: discord.Interaction) -> None:
+            if self.used:
+                await interaction.response.send_message(
+                    "This menu was already used. Open New session again.", ephemeral=True
+                )
+                return
+            self.used = True
+            await cog.new_session(interaction, folders[int(select.values[0])])
+
+        select.callback = choose
+        self.add_item(select)
+        back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
+
+        async def go_back(interaction: discord.Interaction) -> None:
+            await cog.show_new_session(interaction, edit=True)
+
+        back.callback = go_back
+        self.add_item(back)
+
+
 class FolderBrowser(PersonalView):
     """Navigate a real directory tree; only Start here creates a thread."""
 
@@ -372,6 +545,10 @@ class ProjectLauncherCog(commands.Cog):
         working_dir: str | None = None,
         home_channel_id: int | None = None,
         session_channel_id: int | None = None,
+        backend_settings: Any | None = None,
+        backend_factory: Any | None = None,
+        lifecycle: SessionLifecycleService | None = None,
+        settings_home: SettingsHome | None = None,
     ) -> None:
         self.bot = bot
         self.repo = repo
@@ -381,14 +558,25 @@ class ProjectLauncherCog(commands.Cog):
         self.channel_ids = set(channel_ids)
         self.session_channel_id = session_channel_id
         self.working_dir = working_dir
+        # Optional: lets the status line and new-thread notice name the default
+        # model without a model turn. Absent, the notice names no model.
+        self.backend_settings = backend_settings
+        self.backend_factory = backend_factory
+        # The shared close/reopen service. Absent, Sessions' Close declines and
+        # Open only unarchives — it never falls back to deleting anything.
+        self.lifecycle = lifecycle
+        self._settings_home = settings_home
         self._favorites_lock = asyncio.Lock()
         self._panel_lock = asyncio.Lock()
         self._view: LauncherView | None = None
+        self._control_row: ControlRowView | None = None
         self._shortcut_task: asyncio.Task[None] | None = None
 
     async def cog_load(self) -> None:
         self._view = LauncherView(self)
         self.bot.add_view(self._view)
+        self._control_row = ControlRowView(self)
+        self.bot.add_view(self._control_row)
 
     async def cog_unload(self) -> None:
         if self._shortcut_task is not None:
@@ -397,12 +585,212 @@ class ProjectLauncherCog(commands.Cog):
                 await self._shortcut_task
         if self._view is not None:
             self._view.stop()
+        if self._control_row is not None:
+            self._control_row.stop()
+
+    # ------------------------------------------------------------------
+    # The control row: status line + New session / Sessions / Settings
+    # ------------------------------------------------------------------
+
+    def computer_name(self) -> str:
+        fallback = self.bot.user.display_name if self.bot.user else "This computer"
+        return (os.environ.get("CCDB_COMPUTER_NAME", "").strip() or fallback)[:180]
+
+    async def default_model(self) -> tuple[str | None, str | None]:
+        """The (backend, model) a new thread starts on, read without a model turn."""
+        settings = self.backend_settings
+        if settings is None:
+            runner = getattr(self.chat, "runner", None)
+            model = getattr(runner, "model", None)
+            return None, (model if isinstance(model, str) and model else None)
+        try:
+            backend = await settings.current_backend()
+            model = await settings.current_model(backend)
+            if not model and self.backend_factory is not None:
+                model = self.backend_factory.default_model_for(backend)
+        except Exception:
+            logger.debug("Default model unavailable for the status line", exc_info=True)
+            return None, None
+        return backend, (model or None)
+
+    async def status_block(self) -> str:
+        """The compact computer status shown above the control buttons."""
+        active = int(getattr(self.chat, "active_session_count", 0) or 0)
+        backend, model = await self.default_model()
+        parts = [f"**{self.computer_name()}**", f"{active} active session{'s' * (active != 1)}"]
+        if backend or model:
+            parts.append("default: " + " · ".join(p for p in (backend, model) if p))
+        return " · ".join(parts)
+
+    def control_row(self) -> ControlRowView:
+        return self._control_row or ControlRowView(self)
+
+    def panel_view(self) -> discord.ui.View:
+        """The pinned panel's buttons: the old three until retirement is switched on.
+
+        Task 4.4 removes the old launcher buttons only after recorded
+        acceptance; `CCDB_RETIRE_SUPERSEDED_COMMANDS=1` is that switch.
+        """
+        if retirement_enabled():
+            return self.control_row()
+        return self._view or LauncherView(self)
+
+    async def control_content(self) -> str:
+        return (
+            f"{await self.status_block()}\n"
+            "-# **New session** starts a folder-bound thread · **Sessions** finds work · "
+            "**Settings** shows what this computer supports"
+        )
+
+    async def show_new_session(
+        self, interaction: discord.Interaction, *, edit: bool = False
+    ) -> None:
+        """New session: Favorites, Recent, or Browse — each ends in an idle thread."""
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        _, model = await self.default_model()
+        starts_on = f"`{model}`" if model else "this computer's default model"
+        text = (
+            f"**New session** — choose where it works. It starts on {starts_on} "
+            "and nothing runs until you send the first task."
+        )
+        view = NewSessionMenu(self, interaction.user.id)
+        if edit:
+            await interaction.edit_original_response(content=text, view=view)
+        else:
+            await interaction.followup.send(text, view=view, ephemeral=True)
+
+    async def show_favorite_pick(self, interaction: discord.Interaction) -> None:
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        folders = await self.favorites(interaction.guild_id or 0, interaction.user.id)
+        if not folders:
+            await interaction.edit_original_response(
+                content="No favorites saved yet. Use **Browse** and press **Save favorite**.",
+                view=NewSessionMenu(self, interaction.user.id),
+            )
+            return
+        await interaction.edit_original_response(
+            content="Choose a favorite folder; the session thread is created at once.",
+            view=FolderPick(self, interaction.user.id, folders, placeholder="Favorite folders"),
+        )
+
+    async def show_recent_pick(self, interaction: discord.Interaction) -> None:
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        recent = await self.recents(interaction.guild_id or 0, interaction.user.id)
+        recent = await asyncio.to_thread(lambda: [p for p in recent if Path(p).is_dir()])
+        if not recent:
+            await interaction.edit_original_response(
+                content="No recent folders on this computer yet. Use **Favorites** or **Browse**.",
+                view=NewSessionMenu(self, interaction.user.id),
+            )
+            return
+        await interaction.edit_original_response(
+            content="Choose a recent folder; the session thread is created at once.",
+            view=FolderPick(self, interaction.user.id, recent, placeholder="Recent folders"),
+        )
+
+    async def show_browse_choice(self, interaction: discord.Interaction) -> None:
+        await self.show_browser(interaction, edit=True)
+
+    async def show_sessions(
+        self, interaction: discord.Interaction, query: str | None = None, *, edit: bool = False
+    ) -> None:
+        """Sessions: newest-first, searchable, with Open / New in same folder / Close."""
+        if not await self.authorize(interaction):
+            return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
+        async def resolve(thread_id: int) -> discord.Thread | None:
+            return await self.visible_thread(thread_id, interaction)
+
+        entries = await SessionBrowser(self.repo, resolve).find(query)
+        text = browser_text(entries, query)
+        view = SessionBrowserView(entries, self.session_actions(), user_id=interaction.user.id)
+        if edit:
+            await interaction.edit_original_response(content=text, view=view)
+        else:
+            await interaction.followup.send(text, view=view, ephemeral=True)
+
+    def session_actions(self) -> SessionActions:
+        """The four operations the Sessions view may call, all owned by this cog."""
+        return _LauncherSessionActions(self)
+
+    async def open_session(self, interaction: discord.Interaction, thread_id: int) -> None:
+        """Open (and if needed unarchive/reopen) a session's original thread; never clone it."""
+        if not await self.authorize(interaction):
+            return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        thread = await self.visible_thread(thread_id, interaction)
+        if thread is None:
+            await interaction.followup.send(
+                "That session's thread is no longer available. Open Sessions again.",
+                ephemeral=True,
+            )
+            return
+        record = await self.repo.get(thread.id)
+        reopened = False
+        if self.lifecycle is not None and record is not None and record.is_closed:
+            outcome = await self.lifecycle.reopen(thread.id)
+            reopened = outcome.is_reopened
+        if getattr(thread, "archived", False) and not reopened:
+            with contextlib.suppress(discord.HTTPException):
+                await thread.edit(archived=False)
+        if record is not None and record.working_dir:
+            await self.remember_folder(
+                interaction.guild_id or 0, interaction.user.id, record.working_dir
+            )
+        note = " Reopened — the conversation continues where it stopped." if reopened else ""
+        await interaction.followup.send(
+            f"Continue here: https://discord.com/channels/{thread.guild.id}/{thread.id}{note}",
+            ephemeral=True,
+        )
+
+    async def new_in_same_folder(self, interaction: discord.Interaction, folder: str) -> None:
+        """A clean idle thread in the selected session's folder; the original is untouched."""
+        await self.new_session(interaction, folder)
+
+    async def close_from_sessions(self, interaction: discord.Interaction, thread_id: int) -> None:
+        """Close through the shared lifecycle; without it, decline rather than delete."""
+        if not await self.authorize(interaction):
+            return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        if self.lifecycle is None:
+            await interaction.followup.send(
+                "Close is not available on this computer yet; the session was left as it is.",
+                ephemeral=True,
+            )
+            return
+        outcome = await self.lifecycle.close(
+            thread_id, CloseAuthorization.from_interaction(interaction.user.id)
+        )
+        await interaction.followup.send(close_outcome_text(outcome), ephemeral=True)
+
+    @property
+    def settings_home(self) -> SettingsHome:
+        """The Settings entries for this computer; other features `.add()` to it."""
+        if self._settings_home is None:
+            self._settings_home = SettingsHome(SupportedFeatures.detect())
+        return self._settings_home
+
+    async def show_settings(self, interaction: discord.Interaction) -> None:
+        """Settings: only what this computer supports, and no model turn."""
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        text, view = self.settings_home.render(self.computer_name(), user_id=interaction.user.id)
+        await interaction.followup.send(text, view=view, ephemeral=True)
 
     def embed(self) -> discord.Embed:
-        fallback = self.bot.user.display_name if self.bot.user else "This computer"
-        name = os.environ.get("CCDB_COMPUTER_NAME", "").strip() or fallback
         return discord.Embed(
-            title=f"{name[:180]} · Sessions",
+            title=f"{self.computer_name()} · Sessions",
             description=(
                 "**Favorite folders** — save the folders you use on this computer.\n"
                 "**New session** — pick a folder and start a separate thread.\n"
@@ -604,6 +992,32 @@ class ProjectLauncherCog(commands.Cog):
         else:
             await interaction.followup.send(text, view=view, ephemeral=True)
 
+    def project_roots(self) -> ProjectRoots:
+        """Where Create and Clone may put folders: ``CCDB_PROJECT_ROOTS``, else the cwd."""
+        return ProjectRoots.from_env(fallback=self.working_dir)
+
+    async def create_and_start(
+        self, interaction: discord.Interaction, name: str, *, repository: str | None = None
+    ) -> None:
+        """Create (or clone into) a folder beneath an approved root, then bind an idle thread.
+
+        Every refusal and failure is reported in one ephemeral message and
+        starts nothing; only a folder that now exists gets a session.
+        """
+        if not await self.authorize(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        roots = self.project_roots()
+        try:
+            if repository:
+                folder = await clone_project(roots, None, repository, name=name.strip() or None)
+            else:
+                folder = await create_project(roots, None, name)
+        except ProjectCreationError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        await self._start_idle_thread(interaction, str(folder))
+
     async def new_session(self, interaction: discord.Interaction, path: str) -> None:
         if not await self.authorize(interaction):
             return
@@ -613,6 +1027,10 @@ class ProjectLauncherCog(commands.Cog):
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
+        await self._start_idle_thread(interaction, path)
+
+    async def _start_idle_thread(self, interaction: discord.Interaction, path: str) -> None:
+        """Bind ``path`` to a fresh thread; the interaction is already deferred."""
         channel = interaction.channel
         if self.session_channel_id is not None:
             channel = self.bot.get_channel(self.session_channel_id)
@@ -638,8 +1056,11 @@ class ProjectLauncherCog(commands.Cog):
         join = getattr(self.chat, "_ensure_thread_members", None)
         if join is not None:
             await join(thread)
+        # The notice is the whole start: no model turn is spent until the first task.
+        _, model = await self.default_model()
+        model_line = f"🤖 Default model: `{model}`\n" if model else ""
         await thread.send(
-            f"📂 Working folder: `{path}`\n"
+            f"📂 Working folder: `{path}`\n{model_line}"
             "Send your task here to begin; replies continue this session.",
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -714,7 +1135,9 @@ class ProjectLauncherCog(commands.Cog):
             for row in message.components:
                 for component in getattr(row, "children", ()):
                     custom_id = getattr(component, "custom_id", None)
-                    if isinstance(custom_id, str) and custom_id.startswith("ccdb:launcher:"):
+                    if isinstance(custom_id, str) and custom_id.startswith(
+                        ("ccdb:launcher:", "ccdb:control:")
+                    ):
                         return
         if self._shortcut_task is None or self._shortcut_task.done():
             self._shortcut_task = asyncio.create_task(self._delayed_shortcut())
@@ -724,30 +1147,59 @@ class ProjectLauncherCog(commands.Cog):
         try:
             await self.refresh_shortcut()
         except Exception:
-            logger.exception("Could not refresh the launcher shortcut")
+            logger.exception("Could not refresh the control row")
+
+    async def _saved_control_row(self, channel: discord.TextChannel) -> discord.Message | None:
+        """The bot-owned control row the settings point at, if it still exists."""
+        saved = await self.settings.get(f"launcher.shortcut:{self.channel_id}")
+        if not saved or not saved.isdigit():
+            return None
+        try:
+            message = await channel.fetch_message(int(saved))
+        except discord.HTTPException:
+            return None
+        if self.bot.user and message.author.id == self.bot.user.id:
+            return message
+        return None
 
     async def refresh_shortcut(self) -> None:
-        """Keep one quiet bottom shortcut; never replace the pinned anchor or history."""
+        """Publish a fresh control row at the bottom and remove only the previous one.
+
+        The new id is saved before the old row is deleted: a failed delete
+        leaves an extra row for the next repair pass, never a missing one.
+        The pinned anchor and channel history are never touched.
+        """
         async with self._panel_lock:
             channel = self.bot.get_channel(self.channel_id)
             if not isinstance(channel, discord.TextChannel):
                 return
-            key = f"launcher.shortcut:{self.channel_id}"
-            saved = await self.settings.get(key)
-            previous = None
-            if saved and saved.isdigit():
-                with contextlib.suppress(discord.NotFound):
-                    previous = await channel.fetch_message(int(saved))
+            previous = await self._saved_control_row(channel)
             message = await channel.send(
-                content="**Session controls** · choose a folder or return to existing work",
-                view=self._view or LauncherView(self),
+                content=await self.control_content(),
+                view=self.control_row(),
                 allowed_mentions=discord.AllowedMentions.none(),
                 silent=True,
             )
-            await self.settings.set(key, str(message.id))
-            if previous is not None and self.bot.user and previous.author.id == self.bot.user.id:
+            await self.settings.set(f"launcher.shortcut:{self.channel_id}", str(message.id))
+            if previous is not None:
                 with contextlib.suppress(discord.HTTPException):
                     await previous.delete()
+
+    async def ensure_control_row(self) -> None:
+        """On reconnect, restore the saved control row or replace a missing one.
+
+        Editing the surviving row keeps its place; only when it is gone (or
+        was never posted) is a new one sent, so a restart adds no second row.
+        """
+        channel = self.bot.get_channel(self.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        async with self._panel_lock:
+            existing = await self._saved_control_row(channel)
+            if existing is not None:
+                await existing.edit(content=await self.control_content(), view=self.control_row())
+                return
+        await self.refresh_shortcut()
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -763,11 +1215,11 @@ class ProjectLauncherCog(commands.Cog):
                     with contextlib.suppress(discord.NotFound):
                         message = await channel.fetch_message(int(saved))
                 if message is not None and self.bot.user and message.author.id == self.bot.user.id:
-                    await message.edit(embed=self.embed(), view=self._view or LauncherView(self))
+                    await message.edit(embed=self.embed(), view=self.panel_view())
                 else:
                     message = await channel.send(
                         embed=self.embed(),
-                        view=self._view or LauncherView(self),
+                        view=self.panel_view(),
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                     await self.settings.set(key, str(message.id))
@@ -776,3 +1228,7 @@ class ProjectLauncherCog(commands.Cog):
                         await message.pin(reason="Computer session launcher")
             except discord.HTTPException:
                 logger.exception("Could not publish the computer session launcher")
+        try:
+            await self.ensure_control_row()
+        except discord.HTTPException:
+            logger.exception("Could not restore the control row")

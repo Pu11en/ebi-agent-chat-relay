@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import discord
@@ -21,7 +22,7 @@ from claude_code_core.context_nudge import context_label
 from claude_code_core.thread_search import ThreadSearchResult, run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
-from ..database.repository import SessionRepository, UsageStatsRepository
+from ..database.repository import SessionRecord, SessionRepository, UsageStatsRepository
 from ..database.settings_repo import SettingsRepository
 from ..discord_ui.embeds import COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_TOOL
 from ..discord_ui.views import ResumeSelectView, ToolSelectView
@@ -146,6 +147,45 @@ def _progress_bar(ratio: float, width: int = 20) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def context_embed(record: SessionRecord | None, thread_name: str) -> discord.Embed | None:
+    """The context-window report for a session, or ``None`` when no stats exist yet.
+
+    Read-only: shared by `/context` and the `/session` Context button, and
+    changes nothing about the session.
+    """
+    if record is None or record.context_window is None or record.context_used is None:
+        return None
+
+    ratio = record.context_used / record.context_window
+    pct = round(ratio * 100)
+    bar = _progress_bar(ratio)
+    autocompact_tokens = round(_AUTOCOMPACT_THRESHOLD * record.context_window)
+    distance_to_compact = max(0, autocompact_tokens - record.context_used)
+
+    warning = ratio >= _AUTOCOMPACT_THRESHOLD
+    color = COLOR_ERROR if warning else COLOR_INFO
+
+    label = context_label(pct, record.backend)
+    lines = [
+        f"`{bar}`  **{label}**  ({record.context_used:,} / {record.context_window:,} tokens)",
+        "",
+        f"⚡ autocompact threshold: {round(_AUTOCOMPACT_THRESHOLD * 100, 1)}%"
+        f" ({distance_to_compact:,} tokens away)",
+    ]
+    if warning:
+        lines.append("")
+        lines.append("⚠️ Above autocompact threshold — auto-compact may run on next turn")
+
+    lines.append("")
+    lines.append("💡 Use `/rewind` to recover context headroom")
+
+    return discord.Embed(
+        title=f"📊 Context Window — #{thread_name}",
+        description="\n".join(lines),
+        color=color,
+    )
+
+
 def _format_countdown(resets_at: int) -> str:
     """Return a human-readable countdown to a Unix timestamp, e.g. 'resets in 2h 14m'."""
     remaining = resets_at - int(time.time())
@@ -178,6 +218,12 @@ class SessionManageCog(commands.Cog):
         # Optional ClaudeRunner reference for reading the default model.
         # Resolved lazily from ClaudeChatCog if not provided directly.
         self._runner = runner
+        # discord-command-surface: when the Sessions browser is attached (by
+        # setup_bridge), `/sessions` opens it instead of the static list. The
+        # registration stays here so the command name is never duplicated.
+        self.session_browser: (
+            Callable[[discord.Interaction, str | None], Awaitable[None]] | None
+        ) = None
 
     async def _get_thread_style(self) -> str:
         """Get the configured thread style, defaulting to 'channel'."""
@@ -509,16 +555,22 @@ class SessionManageCog(commands.Cog):
 
     @app_commands.command(
         name="sessions",
-        description="List all known Claude Code sessions",
+        description="Find a session, then open, close, or start another in its folder",
     )
-    @app_commands.describe(origin="Filter by session origin")
+    @app_commands.describe(
+        query="Word from a title, summary or folder", origin="Filter by session origin"
+    )
     @app_commands.choices(origin=_ORIGIN_CHOICES)
     async def sessions_list(
         self,
         interaction: discord.Interaction,
+        query: str | None = None,
         origin: str | None = None,
     ) -> None:
-        """List all sessions with origin, summary, and last activity."""
+        """Open the Sessions browser when attached; otherwise the legacy list."""
+        if self.session_browser is not None:
+            await self.session_browser(interaction, (query or "").strip() or None)
+            return
         # Convert "all" to None for the repository
         origin_filter = None if origin in (None, "all") else origin
         records = await self.repo.list_all(limit=25, origin=origin_filter)
@@ -838,41 +890,13 @@ class SessionManageCog(commands.Cog):
             return
 
         record = await self.repo.get(interaction.channel.id)
-        if record is None or record.context_window is None or record.context_used is None:
+        embed = context_embed(record, interaction.channel.name)
+        if embed is None:
             await interaction.response.send_message(
                 "ℹ️ No context data yet — stats are recorded after the first session completes.",
                 ephemeral=True,
             )
             return
-
-        ratio = record.context_used / record.context_window
-        pct = round(ratio * 100)
-        bar = _progress_bar(ratio)
-        autocompact_tokens = round(_AUTOCOMPACT_THRESHOLD * record.context_window)
-        distance_to_compact = max(0, autocompact_tokens - record.context_used)
-
-        warning = ratio >= _AUTOCOMPACT_THRESHOLD
-        color = COLOR_ERROR if warning else COLOR_INFO
-
-        label = context_label(pct, record.backend)
-        lines = [
-            f"`{bar}`  **{label}**  ({record.context_used:,} / {record.context_window:,} tokens)",
-            "",
-            f"⚡ autocompact threshold: {round(_AUTOCOMPACT_THRESHOLD * 100, 1)}%"
-            f" ({distance_to_compact:,} tokens away)",
-        ]
-        if warning:
-            lines.append("")
-            lines.append("⚠️ Above autocompact threshold — auto-compact may run on next turn")
-
-        lines.append("")
-        lines.append("💡 Use `/rewind` to recover context headroom")
-
-        embed = discord.Embed(
-            title=f"📊 Context Window — #{interaction.channel.name}",
-            description="\n".join(lines),
-            color=color,
-        )
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(

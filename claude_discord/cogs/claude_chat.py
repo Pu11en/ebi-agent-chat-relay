@@ -59,7 +59,9 @@ from .run_config import RunConfig
 
 if TYPE_CHECKING:
     from ..bot import ClaudeDiscordBot
+    from ..command_surface import CommandSurface
     from ..database.handoff_repo import HandoffRepository
+    from ..session_lifecycle import SessionLifecycleService
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,10 @@ SEED_CONTEXT_MESSAGE_LIMIT = 40
 _HELP_CATEGORY: dict[str, str | None] = {
     "help": None,  # the help command doesn't list itself
     "stop": "📌 Session",
+    "session": "📌 Session",  # fork / rewind / compact / clear / context / goal in one view
+    "close": "📌 Session",  # wrap up + archive through the lifecycle service; reopenable
+    "new": "📌 Session",  # control center: Favorites / Recent / Browse / Create / Clone
+    "settings": "🔧 Advanced",  # control center: what this computer supports
     "clear": "📌 Session",
     "rewind": "📌 Session",
     "compact": "📌 Session",
@@ -221,6 +227,24 @@ class ClaudeChatCog(commands.Cog):
         # per-message path free of redundant add_user calls.  Only successful
         # adds are recorded, so a transient failure is retried next time.
         self._thread_members_joined: set[tuple[int, int]] = set()
+        # The shared close/reopen service (discord-command-surface). Set by
+        # setup_bridge(); None leaves every close path a no-op here.
+        self.lifecycle: SessionLifecycleService | None = None
+        # The location coordinator; set by setup_bridge(). None keeps /help global.
+        self.command_surface: CommandSurface | None = None
+
+    async def _complete_pending_close(self, thread_id: int) -> None:
+        """Finish a `/close` that was requested while this thread's turn ran.
+
+        The closing note is posted by the lifecycle's surface *before* it
+        archives — a message sent afterwards would un-archive the thread.
+        """
+        if self.lifecycle is None:
+            return
+        try:
+            await self.lifecycle.complete_pending_close(thread_id)
+        except Exception:
+            logger.exception("Could not complete the pending close for thread %s", thread_id)
 
     @property
     def active_session_count(self) -> int:
@@ -714,6 +738,31 @@ class ClaudeChatCog(commands.Cog):
 
         return runner
 
+    async def _location_help(self, interaction: discord.Interaction) -> discord.Embed | None:
+        """The location-aware help embed, or ``None`` when the full list applies."""
+        if self.command_surface is None:
+            return None
+        from ..command_surface import SurfaceLocation, help_sections
+        from .surface_commands import locate
+
+        location = await locate(self.command_surface, self.repo, interaction)
+        sections = help_sections(location)
+        if not sections:
+            return None
+        here = (
+            "this computer's control center"
+            if location is SurfaceLocation.CONTROL_CENTER
+            else "a session thread"
+        )
+        embed = discord.Embed(
+            title="🤖 Help — what works here",
+            description=f"You are in {here}. Everything below works from right here.",
+            color=0x5865F2,
+        )
+        for name, lines in sections:
+            embed.add_field(name=name, value="\n".join(lines), inline=False)
+        return embed
+
     @app_commands.command(name="help", description="Show available commands and how to use the bot")
     async def help_command(self, interaction: discord.Interaction) -> None:
         """Display a categorised embed of all slash commands.
@@ -722,7 +771,16 @@ class ClaudeChatCog(commands.Cog):
         command tree so they can never drift from the actual definitions.
         Category assignments live in _HELP_CATEGORY; CI (test_help_sync.py)
         ensures every registered command is listed there.
+
+        In a configured control center or a managed session thread the embed
+        is location-aware (discord-command-surface): only the buttons and the
+        commands that work *there*. Everywhere else the full list remains.
         """
+        located = await self._location_help(interaction)
+        if located is not None:
+            await interaction.response.send_message(embed=located, ephemeral=True)
+            return
+
         sections: dict[str, list[str]] = {s: [] for s in _HELP_SECTION_ORDER}
 
         for cmd in sorted(interaction.client.tree.get_commands(), key=lambda c: c.name):  # type: ignore[attr-defined]
@@ -761,19 +819,117 @@ class ClaudeChatCog(commands.Cog):
             )
             return
 
-        runner = self._active_runners.get(interaction.channel.id)
-        if not runner:
+        if not await self.stop_turn(interaction.channel.id):
             await interaction.response.send_message(
                 "No active session is running in this thread.", ephemeral=True
             )
             return
+        await interaction.response.send_message(embed=stopped_embed())
 
+    # ------------------------------------------------------------------
+    # Shared session services — one implementation behind the slash
+    # commands above/below and the /session action view, so a button and a
+    # command cannot drift apart. None of these touch an interaction.
+    # ------------------------------------------------------------------
+
+    async def stop_turn(self, thread_id: int) -> bool:
+        """Interrupt the running turn in ``thread_id``; ``False`` when nothing runs.
+
+        The session row is left alone on purpose: stop is resumable, close is
+        the operation that archives.
+        """
+        runner = self._active_runners.get(thread_id)
+        if not runner:
+            return False
         await runner.interrupt()
         with contextlib.suppress(Exception):
-            self.bot.dispatch("session_stopped", interaction.channel.id)
+            self.bot.dispatch("session_stopped", thread_id)
         # _active_runners cleanup is handled by _run_claude's finally block.
-        # We intentionally do NOT delete from the session DB so the user can resume.
-        await interaction.response.send_message(embed=stopped_embed())
+        return True
+
+    async def compact_thread(
+        self, thread: discord.Thread, record: SessionRecord, seed_message: discord.Message
+    ) -> None:
+        """Ask the CLI to compact the conversation (chat-only output)."""
+        await self._run_claude(
+            user_message=seed_message,
+            thread=thread,
+            prompt="/compact",
+            session_id=record.session_id,
+            working_dir_override=record.working_dir,
+            chat_only=True,
+        )
+
+    @staticmethod
+    def goal_label(condition: str | None) -> str:
+        """The seed-message text for a goal request."""
+        if not condition:
+            return "◎ Checking goal status..."
+        if condition.strip().lower() in ("clear", "stop", "off", "reset", "none", "cancel"):
+            return "◎ Clearing goal..."
+        return f"◎ Setting goal: {condition[:80]}"
+
+    async def run_goal(
+        self,
+        thread: discord.Thread,
+        record: SessionRecord,
+        condition: str | None,
+        seed_message: discord.Message,
+    ) -> None:
+        """View, set, or clear the session's completion condition via `/goal`."""
+        prompt = f"/goal {condition}" if condition else "/goal"
+        await self._run_claude(
+            user_message=seed_message,
+            thread=thread,
+            prompt=prompt,
+            session_id=record.session_id,
+            working_dir_override=record.working_dir,
+        )
+
+    async def clear_thread(self, thread_id: int) -> bool:
+        """Reset the conversation identity; the thread and its bound folder remain.
+
+        The next message starts a fresh session in the same folder. ``False``
+        when no session is bound to the thread.
+        """
+        record = await self.repo.get(thread_id)
+        if record is None:
+            return False
+        runner = self._active_runners.pop(thread_id, None)
+        if runner:
+            await runner.kill()
+        await self.repo.save(thread_id, "", working_dir=record.working_dir)
+        return True
+
+    def rewind_view(self, thread_id: int, record: SessionRecord) -> RewindSelectView | None:
+        """The turn picker for a rewind, or ``None`` when there is no history to rewind."""
+        jsonl_path = find_session_jsonl(record.session_id, record.working_dir)
+        turns = parse_user_turns(jsonl_path) if jsonl_path is not None else []
+        if not turns or jsonl_path is None:
+            return None
+        return RewindSelectView(
+            turns=turns,
+            jsonl_path=jsonl_path,
+            active_runners=self._active_runners,
+            thread_id=thread_id,
+        )
+
+    async def fork_thread(self, thread: discord.Thread, record: SessionRecord) -> discord.Thread:
+        """A separate thread that continues this conversation; the original is untouched."""
+        parent_channel = getattr(thread, "parent", None)
+        if not isinstance(parent_channel, discord.TextChannel):
+            raise ValueError("Cannot create a fork: unable to find the parent channel.")
+        return await self.spawn_session(
+            channel=parent_channel,
+            prompt=(
+                "This thread is a fork of the previous conversation. "
+                "Continue from where we left off."
+            ),
+            thread_name=f"🔀 Fork of {thread.name}"[:100],
+            session_id=record.session_id,
+            fork=True,
+            working_dir=record.working_dir,
+        )
 
     @app_commands.command(
         name="compact",
@@ -806,14 +962,7 @@ class ClaudeChatCog(commands.Cog):
 
         seed_message = await interaction.followup.send("🗜️ Compacting conversation...", wait=True)
 
-        await self._run_claude(
-            user_message=seed_message,
-            thread=interaction.channel,
-            prompt="/compact",
-            session_id=record.session_id,
-            working_dir_override=record.working_dir,
-            chat_only=True,
-        )
+        await self.compact_thread(interaction.channel, record, seed_message)
 
     @app_commands.command(
         name="goal",
@@ -847,53 +996,25 @@ class ClaudeChatCog(commands.Cog):
             )
             return
 
-        prompt = f"/goal {condition}" if condition else "/goal"
-
         await interaction.response.defer()
 
-        if condition and condition.strip().lower() not in (
-            "clear",
-            "stop",
-            "off",
-            "reset",
-            "none",
-            "cancel",
-        ):
-            label = f"◎ Setting goal: {condition[:80]}"
-        elif not condition:
-            label = "◎ Checking goal status..."
-        else:
-            label = "◎ Clearing goal..."
+        seed_message = await interaction.followup.send(self.goal_label(condition), wait=True)
 
-        seed_message = await interaction.followup.send(label, wait=True)
-
-        await self._run_claude(
-            user_message=seed_message,
-            thread=interaction.channel,
-            prompt=prompt,
-            session_id=record.session_id,
-            working_dir_override=record.working_dir,
-        )
+        await self.run_goal(interaction.channel, record, condition, seed_message)
 
     @app_commands.command(name="clear", description="Reset the Claude Code session for this thread")
     async def clear_session(self, interaction: discord.Interaction) -> None:
-        """Reset the session for the current thread."""
+        """Reset the session for the current thread; the thread and its folder remain."""
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message(
                 "This command can only be used in a Claude chat thread.", ephemeral=True
             )
             return
 
-        # Kill active runner if any
-        runner = self._active_runners.get(interaction.channel.id)
-        if runner:
-            await runner.kill()
-            del self._active_runners[interaction.channel.id]
-
-        deleted = await self.repo.delete(interaction.channel.id)
-        if deleted:
+        if await self.clear_thread(interaction.channel.id):
             await interaction.response.send_message(
-                "\U0001f504 Session cleared. Next message will start a fresh session."
+                "\U0001f504 Session cleared. Next message will start a fresh session "
+                "in the same folder."
             )
         else:
             await interaction.response.send_message(
@@ -944,16 +1065,10 @@ class ClaudeChatCog(commands.Cog):
             )
             return
 
-        # Locate the JSONL and parse user turns.
-        jsonl_path = find_session_jsonl(record.session_id, record.working_dir)
-        turns = parse_user_turns(jsonl_path) if jsonl_path is not None else []
-
-        if not turns:
+        view = self.rewind_view(thread_id, record)
+        if view is None:
             # No history to rewind through — fall back to a full reset (same as /clear).
-            runner = self._active_runners.pop(thread_id, None)
-            if runner:
-                await runner.kill()
-            await self.repo.delete(thread_id)
+            await self.clear_thread(thread_id)
             await interaction.response.send_message(
                 "⏪ No conversation history found to rewind. "
                 "Session has been reset — send a new message to start fresh."
@@ -967,13 +1082,6 @@ class ClaudeChatCog(commands.Cog):
             pct = record.context_used / record.context_window * 100
             ctx_note = f" (context {context_label(pct, record.backend)} full)"
 
-        assert jsonl_path is not None  # guaranteed: turns is non-empty here
-        view = RewindSelectView(
-            turns=turns,
-            jsonl_path=jsonl_path,
-            active_runners=self._active_runners,
-            thread_id=thread_id,
-        )
         await interaction.response.send_message(
             f"⏪ **Rewind**{ctx_note} — select a turn to go back to before:",
             view=view,
@@ -1018,18 +1126,7 @@ class ClaudeChatCog(commands.Cog):
         # Defer so we have time to create the thread before Discord's 3-second limit.
         await interaction.response.defer(ephemeral=False)
 
-        fork_name = f"🔀 Fork of {interaction.channel.name}"[:100]
-        new_thread = await self.spawn_session(
-            channel=parent_channel,
-            prompt=(
-                "This thread is a fork of the previous conversation. "
-                "Continue from where we left off."
-            ),
-            thread_name=fork_name,
-            session_id=record.session_id,
-            fork=True,
-            working_dir=record.working_dir,
-        )
+        new_thread = await self.fork_thread(interaction.channel, record)
 
         await interaction.followup.send(
             f"🔀 Forked! Continue in {new_thread.mention} — this thread is unchanged."
@@ -1445,6 +1542,13 @@ class ClaudeChatCog(commands.Cog):
             else:
                 if resumed:
                     logger.info("Capacity recovery: resumed %d pending turn(s)", len(resumed))
+
+        # Closes interrupted by the restart: finish them before anything resumes.
+        if self.lifecycle is not None:
+            try:
+                await self.lifecycle.reconcile_pending_closes()
+            except Exception:
+                logger.exception("Could not reconcile pending closes on startup")
 
         if self._resume_repo is None:
             return
@@ -1938,6 +2042,10 @@ class ClaudeChatCog(commands.Cog):
                 self._active_runners.pop(thread.id, None)
             if self._active_tasks.get(thread.id) is current_task:
                 self._active_tasks.pop(thread.id, None)
+
+            # A /close asked for during this turn waits for exactly this point:
+            # the slot is released, so the lifecycle sees the thread as idle.
+            await self._complete_pending_close(thread.id)
 
             # Notify this message's author, independently of shared thread membership.
             if dashboard is not None:

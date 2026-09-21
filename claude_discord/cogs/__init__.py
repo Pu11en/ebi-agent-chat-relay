@@ -13,6 +13,7 @@ from .run_config import RunConfig
 from .scheduler import SchedulerCog
 from .session_manage import SessionManageCog
 from .skill_command import SkillCommandCog
+from .surface_commands import SurfaceCommandsCog
 from .task_loop import TaskLoopCog
 from .webhook_trigger import WebhookTriggerCog
 
@@ -31,5 +32,6 @@ __all__ = [
     "TaskLoopCog",
     "AskCommandCog",
     "SkillCommandCog",
+    "SurfaceCommandsCog",
     "WebhookTriggerCog",
 ]

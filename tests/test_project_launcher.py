@@ -227,10 +227,13 @@ async def test_reconnect_updates_one_panel(cog):
     channel.fetch_message = AsyncMock(return_value=message)
     cog.bot.get_channel.return_value = channel
     await cog.on_ready()
+    # First connect: the pinned panel plus one control row. Second connect: both
+    # are found and edited in place — nothing new is sent.
+    assert channel.send.await_count == 2
     await cog.on_ready()
-    channel.send.assert_awaited_once()
-    message.edit.assert_awaited_once()
-    assert "Test computer" in channel.send.call_args.kwargs["embed"].title
+    assert channel.send.await_count == 2
+    assert message.edit.await_count == 2
+    assert "Test computer" in channel.send.call_args_list[0].kwargs["embed"].title
 
 
 async def test_deleted_panel_is_recreated(cog):
@@ -509,3 +512,489 @@ async def test_shortcut_coalesces_messages_and_cancels_on_unload(cog):
     assert cog._shortcut_task is first
     await cog.cog_unload()
     assert first.cancelled()
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.1: the control row (status + New session / Sessions / Settings)
+# ---------------------------------------------------------------------------
+
+
+async def test_control_row_is_persistent_with_the_three_control_buttons(cog):
+    from claude_discord.cogs.project_launcher import ControlRowView
+
+    row = ControlRowView(cog)
+    assert row.is_persistent()
+    assert [button.label for button in row.children] == ["New session", "Sessions", "Settings"]
+    assert all(button.custom_id.startswith("ccdb:control:") for button in row.children)
+    assert await row.interaction_check(interaction())
+    assert not await row.interaction_check(interaction(99))
+
+
+async def test_status_block_names_the_computer_and_active_sessions(cog, monkeypatch):
+    monkeypatch.setenv("CCDB_COMPUTER_NAME", "Lenovo")
+    cog.chat.active_session_count = 2
+    text = await cog.status_block()
+    assert "Lenovo" in text
+    assert "2 active" in text
+
+
+async def test_bottom_control_row_carries_status_and_replaces_previous(cog, monkeypatch):
+    monkeypatch.setenv("CCDB_COMPUTER_NAME", "Lenovo")
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    previous = MagicMock(spec=discord.Message)
+    previous.id = 777
+    previous.author.id = cog.bot.user.id
+    previous.delete = AsyncMock()
+    channel.fetch_message = AsyncMock(return_value=previous)
+    current = MagicMock(spec=discord.Message)
+    current.id = 778
+    channel.send = AsyncMock(return_value=current)
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.shortcut:100", "777")
+    await cog.refresh_shortcut()
+    # The new id is saved before the old row is deleted, so a failed delete loses nothing.
+    assert await cog.settings.get("launcher.shortcut:100") == "778"
+    previous.delete.assert_awaited_once()
+    kwargs = channel.send.call_args.kwargs
+    assert "Lenovo" in kwargs["content"]
+    assert [b.label for b in kwargs["view"].children] == ["New session", "Sessions", "Settings"]
+
+
+async def test_control_row_ignores_its_own_control_message(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    event = SimpleNamespace(
+        channel=channel,
+        type=discord.MessageType.default,
+        author=SimpleNamespace(id=cog.bot.user.id),
+        components=[SimpleNamespace(children=[SimpleNamespace(custom_id="ccdb:control:new:v1")])],
+    )
+    await cog.keep_launcher_visible(event)
+    assert cog._shortcut_task is None
+
+
+async def test_restart_restores_the_saved_control_row_instead_of_adding_one(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    panel = MagicMock(spec=discord.Message)
+    panel.id = 555
+    panel.author.id = cog.bot.user.id
+    panel.pinned = True
+    panel.edit = AsyncMock()
+    row = MagicMock(spec=discord.Message)
+    row.id = 777
+    row.author.id = cog.bot.user.id
+    row.edit = AsyncMock()
+    channel.fetch_message = AsyncMock(side_effect=lambda mid: {555: panel, 777: row}[mid])
+    channel.send = AsyncMock()
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.panel:100", "555")
+    await cog.settings.set("launcher.shortcut:100", "777")
+    await cog.on_ready()
+    channel.send.assert_not_awaited()
+    row.edit.assert_awaited_once()
+    assert [b.label for b in row.edit.call_args.kwargs["view"].children] == [
+        "New session",
+        "Sessions",
+        "Settings",
+    ]
+
+
+async def test_restart_replaces_a_missing_control_row(cog):
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 100
+    panel = MagicMock(spec=discord.Message)
+    panel.id = 555
+    panel.author.id = cog.bot.user.id
+    panel.pinned = True
+    panel.edit = AsyncMock()
+
+    async def fetch(mid: int):
+        if mid == 555:
+            return panel
+        raise discord.NotFound(MagicMock(status=404), "deleted")
+
+    channel.fetch_message = AsyncMock(side_effect=fetch)
+    fresh = MagicMock(spec=discord.Message)
+    fresh.id = 778
+    channel.send = AsyncMock(return_value=fresh)
+    cog.bot.get_channel.return_value = channel
+    await cog.settings.set("launcher.panel:100", "555")
+    await cog.settings.set("launcher.shortcut:100", "777")
+    await cog.on_ready()
+    channel.send.assert_awaited_once()
+    assert await cog.settings.get("launcher.shortcut:100") == "778"
+
+
+async def test_control_buttons_open_the_three_flows(cog):
+    from claude_discord.cogs.project_launcher import ControlRowView
+
+    cog.show_new_session = AsyncMock()
+    cog.show_sessions = AsyncMock()
+    cog.show_settings = AsyncMock()
+    row = ControlRowView(cog)
+    for button in row.children:
+        await button.callback(interaction())
+    cog.show_new_session.assert_awaited_once()
+    cog.show_sessions.assert_awaited_once()
+    cog.show_settings.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.2: New session offers Favorites, Recent, Browse
+# ---------------------------------------------------------------------------
+
+
+def _buttons(view) -> dict[str, discord.ui.Button]:
+    return {c.label: c for c in view.children if isinstance(c, discord.ui.Button)}
+
+
+def _selects(view) -> list[discord.ui.Select]:
+    return [c for c in view.children if isinstance(c, discord.ui.Select)]
+
+
+async def test_new_session_menu_offers_favorites_recent_and_browse(cog):
+    event = interaction()
+    await cog.show_new_session(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    assert event.followup.send.call_args.kwargs["ephemeral"] is True
+    assert {"Favorites", "Recent", "Browse"} <= set(_buttons(view))
+    assert not await view.interaction_check(interaction(43))
+
+
+async def test_choosing_a_favorite_creates_an_idle_thread_and_records_recency(cog, tmp_path):
+    await cog.change_favorite(10, 42, str(tmp_path), add=True)
+    event = interaction()
+    await cog.show_new_session(event)
+    await _buttons(event.followup.send.call_args.kwargs["view"])["Favorites"].callback(event)
+    view = event.edit_original_response.call_args.kwargs["view"]
+    select = _selects(view)[0]
+    assert [o.description for o in select.options] == [str(tmp_path)[-100:]]
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.mention = "<#333>"
+    thread.add_user = AsyncMock()
+    thread.send = AsyncMock()
+    event.channel.create_thread = AsyncMock(return_value=thread)
+    cog.chat.spawn_session = AsyncMock()
+    cog.chat._run_claude = AsyncMock()
+    select._values = ["0"]
+    await select.callback(event)
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(tmp_path))
+    cog.chat.spawn_session.assert_not_awaited()
+    cog.chat._run_claude.assert_not_awaited()
+    assert await cog.recents(10, 42) == [str(tmp_path)]
+
+
+async def test_choosing_a_recent_folder_creates_an_idle_thread(cog, tmp_path):
+    await cog.remember_folder(10, 42, str(tmp_path))
+    event = interaction()
+    await cog.show_new_session(event)
+    await _buttons(event.followup.send.call_args.kwargs["view"])["Recent"].callback(event)
+    select = _selects(event.edit_original_response.call_args.kwargs["view"])[0]
+    cog.new_session = AsyncMock()
+    select._values = ["0"]
+    await select.callback(event)
+    await select.callback(event)
+    cog.new_session.assert_awaited_once_with(event, str(tmp_path))
+
+
+async def test_recent_pick_skips_folders_that_no_longer_exist(cog, tmp_path):
+    await cog.remember_folder(10, 42, str(tmp_path / "gone"))
+    event = interaction()
+    await cog.show_new_session(event)
+    await _buttons(event.followup.send.call_args.kwargs["view"])["Recent"].callback(event)
+    assert "No recent" in event.edit_original_response.call_args.kwargs["content"]
+
+
+async def test_browse_choice_opens_the_folder_browser(cog, tmp_path):
+    event = interaction()
+    await cog.show_new_session(event)
+    cog.show_browser = AsyncMock()
+    await _buttons(event.followup.send.call_args.kwargs["view"])["Browse"].callback(event)
+    cog.show_browser.assert_awaited_once()
+
+
+async def test_new_thread_notice_names_folder_and_default_model_without_a_turn(cog, tmp_path):
+    cog.backend_settings = SimpleNamespace(
+        current_backend=AsyncMock(return_value="claude"),
+        current_model=AsyncMock(return_value="claude-opus-4-1"),
+    )
+    event = interaction()
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.mention = "<#333>"
+    thread.add_user = AsyncMock()
+    thread.send = AsyncMock()
+    event.channel.create_thread = AsyncMock(return_value=thread)
+    cog.chat.spawn_session = AsyncMock()
+    await cog.new_session(event, str(tmp_path))
+    notice = thread.send.call_args.args[0]
+    assert str(tmp_path) in notice
+    assert "claude-opus-4-1" in notice
+    cog.chat.spawn_session.assert_not_awaited()
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.3: Create and Clone (thin calls into project_creation)
+# ---------------------------------------------------------------------------
+
+
+def _idle_thread(event) -> MagicMock:
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 333
+    thread.mention = "<#333>"
+    thread.add_user = AsyncMock()
+    thread.send = AsyncMock()
+    event.channel.create_thread = AsyncMock(return_value=thread)
+    return thread
+
+
+async def test_new_session_menu_also_offers_create_and_clone(cog):
+    event = interaction()
+    await cog.show_new_session(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    assert set(_buttons(view)) == {"Favorites", "Recent", "Browse", "Create", "Clone"}
+
+
+async def test_create_makes_a_folder_under_the_approved_root_and_an_idle_thread(
+    cog, tmp_path, monkeypatch
+):
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(root))
+    event = interaction()
+    _idle_thread(event)
+    cog.chat.spawn_session = AsyncMock()
+    await cog.create_and_start(event, "fresh-app")
+    assert (root / "fresh-app").is_dir()
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(root / "fresh-app"))
+    cog.chat.spawn_session.assert_not_awaited()
+
+
+async def test_create_refuses_traversal_and_starts_nothing(cog, tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(root))
+    event = interaction()
+    await cog.create_and_start(event, "../escape")
+    assert not (tmp_path / "escape").exists()
+    cog.repo.save.assert_not_awaited()
+    event.channel.create_thread.assert_not_called()
+    assert "folder name" in event.followup.send.call_args.args[0]
+
+
+async def test_clone_failure_is_reported_and_no_session_is_started(cog, tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(root))
+
+    async def failing(argv, cwd):
+        return 128
+
+    monkeypatch.setattr("claude_discord.project_creation.run_git", failing)
+    event = interaction()
+    await cog.create_and_start(event, "", repository="octo/hello")
+    assert not (root / "hello").exists()
+    cog.repo.save.assert_not_awaited()
+    event.channel.create_thread.assert_not_called()
+    assert "Nothing was started" in event.followup.send.call_args.args[0]
+
+
+async def test_clone_success_binds_the_cloned_folder(cog, tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(root))
+
+    async def ok(argv, cwd):
+        assert argv[:3] == ["git", "clone", "--"]
+        return 0
+
+    monkeypatch.setattr("claude_discord.project_creation.run_git", ok)
+    event = interaction()
+    _idle_thread(event)
+    await cog.create_and_start(event, "", repository="octo/hello")
+    cog.repo.save.assert_awaited_once_with(333, "", working_dir=str(root / "hello"))
+
+
+async def test_create_and_clone_buttons_open_modals(cog):
+    event = interaction()
+    await cog.show_new_session(event)
+    buttons = _buttons(event.followup.send.call_args.kwargs["view"])
+    await buttons["Create"].callback(event)
+    await buttons["Clone"].callback(event)
+    from claude_discord.cogs.project_launcher import CloneProjectModal, CreateProjectModal
+
+    modals = [c.args[0] for c in event.response.send_modal.await_args_list]
+    assert isinstance(modals[0], CreateProjectModal)
+    assert isinstance(modals[1], CloneProjectModal)
+    assert len(modals[0].children) == 1
+    assert len(modals[1].children) == 2
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.4: Sessions browser wired to the launcher
+# ---------------------------------------------------------------------------
+
+
+def _record(thread_id: int, folder: str, *, closed: bool = False, summary: str | None = None):
+    return SimpleNamespace(
+        thread_id=thread_id,
+        session_id=f"s{thread_id}",
+        working_dir=folder,
+        summary=summary,
+        last_used_at=f"2026-09-{thread_id:02d} 09:00:00",
+        lifecycle_state="closed" if closed else "open",
+        is_closed=closed,
+    )
+
+
+def _live_thread(thread_id: int, name: str, *, archived: bool = False) -> MagicMock:
+    live = MagicMock(spec=discord.Thread)
+    live.id = thread_id
+    live.parent_id = 100
+    live.guild.id = 10
+    live.name = name
+    live.archived = archived
+    live.mention = f"<#{thread_id}>"
+    live.permissions_for.return_value.view_channel = True
+    live.is_private.return_value = False
+    live.edit = AsyncMock()
+    return live
+
+
+async def test_sessions_lists_accessible_records_newest_first(cog, tmp_path):
+    cog.repo.list_all.return_value = [
+        _record(3, str(tmp_path), summary="newest"),
+        _record(2, str(tmp_path), closed=True),
+        _record(1, str(tmp_path)),
+    ]
+    threads = {3: _live_thread(3, "Newest"), 2: _live_thread(2, "Closed", archived=True)}
+
+    async def fetch(thread_id: int):
+        if thread_id in threads:
+            return threads[thread_id]
+        raise discord.NotFound(MagicMock(status=404), "deleted")
+
+    cog.bot.fetch_channel = AsyncMock(side_effect=fetch)
+    event = interaction()
+    await cog.show_sessions(event)
+    view = event.followup.send.call_args.kwargs["view"]
+    options = _selects(view)[0].options
+    assert [o.value for o in options] == ["3", "2"]
+    assert set(_buttons(view)) == {"Open", "New in same folder", "Close", "Search"}
+
+
+async def test_sessions_search_narrows_by_title(cog, tmp_path):
+    cog.repo.list_all.return_value = [_record(3, str(tmp_path)), _record(2, str(tmp_path))]
+    threads = {3: _live_thread(3, "API work"), 2: _live_thread(2, "Website")}
+    cog.bot.fetch_channel = AsyncMock(side_effect=lambda tid: threads[tid])
+    event = interaction()
+    await cog.show_sessions(event, "web")
+    options = _selects(event.followup.send.call_args.kwargs["view"])[0].options
+    assert [o.value for o in options] == ["2"]
+
+
+async def test_sessions_open_unarchives_and_links_without_touching_the_conversation(cog, tmp_path):
+    live = _live_thread(2, "Closed", archived=True)
+    cog.bot.fetch_channel = AsyncMock(return_value=live)
+    cog.repo.get.return_value = _record(2, str(tmp_path), closed=True)
+    event = interaction()
+    await cog.open_session(event, 2)
+    live.edit.assert_awaited_once_with(archived=False)
+    assert "https://discord.com/channels/10/2" in event.followup.send.call_args.args[0]
+    cog.repo.save.assert_not_awaited()
+    assert await cog.recents(10, 42) == [str(tmp_path)]
+
+
+async def test_sessions_new_in_same_folder_creates_an_idle_thread(cog, tmp_path):
+    cog.new_session = AsyncMock()
+    event = interaction()
+    await cog.new_in_same_folder(event, str(tmp_path))
+    cog.new_session.assert_awaited_once_with(event, str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 2.5: Settings entry view
+# ---------------------------------------------------------------------------
+
+
+async def test_settings_shows_only_supported_entries_and_runs_no_model(cog, monkeypatch):
+    from claude_discord.discord_ui.settings_home import SettingsEntry
+
+    monkeypatch.setenv("CCDB_SUPPORTED_HARNESSES", "claude")
+    monkeypatch.setenv("CCDB_COMPUTER_NAME", "Lenovo")
+    cog.chat.spawn_session = AsyncMock()
+    cog.chat._run_claude = AsyncMock()
+    opener = AsyncMock()
+    cog.settings_home.add(SettingsEntry("ai-setup", "My AI Setup", "Inventory", open=opener))
+    event = interaction()
+    await cog.show_settings(event)
+    kwargs = event.followup.send.call_args.kwargs
+    text = event.followup.send.call_args.args[0]
+    assert kwargs["ephemeral"] is True
+    assert "Lenovo" in text
+    assert "/switch" in text
+    assert "/ollama" not in text  # local harness is not configured here
+    assert [b.label for b in kwargs["view"].children] == ["My AI Setup"]
+    cog.chat.spawn_session.assert_not_awaited()
+    cog.chat._run_claude.assert_not_awaited()
+
+
+async def test_sessions_open_reopens_a_closed_session_through_the_lifecycle(cog, tmp_path):
+    from claude_discord.session_lifecycle import ReopenOutcome, ReopenState
+
+    live = _live_thread(2, "Closed", archived=True)
+    cog.bot.fetch_channel = AsyncMock(return_value=live)
+    cog.repo.get.return_value = _record(2, str(tmp_path), closed=True)
+    cog.lifecycle = SimpleNamespace(
+        reopen=AsyncMock(return_value=ReopenOutcome(state=ReopenState.REOPENED, unarchived=True)),
+        close=AsyncMock(),
+    )
+    event = interaction()
+    await cog.open_session(event, 2)
+    cog.lifecycle.reopen.assert_awaited_once_with(2)
+    live.edit.assert_not_awaited()  # the lifecycle surface already unarchived it
+    assert "Reopened" in event.followup.send.call_args.args[0]
+
+
+async def test_sessions_close_uses_the_lifecycle_with_the_users_authority(cog):
+    from claude_code_core.session_repo import CloseAuthority
+    from claude_discord.session_lifecycle import CloseOutcome, CloseState
+
+    cog.lifecycle = SimpleNamespace(
+        close=AsyncMock(return_value=CloseOutcome(state=CloseState.CLOSED, archived=True))
+    )
+    event = interaction()
+    await cog.close_from_sessions(event, 2)
+    thread_id, authorization = cog.lifecycle.close.call_args.args
+    assert thread_id == 2
+    assert authorization.source is CloseAuthority.DIRECT_INTERACTION
+    assert authorization.actor == "42"
+    assert "closed" in event.followup.send.call_args.args[0].lower()
+
+
+# ---------------------------------------------------------------------------
+# discord-command-surface 4.4 (code part, behind the retirement switch)
+# ---------------------------------------------------------------------------
+
+
+async def test_pinned_panel_keeps_old_buttons_until_retirement_is_switched_on(cog, monkeypatch):
+    monkeypatch.delenv("CCDB_RETIRE_SUPERSEDED_COMMANDS", raising=False)
+    assert {b.label for b in cog.panel_view().children} == {
+        "Favorite folders",
+        "New session",
+        "Resume",
+    }
+    monkeypatch.setenv("CCDB_RETIRE_SUPERSEDED_COMMANDS", "1")
+    assert [b.label for b in cog.panel_view().children] == ["New session", "Sessions", "Settings"]
+
+
+async def test_sessions_close_without_a_lifecycle_service_declines_safely(cog):
+    cog.repo.delete = AsyncMock()
+    event = interaction()
+    await cog.close_from_sessions(event, 2)
+    cog.repo.delete.assert_not_awaited()
+    assert "not available" in event.followup.send.call_args.args[0]

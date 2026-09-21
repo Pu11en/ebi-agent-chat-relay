@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from .database.settings_repo import SettingsRepository
     from .database.summary_repo import ThreadSummaryRepository
     from .database.task_repo import TaskRepository
+    from .discord_ui.settings_home import SettingsHome
     from .ext.api_server import ApiServer
 
 from .deployment import DEFAULT_DATA_ROOT, DataLayout
@@ -75,6 +76,10 @@ class BridgeComponents:
     #: so a custom Cog scheduling a reminder lands in the same database the
     #: dispatcher reads.  A Cog that opens its own file writes into a void.
     notification_repo: NotificationRepository | None = None
+    #: The Settings entry list this computer shows. A custom Cog adds its own
+    #: entry with ``components.settings_home.add(SettingsEntry(...))`` — no
+    #: subclassing, no wiring. None when no channel is configured.
+    settings_home: SettingsHome | None = None
 
     def apply_to_api_server(self, api_server: ApiServer) -> None:
         """Wire all optional repos to an ApiServer instance.
@@ -526,6 +531,29 @@ async def setup_bridge(
     await bot.add_cog(chat_cog)
     logger.info("Registered ClaudeChatCog")
 
+    # --- SurfaceCommandsCog: the location-aware final surface (/session, ...) ---
+    # Control centers are the configured channels; a thread counts as a session
+    # only when a record is bound to it, so an unconfigured bot fails closed.
+    from .cogs.surface_commands import SurfaceCommandsCog
+    from .command_surface import CommandSurface
+    from .lifecycle_adapters import build_lifecycle_service
+
+    command_surface = CommandSurface.from_ids([*_all_channel_ids, _launcher_home_id])
+    # One close/reopen service behind /close, the Sessions buttons, run
+    # finalization and startup reconciliation. It archives; it never deletes.
+    lifecycle = build_lifecycle_service(bot, chat_cog, session_repo)
+    chat_cog.lifecycle = lifecycle
+    chat_cog.command_surface = command_surface  # makes /help location-aware
+    surface_cog = SurfaceCommandsCog(
+        bot,
+        surface=command_surface,
+        repo=session_repo,
+        chat=chat_cog,
+        lifecycle=lifecycle,
+    )
+    await bot.add_cog(surface_cog)
+    logger.info("Registered SurfaceCommandsCog")
+
     # --- TaskLoopCog (auto-enabled; idle until /gowork or POST /api/loops) ---
     from .cogs.task_loop import TaskLoopCog
 
@@ -554,22 +582,30 @@ async def setup_bridge(
     logger.info("Registered SessionManageCog")
 
     # --- SkillCommandCog (requires at least one channel ID) ---
+    launcher_cog: ProjectLauncherCog | None = None
     if _all_channel_ids:
         # Primary channel: prefer the explicit claude_channel_id, else pick from set
         _primary_channel_id = claude_channel_id or next(iter(_all_channel_ids))
-        await bot.add_cog(
-            ProjectLauncherCog(
-                bot,
-                session_repo,
-                settings_repo,
-                chat_cog,
-                channel_id=_primary_channel_id,
-                channel_ids=_all_channel_ids,
-                working_dir=runner.working_dir,
-                home_channel_id=_launcher_home_id,
-                session_channel_id=_launcher_session_id,
-            )
+        launcher_cog = ProjectLauncherCog(
+            bot,
+            session_repo,
+            settings_repo,
+            chat_cog,
+            channel_id=_primary_channel_id,
+            channel_ids=_all_channel_ids,
+            working_dir=runner.working_dir,
+            home_channel_id=_launcher_home_id,
+            session_channel_id=_launcher_session_id,
+            backend_settings=backend_settings,
+            backend_factory=backend_factory,
+            lifecycle=lifecycle,
         )
+        await bot.add_cog(launcher_cog)
+        # /new, /sessions and /settings are the launcher's flows spelled as
+        # commands; /sessions keeps its SessionManageCog registration and is
+        # routed to the browser so no command name is registered twice.
+        surface_cog.launcher = launcher_cog
+        session_manage_cog.session_browser = surface_cog.open_sessions
         skill_cog = SkillCommandCog(
             bot,
             repo=session_repo,
@@ -661,6 +697,15 @@ async def setup_bridge(
         # raises deliberately, and the chat path surfaces it on first use.
         logger.exception("Could not register AskCommandCog")
 
+    # Task 4.4: superseded registrations go only after recorded acceptance,
+    # behind CCDB_RETIRE_SUPERSEDED_COMMANDS (off by default). Registration
+    # only — services and stored state stay, so switching it off restores them.
+    from .command_surface import retire_superseded_commands
+
+    retired = retire_superseded_commands(bot.tree)
+    if retired:
+        logger.info("Retired superseded commands: %s", ", ".join(sorted(retired)))
+
     components = BridgeComponents(
         session_repo=session_repo,
         task_repo=task_repo,
@@ -677,6 +722,7 @@ async def setup_bridge(
         ask_repo=ask_repo,
         usage_repo=usage_repo,
         handoff_repo=handoff_repo,
+        settings_home=launcher_cog.settings_home if launcher_cog is not None else None,
     )
 
     # Auto-wire repos to ApiServer and set runner.api_port if provided
