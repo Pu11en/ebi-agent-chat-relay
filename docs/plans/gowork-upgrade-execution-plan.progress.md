@@ -716,3 +716,53 @@ T11 is complete (T11a–T11c).
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (491 passed), `ruff check`,
   `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors). Security: the cog
   edit builds prompts only; no new subprocess, shell or env use.
+
+## T29 — Package shared planner guidance for all harnesses
+
+- New `claude_code_core/gowork_guidance.py`: `render_skill()` is the one narrow supporting
+  skill (`gowork-planning`): T26's `PLANNER_RULES` and `COMMUNICATION_RULES`, what a ready
+  plan contains, the T27 check command and `plan_template()`, on top of the one-question
+  flow it names — generated from repo text, nothing from the rejected `planner-skill-draft`
+  (the test checks its name and headings are absent). `GuidanceLayout.for_home(home, env=)`
+  derives the audited paths (docs/AUDIT-2026-09-10.md): shared instructions `~/AGENTS.md`,
+  shared skills `~/.agents/skills`, `~/.claude`, `CODEX_HOME` (else `~/.codex`), `DSH_HOME`
+  (else `~/.local/state/ccdb/dsh`). Every path is explicit; the CLI
+  (`python -m claude_code_core.gowork_guidance plan|stage|rollback|check --home DIR`) has no
+  default home and refuses to run without one.
+- `stage_guidance(layout)`: writes the skill once under the shared folder; upserts one owned
+  routing block (`<!-- ccdb:gowork-planning start/end -->`, naming the skill file) in the
+  shared `AGENTS.md`; Claude's `CLAUDE.md` is left alone when it already imports the shared
+  file (`@~/AGENTS.md`), otherwise it gets the block; Codex's and DSH's `AGENTS.md` become a
+  link to the shared file, or a file holding only the block when a file link cannot be made;
+  the harness skill folders get a link to the shared skill folder (symlink, else a directory
+  junction on Windows, else a `manual` action — never a copy). Every existing instruction
+  file is backed up (`<file>.ccdb-backup`) before its first change; folders the install
+  created are remembered. `plan_guidance` is the same run without writes. A second run
+  reports every item `unchanged` and changes no byte. `.ccdb-install.json` beside the skill
+  records what is owned.
+- `rollback_guidance(layout)`: removes the links, strips the block (a file the install
+  created and now empty is deleted; one that equals its backup is restored and the backup
+  removed; one edited since keeps the edits and the backup), removes the skill and manifest,
+  and removes only the folders it created and only when empty.
+- `resolve_guidance(layout, harness)`: follows the harness entry file (through `@` imports,
+  `~` expanded to the layout's home, and links) to the skill file the block names, returning
+  its path, digest and the chain of files read.
+- Tests: `tests/gowork_upgrade/test_planner_guidance.py` (7): Claude/Codex/DSH resolve the
+  same file with the current digest from a temporary home shaped like the audited machine,
+  with one real SKILL.md on disk, user rules preserved and backed up, CLAUDE.md untouched;
+  install twice → no change, one block; rollback restores only owned content (a later edit
+  and its backup kept, a pre-existing Codex file restored exactly, created folders gone, a
+  stranger's file in the skill folder kept, a second rollback changes nothing); a CLAUDE.md
+  without the import gets the block with a backup and is restored exactly; links refused →
+  manual step, still no copy, every harness still resolves through the instruction route;
+  no `--home` → refused, a missing home → `GuidanceError`, a plan writes nothing, the CLI
+  stage/check/rollback round trip; the rendered skill is stable and repo-owned.
+- Measured here (Windows 11, no symlink privilege): the skill folders became directory
+  junctions and the Codex/DSH entries became block files; on the audited Linux host they
+  will be symlinks. Both routes are tested on every platform through the forced fallback.
+- Boundary: this stages into a directory you name. The running bot and the real
+  `~/.claude`, `~/.codex*` and `~/.dsh` were not touched by this build; live activation is
+  `stage --home ~` after inspection (T32 documents it).
+- Implementation commit: `71b7d69`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (498 passed), `ruff check`,
+  `ruff format`, `pyright claude_discord/ claude_code_core/` (0 errors).

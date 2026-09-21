@@ -266,7 +266,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: same-title different-ownership fixtures show correct context; incomplete or
   malformed model grouping output safely falls back without losing tasks.
 
-- [ ] T29: Execution spine, only after T28: package shared planner guidance for all harnesses.
+- [x] T29: Execution spine, only after T28: package shared planner guidance for all harnesses.
   Scope: narrow supporting guidance plus idempotent local installation tool and tests.
   Reuse the canonical shared instruction/skill paths and existing One Question flow;
   do not fork per-harness copies or activate the rejected wholesale skill. Preserve user
