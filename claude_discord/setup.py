@@ -521,13 +521,19 @@ async def setup_bridge(
     # only when a record is bound to it, so an unconfigured bot fails closed.
     from .cogs.surface_commands import SurfaceCommandsCog
     from .command_surface import CommandSurface
+    from .lifecycle_adapters import build_lifecycle_service
 
     command_surface = CommandSurface.from_ids([*_all_channel_ids, _launcher_home_id])
+    # One close/reopen service behind /close, the Sessions buttons, run
+    # finalization and startup reconciliation. It archives; it never deletes.
+    lifecycle = build_lifecycle_service(bot, chat_cog, session_repo)
+    chat_cog.lifecycle = lifecycle
     surface_cog = SurfaceCommandsCog(
         bot,
         surface=command_surface,
         repo=session_repo,
         chat=chat_cog,
+        lifecycle=lifecycle,
     )
     await bot.add_cog(surface_cog)
     logger.info("Registered SurfaceCommandsCog")
@@ -576,6 +582,7 @@ async def setup_bridge(
             session_channel_id=_launcher_session_id,
             backend_settings=backend_settings,
             backend_factory=backend_factory,
+            lifecycle=lifecycle,
         )
         await bot.add_cog(launcher_cog)
         skill_cog = SkillCommandCog(

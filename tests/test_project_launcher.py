@@ -945,6 +945,39 @@ async def test_settings_shows_only_supported_entries_and_runs_no_model(cog, monk
     cog.chat._run_claude.assert_not_awaited()
 
 
+async def test_sessions_open_reopens_a_closed_session_through_the_lifecycle(cog, tmp_path):
+    from claude_discord.session_lifecycle import ReopenOutcome, ReopenState
+
+    live = _live_thread(2, "Closed", archived=True)
+    cog.bot.fetch_channel = AsyncMock(return_value=live)
+    cog.repo.get.return_value = _record(2, str(tmp_path), closed=True)
+    cog.lifecycle = SimpleNamespace(
+        reopen=AsyncMock(return_value=ReopenOutcome(state=ReopenState.REOPENED, unarchived=True)),
+        close=AsyncMock(),
+    )
+    event = interaction()
+    await cog.open_session(event, 2)
+    cog.lifecycle.reopen.assert_awaited_once_with(2)
+    live.edit.assert_not_awaited()  # the lifecycle surface already unarchived it
+    assert "Reopened" in event.followup.send.call_args.args[0]
+
+
+async def test_sessions_close_uses_the_lifecycle_with_the_users_authority(cog):
+    from claude_code_core.session_repo import CloseAuthority
+    from claude_discord.session_lifecycle import CloseOutcome, CloseState
+
+    cog.lifecycle = SimpleNamespace(
+        close=AsyncMock(return_value=CloseOutcome(state=CloseState.CLOSED, archived=True))
+    )
+    event = interaction()
+    await cog.close_from_sessions(event, 2)
+    thread_id, authorization = cog.lifecycle.close.call_args.args
+    assert thread_id == 2
+    assert authorization.source is CloseAuthority.DIRECT_INTERACTION
+    assert authorization.actor == "42"
+    assert "closed" in event.followup.send.call_args.args[0].lower()
+
+
 async def test_sessions_close_without_a_lifecycle_service_declines_safely(cog):
     cog.repo.delete = AsyncMock()
     event = interaction()

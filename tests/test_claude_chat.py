@@ -2536,6 +2536,57 @@ class TestGoalCommand:
         assert "◎" in send_args.args[0] or "goal" in send_args.args[0].lower()
 
 
+class TestLifecycleHooks:
+    """discord-command-surface 3.4: run finalization and startup finish pending closes."""
+
+    @pytest.mark.asyncio
+    async def test_run_finalization_completes_a_pending_close(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import claude_discord.cogs.claude_chat as chat_mod
+
+        cog = _make_cog()
+        cog.lifecycle = MagicMock()
+        cog.lifecycle.complete_pending_close = AsyncMock()
+        cog._get_dashboard = lambda: None
+        cog._prepare_cross_backend_handoff = AsyncMock(return_value=(None, "work"))
+        cog._get_current_model = AsyncMock(return_value=None)
+        cog._get_allowed_tools = AsyncMock(return_value=None)
+        cog._get_current_effort = AsyncMock(return_value=None)
+        runner = MagicMock()
+        runner.command = "claude"
+        cog._build_runner_for_thread = AsyncMock(return_value=runner)
+        monkeypatch.setattr(chat_mod, "run_claude_with_config", AsyncMock())
+        monkeypatch.setattr(chat_mod, "StatusManager", lambda *a, **k: _StubStatus())
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 123
+        thread.send = AsyncMock()
+        message = MagicMock(spec=discord.Message)
+        message.author = SimpleNamespace(id=42, bot=False)
+
+        await cog._run_claude(message, thread, "work", None, chat_only=True)
+
+        cog.lifecycle.complete_pending_close.assert_awaited_once_with(123)
+        assert 123 not in cog._active_runners  # completed only after the slot is released
+
+    @pytest.mark.asyncio
+    async def test_on_ready_reconciles_pending_closes(self) -> None:
+        cog = _make_cog()
+        cog._resume_repo = None
+        cog.lifecycle = MagicMock()
+        cog.lifecycle.reconcile_pending_closes = AsyncMock(return_value=[])
+        await cog.on_ready()
+        cog.lifecycle.reconcile_pending_closes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_hooks_are_no_ops_without_a_lifecycle_service(self) -> None:
+        cog = _make_cog()
+        cog._resume_repo = None
+        assert cog.lifecycle is None
+        await cog._complete_pending_close(123)
+        await cog.on_ready()
+
+
 class TestSessionServices:
     """discord-command-surface 3.1: the slash commands and /session share these."""
 

@@ -57,6 +57,7 @@ from .run_config import RunConfig
 if TYPE_CHECKING:
     from ..bot import ClaudeDiscordBot
     from ..database.handoff_repo import HandoffRepository
+    from ..session_lifecycle import SessionLifecycleService
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "help": None,  # the help command doesn't list itself
     "stop": "📌 Session",
     "session": "📌 Session",  # fork / rewind / compact / clear / context / goal in one view
+    "close": "📌 Session",  # wrap up + archive through the lifecycle service; reopenable
     "clear": "📌 Session",
     "rewind": "📌 Session",
     "compact": "📌 Session",
@@ -214,6 +216,22 @@ class ClaudeChatCog(commands.Cog):
         # per-message path free of redundant add_user calls.  Only successful
         # adds are recorded, so a transient failure is retried next time.
         self._thread_members_joined: set[tuple[int, int]] = set()
+        # The shared close/reopen service (discord-command-surface). Set by
+        # setup_bridge(); None leaves every close path a no-op here.
+        self.lifecycle: SessionLifecycleService | None = None
+
+    async def _complete_pending_close(self, thread_id: int) -> None:
+        """Finish a `/close` that was requested while this thread's turn ran.
+
+        The closing note is posted by the lifecycle's surface *before* it
+        archives — a message sent afterwards would un-archive the thread.
+        """
+        if self.lifecycle is None:
+            return
+        try:
+            await self.lifecycle.complete_pending_close(thread_id)
+        except Exception:
+            logger.exception("Could not complete the pending close for thread %s", thread_id)
 
     @property
     def active_session_count(self) -> int:
@@ -1467,6 +1485,13 @@ class ClaudeChatCog(commands.Cog):
             self._thread_members_backfilled = True
             asyncio.create_task(self._backfill_thread_members())
 
+        # Closes interrupted by the restart: finish them before anything resumes.
+        if self.lifecycle is not None:
+            try:
+                await self.lifecycle.reconcile_pending_closes()
+            except Exception:
+                logger.exception("Could not reconcile pending closes on startup")
+
         if self._resume_repo is None:
             return
 
@@ -1927,6 +1952,10 @@ class ClaudeChatCog(commands.Cog):
                 self._active_runners.pop(thread.id, None)
             if self._active_tasks.get(thread.id) is current_task:
                 self._active_tasks.pop(thread.id, None)
+
+            # A /close asked for during this turn waits for exactly this point:
+            # the slot is released, so the lifecycle sees the thread as idle.
+            await self._complete_pending_close(thread.id)
 
             # Notify this message's author, independently of shared thread membership.
             if dashboard is not None:

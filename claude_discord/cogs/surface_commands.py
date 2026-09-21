@@ -23,6 +23,7 @@ from discord.ext import commands
 from ..category_scope import category_allowed
 from ..command_surface import CommandSurface, InvocationPlace, SurfaceLocation
 from ..discord_ui.session_actions import SessionActionsView
+from ..session_lifecycle import CloseAuthorization, SessionLifecycleService, close_outcome_text
 from .session_manage import context_embed
 
 logger = logging.getLogger(__name__)
@@ -165,11 +166,15 @@ class SurfaceCommandsCog(commands.Cog):
         surface: CommandSurface,
         repo: Any,
         chat: Any,
+        lifecycle: SessionLifecycleService | None = None,
     ) -> None:
         self.bot = bot
         self.surface = surface
         self.repo = repo
         self.chat = chat
+        # The shared close/reopen service. Absent, `/close` declines; it never
+        # falls back to the destructive helper.
+        self.lifecycle = lifecycle
         self.actions = ChatSessionActions(self)
 
     # -- shared checks -----------------------------------------------------
@@ -212,6 +217,26 @@ class SurfaceCommandsCog(commands.Cog):
             view=SessionActionsView(self.actions, user_id=interaction.user.id),
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="close", description="Wrap up and archive this session without losing it"
+    )
+    async def close_command(self, interaction: discord.Interaction) -> None:
+        """Close through the lifecycle service: wrap-up, closed, archived — never deleted."""
+        if not await self.in_place(interaction, "close", SurfaceLocation.MANAGED_SESSION):
+            return
+        if self.lifecycle is None:
+            await _say(interaction, "Close is not available on this computer yet.")
+            return
+        thread = interaction.channel
+        assert isinstance(thread, discord.Thread)
+        # The thread's own closing note is posted by the lifecycle surface before
+        # it archives; this reply is ephemeral so it cannot un-archive the thread.
+        await interaction.response.defer(ephemeral=True)
+        outcome = await self.lifecycle.close(
+            thread.id, CloseAuthorization.from_interaction(interaction.user.id)
+        )
+        await interaction.followup.send(close_outcome_text(outcome), ephemeral=True)
 
 
 async def _say(interaction: discord.Interaction, text: str) -> None:
