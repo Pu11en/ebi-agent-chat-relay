@@ -10,7 +10,7 @@ Try: `make dev-on`
 
 ## 2. Persistent Personal Metadata
 
-- [ ] 2.1 **Owner: catalog persistence** — Add project Favorite, Hide, and recent metadata schema/repository in `claude_discord/database/project_catalog_repo.py` and database initialization; verify repository tests cover user/guild isolation, concurrent updates, missing projects, and identity-preserving return.
+- [x] 2.1 **Owner: catalog persistence** — Add project Favorite, Hide, and recent metadata schema/repository in `claude_discord/database/project_catalog_repo.py` and database initialization; verify repository tests cover user/guild isolation, concurrent updates, missing projects, and identity-preserving return.
 - [ ] 2.2 **Depends on 1.2 and 2.1; owner: migration adapter** — Map valid legacy launcher favorites/recents to catalog identities without deleting raw settings; verify tests keep unmappable paths available to the manual browser and preserve metadata across temporary absence.
 
 ## 3. Shared Query Surface

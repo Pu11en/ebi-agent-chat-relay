@@ -280,8 +280,32 @@ CREATE INDEX IF NOT EXISTS idx_capacity_pending_thread
     ON capacity_pending_turns(frontend, thread_id);
 """
 
+# ---------------------------------------------------------------------------
+# Shared project catalog: personal Favorite / Hide / recency metadata (v4.1).
+#
+# Keyed by the stable catalog identity (owner:computer:root-key:folder), never
+# by path, so a moved root or a renamed drive letter does not orphan a user's
+# favorites.  Discovery is filesystem truth; nothing here says a project
+# exists, so metadata for a folder that is temporarily absent stays put.
+# ---------------------------------------------------------------------------
+_PROJECT_CATALOG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS project_catalog_metadata (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    project_key TEXT NOT NULL,
+    favorite INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    last_opened_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, user_id, project_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_catalog_recent
+    ON project_catalog_metadata(guild_id, user_id, last_opened_at);
+"""
+
 # Fresh databases get everything in one script.
-SCHEMA = _CORE_SCHEMA + _HANDOFF_SCHEMA + _CAPACITY_RECOVERY_SCHEMA
+SCHEMA = _CORE_SCHEMA + _HANDOFF_SCHEMA + _CAPACITY_RECOVERY_SCHEMA + _PROJECT_CATALOG_SCHEMA
 
 
 def _statements(script: str) -> list[str]:
@@ -371,6 +395,8 @@ _MIGRATIONS = [
     # additive and owns no foreign keys, so older session and handoff rows are
     # preserved exactly.
     *_statements(_CAPACITY_RECOVERY_SCHEMA),
+    # Shared project catalog metadata added in v4.1: additive, no foreign keys.
+    *_statements(_PROJECT_CATALOG_SCHEMA),
 ]
 
 
