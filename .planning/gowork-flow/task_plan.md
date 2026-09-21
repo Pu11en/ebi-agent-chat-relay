@@ -3,7 +3,7 @@
 Check: uv run pytest tests/test_task_loop.py tests/test_loop_store.py tests/test_gowork_records.py tests/test_gowork_ending.py tests/test_work_copy.py -q
 Try: uv run pytest tests/test_task_loop.py -q
 Goal: One planning conversation produces several coordinated build plans, with independent work running together and finished workers closing automatically.
-Done when: A local practice run proves dependencies, the chosen worker limit, recovery after interruption, combined checks, and worker closure while Drew's final review remains pending.
+Done when: A local practice run proves dependencies, automatic worker sizing under changing machine load, recovery after interruption, combined checks, and worker closure while Drew's final review remains pending.
 
 ## 1. What Is Settled
 
@@ -12,12 +12,14 @@ Done when: A local practice run proves dependencies, the chosen worker limit, re
 - A business can have website, product and marketing plans; each can have smaller plans of its own.
 - Plan in detail before building; later small changes remain possible.
 - Independent work may run together; work that needs another task's result must wait.
-- Drew requested **up to 10 parallel workers**; whether this is shared across builds is still open.
+- **Capacity decision, updated September 20:** automatically use as many useful workers as the computer can support, including more than ten when resources allow; Drew should not choose a count for every launch.
+- The planning session identifies independent work and reads available capacity; the running bot keeps checking actual machine load and controls worker starts across all builds.
+- Use a protective ceiling when needed, based on measured conditions; ten is the current implementation limit, not the desired permanent maximum.
 - A finished worker must stop consuming a session even if Drew has not tried the result yet.
 - Keep building the agreed work until it is finished or there is a real blocker.
 - Drew can try the combined result after the work is finished; publishing is a separate step.
 - **Already changed locally:** the parallel-step cap and default session capacity were raised from 3 to 10.
-- **Observed now:** the live session API reports a capacity of 10; this includes ordinary conversations and does not prove 10 build workers can run alongside them.
+- **Observed during planning:** the live session API reports a capacity of 10; the shared execution helper uses a configured semaphore. Automatic resource-based sizing is proposed, not implemented.
 
 ## 2. What We Reuse and Improve
 
@@ -38,8 +40,13 @@ Done when: A local practice run proves dependencies, the chosen worker limit, re
 
 - **Plan:** the master thread records the goal, what counts as finished, separate plans, dependencies and unresolved decisions.
 - **Prepare:** each task gets a stable identity, one outcome, its project, allowed files, required inputs, expected result and a check.
-- **Start:** show what can run together, what must wait and what needs Drew; retain existing AI and mode choices.
-- **Build:** start ready tasks within the chosen shared capacity; record ownership before dispatch so restarts cannot silently duplicate work.
+- **Start:** show independent work and the initial capacity estimate; retain existing AI and mode choices without asking Drew to pick a worker count.
+- **Build:** gradually start ready tasks while machine headroom allows; record ownership before dispatch so restarts cannot silently duplicate work.
+- **Adjust:** monitor all builds and other computer activity together, including workers' browsers, tests and child processes; leave room for the operating system, normal chat and reviews.
+- **Back off:** stop admitting new workers when pressure rises, then grow gradually after recovery; use a cooldown to avoid repeatedly raising and lowering capacity.
+- **Protect:** estimate worker peak memory and CPU needs, watch available memory, swap pressure and disk space, respect actual host/container limits, and use a conservative fallback if measurements are missing. Do not load-test the machine to failure.
+- **Separate limits:** available hardware does not bypass provider rate limits, existing spending permissions, task dependencies or file ownership. More workers are useful only when they can make independent progress.
+- **Emergency behavior:** prefer finishing running work while launches are paused; test a defined emergency stop/recovery path for critical pressure. Monitoring reduces overload risk but cannot guarantee that a computer never crashes.
 - **Finish a worker:** save its result, checks and local commit; release its capacity and close its execution session.
 - **Combine:** bring compatible changes into a local review copy, run combined checks and required reviews, then release dependent tasks.
 - **Finish a build:** report ready for Drew, blocked or failed; never call unfinished work complete just because no workers are running.
@@ -63,9 +70,11 @@ The Check command above is the existing baseline; every implementation task also
 ### Scheduling and Worker Life
 
 - [ ] **T05: Select ready tasks from dependencies.** Only tasks with accepted prerequisite results can start; incomplete or failed prerequisites keep children waiting. Needs: T03, T04. Proof: website work waits for the required product result while independent marketing continues.
-- [ ] **T06: Enforce the chosen capacity policy.** Account for builders, reviewers and ordinary chat, and share capacity fairly across active plans. Needs: T05 and decision Q1. Proof: two plans cannot exceed their chosen limit or deadlock by holding all slots while waiting for workers.
+- [ ] **T06a: Measure available capacity.** Provide a read-only machine-pressure snapshot and observed worker resource estimates, including subprocesses and missing-data fallback. Needs: T04. Proof: simulated memory, CPU, swap and disk pressure produce explainable readings; measurement does not start paid workers.
+- [ ] **T06b: Share one capacity controller across builds.** Enforce admission atomically for builders and reviewers, account for chat and other running work, preserve room for coordination and apply the selected priority rule. Needs: T05, T06a and scheduling-priority decision. Proof: simultaneous plans cannot independently claim the same headroom or deadlock by occupying slots while waiting for child workers.
+- [ ] **T06c: Adjust worker count automatically.** Start conservatively, use observed resource peaks to grow, slow admissions under pressure, and recover with cooldowns and a protective ceiling; update both the fixed parallel-group cap and the underlying process gate. Needs: T06b. Proof: simulated healthy capacity permits more than ten workers, pressure reduces admissions, missing measurements trigger fallback, and provider limits remain respected.
 - [ ] **T07: Give each worker a compact, saved assignment.** Reuse the current handoff contract, including task ID, attempt, inputs and expected result. Needs: T04. Proof: a duplicate delivery does not create another attempt, and unrelated conversation history is omitted.
-- [ ] **T08: Finish workers individually.** Persist successful or failed outcomes and release execution capacity without waiting for sibling workers; preserve results before any thread cleanup. Needs: T06, T07. Proof: a fast worker closes while a slow sibling continues, including exception and cancellation paths.
+- [ ] **T08: Finish workers individually.** Persist successful or failed outcomes and release execution capacity without waiting for sibling workers; preserve results before any thread cleanup. Needs: T06c, T07. Proof: a fast worker closes while a slow sibling continues, including exception and cancellation paths.
 - [ ] **T09: Combine results in a controlled order.** Bring saved worker commits into the project's review copy; retain conflicting work for repair. Needs: T08. Proof: independent results combine and a conflict cannot release dependent tasks.
 - [ ] **T10: Make completion depend on evidence.** Run combined checks and required reviews; a missing review stays visibly unfinished under modes that require it. Needs: T09. Proof: a failed check or unavailable required review never produces a completed result.
 
@@ -81,9 +90,9 @@ The Check command above is the existing baseline; every implementation task also
 - [ ] **T15: Separate finished workers from Drew's review.** Keep results available after execution ends, using the chosen archive/retention policy and a local test handoff. Needs: T14 and retention decision. Proof: all workers are closed while the parent still says ready for Drew.
 - [ ] **T16: Report repeated workflow friction.** Extend existing run records with wait time, repair attempts, review outcomes and repeated owner questions. Needs: T04, T12. Proof: a saved sample produces reproducible counts; unavailable cost data stays unknown.
 - [ ] **T17: Refresh the planning instructions.** Teach the master thread to create small tasks, dependencies, checks and clear stop conditions; document any agreed plain-English launch names. Needs: T03 and workflow-naming decision. Proof: website/product/marketing examples produce valid plans without duplicate questions already answered.
-- [ ] **T18: Provide a local practice run.** Use simulated workers to demonstrate 10 ready tasks, dependent tasks, two competing plans, a failure, a restart and a plan edit. Needs: T06-T17. Proof: no paid model calls, all assertions pass, and final results remain available for review.
+- [ ] **T18: Provide a local practice run.** Use simulated workers and machine readings to demonstrate more than ten ready tasks, automatic growth and backoff, dependent tasks, two competing plans, a failure, a restart and a plan edit. Needs: T06a-T06c and T07-T17. Proof: no paid model calls or real stress test, all assertions pass, and final results remain available for review.
 
-**Parallel build opportunities:** T03 and T04 can proceed after T02; T07 can run while T05/T06 are built; T13, T16 and T17 can proceed once their own prerequisites exist.
+**Parallel build opportunities:** T03 and T04 can proceed after T02; T06a and T07 can proceed after T04 while T05 is built; T13, T16 and T17 can proceed once their own prerequisites exist.
 Tasks changing the same existing loop or Discord files must be sequenced or given distinct ownership even when their conceptual dependencies allow parallel work.
 Cross-project builds preserve separate local review copies and an explicit final cross-project check; they do not pretend separate repositories have one atomic merge.
 
@@ -92,8 +101,9 @@ Cross-project builds preserve separate local review copies and an explicit final
 Settled answers are listed in section 1; the following are proposals or open choices, not assumed approval.
 Ask one question at a time and record the answer before moving to dependent questions.
 
-- **Q1, first: What does the 10-worker limit cover?** Recommended: one shared pool across builds, with room for normal conversations; alternatives are per master plan, per project or a count chosen at each launch.
-- **After Q1: How is capacity shared?** Decide fairness between builds and how ordinary chat and reviews fit within actual process capacity.
+- **Q1 settled:** automatically choose the useful worker count from independent work and available machine resources, with a protective maximum if needed; do not enforce ten forever or ask for a count each launch.
+- **Q2, next: Which ready work gets capacity first when builds compete?** Recommended: tasks that unblock other tasks, with aging so other builds still progress; alternatives are equal sharing, finishing the oldest build first or explicit project priority.
+- **Engineering follow-through:** determine headroom thresholds, sampling, fallback and ceiling from read-only measurements and simulated tests during implementation; do not ask Drew to guess technical numbers or promise a safe count from one idle snapshot.
 - **Failure policy:** when a product task is stuck, should independent website or marketing work continue, and how much automatic repair is allowed?
 - **Completion and retention:** execution must end without waiting for Drew; decide whether finished threads are archived, deleted after results are saved, or kept as inactive history.
 - **Review strength:** retain cheap/balanced/careful behavior, or change which tasks need a separate reviewer and what happens when one is unavailable?
@@ -108,6 +118,7 @@ Ask one question at a time and record the answer before moving to dependent ques
 - **Baseline checked:** the full Check command passed 168 tests in 7.76 seconds on this worktree; this verifies existing behavior, not the unbuilt proposals.
 - **Once T18 exists:** one local practice command will run simulated builders and show a compact result, without starting the live bot or paid agents.
 - **30-second check 1:** independent website and marketing tasks run together; a dependent product task visibly waits.
+- **Automatic capacity check:** the practice run shows worker count growing when simulated resources allow and new launches pausing when the computer becomes busy; the displayed reason explains each change.
 - **30-second check 2:** a finished worker closes while another is still running, and its result remains accessible.
 - **30-second check 3:** one failed task is shown honestly, a restart does not duplicate completed work, and the final result waits for Drew's review.
 - Before implementation finishes, replace Try with the proven practice command and record its actual output and runtime.

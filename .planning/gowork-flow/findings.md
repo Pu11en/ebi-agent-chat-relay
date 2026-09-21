@@ -25,6 +25,7 @@
 ## Boundaries
 
 - User asked for a draft plan followed by grilling, not implementation or a new worker launch.
-- Ten-way behavior's exact scope, retention, failure policy and launch method remain decisions.
+- Capacity choice settled: Drew wants automatic useful parallelism limited by machine health, potentially above ten, with a protective ceiling if needed. The fixed shared semaphore remains current code, not an adaptive controller.
+- Planner estimates task parallelism; runtime admission must continuously account for all builds and measured resource pressure. Scheduling priority, retention, failure policy and launch method remain decisions.
 - Prior untracked .gowork-catchup.md is unrelated and untouched.
 - No skill hooks installed and no shared active-plan pointer changed.
