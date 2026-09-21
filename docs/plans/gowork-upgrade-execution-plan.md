@@ -63,7 +63,7 @@ new code merely because this build edits it. Report that boundary honestly.
 
 ## Build Chain
 
-- [ ] T01: Execution spine, first: load stable master and child plan identities.
+- [x] T01: Execution spine, first: load stable master and child plan identities.
   Scope: core plan parsing/models; old single-plan files remain valid.
   Add IDs, parent links, canonical project paths and versions; allow multiple projects
   under one master and nested child plans without assuming an atomic cross-repo merge.
