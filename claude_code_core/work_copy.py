@@ -31,6 +31,24 @@ DEFAULT_ROOT = Path(
 )
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+#: The one branch shape this module creates: ``gowork/<slug>-<YYYYmmdd>-<HHMMSS>``.
+#: Anything read back from disk that does not match was not made here.
+_BRANCH_RE = re.compile(r"^gowork/[a-z0-9-]+-\d{8}-\d{6}$")
+
+
+def is_gowork_branch(name: object) -> bool:
+    """Whether *name* is a branch ``create_work_copy``/``create_project_copy`` made."""
+    return isinstance(name, str) and _BRANCH_RE.fullmatch(name) is not None
+
+
+def is_under_work_root(path: Path, root: Path) -> bool:
+    """Whether *path* is a copy inside *root* (the work-copy area), never the area itself."""
+    try:
+        inner = Path(os.path.normcase(os.path.realpath(path)))
+        outer = Path(os.path.normcase(os.path.realpath(root)))
+    except OSError:
+        return False
+    return outer in inner.parents
 
 
 class WorkCopyError(RuntimeError):

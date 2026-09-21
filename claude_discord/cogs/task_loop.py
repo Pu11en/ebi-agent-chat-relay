@@ -123,6 +123,8 @@ from claude_code_core.work_copy import (
     create_work_copy,
     head_commit,
     integrate_build,
+    is_gowork_branch,
+    is_under_work_root,
     keep_work,
     merge_side_copy,
     remove_side_copy,
@@ -684,6 +686,8 @@ class TaskLoopCog(commands.Cog):
         self._running: dict[str, _Running] = {}
         #: Running builds on disk, so a bot restart resumes them.
         self._store = store or LoopStore()
+        if self._store.work_root is None:  # records name copies to remove: confine them
+            self._store.work_root = work_root or DEFAULT_ROOT
         self._project_copy_lock = asyncio.Lock()
         #: Every build's open questions (T20), beside the loop store.
         self._blockers = BlockerLedger(self._store.path.with_name("gowork-blockers.json"))
@@ -2700,10 +2704,26 @@ class TaskLoopCog(commands.Cog):
             remembered = self._build_state(running).project_copies().get(str(top))
         except Exception:
             return None
-        if not remembered or not Path(remembered["path"]).is_dir():
+        if not remembered:
             return None
-        path = Path(remembered["path"])
-        return WorkCopy(source_repo=top, path=path, branch=remembered["branch"], plan_path=path)
+        return self._trusted_copy(top, remembered)
+
+    def _trusted_copy(self, top: Path, remembered: dict[str, str]) -> WorkCopy | None:
+        """A remembered copy as a ``WorkCopy`` — only when it is a gowork branch on a
+        folder inside this cog's work-copy area (E2). The ledger is data; a record that
+        named the person's project would otherwise reach ``git worktree remove --force``."""
+        path = Path(remembered.get("path", ""))
+        branch = remembered.get("branch", "")
+        if not is_gowork_branch(branch) or not is_under_work_root(path, self._work_area):
+            logger.warning("gowork: ignoring untrusted remembered copy for %s", top)
+            return None
+        if not path.is_dir():
+            return None
+        return WorkCopy(source_repo=top, path=path, branch=branch, plan_path=path)
+
+    @property
+    def _work_area(self) -> Path:
+        return self._work_root or DEFAULT_ROOT
 
     def _all_project_copies(self, running: _Running) -> list[WorkCopy]:
         """Every other-repository copy this build made, in memory or remembered."""
@@ -2711,11 +2731,11 @@ class TaskLoopCog(commands.Cog):
         try:
             for root, remembered in self._build_state(running).project_copies().items():
                 top = Path(root)
-                if top not in copies and Path(remembered["path"]).is_dir():
-                    path = Path(remembered["path"])
-                    copies[top] = WorkCopy(
-                        source_repo=top, path=path, branch=remembered["branch"], plan_path=path
-                    )
+                if top in copies:
+                    continue
+                copy = self._trusted_copy(top, remembered)
+                if copy is not None:
+                    copies[top] = copy
         except Exception:
             pass
         return list(copies.values())
