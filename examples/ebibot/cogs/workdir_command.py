@@ -1,0 +1,1 @@
+/home/drewp/main-projects/ebi-agent-chat-relay/extensions/project_picker/workdir_command.py

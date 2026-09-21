@@ -60,3 +60,11 @@ All three Discord sessions were stopped by Drew's request. Sources: four read-on
 - **Hole 5, the preview's lifetime:** it keeps running through 'Something's off' (the fix updates it and a fresh try-it card is posted). It shuts down after 'Looks good', or after 24 hours with no tap.
 - **Hole 6, the cost cap:** 40 tries per build. At the limit it stops with '🛑 Used 40 tries, X of Y tasks done' and a 'Keep going' button. All /gowork design questions are now answered.
 - **No shared planning skill:** Drew declined it. Planning stays with the /home/drewp/AGENTS.md rule (checkbox tasks plus a Check: line), and /gowork finds the plan from the thread's project.
+
+## 2026-09-12 — /gowork ending, Drew's pick: Style A
+- The ending posts ONE big coloured card (embed, not an image) in the thread where /gowork was typed, with a ping.
+- The bot tests the finished work itself first (the plan's Check line + an AI run of the "How to try it" checks), and the card lists each check with ✅/❌.
+- No links to open. Drew types "looks good" to keep it, or says what's wrong (becomes a Fix step).
+- Localhost links are useless to him (he's on Discord, often on his phone, away from the PC).
+- Example cards live in Discord channel #gowork-examples (id 1548236394630221846).
+- Also decided: planning must ASK "gowork or normal session?" every time (global AGENTS.md, backup .retired-harness/AGENTS.md.before-ask-gowork-20260912).
