@@ -31,6 +31,7 @@ from claude_code_core.handoffs.protocol import (
 )
 
 from .handoff_messages import HANDOFF_MARKER, HandoffEnvelopeError
+from .thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,10 @@ async def ensure_job_thread(
     thread = getattr(starter, "thread", None)
     if thread is None:
         try:
-            thread = await starter.create_thread(name=job_thread_name(task_id))
+            thread = await starter.create_thread(
+                name=job_thread_name(task_id),
+                auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+            )
         except Exception as exc:
             if fetch_channel is None:
                 raise

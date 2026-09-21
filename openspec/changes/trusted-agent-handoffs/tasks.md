@@ -28,7 +28,7 @@ Try: `uv run python -m claude_discord.main`
 - [x] 4.2 Add origin-side ack, blocker, and final-result handling that accepts events only for locally created tasks and never turns a result into a task; owner: the handoff Cog and tests; depends on 4.1; verify duplicate/late/cross-origin results are idempotent and attributable.
 - [x] 4.3 Wire repositories, configuration, Cog, and backend adapters through `claude_discord/setup.py` with backward-compatible disabled defaults and public exports where needed; owner: setup/export files and wiring tests; depends on sections 1–4.2; verify ordinary consumers with no handoff config start unchanged.
 - [x] 4.4 Add a three-identity integration harness covering DrewAI→David, David→DrewAI, iMac→DrewAI, offline recovery, duplicate delivery, blocked authority, restart, and final return; owner: `tests/test_handoff_integration.py`; depends on 4.3; verify Check passes without live model calls.
-- [ ] 4.5 Run Check, `uv run ruff check claude_discord/ claude_code_core/ tests/`, `uv run pyright claude_discord/ claude_code_core/`, the full test suite, and the security audit; owner: in-scope fixes only; depends on 4.4.
+- [x] 4.5 Run Check, `uv run ruff check claude_discord/ claude_code_core/ tests/`, `uv run pyright claude_discord/ claude_code_core/`, the full test suite, and the security audit; owner: in-scope fixes only; depends on 4.4.
 
 ## How to try it
 
