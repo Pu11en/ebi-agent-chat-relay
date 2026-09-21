@@ -69,7 +69,7 @@ new code merely because this build edits it. Report that boundary honestly.
   under one master and nested child plans without assuming an atomic cross-repo merge.
   Proof: legacy fixture and multi-project tree round-trip; duplicate IDs and parent cycles fail.
 
-- [ ] T02: Execution spine, only after T01: define complete worker task assignments.
+- [x] T02: Execution spine, only after T01: define complete worker task assignments.
   Scope: T01 models and parser. Add stable task ID, plan version, dependencies, owned
   files/resources, required inputs, output, acceptance check and source goal/requirement.
   Proof: complete fixtures round-trip; missing fields/duplicate task IDs fail clearly;
