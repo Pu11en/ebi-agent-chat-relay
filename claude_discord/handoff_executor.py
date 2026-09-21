@@ -181,6 +181,14 @@ class HandoffExecutor:
     def local_agent_id(self) -> str:
         return self._agent
 
+    @property
+    def on_transition(self) -> TransitionHook | None:
+        return self._on_transition
+
+    @on_transition.setter
+    def on_transition(self, hook: TransitionHook | None) -> None:
+        self._on_transition = hook
+
     # -- restart -------------------------------------------------------------
 
     async def reconcile_after_restart(self, *, now: datetime | None = None) -> list[HandoffJob]:

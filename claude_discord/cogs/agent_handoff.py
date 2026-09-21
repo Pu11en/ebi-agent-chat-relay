@@ -105,6 +105,10 @@ class AgentHandoffCog(commands.Cog):
             thread_lookup=self.lookup_channel,
             on_transition=self._poster,
         )
+        if self._executor.on_transition is None:
+            # An injected executor still reports through this Cog's poster,
+            # otherwise the job thread would show the ack and nothing after it.
+            self._executor.on_transition = self._poster
         self._start_loops = start_loops
         self._run_lock = asyncio.Lock()
         self._restart_reconciled = False
