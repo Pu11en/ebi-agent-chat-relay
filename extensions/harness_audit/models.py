@@ -131,6 +131,7 @@ class AuditCheck(StrEnum):
     PRECEDENCE = "precedence"
     DEAD_CONFIGURATION = "dead-configuration"
     PROJECT_CONTENT_IS_GLOBAL = "project-content-is-global"
+    PARITY = "parity"
 
 
 class CheckOutcome(StrEnum):

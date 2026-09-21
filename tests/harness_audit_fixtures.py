@@ -205,6 +205,8 @@ def codex_invocation(project: Path, *extra: str) -> dict[str, object]:
             "model_reasoning_effort=medium",
             "-c",
             "sandbox_workspace_write.network_access=true",
+            "-c",
+            f"developer_instructions={FAKE_SYSTEM_PROMPT}",
             *extra,
             "--",
             "hello",
