@@ -86,3 +86,20 @@
   `ruff format --check`, `pyright claude_code_core/gowork_state.py` (0 errors).
 - Open: nothing wires the ledger into the running loop yet — that is T11's dispatch step;
   T06 can select ready tasks from `BuildState.accepted_tasks()` plus the plan's dependencies.
+
+## T06 — Select ready tasks across child plans
+
+- New `claude_code_core/gowork_schedule.py`: `ready_tasks(state, running=…, limit=…)` returns
+  `ReadyTask(task_id, plan_id, project_path)` tuples in plan order. Pure and deterministic.
+- A task is ready only when pending, every dependency is *accepted* at the plan version that is
+  current now (`BuildState.note_plan_version` makes an earlier acceptance stale), and none of its
+  owned files/resources overlap a running task or one picked earlier in the same answer
+  (`PlanTree.can_run_together`). Cross-repository dependencies use the same test.
+- Tests: `tests/gowork_upgrade/test_ready_tasks.py` (9): website waits for product while
+  marketing proceeds; finished-not-accepted, blocked and stale dependencies release nothing;
+  overlaps exclude the later task; running/selected tasks are never offered; bounded by `limit`.
+- Implementation commit: `496b3b0`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (357 passed), `ruff check`,
+  `ruff format --check`, `pyright claude_code_core/gowork_schedule.py` (0 errors).
+- Open: T07 measures resource pressure; the `limit` argument is where T08–T10 plug adaptive
+  capacity in.

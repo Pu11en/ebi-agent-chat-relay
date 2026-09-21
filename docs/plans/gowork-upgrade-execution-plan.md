@@ -92,7 +92,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: reopen preserves state; duplicate result submission is idempotent; stale attempt
   cannot overwrite an accepted current result; interrupted writes leave recoverable state.
 
-- [ ] T06: Execution spine, only after T05: select ready tasks across child plans.
+- [x] T06: Execution spine, only after T05: select ready tasks across child plans.
   Scope: deterministic core scheduler. Only accepted current-version prerequisites
   release dependent work; shared ownership excludes overlapping tasks.
   Proof: website waits for product input while independent marketing proceeds; a failed,
