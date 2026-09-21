@@ -142,4 +142,4 @@ Source: local-plans/generation-wealth-feedback-gowork.md, inspected as a plan, n
 - Capacity priority settled: prefer tasks that unblock other work, with fair turns so other ready builds still progress.
 - Mid-build changes settled: finish the current small task, then apply the new requirements before integration; unaffected tasks continue.
 - Verification default settled: tests/checks on every task and separate AI review for difficult changes, preserving explicit mode overrides.
-- Workflow behavior choices are recorded; implementation method remains to be selected before preparing launch-ready execution plans.
+- Workflow behavior choices are recorded; Drew selected fresh-session Go Work. The native execution plan now stages focused prompt changes alongside runtime implementation; no live prompt installation has occurred yet.

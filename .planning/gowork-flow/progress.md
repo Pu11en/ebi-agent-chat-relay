@@ -57,3 +57,19 @@
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.
 - Keep alternatives open until answered; do not launch the draft as a build plan.
+
+## Fresh-Session Build Preparation
+
+- Drew selected A: use existing Go Work with fresh sessions to implement the upgrade.
+- Converted all agreed scope into 32 ordered small implementation outcomes in the native
+  execution plan. This self-upgrade is sequential because its tasks change the same
+  execution spine; the completed product still supports independent parallel work.
+- Added a bounded offline Check runner that includes future Go Work regression tests.
+- Model/harness remain unselected: submit without them so the bot asks Drew here.
+- Global prompt installation and shared-bot restart are not performed by isolated workers;
+  the final task supplies tested activation/rollback instructions and states the live boundary.
+- Preparation verification: the standalone Check passed 284 tests in 38.04 seconds;
+  ruff check/format and git diff --check passed. The native parser recognizes all 32
+  ordered tasks and the Check command, with no accidental owner-action task labels.
+- The old report worker's Discord channel is no longer available (API returned Unknown
+  Channel); its historical session row is not evidence of an active conflicting build.

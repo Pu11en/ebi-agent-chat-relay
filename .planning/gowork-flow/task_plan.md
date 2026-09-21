@@ -9,7 +9,7 @@ Done when: A local practice run proves dependencies, automatic worker sizing, re
 
 ## 1. What Is Settled
 
-- **Draft for discussion, not a build launch.** Drew requested a research-backed plan followed by grilling.
+- **Implementation method settled:** Drew selected Go Work with fresh sessions after the design questions. `docs/plans/gowork-upgrade-execution-plan.md` is the native execution checklist; this document retains the complete design and conceptual task map.
 - **Planner requirement:** existing brainstorming, question-answering and task-writing should understand execution requirements through shared instructions or a focused supporting skill; preserve useful existing behavior and reduce reading burden.
 - Keep one master planning conversation, with separate small build tasks beneath it.
 - A business can have website, product and marketing plans; each can have smaller plans of its own.
@@ -54,7 +54,7 @@ Done when: A local practice run proves dependencies, automatic worker sizing, re
 - **Recommendation:** adapt these patterns inside the existing bot; do not choose a replacement framework without evidence that it removes more work than it adds.
 - Copying actual source later requires checking that source's license and preserving required notices; this draft proposes patterns, not vendored code.
 - **Planner-specific follow-up:** Superpowers, Get Shit Done and BMad were cloned and inspected; planner-audit.md maps the reusable parts, and planner-skill-draft contains a concrete, uninstalled skill draft, output contract, example evaluations and retained licenses.
-- Use a short global routing rule, one shared master-planning skill, small templates and saved project decisions; runtime code still owns dependency enforcement and adaptive capacity.
+- Refine existing shared planning guidance with narrow supporting instructions, small templates and saved decisions; do not install the rejected wholesale replacement skill. Runtime code owns dependency enforcement and adaptive capacity.
 
 ## 3. Proposed Everyday Flow
 
@@ -138,7 +138,7 @@ Ask one question at a time and record the answer before moving to dependent ques
 - **Changes during a build settled:** finish the current small task, then apply the change before using its result; unaffected workers continue and affected dependents wait.
 - **Scope from the original request:** retain master plans containing several projects and their child plans; implementation can prove one-project behavior first, but must not silently reduce the requested final outcome to one project.
 - **Name and completion reporting settled:** keep Go Work, report issues/workarounds in the planning thread, and finish with short bullets explaining what changed and why; no success approval question.
-- **Implementation method, after the design is settled:** choose fresh-session Go Work or small normal-session increments; this planning request does not launch either.
+- **Implementation method settled:** fresh-session Go Work; prepare and check the native execution plan, then submit it with model selection left to Drew in this thread.
 
 ## 6. How to Try It
 
