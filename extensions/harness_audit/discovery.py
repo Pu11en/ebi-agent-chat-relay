@@ -24,13 +24,15 @@ Three properties are enforced here rather than documented:
 Symlinks and file modes are read from the filesystem, but both can also be
 *declared* on :class:`DiscoveryRoots` (``links`` and ``modes``).  Creating a
 symlink or a 0600 file needs privileges a Windows test run does not have, so
-fixtures declare them; production passes nothing and the real ``os`` answers.
+fixtures declare them; production passes nothing and the real ``os`` answers
+(on Windows the answer for a mode is ``unknown``: POSIX bits mean nothing there).
 This module reads; it never writes anywhere.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import stat
 import tomllib
@@ -93,7 +95,7 @@ class DiscoveryRoots:
     project_dir: Path | None = None
     known_projects: tuple[str, ...] = ()
     links: Mapping[Path, Path] = field(default_factory=dict)
-    modes: Mapping[Path, int] = field(default_factory=dict)
+    modes: Mapping[Path, int | None] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name in ("home", "claude_home", "codex_home"):
@@ -584,9 +586,17 @@ def _resolve(path: Path, roots: DiscoveryRoots) -> Path:
 
 
 def _permissions(path: Path, roots: DiscoveryRoots) -> str:
-    declared = roots.modes.get(path)
-    if declared is not None:
-        return f"{declared:04o}"
+    """POSIX mode bits as ``0644``, or ``unknown`` when they mean nothing.
+
+    A declared ``None`` says "not inspectable"; on Windows every file reports
+    ``0666`` while the real answer lives in ACLs, so the mode is unknown there
+    rather than a false world-writable finding on every file.
+    """
+    if path in roots.modes:
+        declared = roots.modes[path]
+        return "unknown" if declared is None else f"{declared:04o}"
+    if os.name == "nt":
+        return "unknown"
     try:
         return f"{stat.S_IMODE(path.stat().st_mode):04o}"
     except OSError:

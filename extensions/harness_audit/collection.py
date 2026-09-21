@@ -60,16 +60,9 @@ class Invocation:
             raise CollectionError("invocation: cwd must not be empty")
 
     def option(self, *names: str) -> str | None:
-        """The value of the first ``--name value`` or ``--name=value`` present."""
-        for index, part in enumerate(self.argv):
-            if part == "--":
-                break
-            for name in names:
-                if part == name and index + 1 < len(self.argv):
-                    return self.argv[index + 1]
-                if part.startswith(f"{name}="):
-                    return part[len(name) + 1 :]
-        return None
+        """The value of ``--name value`` or ``--name=value``; the last one wins."""
+        values = self.options(*names)
+        return values[-1] if values else None
 
     def options(self, *names: str) -> tuple[str, ...]:
         """Every value of a repeatable option, in order."""
