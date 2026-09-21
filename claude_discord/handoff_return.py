@@ -14,12 +14,14 @@ from claude_code_core.handoffs.protocol import (
     ConversationCoordinate,
     HandoffEvent,
     HandoffEventKind,
+    HandoffProtocolError,
     HandoffTask,
     next_sequence,
 )
 from claude_code_core.handoffs.state import HandoffTrigger, Transition, apply
 
 from .database.handoff_repo import HandoffRepository
+from .handoff_discord import channel_in_guild
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +54,34 @@ async def record_and_deliver_handoff_result(
     outcome = "failed" if error else "completed"
     summary = _summary(text=text, error=error)
     last = await repo.last_sequence(task.task_id)
+    try:
+        sequence = next_sequence(last if last is not None else 0)
+    except HandoffProtocolError as exc:
+        # No result event can be minted, so the outbox gets nothing — but the
+        # job must still reach a terminal state, or it sits at RUNNING with
+        # nothing running. Fail it visibly and let the hook show that.
+        logger.error("handoff %s: cannot record its result (%s); failing the job", task_id, exc)
+        transition = await _finish_job(
+            repo,
+            task_id=task.task_id,
+            recipient=recipient,
+            outcome="failed",
+            now=stamp,
+            note=f"could not record the result: event sequence exhausted ({exc})",
+        )
+        if transition is not None and on_transition is not None:
+            try:
+                await on_transition(task, transition)
+            except Exception:
+                logger.warning("handoff status hook failed for %s", task_id, exc_info=True)
+        return False
     event = HandoffEvent(
         event_id=_new_event_id(event_id_factory),
         kind=HandoffEventKind.RESULT,
         task_id=task.task_id,
         sender=task.recipient,
         recipient=task.sender,
-        sequence=next_sequence(last if last is not None else 0),
+        sequence=sequence,
         created_at=stamp,
         payload={"outcome": outcome, "summary": summary},
     )
@@ -117,13 +140,16 @@ async def _finish_job(
     recipient: str,
     outcome: str,
     now: datetime,
+    note: str | None = None,
 ) -> Transition | None:
     job = await repo.get_job(task_id, recipient)
     if job is None:
         return None
     trigger = HandoffTrigger.FAIL if outcome == "failed" else HandoffTrigger.COMPLETE
-    await repo.finish_attempt(task_id, recipient, attempt=job.attempt, outcome=outcome, now=now)
-    transition = apply(job, trigger, now=now, note=outcome)
+    await repo.finish_attempt(
+        task_id, recipient, attempt=job.attempt, outcome=outcome, detail=note, now=now
+    )
+    transition = apply(job, trigger, now=now, note=note or outcome)
     if not await repo.save_transition(transition):
         return None
     return transition
@@ -136,6 +162,15 @@ async def _resolve_destination(bot: Any, destination: ConversationCoordinate) ->
         target = await bot.fetch_channel(target_id)
     if not hasattr(target, "send"):
         raise ValueError(f"handoff destination {target_id} cannot receive messages")
+    # The coordinate came from the peer; the guild on the resolved channel is
+    # Discord's. They must agree, or the "origin" is somewhere the peer chose.
+    if not channel_in_guild(target, destination.guild_id):
+        logger.warning(
+            "refusing handoff delivery to %s: not in reply guild %s",
+            target_id,
+            destination.guild_id,
+        )
+        raise ValueError(f"handoff destination {target_id} is not in guild {destination.guild_id}")
     return target
 
 

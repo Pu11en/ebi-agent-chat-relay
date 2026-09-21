@@ -119,8 +119,15 @@ def build_handoff_prompt(task: HandoffTask, *, project_path: str, effective: Aut
         )
     else:
         where = ", ".join(effective.edit_paths) if effective.edit_paths else "the project folder"
+        path_note = (
+            "  (This path limit is not enforced by the harness — only the read-only\n"
+            "  decision is — so it is your responsibility to stay inside it.)\n"
+            if effective.edit_paths
+            else ""
+        )
         scope_rules = (
             f"- You may edit files within {where}. Use a safe worktree or branch for changes.\n"
+            f"{path_note}"
             "- Do not delete data, do not deploy, do not push, do not publish, do not pay for\n"
             "  anything, do not message anyone outside this thread, and do not change\n"
             "  permissions. If the goal needs any of those, stop and say so."
@@ -334,7 +341,11 @@ class HandoffExecutor:
             )
         else:
             prompt = build_handoff_prompt(task, project_path=path, effective=effective)
-        backend, model = project_lookup_harness() if effective.is_read_only else (None, None)
+        # Read-only is enforced in argv (the worker's tool set), never by the
+        # prompt alone; the harness is pinned to claude because only that
+        # backend can restrict its tools.
+        read_only = effective.is_read_only
+        backend, model = project_lookup_harness() if read_only else (None, None)
 
         selected = self._session_selector(task) if self._session_selector else None
         if selected is not None:
@@ -349,6 +360,7 @@ class HandoffExecutor:
                 resume=True,
                 backend=backend,
                 model=model,
+                read_only=read_only,
             )
             return ExecutionMode.EXISTING_SESSION, int(thread.id)
 
@@ -363,6 +375,7 @@ class HandoffExecutor:
                 resume=False,
                 backend=backend,
                 model=model,
+                read_only=read_only,
             )
             return ExecutionMode.FRESH_TURN, int(job_thread.id)
 
@@ -377,6 +390,7 @@ class HandoffExecutor:
             result_sink=sink,
             backend=backend,
             model=model,
+            read_only=read_only,
         )
         thread_id = int(worker.id)
         await self._repo.set_job_thread(task.task_id, self._agent, thread_id)

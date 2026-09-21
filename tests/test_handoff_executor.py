@@ -169,12 +169,13 @@ async def test_chat_cog_starts_executor_after_receiving_handoff(
     monkeypatch.setenv("CCDB_AGENT_ID", "drewai")
     parent_channel = SimpleNamespace(id=222)
     monkeypatch.setenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", "4242")  # the sending bot is trusted
+    monkeypatch.delenv("CCDB_HANDOFF_AGENTS", raising=False)
     message = SimpleNamespace(
         content=format_handoff_message(_handoff_event()),
         channel=SimpleNamespace(id=777, parent=parent_channel, send=AsyncMock()),
         author=SimpleNamespace(id=4242, bot=True),
         webhook_id=None,
-        guild=None,
+        guild=SimpleNamespace(id=111),  # the packet's origin guild
     )
     seen: dict[str, object] = {}
 
@@ -272,6 +273,7 @@ class FakeChat:
         resume: bool = False,
         backend: str | None = None,
         model: str | None = None,
+        read_only: bool = False,
     ) -> None:
         if self.fail_spawn:
             raise RuntimeError("harness unavailable")
@@ -284,6 +286,7 @@ class FakeChat:
                 "resume": resume,
                 "backend": backend,
                 "model": model,
+                "read_only": read_only,
             }
         )
 
@@ -444,6 +447,8 @@ async def test_missing_project_folder_blocks(
     assert job is not None
     assert job.state is HandoffState.BLOCKED
     assert job.note and "does not exist" in job.note
+    root = str(Path(project_root).parent)
+    assert root not in job.note, "the blocker note leaves this machine; no local paths"
 
 
 @pytest.mark.asyncio
@@ -514,7 +519,7 @@ async def test_deterministic_operation_needs_no_model(
 ) -> None:
     await _store(handoff_repo, _general_task(goal="List the folders"))
     chat = FakeChat()
-    origin = SimpleNamespace(id=333, send=AsyncMock())
+    origin = SimpleNamespace(id=333, send=AsyncMock(), guild=SimpleNamespace(id=111))
     chat.bot.get_channel.return_value = origin
 
     class ListFolders:

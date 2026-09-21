@@ -18,6 +18,7 @@ the one locator the narrow project-lookup slice already uses,
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ from pathlib import Path
 from typing import Protocol
 
 from claude_code_core.handoffs.protocol import HandoffProtocolError, ProjectLocator
+
+logger = logging.getLogger(__name__)
 
 ENV_OWNER_ROOTS = "CCDB_HANDOFF_PROJECT_ROOTS"
 ENV_LOOKUP_ROOT = "CCDB_PROJECT_LOOKUP_ROOT"
@@ -35,7 +38,12 @@ DEFAULT_LOOKUP_LOCATOR = ProjectLocator(owner="drew", folder="main-projects")
 
 
 class ProjectResolutionError(ValueError):
-    """The locator names nothing this computer may open."""
+    """The locator names nothing this computer may open.
+
+    The message is written for the peer and for Discord: it names the
+    locator's labels (owner, folder) and never a local path. The paths that
+    were tried go to the log, where only this computer's operator reads them.
+    """
 
 
 @dataclass(frozen=True)
@@ -105,20 +113,38 @@ class ApprovedRootResolver:
                 missing.append(str(candidate))
                 continue
             return self._check(locator, candidate, root.expanduser())
+        logger.info(
+            "handoff locator %s/%s: no such folder under the approved roots (looked in %s)",
+            locator.owner,
+            locator.folder,
+            ", ".join(missing),
+        )
         raise ProjectResolutionError(
-            f"folder {locator.folder!r} does not exist under any approved root of "
-            f"{locator.owner!r} (looked in {', '.join(missing)})"
+            f"folder {locator.folder!r} does not exist under any approved root of {locator.owner!r}"
         )
 
     @staticmethod
     def _check(locator: ProjectLocator, candidate: Path, root: Path) -> ResolvedProject:
+        label = f"{locator.owner}/{locator.folder}"
         if not candidate.exists():
-            raise ProjectResolutionError(f"project folder does not exist: {candidate}")
+            logger.info("handoff locator %s: %s does not exist", label, candidate)
+            raise ProjectResolutionError(
+                f"folder {locator.folder!r} does not exist under the approved root of "
+                f"{locator.owner!r}"
+            )
         real = candidate.resolve()
         real_root = root.resolve()
         if not real.is_dir():
-            raise ProjectResolutionError(f"project locator is not a directory: {candidate}")
+            logger.info("handoff locator %s: %s is not a directory", label, candidate)
+            raise ProjectResolutionError(f"project locator {label!r} is not a directory")
         if not _is_within(real, real_root):
+            logger.warning(
+                "handoff locator %s: %s resolves to %s, outside approved root %s",
+                label,
+                candidate,
+                real,
+                real_root,
+            )
             raise ProjectResolutionError(
                 f"project folder {locator.folder!r} resolves outside its approved root"
             )

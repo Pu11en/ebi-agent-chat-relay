@@ -33,6 +33,7 @@ from claude_code_core.handoffs.state import HandoffJob, HandoffStateError, apply
 
 from ..handoff_config import HandoffConfig, HandoffTrustError
 from ..handoff_discord import (
+    channel_in_guild,
     ensure_job_thread,
     parse_event_message,
     post_task_starter,
@@ -55,6 +56,11 @@ logger = logging.getLogger(__name__)
 SCAN_LIMIT = 200
 MAX_ORIGIN_LINE_CHARS = 400
 DELIVERY_INTERVAL_SECONDS = 60
+# A peer's event on a job *we* own is stored in the same ledger our own
+# events draw their sequence numbers from. A sequence far ahead of the
+# conversation (a QUESTION at MAX_SEQUENCE) would leave next_sequence()
+# nothing to mint and wedge the job; anything past this gap is refused.
+MAX_PEER_SEQUENCE_GAP = 100
 
 
 @dataclass(frozen=True)
@@ -227,6 +233,17 @@ class AgentHandoffCog(commands.Cog):
                     event.sender,
                 )
                 return None
+            last = await self._repo.last_sequence(event.task_id) or 0
+            if event.sequence > last + MAX_PEER_SEQUENCE_GAP:
+                logger.warning(
+                    "refusing %s event %s from %s: sequence %d is out of band (last %d)",
+                    event.kind.value,
+                    event.event_id,
+                    event.sender,
+                    event.sequence,
+                    last,
+                )
+                return None
             duplicate = not await self._repo.record_event(event)
             return HandoffReceipt(event=event, job=own_job, created=False, duplicate=duplicate)
 
@@ -266,9 +283,23 @@ class AgentHandoffCog(commands.Cog):
             )
         else:
             return
-        target = await self.lookup_channel(task.reply_to.thread_id or task.reply_to.channel_id)
+        target_id = task.reply_to.thread_id or task.reply_to.channel_id
+        target = await self.lookup_channel(target_id)
         if target is None or not hasattr(target, "send"):
             logger.warning("handoff %s origin is unreachable for %s", task.task_id, event.kind)
+            return
+        # The resolved channel must be in the reply guild *and* the configured
+        # one; an id the bot can see elsewhere is not the origin conversation.
+        if not (
+            channel_in_guild(target, task.reply_to.guild_id)
+            and channel_in_guild(target, self._config.guild_id)
+        ):
+            logger.warning(
+                "handoff %s: refusing to post %s to %s, not in the handoff guild",
+                task.task_id,
+                event.kind.value,
+                target_id,
+            )
             return
         try:
             await target.send(text)

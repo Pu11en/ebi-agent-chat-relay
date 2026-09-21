@@ -66,6 +66,19 @@ def job_thread_name(task_id: str) -> str:
     return f"{THREAD_NAME_PREFIX}{short_task_id(task_id)}"
 
 
+def channel_in_guild(channel: Any, guild_id: int) -> bool:
+    """True when ``channel`` (or thread) demonstrably belongs to ``guild_id``.
+
+    A ``reply_to`` coordinate is peer-supplied. ``bot.get_channel`` resolves an
+    id across every guild the bot is in, so the id alone would let a peer name
+    any channel this bot can see as the place its result lands. The guild on
+    the resolved object is what Discord says; a DM or an unknown object has no
+    guild and is refused.
+    """
+    resolved = getattr(getattr(channel, "guild", None), "id", None)
+    return isinstance(resolved, int) and resolved == guild_id
+
+
 def _clip(text: str, limit: int) -> str:
     cleaned = " ".join(text.split())
     if len(cleaned) <= limit:
@@ -210,6 +223,7 @@ async def post_task_starter(channel: Any, event: HandoffEvent) -> tuple[Any, Any
 __all__ = [
     "DISCORD_MESSAGE_LIMIT",
     "THREAD_NAME_PREFIX",
+    "channel_in_guild",
     "describe_authority",
     "ensure_job_thread",
     "job_thread_name",

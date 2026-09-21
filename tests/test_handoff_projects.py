@@ -65,6 +65,26 @@ class TestApprovedRootResolver:
         with pytest.raises(ProjectResolutionError, match="not a directory"):
             resolver.resolve(ProjectLocator("drew", "notes.txt"))
 
+    def test_refusals_name_labels_never_local_paths(self, drew_root: Path) -> None:
+        """The refusal text travels to the peer and to Discord; local paths do not."""
+        resolver = ApprovedRootResolver(roots={"drew": (drew_root,)})
+        for folder in ("missing", "notes.txt"):
+            with pytest.raises(ProjectResolutionError) as excinfo:
+                resolver.resolve(ProjectLocator("drew", folder))
+            text = str(excinfo.value)
+            assert str(drew_root) not in text
+            assert drew_root.name not in text
+            assert folder in text and "drew" in text
+
+    def test_pinned_refusals_name_labels_never_local_paths(self, tmp_path: Path) -> None:
+        pinned = tmp_path / "absent"
+        locator = ProjectLocator("drew", "main-projects")
+        resolver = ApprovedRootResolver(roots={}, pinned={locator: pinned})
+        with pytest.raises(ProjectResolutionError) as excinfo:
+            resolver.resolve(locator)
+        assert str(tmp_path) not in str(excinfo.value)
+        assert "main-projects" in str(excinfo.value)
+
     def test_symlink_escape_is_refused(self, drew_root: Path, tmp_path: Path) -> None:
         outside = tmp_path / "outside"
         outside.mkdir()

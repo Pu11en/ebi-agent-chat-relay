@@ -46,8 +46,9 @@ def project_root(tmp_path: Path) -> Path:
 
 
 class FakeThread:
-    def __init__(self, thread_id: int) -> None:
+    def __init__(self, thread_id: int, *, guild_id: int | None = 111) -> None:
         self.id = thread_id
+        self.guild = SimpleNamespace(id=guild_id) if guild_id is not None else None
         self.sent: list[str] = []
 
     async def send(self, content: str) -> SimpleNamespace:
@@ -182,6 +183,67 @@ async def test_blocked_is_posted_to_the_job_thread_and_the_origin(
     assert len(origin.sent) == 1
     assert "blocked" in origin.sent[0] and "6d9f6ad0" in origin.sent[0]
     assert parse_event_message(origin.sent[0]) is None, "the origin gets prose, not protocol"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guild_id", [999, None])
+async def test_a_blocker_never_reaches_an_origin_outside_the_reply_guild(
+    repo: HandoffRepository, project_root: Path, guild_id: int | None
+) -> None:
+    """reply_to says guild 111; a channel with that id in another guild is not the origin."""
+    task = _task(goal="Delete the old builds")
+    job_thread, elsewhere = FakeThread(4242), FakeThread(333, guild_id=guild_id)
+    await repo.record_task(task, now=NOW)
+    await repo.set_job_thread(TASK_ID, "drewai", 4242)
+    executor = HandoffExecutor(
+        repo=repo,
+        local_agent_id="drewai",
+        resolver=ApprovedRootResolver(roots={"drew": (project_root.parent,)}),
+        policy=RecipientPolicy(),
+        threads={4242: job_thread},
+        on_transition=_poster(repo, job_thread, elsewhere),
+    )
+
+    await executor.run_ready(chat=FakeChat(elsewhere), parent_channel=None, now=NOW)
+
+    assert len(job_thread.sent) == 1, "the job thread still shows the block"
+    assert elsewhere.sent == []
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_sequence_still_shows_the_terminal_state_as_prose(
+    repo: HandoffRepository,
+) -> None:
+    """When no ledger event can be minted, the job thread still learns the job ended."""
+    task = _task()
+    job_thread, origin = FakeThread(4242), FakeThread(333)
+    await repo.record_task(task, now=NOW)
+    await repo.record_event(_task_event(task))
+    await repo.set_job_thread(TASK_ID, "drewai", 4242)
+    await repo.record_event(
+        p.HandoffEvent(
+            event_id="bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+            kind=p.HandoffEventKind.STATE,
+            task_id=TASK_ID,
+            sender="drewai",
+            recipient="david",
+            sequence=p.MAX_SEQUENCE,
+            created_at=NOW,
+            payload={"state": "running"},
+        )
+    )
+    poster = _poster(repo, job_thread, origin)
+    job = await repo.get_job(TASK_ID, "drewai")
+    assert job is not None
+    started = apply(job, HandoffTrigger.START, now=NOW)
+    await repo.save_transition(started)
+    failed = apply(started.job, HandoffTrigger.FAIL, now=NOW, note="sequence exhausted")
+
+    await poster(task, failed)  # must not raise
+
+    assert len(job_thread.sent) == 1
+    assert "failed" in job_thread.sent[0].lower()
+    assert parse_event_message(job_thread.sent[0]) is None, "prose, since no event could be minted"
 
 
 @pytest.mark.asyncio

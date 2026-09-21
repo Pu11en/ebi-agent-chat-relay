@@ -1689,8 +1689,13 @@ class ApiServer:
             # Same precedence as the Discord-envelope path: configuration first,
             # the runner's working directory only when nothing is configured.
             project_root = resolve_project_lookup_root(fallback=self.working_dir)
-        except ValueError as exc:
-            return web.json_response({"error": str(exc)}, status=503)
+        except ValueError:
+            # The caller is remote; the path we looked at stays in the log.
+            logger.warning("project lookup root is not usable", exc_info=True)
+            return web.json_response(
+                {"error": "project lookup root is not configured or not a directory"},
+                status=503,
+            )
 
         raw_from_thread = data.get("from_thread")
         from_thread: int | None = None
@@ -1720,8 +1725,9 @@ class ApiServer:
         if raw is None:
             try:
                 raw = await self.bot.fetch_channel(channel_id)
-            except Exception as exc:
-                return web.json_response({"error": str(exc)}, status=500)
+            except Exception:
+                logger.warning("could not fetch channel %s", channel_id, exc_info=True)
+                return web.json_response({"error": "channel could not be fetched"}, status=500)
         if not isinstance(raw, _discord.TextChannel):
             return web.json_response(
                 {"error": "Channel must be a text channel that supports threads"},
@@ -1773,6 +1779,7 @@ class ApiServer:
                 result_sink=_project_lookup_result_sink if from_thread is not None else None,
                 backend=lookup_backend,
                 model=lookup_model,
+                read_only=True,  # a lookup never edits: enforced in argv, not by the prompt
             )
         except Exception:
             logger.exception("project lookup spawn_session failed")
@@ -2093,8 +2100,9 @@ class ApiServer:
         if raw is None:
             try:
                 raw = await self.bot.fetch_channel(channel_id)
-            except Exception as exc:
-                return web.json_response({"error": str(exc)}, status=500)
+            except Exception:
+                logger.warning("could not fetch channel %s", channel_id, exc_info=True)
+                return web.json_response({"error": "channel could not be fetched"}, status=500)
 
         if not isinstance(raw, _discord.TextChannel):
             return web.json_response(
@@ -2759,8 +2767,9 @@ class ApiServer:
         if raw is None:
             try:
                 raw = await self.bot.fetch_channel(channel_id)
-            except Exception as exc:
-                return web.json_response({"error": str(exc)}, status=500)
+            except Exception:
+                logger.warning("could not fetch channel %s", channel_id, exc_info=True)
+                return web.json_response({"error": "channel could not be fetched"}, status=500)
 
         if not isinstance(raw, _discord.TextChannel):
             return web.json_response(

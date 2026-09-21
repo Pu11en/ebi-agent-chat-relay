@@ -79,7 +79,7 @@ async def test_record_and_deliver_handoff_result_posts_to_origin_thread(
     handoff_repo: HandoffRepository,
 ) -> None:
     await _record_running_task(handoff_repo)
-    origin_thread = SimpleNamespace(id=333, send=AsyncMock())
+    origin_thread = SimpleNamespace(id=333, send=AsyncMock(), guild=SimpleNamespace(id=111))
     bot = MagicMock()
     bot.get_channel.return_value = origin_thread
 
@@ -113,12 +113,90 @@ async def test_record_and_deliver_handoff_result_posts_to_origin_thread(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("guild", [SimpleNamespace(id=999), None])
+async def test_result_is_never_delivered_to_a_channel_outside_the_reply_guild(
+    handoff_repo: HandoffRepository, guild: object
+) -> None:
+    """reply_to names guild 111; a channel id the bot can see elsewhere is not a destination."""
+    await _record_running_task(handoff_repo)
+    elsewhere = SimpleNamespace(id=333, send=AsyncMock(), guild=guild)
+    bot = MagicMock()
+    bot.get_channel.return_value = elsewhere
+
+    delivered = await record_and_deliver_handoff_result(
+        repo=handoff_repo,
+        bot=bot,
+        task_id=TASK_ID,
+        local_agent_id="drewai",
+        text="Found it.",
+        error=None,
+        now=NOW,
+        event_id_factory=lambda: RESULT_ID,
+    )
+
+    assert delivered is False
+    elsewhere.send.assert_not_awaited()
+    pending = await handoff_repo.pending_deliveries(now=NOW + timedelta(minutes=2))
+    assert len(pending) == 1
+    assert "guild" in (pending[0].last_error or "")
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_sequence_closes_the_job_as_failed_instead_of_leaving_it_running(
+    handoff_repo: HandoffRepository,
+) -> None:
+    """If no result event can be minted, the ledger still reaches a terminal state, visibly."""
+    from claude_code_core.handoffs.protocol import MAX_SEQUENCE, HandoffEvent, HandoffEventKind
+
+    await _record_running_task(handoff_repo)
+    await handoff_repo.record_event(
+        HandoffEvent(
+            event_id="bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+            kind=HandoffEventKind.STATE,
+            task_id=TASK_ID,
+            sender="david",
+            recipient="drewai",
+            sequence=MAX_SEQUENCE,
+            created_at=NOW,
+            payload={"state": "running"},
+        )
+    )
+    origin_thread = SimpleNamespace(id=333, send=AsyncMock(), guild=SimpleNamespace(id=111))
+    bot = MagicMock()
+    bot.get_channel.return_value = origin_thread
+    seen: list[str] = []
+
+    async def hook(task, transition) -> None:
+        seen.append(transition.state.value)
+
+    delivered = await record_and_deliver_handoff_result(
+        repo=handoff_repo,
+        bot=bot,
+        task_id=TASK_ID,
+        local_agent_id="drewai",
+        text="Found it.",
+        error=None,
+        now=NOW,
+        event_id_factory=lambda: RESULT_ID,
+        on_transition=hook,
+    )
+
+    assert delivered is False
+    job = await handoff_repo.get_job(TASK_ID, "drewai")
+    assert job is not None and job.state is HandoffState.FAILED
+    assert "sequence" in (job.note or "")
+    attempts = await handoff_repo.list_attempts(TASK_ID, "drewai")
+    assert attempts[0].is_finished and attempts[0].outcome == "failed"
+    assert seen == ["failed"], "the terminal transition is still announced"
+
+
+@pytest.mark.asyncio
 async def test_record_and_deliver_handoff_result_archives_worker_thread_after_delivery(
     handoff_repo: HandoffRepository,
 ) -> None:
     await _record_running_task(handoff_repo)
     await handoff_repo.set_job_thread(TASK_ID, "drewai", 999)
-    origin_thread = SimpleNamespace(id=333, send=AsyncMock())
+    origin_thread = SimpleNamespace(id=333, send=AsyncMock(), guild=SimpleNamespace(id=111))
     worker_thread = SimpleNamespace(id=999, edit=AsyncMock())
     bot = MagicMock()
     bot.get_channel.side_effect = lambda channel_id: {
@@ -204,7 +282,7 @@ async def test_executor_passes_result_sink_that_returns_worker_result(
     assert event.task is not None
     await handoff_repo.record_task(event.task, now=NOW)
     await handoff_repo.record_event(event)
-    origin_thread = SimpleNamespace(id=333, send=AsyncMock())
+    origin_thread = SimpleNamespace(id=333, send=AsyncMock(), guild=SimpleNamespace(id=111))
     bot = MagicMock()
     bot.get_channel.return_value = origin_thread
     worker_thread = SimpleNamespace(id=999, name="lookup")
