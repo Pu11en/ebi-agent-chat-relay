@@ -75,6 +75,14 @@ from .gowork_plan import (
     parse_plan_tree,
     render_plan_manifest,
 )
+from .gowork_resources import (
+    HostProbe,
+    Pressure,
+    ResourceSnapshot,
+    WorkerPeaks,
+    pressure_of,
+    workers_that_fit,
+)
 from .gowork_schedule import ReadyTask, ready_tasks
 from .gowork_state import (
     BuildState,
@@ -191,6 +199,12 @@ __all__ = [
     "GoworkTaskStatus",
     "open_build_state",
     "ReadyTask",
+    "HostProbe",
+    "Pressure",
+    "ResourceSnapshot",
+    "WorkerPeaks",
+    "pressure_of",
+    "workers_that_fit",
     "ready_tasks",
     "Requirement",
     "TaskAssignment",
