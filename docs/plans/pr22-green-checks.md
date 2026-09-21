@@ -23,7 +23,7 @@ and only after Drew says yes (GitHub is always last).
   the lock from the second loop can be acquired and released without hanging. Run it 50× with
   `-p no:randomly --count` or a loop to prove it is stable.
 
-- [ ] 2. Reproduce the Python 3.12 hang locally. Create a 3.12 env
+- [x] 2. Reproduce the Python 3.12 hang locally. Create a 3.12 env
   (`uv python install 3.12`, `UV_PROJECT_ENVIRONMENT=.venv312 uv sync --dev --python 3.12`)
   and run `tests/test_task_loop_cog.py` then the full `tests/` under 3.12 with
   `--timeout=300`. Record the exact test and the stuck task (use the timeout thread dump plus
