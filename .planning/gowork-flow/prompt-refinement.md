@@ -37,9 +37,15 @@ Separate task readiness from current machine/provider capacity.
 Assign only the intended outcome and enough context to a fresh worker.
 Preserve its result and check evidence; release execution capacity when done.
 Validate combined outputs before unblocking dependent work.
-When a task gets stuck, keep independent work moving and attempt bounded
-repairs within the agreed repair allowance and shared capacity. Keep its
+When a task gets stuck, keep independent work moving and attempt one automatic
+repair after the failed original attempt, within shared capacity. Keep its
 dependents waiting; do not mark a failed result complete to unblock them.
+Report problems and workarounds briefly in the planning thread. An unresolved
+blocker gets its own saved question reference; consume only a direct Discord
+reply to that question as its answer, not arbitrary conversation in the thread.
+On success, close worker execution and send short bullets explaining each
+completed outcome and why it was needed. Do not ask for looks good or wait for
+a success reply. When nothing can proceed, report all unresolved blockers.
 Report only the blocker or milestone that changes what the user needs to know.
 Do not reopen answered questions or infer permission to launch from a planning
 answer. Report unsupported runtime behavior honestly.
@@ -81,5 +87,7 @@ Source: local-plans/generation-wealth-feedback-gowork.md, inspected as a plan, n
 - Interaction settled: short multiple-choice questions with strong distinct options, continuing until required answers are recorded; detailed internal plans remain essential.
 - Name settled: improve Go Work and its loops, not a separately named replacement.
 - Recommended loop model: durable coordinator, independent child-plan lanes and fresh short-lived task workers; the coordinator owns retries, dependency release and shared capacity instead of letting workers spawn unlimited private loops.
-- Failure policy settled: keep independent work moving and try limited repairs; dependent tasks wait for a checked result.
-- Repair allowance, capacity priority across builds and retention remain open.
+- Failure policy settled: keep independent work moving and try one repair after the original failed attempt; dependent tasks wait for a checked result.
+- Completion settled: no looks-good gate; short what-and-why bullets, check result and issues in the planning thread.
+- Blocker answers use Discord Reply to the specific saved blocker message, not any message in that thread; runtime needs durable message-to-blocker routing.
+- Local result integration timing, capacity priority and worker-thread retention remain open.

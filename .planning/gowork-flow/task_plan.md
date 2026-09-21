@@ -5,7 +5,7 @@
 Check: uv run pytest tests/test_task_loop.py tests/test_loop_store.py tests/test_gowork_records.py tests/test_gowork_ending.py tests/test_work_copy.py -q
 Try: uv run pytest tests/test_task_loop.py -q
 Goal: One planning conversation produces several coordinated build plans, with independent work running together and finished workers closing automatically.
-Done when: A local practice run proves dependencies, automatic worker sizing under changing machine load, recovery after interruption, combined checks, and worker closure while Drew's final review remains pending.
+Done when: A local practice run proves dependencies, automatic worker sizing, recovery, combined checks, one repair attempt, message-linked blocker answers, and automatic completion with a short what-and-why recap and no looks-good wait.
 
 ## 1. What Is Settled
 
@@ -23,7 +23,12 @@ Done when: A local practice run proves dependencies, automatic worker sizing und
 - Use a protective ceiling when needed, based on measured conditions; ten is the current implementation limit, not the desired permanent maximum.
 - A finished worker must stop consuming a session even if Drew has not tried the result yet.
 - Keep building the agreed work until it is finished or there is a real blocker.
-- **Failure policy settled:** when a task gets stuck, continue independent work and attempt bounded repairs. Keep its dependent tasks waiting until a repaired result passes the required checks; repairs share the same capacity limits. The repair limit remains to be chosen.
+- **Failure policy settled:** after the original failed attempt, allow one automatic repair attempt, while independent work continues. Dependent tasks wait for a checked result; the repair shares capacity and cannot reset its allowance by switching model, splitting into children or entering another automatic repair loop.
+- **Completion settled:** successful automated checks and required reviews finish the build without requiring Drew to say looks good; end worker execution and post the result in the main planning thread. Do not keep a success waiter or send approval reminders.
+- **Issue handling settled:** report problems and any successful workaround briefly in the planning thread; if one repair cannot resolve an issue, post an actionable blocker there. When no remaining task can proceed, provide an honest blocked summary of all unresolved issues rather than claiming completion.
+- **Answer routing settled:** Drew uses Discord's Reply action on the specific blocker message in the planning thread. Route that referenced message to the correct build, task and blocker; an ordinary message in the same thread is not automatically a blocker answer.
+- **Recap settled:** short bullets stating what was completed and why it mattered to the original request, plus concise check results and any workaround or remaining limitation. Distinguish completed, worked-around and blocked outcomes.
+- **Integration still open:** today's looks-good action also combines the build copy into the local project. Removing the confirmation gate is settled; when to integrate results locally still needs a decision. Publishing remains governed by the separate existing rules.
 - Drew can try the combined result after the work is finished; publishing is a separate step.
 - **Already changed locally:** the parallel-step cap and default session capacity were raised from 3 to 10.
 - **Observed during planning:** the live session API reports a capacity of 10; the shared execution helper uses a configured semaphore. Automatic resource-based sizing is proposed, not implemented.
@@ -58,7 +63,8 @@ Done when: A local practice run proves dependencies, automatic worker sizing und
 - **Emergency behavior:** prefer finishing running work while launches are paused; test a defined emergency stop/recovery path for critical pressure. Monitoring reduces overload risk but cannot guarantee that a computer never crashes.
 - **Finish a worker:** save its result, checks and local commit; release its capacity and close its execution session.
 - **Combine:** bring compatible changes into a local review copy, run combined checks and required reviews, then release dependent tasks.
-- **Finish a build:** report ready for Drew, blocked or failed; never call unfinished work complete just because no workers are running.
+- **Finish a build:** after required checks pass, end automatically and post a short what-and-why recap; no looks-good question. If work remains blocked, report the blockers and retain results without an idle worker session.
+- **Answer a blocker:** use the replied-to Discord message ID to recover its saved blocker and attempt; a resolving answer makes only the affected work eligible again, with dependency and capacity checks still enforced.
 - **Try it:** keep one combined result per project available; a business spanning several projects gets a short checklist covering them together.
 - **Resume:** use saved results and states; completed tasks do not rerun just because a thread or bot restarted.
 - **Improve:** summarize repeated stalls, avoidable questions, retries and review failures from run records; suggest changes instead of silently rewriting the workflow.
@@ -90,19 +96,21 @@ The Check command above is the existing baseline; every implementation task also
 ### Recovery and Changes
 
 - [ ] **T11: Recover after interruption without duplicate work.** Reconcile saved attempts with actual worker and commit state at startup. Needs: T08, T09. Proof: interruptions before dispatch, after result save and after combination resume correctly.
-- [ ] **T12: Limit repairs and isolate blockers.** Continue unaffected work while attempting bounded repairs on a stuck task; keep dependent tasks blocked until a checked result is accepted. Needs: T10, T11 and repair-limit decision. Proof: independent tasks progress during repair, dependent tasks wait, repairs respect shared capacity, and repeated failure reaches a clear bounded state instead of running forever.
+- [ ] **T12: Limit repairs and isolate blockers.** Allow one repair after the original failed attempt, continue unaffected work, and keep dependent tasks blocked until a checked result is accepted. Needs: T10, T11. Proof: repair allowance survives restart and cannot reset through model escalation or task splitting; exhaustion records a blocker while independent tasks progress.
 - [ ] **T13: Handle edits to plans already running.** Save plan versions, update unstarted work and detect results based on superseded requirements. Needs: T04, T05 and change-policy decision. Proof: an older result cannot silently satisfy a changed task.
 
 ### Drew's View and Proof
 
-- [ ] **T14: Show one master status in Discord.** Summarize running, waiting, blocked and ready-for-Drew tasks with the next relevant action. Needs: T04, T08, T10. Proof: mixed task states display accurately without requiring worker-thread reading.
-- [ ] **T15: Separate finished workers from Drew's review.** Keep results available after execution ends, using the chosen archive/retention policy and a local test handoff. Needs: T14 and retention decision. Proof: all workers are closed while the parent still says ready for Drew.
+- [ ] **T14a: Persist actionable blocker messages.** Link planning-thread message ID to build, task, attempt, question and unresolved/resolved status. Needs: T04, T12. Proof: several builds can have separate blockers in one planning thread and mappings survive restart.
+- [ ] **T14b: Route direct Discord replies to the right blocker.** Use message.reference.message_id plus channel and authorized-user checks; resolve answers against the saved task version and resume eligible work. Needs: T14a. Proof: normal conversation is not consumed, two blockers receive the right answers, duplicate replies cannot dispatch twice, and stale/resolved/unknown references get an explanation instead of altering another run.
+- [ ] **T14c: Report progress and final outcomes briefly.** Summarize running, waiting and blocked work; announce workarounds without asking for approval; finish with short what-and-why bullets, checks and remaining issues. Needs: T04, T08, T10, T14a. Proof: every recap claim comes from saved task results and goals; an all-blocked run lists unresolved issues without claiming success.
+- [ ] **T15: Finish automatically without looks-good approval.** End successful runs, close worker sessions and retain results; remove success waiters/reminders and apply the chosen local integration and thread-retention policies. Needs: T14a-T14c, local integration decision and retention decision. Proof: success needs no user response, blockers remain actionable through direct message replies, and a failed integration cannot destroy work or masquerade as completion.
 - [ ] **T16: Report repeated workflow friction.** Extend existing run records with wait time, repair attempts, review outcomes and repeated owner questions. Needs: T04, T12. Proof: a saved sample produces reproducible counts; unavailable cost data stays unknown.
 - [ ] **T17a: Refine existing planner prompts.** Preserve saved answers and ask short multiple-choice questions with useful options until required user decisions are resolved; retain detailed plans internally and add clear worker-task preparation using selected OSS patterns. Needs: existing examples and settled interaction preference. Proof: real-plan examples remain complete internally, readable in chat and free of repeated settled questions; focused draft exists in prompt-refinement.md.
 - [ ] **T17b: Define compatible planning templates.** Capture the master record, decisions, ownership, dependencies and completion evidence; export only formats the installed runner actually supports. Needs: T17a. Proof: business examples have full requirement coverage and unsupported dependency behavior is clearly rejected or serialized through a verified supported path.
 - [ ] **T17c: Connect planner instructions and execution context.** Put the agreed execution guidance in the existing shared instructions or a small supporting skill; pass complete task inputs/outputs/ownership to the grouping helper, not just titles. Needs: T17a, T17b. Proof: all three harnesses use the same guidance and grouping receives relevant task details; runtime dependency enforcement remains code-backed.
 - [ ] **T17d: Evaluate planner behavior.** Check the proposed scenarios for new plans, resumed answers, ownership conflicts and tiny changes; compare live behavior only within separately authorized evaluation scope. Needs: T17b, T17c and T03 for executable dependency checks. Proof: saved evidence distinguishes static validation from actual model behavior and records any failures.
-- [ ] **T18: Provide a local practice run.** Use simulated workers and machine readings to demonstrate more than ten ready tasks, automatic growth and backoff, dependent tasks, two competing plans, a failure, a restart and a plan edit. Needs: T06a-T06c, T07-T16 and T17a-T17d. Proof: no paid model calls or real stress test, all assertions pass, and final results remain available for review.
+- [ ] **T18: Provide a local practice run.** Use simulated workers and machine readings to demonstrate adaptive capacity, dependencies, two plans, one repair, message-linked blocker replies, restart, plan edits and automatic completion. Needs: all preceding implementation tasks, including T14a-T14c. Proof: no paid calls or real stress test, no looks-good wait, and saved results and accurate short recaps remain available.
 
 **Parallel build opportunities:** T17a-T17c can progress before scheduler implementation; T03 and T04 can proceed after T02; T06a and T07 can proceed after T04 while T05 is built; T13 and T16 can proceed once their own prerequisites exist.
 Tasks changing the same existing loop or Discord files must be sequenced or given distinct ownership even when their conceptual dependencies allow parallel work.
@@ -117,12 +125,13 @@ Ask one question at a time and record the answer before moving to dependent ques
 - **Planning interaction settled:** detailed plans built through short multiple-choice questions until required user decisions are filled in; retain the Go Work name and existing loop concept.
 - **Q2, still open:** which ready work gets capacity first when builds compete? Recommended: tasks that unblock other tasks, with aging so other builds still progress; alternatives are equal sharing, finishing the oldest build first or explicit project priority.
 - **Engineering follow-through:** determine headroom thresholds, sampling, fallback and ceiling from read-only measurements and simulated tests during implementation; do not ask Drew to guess technical numbers or promise a safe count from one idle snapshot.
-- **Failure policy settled:** independent work continues while Go Work attempts limited repairs; dependent work waits. Next dependent decision: how much repair effort before returning the blocker to Drew.
-- **Completion and retention:** execution must end without waiting for Drew; decide whether finished threads are archived, deleted after results are saved, or kept as inactive history.
+- **Failure policy settled:** one repair attempt, independent work continues, and unresolved blockers return to the planning thread for a direct reply to the blocker message.
+- **Completion settled; local integration next:** no looks-good gate; determine whether successful results join the local project automatically per build, remain in a separate copy, join incrementally per checked task, or join after the entire master plan succeeds.
+- **Retention open:** decide whether finished worker threads are archived, deleted after results are saved, or kept as inactive history; blocker messages stay available in the planning thread.
 - **Review strength:** retain cheap/balanced/careful behavior, or change which tasks need a separate reviewer and what happens when one is unavailable?
 - **Changes during a build:** apply new directions only to unstarted tasks, stop affected workers, or finish their current attempts and then replace stale work?
 - **First release boundary:** include multi-project business plans immediately, or first prove multiple lanes within one project while preserving the same data format?
-- **Name settled; reporting open:** keep Go Work; decide later whether build updates should focus on milestones or mainly the final report.
+- **Name and completion reporting settled:** keep Go Work, report issues/workarounds in the planning thread, and finish with short bullets explaining what changed and why; no success approval question.
 - **Implementation method, after the design is settled:** choose fresh-session Go Work or small normal-session increments; this planning request does not launch either.
 
 ## 6. How to Try It
@@ -133,6 +142,6 @@ Ask one question at a time and record the answer before moving to dependent ques
 - **30-second check 1:** independent website and marketing tasks run together; a dependent product task visibly waits.
 - **Automatic capacity check:** the practice run shows worker count growing when simulated resources allow and new launches pausing when the computer becomes busy; the displayed reason explains each change.
 - **30-second check 2:** a finished worker closes while another is still running, and its result remains accessible.
-- **30-second check 3:** one failed task is shown honestly, a restart does not duplicate completed work, and the final result waits for Drew's review.
+- **30-second check 3:** after one failed repair, a direct Discord reply resolves only its linked blocker; ordinary conversation is left alone, restart does not duplicate completed work, and success posts its recap without waiting for looks good.
 - Before implementation finishes, replace Try with the proven practice command and record its actual output and runtime.
 - No web page is part of this draft, so there is no local web address to open yet.

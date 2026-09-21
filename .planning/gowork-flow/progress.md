@@ -37,7 +37,11 @@
 - Interaction answered: detailed plans, short multiple-choice questions with good options until required answers are complete. Keep Go Work name and evolve existing loops.
 - Explained recommended lifecycle: coordinator continues, independent lanes advance through tasks, and each task worker finishes and closes. Existing Go Work already has parallel groups.
 - Drew chose A for stuck tasks: independent work continues while Go Work attempts bounded repairs; dependent tasks wait. Saved this policy in the plan and prompt draft; runtime unchanged.
-- Next dependent decision: repair allowance before bringing an unresolved blocker back to Drew; do not reopen settled failure policy, naming, plan detail or question format.
+- Drew chose B: one repair after an original failed attempt; independent tasks continue. No hidden extra allowance from escalation, splitting or restarts.
+- Drew removed the looks-good completion gate: automatically finish with short what-and-why bullets, report workarounds, and surface unresolved blockers in the planning thread.
+- Drew requires actual Discord Reply on the specific blocker message to answer it; normal thread conversation must not be captured as an answer. Added separate persistence, routing and concise reporting tasks.
+- Code inspection: current waiters are keyed by channel ID; _wrap_up waits for a verdict and looks good also invokes keep_work to integrate locally. Therefore the next unresolved decision is local integration timing, not whether to require completion approval.
+- No runtime changes, paid calls or test rerun; this is a documentation-only update.
 - One documentation patch used out-of-order contexts and did not apply; reapplied the same changes in file order successfully.
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.
