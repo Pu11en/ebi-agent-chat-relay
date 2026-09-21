@@ -210,3 +210,25 @@
   known values; the admission file path derives from `CCDB_GOWORK_STATE` like the loop store.
 - Open: `_worker_peaks` is not yet fed from real worker RSS (T13/T22 can observe peaks when
   workers finish); until then sizing uses the 1500 MB default.
+
+## T11a — Running identity by build
+
+- `TaskLoopCog._running` is keyed by `build_id` (was the project path); `_starting` holds
+  (project, plan name) pairs. `_running_in(repo)`, `_running_plan(repo, plan)`, `_busy()`.
+- `start_loop`: the same plan already running → `BuildAlreadyRunningError` carrying
+  `.thread`, `.thread_id`, `.build_id` (message: "`PLAN.md` is already running in <#…>");
+  a manifest plan (`has_manifest()` in `gowork_plan.py`) may start beside any other build in
+  the project; a checkbox plan keeps the one-per-project rule. A manifest plan needs no
+  `- [ ]` lines to start. `_close_for_switch` never closes anything for a manifest plan and
+  only ever closes the project's checkbox build. Queue, resume and the `finally` cleanup use
+  the build id.
+- Tests: `tests/gowork_upgrade/test_running_identity.py` (5): two manifest plans in one
+  project at once (two threads, two store records); a repeated start names the existing
+  build and opens nothing; ending one build leaves the other running and stored; checkbox
+  plans keep one build per project; a manifest plan starts beside a checkbox build.
+- Implementation commit: `4db3f27`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (392 passed),
+  `tests/test_api_server.py` (102 passed), `ruff check`, `ruff format --check`,
+  `pyright claude_discord/cogs/task_loop.py` (0 errors).
+- Open: T11b makes a manifest build dispatch its tasks from the ledger; until then a
+  manifest plan runs its checkbox lines like a legacy plan.

@@ -134,7 +134,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: two plans in one planning thread and two projects progress independently;
   repeated start requests cannot dispatch duplicate attempts or close an unrelated build.
   Split (2026-09-21, David's computer) into three ordered boxes; T11 is done when all are:
-  - [ ] T11a: running identity by build. The cog keys running builds by `build_id`
+  - [x] T11a: running identity by build. The cog keys running builds by `build_id`
     (T04), a start for a plan that is already running returns that build instead of a
     second one, a manifest plan may start beside another plan in the same project, and
     the legacy "one checkbox plan per project, switch on a new start" behaviour stays for
