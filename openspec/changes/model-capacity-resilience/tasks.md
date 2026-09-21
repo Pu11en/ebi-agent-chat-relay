@@ -12,12 +12,12 @@ Try: `uv run pytest tests/test_capacity_recovery.py -q`
 
 - [x] 2.1 Add failing repository tests for create, conditional claim, schedule, accept-once, expiry, and restart reload; verify the focused repository test fails before schema work.
 - [x] 2.2 Add the zero-config SQLite schema and a dedicated recovery repository without modifying unrelated session rows; verify fresh and upgraded database tests pass.
-- [ ] 2.3 Add a restart loader that claims only due records and reacquires normal relay admission; verify two simulated workers cannot run one turn twice.
+- [x] 2.3 Add a restart loader that claims only due records and reacquires normal relay admission; verify two simulated workers cannot run one turn twice.
 
 ## 3. Shared recovery coordinator
 
 - [x] 3.1 Add failing policy tests for bounded exponential backoff, retry-after clamping, jitter bounds, total recovery deadline, and ambiguous partial output; verify they fail before orchestration is added.
-- [ ] 3.2 Implement one coordinator around complete backend attempts with a stable turn key and accepted-result guard; verify retry and late-result race tests pass.
+- [x] 3.2 Implement one coordinator around complete backend attempts with a stable turn key and accepted-result guard; verify retry and late-result race tests pass.
 - [ ] 3.3 Capture explicit fallback chains at submission and migrate the existing `/gowork` single fallback into a one-entry chain; verify no unconfigured provider is ever selected.
 - [ ] 3.4 Integrate the coordinator with interactive run orchestration and automated task-loop result handling; verify identical capacity outcomes keep both kinds of task pending.
 
