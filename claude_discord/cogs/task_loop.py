@@ -608,6 +608,15 @@ class TaskLoopCog(commands.Cog):
                 return running
         return None
 
+    async def find_running(self, plan_path: str) -> _Running | None:
+        """The build already working on *plan_path*, if any (for start adapters)."""
+        plan = Path(plan_path).expanduser()
+        try:
+            repo_dir = await resolve_repo(plan)
+        except (ValueError, OSError):
+            return None
+        return self._running_plan(repo_dir, plan.name)
+
     def _busy(self, repo_dir: Path, plan_name: str, *, manifest: bool) -> bool:
         """Is a start for this plan blocked by builds already in flight?"""
         if manifest:
@@ -1787,6 +1796,10 @@ class TaskLoopCog(commands.Cog):
                     per_step_ai=per_step,
                     mode=mode,
                 )
+            except BuildAlreadyRunningError as exc:
+                with contextlib.suppress(discord.HTTPException):
+                    await report_to.send(f"ℹ️ {exc} — nothing new was started.")
+                return exc.thread
             except (ValueError, RuntimeError) as exc:
                 with contextlib.suppress(discord.HTTPException):
                     await report_to.send(f"Could not start: {exc}")
@@ -2658,6 +2671,9 @@ class TaskLoopCog(commands.Cog):
                 per_step_ai=per_step,
                 mode=parse_mode(mode) or (mode if mode in MODES else None),
             )
+        except BuildAlreadyRunningError as exc:
+            await interaction.followup.send(f"ℹ️ {exc} — nothing new was started.")
+            return
         except (ValueError, RuntimeError) as exc:
             await interaction.followup.send(f"Could not start: {exc}")
             return

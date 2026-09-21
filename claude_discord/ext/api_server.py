@@ -1988,6 +1988,17 @@ class ApiServer:
                 fallback_model=fallback_model,
             )
             return web.json_response({"status": "queued", "place": place}, status=202)
+        # A plan that is already being built is answered with that build (T11c):
+        # a repeated request must never open a second one.
+        running = await cog.find_running(plan_path.strip())
+        if running is not None:
+            return web.json_response(
+                {
+                    "status": "running",
+                    "thread_id": running.worker_thread_id,
+                    "build_id": running.build_id,
+                }
+            )
         # Runs in the background: with no harness given, the bot asks in the
         # channel and waits for Drew's typed reply before starting.
         asyncio.create_task(
