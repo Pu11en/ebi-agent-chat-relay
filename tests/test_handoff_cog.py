@@ -781,3 +781,105 @@ class TestReconnect:
         cog.reconcile_on_reconnect = AsyncMock()  # type: ignore[method-assign]
         await cog.on_ready()
         cog.reconcile_on_reconnect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Outbox retry delivery (task 4.1)
+# ---------------------------------------------------------------------------
+
+from claude_discord.database.handoff_repo import OutboxStatus  # noqa: E402
+from claude_discord.handoff_return import record_and_deliver_handoff_result  # noqa: E402
+
+
+class TestOutboxDelivery:
+    @pytest.mark.asyncio
+    async def test_unavailable_origin_receives_one_later_result_without_rerunning(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "drewp" / "main-projects"
+        root.mkdir(parents=True)
+        channel = FakeChannel()
+        cog = _cog(repo, channel, root)
+        chat = _online_chat(cog)
+        starter = _starter(channel, make_task_event())
+        await cog.handle_message(starter, now=NOW)
+        sink = chat.run_handoff_turn.await_args.kwargs["result_sink"]
+
+        # The origin thread (6006) is not reachable while the worker finishes.
+        # (The sink stamps the result with the wall clock, so "later" is real.)
+        await sink("Found it under youtube-money.", None)
+        later = datetime.now(UTC) + timedelta(hours=1)
+        pending = await repo.pending_deliveries(now=later)
+        assert len(pending) == 1 and pending[0].status is OutboxStatus.PENDING
+        job = await repo.get_job(TASK_ID, "david")
+        assert job is not None and job.state is HandoffState.COMPLETED
+
+        # The origin comes back; the next delivery pass reaches it exactly once.
+        origin = FakeThread(6006, "origin")
+        channel.threads[6006] = origin
+        first = await cog.deliver_pending(now=later)
+        second = await cog.deliver_pending(now=later + timedelta(hours=1))
+
+        assert first == 1 and second == 0
+        assert len(origin.sent) == 1 and "youtube-money" in origin.sent[0]
+        assert await repo.pending_deliveries(now=later + timedelta(days=1)) == []
+        assert len(await repo.list_attempts(TASK_ID, "david")) == 1, "never rerun"
+        assert chat.run_handoff_turn.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_delivery_gives_up_visibly_at_the_bound(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        from claude_discord.database.handoff_repo import MAX_DELIVERY_ATTEMPTS
+
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        task = make_task()
+        await repo.record_task(task, now=NOW)
+        job = await repo.get_job(TASK_ID, "david")
+        assert job is not None
+        await repo.save_transition(apply(job, HandoffTrigger.START, now=NOW))
+        await record_and_deliver_handoff_result(
+            repo=repo,
+            bot=cog.bot,
+            task_id=TASK_ID,
+            local_agent_id="david",
+            text="done",
+            error=None,
+            now=NOW,
+        )
+        when = NOW
+        for _ in range(MAX_DELIVERY_ATTEMPTS + 2):
+            when += timedelta(hours=2)
+            await cog.deliver_pending(now=when)
+        entry = await repo.get_delivery(1)
+        assert entry is not None
+        assert entry.status is OutboxStatus.ABANDONED
+        assert entry.attempts == MAX_DELIVERY_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_reconnect_also_flushes_the_outbox(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        cog = _cog(repo, channel, tmp_path)
+        _online_chat(cog)
+        cog.deliver_pending = AsyncMock(return_value=0)  # type: ignore[method-assign]
+        await cog.reconcile_on_reconnect(now=NOW)
+        cog.deliver_pending.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delivery_loop_starts_with_the_cog(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        channel = FakeChannel()
+        config = HandoffConfig.from_env(CONFIG_ENV)
+        assert config is not None
+        cog = AgentHandoffCog(_bot(channel), repo=repo, config=config)  # type: ignore[arg-type]
+        try:
+            await cog.cog_load()
+            assert cog.delivery_loop.is_running()
+        finally:
+            await cog.cog_unload()
+        await asyncio.sleep(0.05)
+        assert not cog.delivery_loop.is_running()

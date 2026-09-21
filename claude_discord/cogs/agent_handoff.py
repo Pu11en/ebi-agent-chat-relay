@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from claude_code_core.handoffs.protocol import HandoffEvent, HandoffEventKind, HandoffTask
 from claude_code_core.handoffs.state import HandoffJob
@@ -36,6 +36,7 @@ from ..handoff_discord import ensure_job_thread, parse_event_message
 from ..handoff_executor import HandoffExecutor, build_handoff_executor
 from ..handoff_messages import HandoffEnvelopeError
 from ..handoff_progress import HandoffProgressPoster
+from ..handoff_return import deliver_pending_handoff_results
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 SCAN_LIMIT = 200
+DELIVERY_INTERVAL_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,13 @@ class AgentHandoffCog(commands.Cog):
         self._start_loops = start_loops
         self._run_lock = asyncio.Lock()
         self._restart_reconciled = False
+
+    async def cog_load(self) -> None:
+        if self._start_loops and not self.delivery_loop.is_running():
+            self.delivery_loop.start()
+
+    async def cog_unload(self) -> None:
+        self.delivery_loop.cancel()
 
     @property
     def config(self) -> HandoffConfig:
@@ -236,6 +245,7 @@ class AgentHandoffCog(commands.Cog):
             ]
         discovered = await self._scan_starters(stamp)
         await self.run_executor(now=stamp)
+        await self.deliver_pending(now=stamp)
         return ReconnectReport(requeued=requeued, discovered=discovered)
 
     async def _scan_starters(self, now: datetime) -> list[str]:
@@ -283,6 +293,38 @@ class AgentHandoffCog(commands.Cog):
             return None
         await self._poster.announce_accepted(task, now=now)
         return task.task_id
+
+    # -- result delivery -----------------------------------------------------
+
+    @tasks.loop(seconds=DELIVERY_INTERVAL_SECONDS)
+    async def delivery_loop(self) -> None:
+        """Retry origin deliveries from the outbox. Never raises."""
+        try:
+            await self.deliver_pending()
+        except Exception:
+            logger.exception("handoff delivery pass failed")
+
+    @delivery_loop.before_loop
+    async def _before_delivery(self) -> None:
+        bot: Any = self.bot
+        if callable(getattr(bot, "wait_until_ready", None)):
+            await bot.wait_until_ready()
+
+    async def deliver_pending(self, *, now: datetime | None = None) -> int:
+        """One outbox pass; returns how many results reached their origin."""
+        stamp = (now or datetime.now(UTC)).astimezone(UTC)
+        before = await self._repo.pending_deliveries(now=stamp)
+        if not before:
+            return 0
+        await deliver_pending_handoff_results(repo=self._repo, bot=self.bot, now=stamp)
+        still = {entry.id for entry in await self._repo.pending_deliveries(now=stamp)}
+        delivered = 0
+        for entry in before:
+            current = await self._repo.get_delivery(entry.id)
+            if current is not None and current.delivered_at is not None:
+                delivered += 1
+        logger.debug("handoff outbox pass: %d delivered, %d still due", delivered, len(still))
+        return delivered
 
     # -- execution -----------------------------------------------------------
 
