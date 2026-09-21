@@ -280,3 +280,104 @@ async def test_a_clash_keeps_the_workers_branch(repo: Path) -> None:
         branch = task["reason"].split("branch ")[-1].rstrip(")")
         assert branch in _git(running.copy.path, "branch", "--list", branch)  # still there
     assert _git(running.copy.path, "status", "--porcelain").strip() == ""  # the copy is clean
+
+
+def _plan_with_mode(repo: Path, text: str | None = None) -> None:
+    (repo / "PLAN.md").write_text(text or _passing_manifest())
+    _git(repo, "commit", "-qam", "plan")
+
+
+async def _run_until_settled(cog: TaskLoopCog, channel: MagicMock, plan: Path):  # noqa: ANN202
+    worker = await cog.start_loop(channel, str(plan), mode=getattr(cog, "_test_mode", None))
+    for _ in range(1500):
+        if cog.running and (cog.running[0].in_review or cog.running[0].waiting_for_person):
+            break
+        await asyncio.sleep(0.01)
+    return worker, json.loads(
+        (cog._store.path.with_name("builds") / f"thread-{worker.id}.json").read_text()
+    )
+
+
+def _channel() -> MagicMock:
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 1
+    channel.send = AsyncMock()
+    return channel
+
+
+async def test_balanced_ordinary_tasks_need_no_review(repo: Path) -> None:
+    """T16: an ordinary balanced task is accepted on its checks alone."""
+    cog, chat, _threads, _worked = _cog()
+    cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    _worker, ledger = await _run_until_settled(cog, _channel(), repo / "PLAN.md")
+    assert {t["status"] for t in ledger["tasks"].values()} == {"accepted"}
+    assert not any("reviewing" in str(c.args[2]) for c in chat.run_fresh_turn.call_args_list)
+
+
+async def test_a_hard_task_cannot_be_accepted_without_a_reviewer(repo: Path) -> None:
+    """T16: required review with no reviewer AI is 'blocked', never approval."""
+    cog, _chat, _threads, _worked = _cog()
+    cog._is_hard = AsyncMock(side_effect=lambda _r, step: "catalog contract" in step)  # type: ignore[method-assign]
+    _worker, ledger = await _run_until_settled(cog, _channel(), repo / "PLAN.md")
+    api = ledger["tasks"]["product.catalog-api"]
+    assert api["status"] == "blocked" and "review" in api["reason"] and api["result_commit"]
+    assert ledger["tasks"]["marketing.launch-post"]["status"] == "accepted"
+
+
+async def test_a_reviewer_verdict_decides_and_a_broken_review_blocks(repo: Path) -> None:
+    """T16: CHANGES blocks, APPROVE accepts, no verdict blocks."""
+    cog, chat, _threads, _worked = _cog()
+    cog._test_mode = "careful"  # type: ignore[attr-defined]
+    cog._reviewer_for = AsyncMock(return_value=("claude", "opus"))  # type: ignore[method-assign]
+    settings = MagicMock()
+    settings.current_backend = AsyncMock(return_value="claude")
+    settings.current_model = AsyncMock(return_value="sonnet")
+    settings.set_backend = AsyncMock()
+    settings.set_model = AsyncMock()
+    chat._backend_settings = settings
+    original = chat.run_fresh_turn.side_effect
+    verdicts = {
+        "catalog contract": "CHANGES: the schema lacks a version field",
+        "Write the launch announcement": "",
+        "catalog on the website": "APPROVE",
+        "launch styling": "APPROVE",
+    }
+
+    async def turn(seed, thread, prompt, *, working_dir, result_sink, **slot):  # noqa: ANN001
+        if "review" in prompt.lower() and "APPROVE" in prompt:
+            step = next((ln for ln in prompt.splitlines() if ln.startswith("The step: ")), "")
+            for key, verdict in verdicts.items():
+                if key in step:
+                    await result_sink(verdict or None, None if verdict else "reviewer crashed")
+                    return
+        await original(
+            seed, thread, prompt, working_dir=working_dir, result_sink=result_sink, **slot
+        )
+
+    chat.run_fresh_turn = AsyncMock(side_effect=turn)
+    _worker, ledger = await _run_until_settled(cog, _channel(), repo / "PLAN.md")
+    tasks = ledger["tasks"]
+    assert tasks["product.catalog-api"]["status"] == "blocked"
+    assert "schema lacks a version field" in tasks["product.catalog-api"]["reason"]
+    assert tasks["marketing.launch-post"]["status"] == "blocked"
+    assert "review" in tasks["marketing.launch-post"]["reason"]
+    assert tasks["website.page-styles"]["status"] == "accepted"
+    assert any("review" in c for c in tasks["website.page-styles"]["checks"])
+
+
+async def test_a_task_without_a_runnable_check_is_not_accepted(repo: Path) -> None:
+    """T16: every task needs real check evidence."""
+    _plan_with_mode(
+        repo,
+        re.sub(
+            r'"acceptance_check": "[^"]*"',
+            '"acceptance_check": "none"',
+            _passing_manifest(),
+            count=1,
+        ),
+    )
+    cog, _chat, _threads, _worked = _cog()
+    cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    _worker, ledger = await _run_until_settled(cog, _channel(), repo / "PLAN.md")
+    api = ledger["tasks"]["product.catalog-api"]
+    assert api["status"] == "blocked" and "no runnable check" in api["reason"]

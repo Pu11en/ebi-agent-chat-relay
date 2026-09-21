@@ -78,6 +78,7 @@ from claude_code_core.task_loop import (
     parse_new_steps,
     parse_pick,
     parse_review,
+    parse_review_verdict,
     parse_status,
     plan_check_command,
     plan_goal,
@@ -2445,10 +2446,16 @@ class TaskLoopCog(commands.Cog):
         """Run the task's acceptance check, then the plan's own check, on the combined copy."""
         results: list[str] = []
         passed = True
-        for label, argv in (
+        commands = (
             ("acceptance", _check_argv(acceptance_check)),
             ("plan", plan_check_command(_plan_text_of(project_copy))),
-        ):
+        )
+        if not any(argv for _label, argv in commands):
+            return False, [
+                f"no runnable check: the task says {acceptance_check!r} and the plan has no "
+                "Check line"
+            ]
+        for label, argv in commands:
             if not argv:
                 continue
             ok, tail = await run_check(cwd if label == "acceptance" else project_copy.path, argv)
@@ -2461,6 +2468,44 @@ class TaskLoopCog(commands.Cog):
             with contextlib.suppress(Exception):  # the check's own mess is not unsaved work
                 await _wc_git(project_copy.path, "checkout", "--", ".")
         return passed, results
+
+    async def _review_manifest_task(
+        self, running: _Running, outcome: str, base: str | None
+    ) -> tuple[str, str]:
+        """("skipped" | "approve" | "changes" | "none", detail) for one merged task (T16).
+
+        Cheap mode never reviews; balanced reviews only difficult tasks; careful reviews
+        every task. When a review is required, no reviewer or a broken review is "none".
+        """
+        assert running.copy is not None
+        if running.mode == "cheap" or not self.smart_review:
+            return "skipped", "no review in this mode"
+        if running.mode != "careful" and not await self._is_hard(running, outcome):
+            return "skipped", "an ordinary task: checks are the evidence"
+        settings = getattr(self._chat(), "_backend_settings", None)
+        reviewer = await self._reviewer_for(running)
+        if reviewer is None or settings is None or running.run_session is None:
+            return "none", "a review is required here but no reviewer AI is configured"
+        tid = running.worker_thread_id
+        harness = await settings.current_backend(tid)
+        model = await settings.current_model(harness, tid)
+        await settings.set_backend(reviewer[0], thread_id=tid)
+        await settings.set_model(reviewer[0], reviewer[1], thread_id=tid)
+        try:
+            text, error = await running.run_session(
+                review_step_prompt(running.copy.plan_path, outcome, base),
+                f"🔍 A second AI ({reviewer[0]} · {reviewer[1]}) is reviewing this task…",
+            )
+        except Exception as exc:
+            return "none", f"the review failed to run: {exc}"
+        finally:
+            with contextlib.suppress(Exception):
+                await settings.set_backend(harness, thread_id=tid)
+                if model:
+                    await settings.set_model(harness, model, thread_id=tid)
+        if error and not text:
+            return "none", f"the review failed: {error}"
+        return parse_review_verdict(text)
 
     async def _run_manifest_task(self, running: _Running, task: ReadyTask) -> ManifestResult:
         """Run one manifest task in its own side copy and worker thread (T11b, T13).
@@ -2539,6 +2584,7 @@ class TaskLoopCog(commands.Cog):
             # Integration is serialized per build (T15): one merge at a time, in the order
             # results arrive, and the combined check runs before anything is accepted.
             async with running.git_lock:
+                base_commit = await head_commit(project_copy.path)
                 merged_before = ok and await side_is_merged(project_copy, side)
                 has_work = ok and (merged_before or await side_has_new_work(project_copy, side))
                 if merged_before:
@@ -2555,6 +2601,13 @@ class TaskLoopCog(commands.Cog):
                     checks_ok, checks = await self._combined_checks(
                         project_copy, assignment.acceptance_check, cwd=project_copy.path / rel
                     )
+            verdict, note = "skipped", ""
+            if landed and checks_ok:
+                verdict, note = await self._review_manifest_task(
+                    running, assignment.outcome, base_commit
+                )
+                if verdict != "skipped":
+                    checks.append(f"review ({verdict}): {note or 'approved'}")
             reason = detail or result.get("error") or ""
             if ok and not has_work:
                 reason = reason or "the worker reported DONE but committed no new work"
@@ -2564,11 +2617,15 @@ class TaskLoopCog(commands.Cog):
                 ) + f" (both versions kept: the worker's is on branch {side.branch})"
             elif landed and not checks_ok:
                 reason = "combined check failed after merging: " + "; ".join(checks)
+            elif landed and verdict == "changes":
+                reason = f"the review sent it back: {note}"
+            elif landed and verdict == "none":
+                reason = f"required review unavailable: {note}"
             elif not ok:
                 reason = (
                     reason or "the worker did not finish"
                 ) + f" (its work is kept at {side.path})"
-            accepted = landed and checks_ok
+            accepted = landed and checks_ok and verdict in ("approve", "skipped")
             await self._record(
                 running,
                 assignment.outcome,

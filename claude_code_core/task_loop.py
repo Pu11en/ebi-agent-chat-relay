@@ -1180,6 +1180,23 @@ def parse_hard(reply: str | None) -> bool:
 _REVIEW_RE = re.compile(r"^(APPROVE|CHANGES:)\s*(.*)$")
 
 
+def parse_review_verdict(text: str | None) -> tuple[str, str]:
+    """("approve" | "changes" | "none", detail) — "none" when the reviewer gave no verdict.
+
+    Unlike ``parse_review``, silence is reported, not read as approval: a *required*
+    review that is missing or broken must block, never accept (T16).
+    """
+    lines = [ln.strip().strip("*_`").strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return "none", "the reviewer gave no verdict"
+    m = _REVIEW_RE.match(lines[-1])
+    if m is None:
+        return "none", "the reviewer gave no verdict"
+    if m.group(1) == "APPROVE":
+        return "approve", ""
+    return "changes", m.group(2).strip() or "the reviewer didn't say what"
+
+
 def parse_review(text: str | None) -> str | None:
     """None for APPROVE (or no verdict at all — a broken review never blocks)."""
     lines = [ln.strip().strip("*_`").strip() for ln in (text or "").splitlines() if ln.strip()]
