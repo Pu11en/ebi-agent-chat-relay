@@ -12,7 +12,7 @@ Try: `uv run python -m extensions.harness_audit.cli audit --machine drewai --har
 
 - [x] 2.1 **Depends on: 1.1, 1.2; owns: `extensions/harness_audit/discovery.py`, `tests/test_harness_audit_discovery.py`.** Discover global/project instructions, memory, skills, tools, plugins, connectors, commands, hooks, bot additions, and native settings with source/scope/permissions/size/hash metadata; verify files outside approved roots and secret values are excluded.
 - [x] 2.2 **Depends on: 2.1; owns: `extensions/harness_audit/claude_collector.py`, `tests/test_harness_audit_claude.py`.** Resolve Claude effective inputs from configuration, invocation, symlinks, and existing session metadata; verify loaded, configured, installed-only, and unknown fixtures are distinguished without a model call.
-- [ ] 2.3 **Depends on: 2.1; owns: `extensions/harness_audit/codex_collector.py`, `tests/test_harness_audit_codex.py`.** Resolve Codex effective inputs from native config, invocation, symlinks, skill discovery, and existing rollout metadata; verify evidence levels without changing model or reasoning settings.
+- [x] 2.3 **Depends on: 2.1; owns: `extensions/harness_audit/codex_collector.py`, `tests/test_harness_audit_codex.py`.** Resolve Codex effective inputs from native config, invocation, symlinks, skill discovery, and existing rollout metadata; verify evidence levels without changing model or reasoning settings.
 
 ## 3. Deterministic findings
 
