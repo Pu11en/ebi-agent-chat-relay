@@ -222,6 +222,30 @@ def test_unreadable_files_are_reported_rather_than_guessed(tmp_path: Path) -> No
     assert codex.settings.parse_error
 
 
+def test_an_oversize_file_is_flagged_by_size_and_never_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stray multi-gigabyte file in ~/.claude must not be loaded to be refused."""
+    from extensions.harness_audit import discovery as discovery_module
+
+    roots = fake_home(tmp_path)
+    big = write(roots.claude_home / "settings.local.json", "{" * 64)
+    monkeypatch.setattr(discovery_module, "MAX_CONFIG_BYTES", 16)
+    original = Path.read_bytes
+
+    def guarded(self: Path) -> bytes:
+        assert self.resolve() != big.resolve(), "oversize file was read whole"
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded)
+    result = discover(roots, salt="test")
+    entry = by_path(result.files, "~/.claude/settings.local.json")
+    assert "too large" in entry.read_error
+    assert entry.size.byte_size == 64
+    assert entry.redaction is RedactionStatus.WITHHELD
+    assert entry.content_hash == ""
+
+
 def test_discovery_never_writes_and_reads_only_the_roots_it_was_given(tmp_path: Path) -> None:
     roots = fake_home(tmp_path)
     before = snapshot(tmp_path)
