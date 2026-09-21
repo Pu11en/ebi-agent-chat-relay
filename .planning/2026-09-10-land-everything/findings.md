@@ -40,3 +40,31 @@ All three Discord sessions were stopped by Drew's request. Sources: four read-on
 - **Hermes gateway:** PID 537 is still running.
 - **crontab line 1:** runs `~/.hermes/profiles/asset/cron/audio-cache-cleaner.sh`, which is missing.
 - **crontab line 2:** runs `/home/drewp/discord-control/idle-nudge.sh`, which is the wrong path.
+
+## /gowork design decisions (Drew, one at a time)
+- **Q1, who picks the worker's harness and model:** buttons when `/gowork` is typed. Pick the harness first, then the model from that harness's list. The worker thread keeps that choice for every round.
+- **Q2, pings:** ping only for a yes/no question, when the loop is stuck, and once at the end. Finished tasks post quietly, and the bot's 'reply needed' ping is silenced in worker threads.
+- **Q3, how a build starts:** once a plan is ready, the planner asks 'Start the build?' with a Yes button. Yes brings up the harness and model buttons, then the loop starts. Typing `/gowork` also still works.
+- **Q4, which plan runs:** the planner's 'Start the build?' button runs the plan it just wrote. A typed `/gowork` shows buttons for every plan in the project that still has unticked tasks.
+- **Q5, bot restart mid-build:** it resumes by itself. Each running loop (plan, worker thread, report channel, harness, model) is saved in the bot's database. On startup it posts '🔁 Resuming: Task N of M' and continues. A question left unanswered when the restart happened is asked again.
+- **(Re-asked after a mix-up)** Drew confirmed the flow: each task gets a fresh session in ONE worker thread, the worker tests its own work, the bot verifies, the session is cleared, and the next task starts in the same thread.
+- **Tests:** the bot runs the plan's test command itself after every task. A failure means the task isn't done: it retries once, then stops.
+- **At the end:** the worker thread is deleted completely, and the summary/output is posted in the main (planner) thread. The recaps are kept in the plan's progress log first, so nothing is lost. Drew's message was cut off at "and then", so this is still being planned.
+- **GitHub is always last:** everything stays local (local git commits only) until Drew has tried it on localhost and said it's good. Then one yes/no, "Put it on GitHub?". The exception: Drew explicitly says to skip testing and push. This is now a global rule in /home/drewp/AGENTS.md for every harness.
+- **The try-it step:** when results post, a local copy is already running. The message has the localhost link, 3 quick checks, and 'Looks good' / 'Something's off' buttons. 'Something's off' creates a new fix task.
+- **Re-confirmed:** Drew kept the five earlier answers (buttons for harness and model, pings only when needed, the Start button, the plan picker, auto-resume).
+- **Hole 1, where the worker works:** in its own copy (a worktree on its own branch). 'Looks good' adds the work to the project, then the copy and its branch are deleted to free the space. 'Something's off' keeps the copy for the fix task.
+- **Hole 2, how a task is checked:** every plan has a plain-words 'how to check it' line (a test command, or something like 'localhost:8765 loads'). The bot runs it after every task, and a failure means the task isn't done.
+- **Hole 3, a missing DONE line:** strict. No status line means the task is retried even if the work looks fine, then the loop stops as stuck after the retry limit. (Current behavior; keep it.)
+- **Hole 4, a stuck build:** the thread and the copy stay. The main thread shows '🛑 Stuck on Task N: <reason>' with three buttons: Try again, Skip this task, Throw it all away. Only a finished build cleans up by itself.
+- **Hole 5, the preview's lifetime:** it keeps running through 'Something's off' (the fix updates it and a fresh try-it card is posted). It shuts down after 'Looks good', or after 24 hours with no tap.
+- **Hole 6, the cost cap:** 40 tries per build. At the limit it stops with '🛑 Used 40 tries, X of Y tasks done' and a 'Keep going' button. All /gowork design questions are now answered.
+- **No shared planning skill:** Drew declined it. Planning stays with the /home/drewp/AGENTS.md rule (checkbox tasks plus a Check: line), and /gowork finds the plan from the thread's project.
+
+## 2026-09-12 — /gowork ending, Drew's pick: Style A
+- The ending posts ONE big coloured card (embed, not an image) in the thread where /gowork was typed, with a ping.
+- The bot tests the finished work itself first (the plan's Check line + an AI run of the "How to try it" checks), and the card lists each check with ✅/❌.
+- No links to open. Drew types "looks good" to keep it, or says what's wrong (becomes a Fix step).
+- Localhost links are useless to him (he's on Discord, often on his phone, away from the PC).
+- Example cards live in Discord channel #gowork-examples (id 1548236394630221846).
+- Also decided: planning must ASK "gowork or normal session?" every time (global AGENTS.md, backup .retired-harness/AGENTS.md.before-ask-gowork-20260912).

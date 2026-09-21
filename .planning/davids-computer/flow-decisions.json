@@ -1,0 +1,37 @@
+{
+  "id": "parallel_project_mode",
+  "question": "When starting another task in the same project, how should simultaneous work share the files?",
+  "options": [
+    {
+      "id": "isolated",
+      "label": "Separate working copies",
+      "tradeoff": "Keeps simultaneous edits apart; completed changes must be brought together."
+    },
+    {
+      "id": "shared",
+      "label": "Separate threads, same files",
+      "tradeoff": "Uses the existing folder immediately; overlapping edits need coordination."
+    },
+    {
+      "id": "queued",
+      "label": "Queue tasks for that project",
+      "tradeoff": "Avoids simultaneous edits; the second task waits."
+    },
+    {
+      "id": "automatic",
+      "label": "Let the agent choose per task",
+      "tradeoff": "Fewer choices for you; the agent must explain the approach it selected."
+    }
+  ],
+  "recommendation": "isolated",
+  "hard": true,
+  "status": "unanswered",
+  "settled": [
+    "Control-center is the entry point, not a separate start-here channel.",
+    "Category selects the computer; no computer picker.",
+    "Favorites and recent folders first, with real filesystem browsing.",
+    "New work opens under workers.",
+    "Both operators keep access; notify the current requester."
+  ],
+  "planning_focus": "Deferred: establish argument-free /new and category/thread command behavior first."
+}

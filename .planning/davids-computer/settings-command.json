@@ -1,0 +1,149 @@
+{
+  "command": "/settings",
+  "status": "design_in_progress_not_implemented",
+  "required_arguments": [],
+  "navigation": {
+    "clickable_options": true,
+    "typed_search": true,
+    "implementation_note": "Choose a Discord-supported search/picker interaction during implementation; do not promise live filtering without verifying it.",
+    "principle": "Few top-level commands; discover related actions through clickable menus instead of memorizing separate commands."
+  },
+  "control_center": {
+    "scope": "Settings and capability visibility for the current category computer; model defaults affect future sessions only. Detailed scope of new menu sections remains to discuss.",
+    "existing_sessions": "retain current settings",
+    "default_agent_and_model": "available here",
+    "choose_existing_thread": "not part of current agreed control-center settings flow after user correction",
+    "menu_sections": [
+      "default_model_for_new_sessions",
+      "skills_inventory",
+      "shared_instructions",
+      "connections",
+      "bot_status",
+      "updates"
+    ]
+  },
+  "session_thread": {
+    "status": "separate options not yet defined",
+    "model_changes": "excluded; use /switch only",
+    "does_not_change": "category defaults or other sessions"
+  },
+  "switch_shortcut": {
+    "command": "/switch",
+    "purpose": "quick agent/model selection",
+    "default_location": "current session thread",
+    "settings_overlap": "No model selector in thread settings; control-center settings handles future-session defaults only.",
+    "selection_flow": "Choose a model; resolve its harness automatically, with no separate harness step."
+  },
+  "next_question": null,
+  "user_correction": "Thread settings are not for model changes; thread session commands differ from control-center commands.",
+  "default_model_picker": {
+    "initial_view": "favorites_and_recent",
+    "typed_search": true,
+    "click_selection": true,
+    "user_answer": "A: favorites and recent",
+    "scope": "future sessions in current category only",
+    "existing_sessions": "unchanged",
+    "favorite_ownership": "personal_to_each_user",
+    "selection_unit": "model",
+    "group_by_harness": false,
+    "separate_harness_selection": false,
+    "harness_resolution": "Automatically select the compatible configured harness associated with the chosen model on the current category computer.",
+    "recent_ownership": "personal_to_each_user",
+    "ownership_user_answer": "Yes, personal to each user"
+  },
+  "user_corrections": [
+    "Do not organize model selection by harness; select the harness automatically from the chosen model.",
+    "Prefer selectable options within a few commands; fold the skills inventory into /settings rather than adding /skills."
+  ],
+  "deferred_decisions": [],
+  "additional_settings": {
+    "selected": [],
+    "user_answer": "A, B and C; discuss each one separately",
+    "discussion_order": [],
+    "browser_starting_folder_definition": "Where folder browsing opens initially; it does not automatically select the new session working directory or restrict browsing elsewhere.",
+    "user_correction": "Nah, not A; we do not need notification controls.",
+    "excluded": [
+      "notification_noise",
+      "browser_starting_folder",
+      "concurrent_session_limit"
+    ],
+    "user_corrections": [
+      "No notification controls in settings.",
+      "No browser starting-folder setting.",
+      "Automatic capacity is default behavior; do not expose a concurrency setting."
+    ]
+  },
+  "notification_noise": {
+    "status": "excluded_from_settings",
+    "recipient": "requester of the corresponding turn, as already agreed",
+    "note": "No runtime notification behavior is changed by this planning choice."
+  },
+  "browser_starting_folder": {
+    "status": "excluded_from_settings",
+    "new_session_flow": "Favorites, Recent and Browse remain available."
+  },
+  "concurrency": {
+    "status": "automatic_policy_requested_not_implemented",
+    "user_answer": "Should be as much as the computer can handle.",
+    "policy": "Automatically admit as much simultaneous work as the computer and configured model provider can sustain; queue additional requests when capacity is constrained.",
+    "per_computer": true,
+    "idle_threads": "Do not consume running-task slots.",
+    "manual_limit_picker": "Not needed in the normal user flow.",
+    "implementation_notes": [
+      "Current limiter is a fixed semaphore; automatic scheduling is a new requirement, not current behavior.",
+      "Measure actual resource pressure and task demand; do not infer a universally safe limit from CPU count or free RAM alone.",
+      "Respect observed provider throttling and subscription limits; do not probe with paid load tests without authorization.",
+      "Preserve current limits until adaptive behavior is implemented and verified."
+    ],
+    "verified_current_local_capacity": {
+      "limit": 10,
+      "running": 2,
+      "queued": 0,
+      "source": "Live local /api/sessions during this design turn"
+    },
+    "observed_runtime_resources": {
+      "logical_cpus": 4,
+      "total_memory_approx": "19 GiB",
+      "available_memory_approx": "15 GiB"
+    },
+    "remote_capacity": {
+      "david": "Last reported 3; not reverified live.",
+      "imac": "Not verified."
+    },
+    "settings_visibility": "excluded_from_settings",
+    "default_behavior": true
+  },
+  "skills_inventory": {
+    "entry": "/settings -> Skills",
+    "standalone_command": false,
+    "status": "design_in_progress_not_implemented",
+    "initial_view": "undecided",
+    "purpose": "Browse and search skills on this computer, see their purpose and verified availability across harnesses.",
+    "installation_or_sync": "not authorized by this design discussion"
+  },
+  "accepted_sections_pending_detail": [
+    "shared_instructions",
+    "connections",
+    "bot_status",
+    "updates"
+  ],
+  "candidate_sections_not_agreed": {
+    "memory": "View and manage remembered preferences and facts, with ownership and sharing still to define.",
+    "backups_and_recovery": "Recover earlier bot settings after a bad change; exact backup scope and restore behavior still to define."
+  },
+  "planning_scope": "Finish control-center menu inventory, then discuss each section one at a time; thread commands remain deferred. Acceptance of menu sections is not implementation authorization.",
+  "natural_language_access": {
+    "status": "agreed_requirement_not_implemented",
+    "entry": "Ordinary requests inside a session",
+    "coverage": "Every supported settings menu action must also be available through natural-language session requests.",
+    "commands_role": "Discoverable, explicit and dependable alternative; no requirement to type a command to change settings.",
+    "execution": "Use the same validated control operations and persistent state as the corresponding menu action; verify and report the actual outcome.",
+    "scope": "Resolve current-session versus future-session/category defaults from the request; retain category and personal ownership boundaries, clarify genuinely ambiguous targets.",
+    "limitations": "Observe the same access and capability limits as menus, including owner-only sign-in steps or offline computers; never claim an unavailable change succeeded.",
+    "examples": [
+      "Set the default model for new sessions in this category to [model].",
+      "Show which skills all the harnesses here can use.",
+      "Change the shared instruction about [topic] to [new rule]."
+    ]
+  }
+}

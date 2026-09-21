@@ -1,0 +1,125 @@
+# Shared command system for the three computer categories
+
+## What we have agreed
+- **This is the command design we are discussing, not an installed replacement command set.**
+- One common default system for Lenovo/drewai, iMac/I mac codex and David/david.
+- Each computer keeps its **control-center** and **workers** channels; each workers thread is a session.
+- The category determines the computer and its bot. Both operators keep their existing access.
+- Type a command by itself and let its buttons/pickers guide the rest; no required extra command or typed argument after it.
+- Keep few top-level commands and expose related features as visible menu options; do not add a separate slash command for every feature.
+- **/new creates a clean idle session.** Choose the folder, create the thread, then type the first task there when ready.
+- Creating the thread must not start a model, invent a greeting task, copy another conversation or carry its pending goal into the new one.
+- This corrects the earlier suggestion to collect a task before opening the thread.
+
+## Proposed control-center commands
+- **Discussion order:** finish control-center commands before discussing thread commands; earlier thread proposals remain deferred.
+- **/new** — Favorites / Recent / Browse → choose a folder → create an idle workers thread → return its link.
+- **/sessions** — show sessions started by the requester, including older and archived threads, newest activity first, strictly within this category; offer an Everyone filter within that same category. Show project and idle/running/archived state; select one to open or manage it.
+- **/settings in control-center** — one clickable menu containing Default model, Skills, Shared instructions, Connections, Bot status and Updates. These sections are accepted for design; their detailed behavior is not all settled or implemented. Default model changes affect future sessions only; this is not a picker for changing an existing thread’s model.
+- **/help** — show only the relevant control-center actions and short examples.
+- **Default model picker chosen:** one unified Favorites + Recent view with clickable choices and typed search; do not group by harness or ask for a separate harness choice. The selected model automatically determines its matching configured harness on this category’s computer. Selecting a default affects future sessions in this category only.
+- **Model favorites and recents are personal:** each user sees their own shortcuts and selection history. This does not change the agreed category-wide scope of future-session model defaults.
+- **Concurrency direction chosen:** each computer should run as much simultaneous work as it can sustain, automatically queueing when resources or provider limits constrain it. This is default behavior, excluded from /settings; do not add a concurrency control. Idle threads do not consume running-task slots; automatic capacity control is not yet implemented.
+- **Notification controls excluded:** keep the agreed requester-only notification behavior without adding notification customization to this settings menu.
+- **Starting-folder setting excluded:** /new keeps Favorites, Recent and Browse without adding a configurable browser starting location to /settings.
+- No additional command is required to finish one of these flows.
+- Advanced maintenance stays inside appropriate menus instead of adding every feature as another top-level command.
+- Do not remove old commands until the agreed replacements have been built and checked.
+
+## Proposed commands inside a session thread
+- **/stop** — stop this thread’s current run while keeping its conversation and files.
+- **/switch** — quick model selection for this session; resolve the matching harness automatically from the chosen model, with no separate harness selection.
+- **Thread settings** — separate options still to be defined; model changes are excluded and belong only to /switch. Do not copy control-center settings into threads.
+- **/help** — show thread-specific actions, including natural-language session management examples.
+- Normal task requests remain ordinary messages, and follow-ups stay in this thread.
+- More detailed context/tools/usage controls can sit inside the session’s settings/help controls rather than crowding the initial slash list.
+- This describes which commands execute in each place; it does not promise Discord will hide all other entries from the native slash picker.
+
+## Natural-language session management
+- **“Open another session in this folder”** — create a new idle thread using the current project folder; return a link without starting the new agent.
+- **“Open a session in [folder]”** — resolve the folder on this computer, or present a picker if it is ambiguous, then create an idle thread.
+- **“Show the other sessions”** — list accessible sessions in this category with clear names and current state.
+- **“Close this session”** — apply the close behavior we choose below; keep the project files.
+- **“Close the session called [name]”** — resolve an unambiguous session in this category; if names collide, present the matching choices.
+- **“Close the other sessions”** — scope “other” to this category and exclude the current thread; stop selected running work immediately and archive those threads, preserving history and project files.
+- Session management must use explicit, validated control operations, not merely claim success in a model reply.
+- Validate requester access and destination category when performing every action; names and quoted text are not permission to operate on another computer.
+- Keep each operator’s personal preferences; notify the person requesting the action.
+- Close does not mean delete project files or erase the conversation history.
+
+## The real Discord limitation and proposed solution
+- Discord says administrators can use all application commands, and channel command permissions carry into child threads: https://docs.discord.com/developers/interactions/application-commands#permissions .
+- Therefore three bots each registering /new can still give Drew and David three slash entries; category permission changes alone do not deliver the requested clean list.
+- **Recommended design to remove these duplicates:** register this shared command set once, and have its command handler route each request by category to the assigned computer bot.
+- The slash entry would belong to the same command-owning app across categories; task execution and session replies still belong to the assigned computer. This is not dynamically swapping the app shown beside the slash command.
+- This is an architectural proposal, not something already installed. It needs verified communication with each instance, online/offline reporting and category checks on both ends.
+- Other instances would stop registering duplicate versions of these commands only after routing is working; their normal task-message handling remains local.
+- Until that exists, separate bots can enforce where commands execute, but we cannot honestly promise category-only slash visibility for administrators.
+
+## Close behavior chosen
+- **A — Stop and archive:** stop the current run immediately, archive the thread, and retain conversation history and project files.
+- This is the selected behavior for the Close action and natural-language requests to close a session.
+- The choice is a design decision, not an instruction to close the current planning thread.
+- **Multi-select chosen:** select one or several sessions, then press Close; only the explicitly selected sessions are stopped and archived.
+- **Actions chosen:** Open, Close and New in same folder; Rename is not part of this command.
+- New in same folder uses one selected session’s folder and creates a clean idle thread, with no copied conversation, task or pending goal; the first user task message starts it.
+- The core /sessions design is agreed; implementation has not begun.
+- Parallel working-copy policy and optional background features remain unanswered and deferred while we establish the basic commands.
+
+## Skills inventory under discussion
+- **/settings → Skills** in control-center: a clickable, searchable inventory on the current category computer. The separate /skills proposal is withdrawn in favor of fewer commands with visible options; the inventory and its initial screen are not implemented.
+- Show what each skill does, whether it is shared globally on that computer or project-specific, and which installed harnesses actually discover it.
+- Distinguish shared files from verified harness discovery and runtime prerequisites; do not assume identical availability just because files exist.
+- Global scope on one computer does not imply installation on David’s or iMac’s computer; unavailable remote inventory must be shown as unverified.
+- Initial-screen question: all skills, shared across harnesses, availability gaps, or search first.
+- This discussion does not authorize installing or syncing skills, changing personal instructions, or running model probes.
+
+## Additional settings sections accepted
+- User accepted Shared instructions, Connections, Bot status and Updates as menu sections, not separate commands.
+- Shared instructions: view and manage rules intended for the computer’s harnesses; preserve personal ownership and define sharing before implementation.
+- Connections: show accounts/services and sign-in status; exact account operations remain to discuss.
+- Bot status: show what is working, unavailable or needs attention; recovery actions remain to discuss.
+- Updates: show installed versions and manage updates for the current computer; activation behavior remains to discuss.
+- Finish identifying control-center sections before discussing each in detail; thread commands remain deferred.
+- Two additional candidates, not accepted: Memory (remembered facts/preferences) and Backups & recovery (recover earlier bot settings).
+- No runtime, account, instruction, memory, installation or update changes are authorized by accepting this menu design.
+
+## Natural-language settings access agreed
+- Every supported settings action must also be accessible through an ordinary request inside a session; commands and menus remain the discoverable, explicit alternative.
+- Use the same validated control operations and persistent settings as menu actions; inspect the outcome before reporting success.
+- Resolve whether a request targets this session, future-session defaults or the category computer; preserve personal ownership and category boundaries. Ask only when the target is genuinely ambiguous.
+- This expands natural-language management beyond opening and closing sessions to all supported settings sections. It does not add a model picker to thread settings.
+- Natural-language and menu actions have the same capability limits; report required owner sign-in or unreachable computers instead of pretending the change completed.
+- This is an agreed design requirement, not a claim that the management controls are installed.
+
+## Immediate priority: David’s minimal project workflow
+- Defer the broader settings discussion and get David’s simple project flow settled first; preserve existing decisions for later.
+- Type **/new** alone in David’s control-center: Recent, All projects and Create project. This is the intended command, not a verified live replacement.
+- Use the previously reported C:/Users/david/projects as the common project root; each project has its own child folder. Reverify on David’s machine before implementation.
+- Selecting a project creates a clean idle workers thread bound to that folder; the user’s first task starts work.
+- Creating a project asks for a name, creates its folder without overwriting another, and opens a clean idle session there.
+- **Creation scope chosen: B — Empty folder or GitHub clone.** A clone gets a new child folder alongside other projects under David’s projects root; do not reuse or overwrite an existing destination.
+- Cloning into an existing folder stays an ordinary natural-language request in a session, outside this new-project menu.
+- After successful creation or cloning, open a clean idle thread bound to the new folder; no model task starts until the user sends one.
+- This is planning, not a claim that David’s remote installation was changed or checked.
+
+## David GitHub account chosen
+- David’s bot should use Drew’s GitHub account through GitHub CLI installed on David’s Windows computer. This is explicitly requested for repository access; it does not replace David’s model subscription or personal instructions.
+- Check existing authentication first. If sign-in is needed, initiate GitHub CLI browser authorization under the bot’s Windows user; Drew completes the GitHub browser step.
+- Configure Git to use GitHub CLI credentials and verify the actual bot/session account can access the intended repos without printing secrets.
+- Save authentication for reuse; reconnect when needed. No credentials have been moved and David’s current auth status is not verified here.
+
+## David minimal project picker delivery
+- Standalone custom Cog implemented locally in examples/project_creation, with Recent / All projects / Create project and empty-folder or GitHub-clone creation.
+- Clone uses an existing GitHub CLI login and a new child folder; successful selection opens an idle folder-bound workers thread.
+- 37 focused tests, lint, formatting, types and security checks pass. Full clean suite with the first 36 focused tests passed 3150 tests; one isolated framework check passed separately.
+- Installation package (source, tests and configuration instructions) delivered to David setup thread, message 1550754808259018772.
+- Delivery is not execution: David bot ignores bot-authored messages, so a human must start this first installation from that thread. No Windows runtime change or activation is claimed.
+
+## Trusted agent-to-agent control required
+- David’s agent must accept explicit tasks dispatched by DrewAI automatically and return acknowledgement, progress and results to the originating thread. Drew should not have to forward each task or approve the same established sender repeatedly.
+- Execute on David’s computer using its own session context; posting through DrewAI’s local session API must not masquerade as execution on David.
+- Recognize the configured sender bot by its actual Discord identity (DrewAI 1546642963709427832), the intended recipient (David 1550644558176460961), guild and task envelope; ordinary bot conversation and task-result messages must not start new tasks.
+- Use request IDs, duplicate detection, bounded reply handling and explicit delivery/running/completed states so retries do not repeat work or create reply loops.
+- This is a required follow-up capability, not part of the already-delivered project-picker package; it is not installed or verified.
+- Do not require direct desktop access or Tailscale for this agent-mediated workflow.

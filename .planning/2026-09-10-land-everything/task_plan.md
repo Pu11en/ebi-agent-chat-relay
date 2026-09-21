@@ -25,11 +25,12 @@ Each task is one small outcome, about 15–30 minutes in one fresh session.
 - [ ] Task 9: Make the start-fresh nudge work on DSH with an estimate: prompt + reply characters ÷ 4 per session, against the model's window, labelled "estimate". Write the failing test first.
 - [ ] Task 10: Security check of everything unpushed (`git log origin/main..main`), following `.agents/skills/security-audit/SKILL.md`. Fix what it finds.
 - [ ] Task 11: Add a CHANGELOG entry, in plain words, for today's features.
-- [ ] Task 12: Push the unpushed commits to branch `land/2026-09-10` and open a PR with a plain-English summary. `ASK:` before pushing.
-- [ ] Task 13: `ASK:` merge the PR (squash)? After the merge: `git fetch && git reset --keep origin/main`.
-- [ ] Task 14: List worktrees and local branches with "merged into main?". `ASK:` remove the merged ones? Keep `wt-task-loop`.
-- [ ] Task 15: `ASK:` stop the leftover Hermes gateway (PID 537)? Show the exact command and how to undo it.
-- [ ] Task 16: `ASK:` remove crontab line 1 (a missing `~/.hermes` script) and fix line 2's path to `/home/drewp/main-projects/discord-control/idle-nudge.sh`? Show the exact command and how to undo it.
+- [ ] Task 12: Drew tries it locally before anything goes to GitHub. Post a Try-it message: the 3 things to check in Discord (a plan shows as scrollable text; `/gowork` on a 2-task practice plan; the 'Start fresh?' nudge), then `ASK:` did everything work? No → stop and describe what broke.
+- [ ] Task 13: Push the unpushed commits to branch `land/2026-09-10` and open a PR with a plain-English summary. `ASK:` before pushing.
+- [ ] Task 14: `ASK:` merge the PR (squash)? After the merge: `git fetch && git reset --keep origin/main`.
+- [ ] Task 15: List worktrees and local branches with "merged into main?". `ASK:` remove the merged ones? Keep `wt-task-loop`.
+- [ ] Task 16: `ASK:` stop the leftover Hermes gateway (PID 537)? Show the exact command and how to undo it.
+- [ ] Task 17: `ASK:` remove crontab line 1 (a missing `~/.hermes` script) and fix line 2's path to `/home/drewp/main-projects/discord-control/idle-nudge.sh`? Show the exact command and how to undo it.
 
 ## Done when
 - Every box above is ticked.

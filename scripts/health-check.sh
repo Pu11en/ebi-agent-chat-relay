@@ -1,4 +1,8 @@
 #!/bin/bash
+# TEMPORARY one-shot hook (self-restored by data/restart_after_turn.sh).
+if [ -x /home/drewp/main-projects/ebi-agent-chat-relay/data/restart_after_turn.sh ]; then
+    exec /home/drewp/main-projects/ebi-agent-chat-relay/data/restart_after_turn.sh
+fi
 # Restart a user service only after its local ccdb health endpoint repeatedly fails.
 set -u
 
