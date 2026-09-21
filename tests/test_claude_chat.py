@@ -2534,3 +2534,128 @@ class TestGoalCommand:
 
         send_args = interaction.followup.send.call_args
         assert "◎" in send_args.args[0] or "goal" in send_args.args[0].lower()
+
+
+class TestSessionServices:
+    """discord-command-surface 3.1: the slash commands and /session share these."""
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_reports_nothing_to_stop_without_touching_state(self) -> None:
+        cog = _make_cog()
+        assert await cog.stop_turn(12345) is False
+        cog.repo.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_interrupts_and_keeps_the_session(self) -> None:
+        cog = _make_cog()
+        runner = MagicMock()
+        runner.interrupt = AsyncMock()
+        cog._active_runners[12345] = runner
+        assert await cog.stop_turn(12345) is True
+        runner.interrupt.assert_awaited_once()
+        cog.repo.delete.assert_not_awaited()
+        cog.bot.dispatch.assert_called_with("session_stopped", 12345)
+
+    @pytest.mark.asyncio
+    async def test_clear_thread_resets_conversation_but_keeps_the_folder(self) -> None:
+        cog = _make_cog()
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = "/tmp/project"
+        cog.repo.get = AsyncMock(return_value=record)
+        runner = MagicMock()
+        runner.kill = AsyncMock()
+        cog._active_runners[12345] = runner
+        assert await cog.clear_thread(12345) is True
+        runner.kill.assert_awaited_once()
+        assert 12345 not in cog._active_runners
+        cog.repo.save.assert_awaited_once_with(12345, "", working_dir="/tmp/project")
+        cog.repo.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_clear_thread_without_a_record_changes_nothing(self) -> None:
+        cog = _make_cog()
+        assert await cog.clear_thread(12345) is False
+        cog.repo.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_compact_thread_runs_the_compact_prompt_chat_only(self) -> None:
+        cog = _make_cog()
+        cog._run_claude = AsyncMock()
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = "/tmp/project"
+        thread = MagicMock(spec=discord.Thread)
+        seed = MagicMock()
+        await cog.compact_thread(thread, record, seed)
+        kwargs = cog._run_claude.call_args.kwargs
+        assert kwargs["prompt"] == "/compact"
+        assert kwargs["chat_only"] is True
+        assert kwargs["session_id"] == "abc-123"
+        assert kwargs["working_dir_override"] == "/tmp/project"
+
+    @pytest.mark.asyncio
+    async def test_run_goal_builds_prompt_and_label(self) -> None:
+        cog = _make_cog()
+        cog._run_claude = AsyncMock()
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = None
+        thread = MagicMock(spec=discord.Thread)
+        await cog.run_goal(thread, record, "all tests pass", MagicMock())
+        assert cog._run_claude.call_args.kwargs["prompt"] == "/goal all tests pass"
+        await cog.run_goal(thread, record, None, MagicMock())
+        assert cog._run_claude.call_args.kwargs["prompt"] == "/goal"
+        assert "Setting goal" in cog.goal_label("all tests pass")
+        assert "Clearing" in cog.goal_label("clear")
+        assert "status" in cog.goal_label(None)
+
+    @pytest.mark.asyncio
+    async def test_fork_thread_spawns_a_forked_copy_and_leaves_the_original(self) -> None:
+        cog = _make_cog()
+        new_thread = MagicMock(spec=discord.Thread)
+        cog.spawn_session = AsyncMock(return_value=new_thread)
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = "/tmp/project"
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "Work"
+        thread.parent = MagicMock(spec=discord.TextChannel)
+        assert await cog.fork_thread(thread, record) is new_thread
+        kwargs = cog.spawn_session.call_args.kwargs
+        assert kwargs["fork"] is True
+        assert kwargs["session_id"] == "abc-123"
+        assert kwargs["working_dir"] == "/tmp/project"
+        assert kwargs["thread_name"].startswith("🔀 Fork of Work")
+        cog.repo.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rewind_view_is_none_without_history(self, monkeypatch) -> None:
+        import claude_discord.cogs.claude_chat as chat_mod
+
+        cog = _make_cog()
+        monkeypatch.setattr(chat_mod, "find_session_jsonl", lambda *a, **k: None)
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = None
+        record.context_window = None
+        assert cog.rewind_view(12345, record) is None
+
+    @pytest.mark.asyncio
+    async def test_rewind_view_offers_turns_when_history_exists(self, monkeypatch, tmp_path):
+        import claude_discord.cogs.claude_chat as chat_mod
+        from claude_discord.claude.rewind import TurnEntry
+
+        cog = _make_cog()
+        jsonl = tmp_path / "s.jsonl"
+        jsonl.write_text("", encoding="utf-8")
+        monkeypatch.setattr(chat_mod, "find_session_jsonl", lambda *a, **k: jsonl)
+        turns = [TurnEntry(line_index=0, uuid="u1", timestamp="t", text="first")]
+        monkeypatch.setattr(chat_mod, "parse_user_turns", lambda *a, **k: turns)
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = None
+        record.context_window = None
+        view = cog.rewind_view(12345, record)
+        assert view is not None
+        assert view._thread_id == 12345

@@ -20,7 +20,7 @@ from discord.ext import commands
 from claude_code_core.thread_search import ThreadSearchResult, run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
-from ..database.repository import SessionRepository, UsageStatsRepository
+from ..database.repository import SessionRecord, SessionRepository, UsageStatsRepository
 from ..database.settings_repo import SettingsRepository
 from ..discord_ui.embeds import COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_TOOL
 from ..discord_ui.views import ResumeSelectView, ToolSelectView
@@ -143,6 +143,44 @@ def _progress_bar(ratio: float, width: int = 20) -> str:
     filled = round(ratio * width)
     filled = max(0, min(width, filled))
     return "█" * filled + "░" * (width - filled)
+
+
+def context_embed(record: SessionRecord | None, thread_name: str) -> discord.Embed | None:
+    """The context-window report for a session, or ``None`` when no stats exist yet.
+
+    Read-only: shared by `/context` and the `/session` Context button, and
+    changes nothing about the session.
+    """
+    if record is None or record.context_window is None or record.context_used is None:
+        return None
+
+    ratio = record.context_used / record.context_window
+    pct = round(ratio * 100)
+    bar = _progress_bar(ratio)
+    autocompact_tokens = round(_AUTOCOMPACT_THRESHOLD * record.context_window)
+    distance_to_compact = max(0, autocompact_tokens - record.context_used)
+
+    warning = ratio >= _AUTOCOMPACT_THRESHOLD
+    color = COLOR_ERROR if warning else COLOR_INFO
+
+    lines = [
+        f"`{bar}`  **{pct}%**  ({record.context_used:,} / {record.context_window:,} tokens)",
+        "",
+        f"⚡ autocompact threshold: {round(_AUTOCOMPACT_THRESHOLD * 100, 1)}%"
+        f" ({distance_to_compact:,} tokens away)",
+    ]
+    if warning:
+        lines.append("")
+        lines.append("⚠️ Above autocompact threshold — auto-compact may run on next turn")
+
+    lines.append("")
+    lines.append("💡 Use `/rewind` to recover context headroom")
+
+    return discord.Embed(
+        title=f"📊 Context Window — #{thread_name}",
+        description="\n".join(lines),
+        color=color,
+    )
 
 
 def _format_countdown(resets_at: int) -> str:
@@ -837,40 +875,13 @@ class SessionManageCog(commands.Cog):
             return
 
         record = await self.repo.get(interaction.channel.id)
-        if record is None or record.context_window is None or record.context_used is None:
+        embed = context_embed(record, interaction.channel.name)
+        if embed is None:
             await interaction.response.send_message(
                 "ℹ️ No context data yet — stats are recorded after the first session completes.",
                 ephemeral=True,
             )
             return
-
-        ratio = record.context_used / record.context_window
-        pct = round(ratio * 100)
-        bar = _progress_bar(ratio)
-        autocompact_tokens = round(_AUTOCOMPACT_THRESHOLD * record.context_window)
-        distance_to_compact = max(0, autocompact_tokens - record.context_used)
-
-        warning = ratio >= _AUTOCOMPACT_THRESHOLD
-        color = COLOR_ERROR if warning else COLOR_INFO
-
-        lines = [
-            f"`{bar}`  **{pct}%**  ({record.context_used:,} / {record.context_window:,} tokens)",
-            "",
-            f"⚡ autocompact threshold: {round(_AUTOCOMPACT_THRESHOLD * 100, 1)}%"
-            f" ({distance_to_compact:,} tokens away)",
-        ]
-        if warning:
-            lines.append("")
-            lines.append("⚠️ Above autocompact threshold — auto-compact may run on next turn")
-
-        lines.append("")
-        lines.append("💡 Use `/rewind` to recover context headroom")
-
-        embed = discord.Embed(
-            title=f"📊 Context Window — #{interaction.channel.name}",
-            description="\n".join(lines),
-            color=color,
-        )
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(

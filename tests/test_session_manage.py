@@ -232,3 +232,21 @@ class TestUsageCommand:
         assert embed is not None
         # Should show utilization percentage
         assert "61" in embed.description
+
+
+class TestContextService:
+    """discord-command-surface 3.1: /context and the /session Context button share this."""
+
+    def test_context_embed_is_none_without_stats(self):
+        from claude_discord.cogs.session_manage import context_embed
+
+        assert context_embed(None, "thread") is None
+        assert context_embed(_make_record(context_window=None, context_used=None), "t") is None
+
+    def test_context_embed_reports_usage_without_changing_anything(self):
+        from claude_discord.cogs.session_manage import context_embed
+
+        embed = context_embed(_make_record(context_window=200000, context_used=134000), "work")
+        assert embed is not None
+        assert "67%" in embed.description
+        assert "work" in embed.title
