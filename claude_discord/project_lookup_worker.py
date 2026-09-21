@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+
+from .handoff_projects import lookup_root
 
 
-def resolve_project_lookup_root(*, configured: str | None = None) -> str:
-    """Return the directory a project lookup worker is allowed to inspect."""
-    root = (
-        configured
-        or os.getenv("CCDB_PROJECT_LOOKUP_ROOT", "").strip()
-        or _first_project_root()
-        or "/home/drewp/main-projects"
-    )
-    path = Path(root).expanduser()
-    if not path.exists() or not path.is_dir():
-        raise ValueError(f"project lookup root is not a directory: {path}")
-    return str(path)
+def resolve_project_lookup_root(
+    *, configured: str | None = None, fallback: str | None = None
+) -> str:
+    """Return the directory a project lookup worker is allowed to inspect.
+
+    Thin alias of :func:`claude_discord.handoff_projects.lookup_root` so the
+    REST endpoint and the Discord envelope path cannot drift apart.
+    """
+    return lookup_root(configured=configured, fallback=fallback)
 
 
 def project_lookup_harness() -> tuple[str, str]:
@@ -71,14 +69,6 @@ def project_lookup_thread_name(query: str) -> str:
     cleaned = " ".join(query.split())
     suffix = cleaned[:78] if cleaned else "Project lookup"
     return f"🔎 Project lookup · {suffix}"[:100]
-
-
-def _first_project_root() -> str | None:
-    for raw in os.getenv("CCDB_PROJECT_ROOTS", "").split(","):
-        value = raw.strip().strip("'\"")
-        if value:
-            return value
-    return None
 
 
 __all__ = [
