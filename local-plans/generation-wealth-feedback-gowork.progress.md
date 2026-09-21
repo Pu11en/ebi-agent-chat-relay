@@ -17,3 +17,24 @@
 - Open note: one source session was still recording, so later tasks must enforce the
   fixed timestamp cutoff recorded in the source index.
 - Work and completion record commit: `5f92af0`.
+
+## Task 2 — Extract everything Generation Wealth said
+
+- Completed: 2026-09-20 CDT
+- What changed: extracted all 2,752 `Generational Wealth` segments from the two
+  inventoried source sessions through the fixed cutoff, grouped them into 1,070
+  chronological passages, and preserved the nearest Drew context on both sides when it
+  was within three minutes.
+- Output: `generation-wealth-quotes.md` in the requested Generation Wealth feedback
+  folder; `status.json` now records quote extraction as complete and points to
+  `answerable-themes.md` next.
+- Integrity check: every one of the 2,752 segment IDs in the artifact uniquely matched
+  the cutoff-bounded database query, with no missing or extra target-speaker rows.
+- Plan check: `check_progress.py` passed with two listed artifacts.
+- Project tests: 3,456 passed with 15 warnings after removing live bot deployment
+  settings from the test environment. The initial inherited-environment run reproduced
+  the same 28 unrelated configuration-dependent failures recorded in Task 1.
+- Work commit: `9d9eb54`; this completion record is committed separately.
+- Open note: the artifact preserves machine-transcribed wording exactly, including
+  fragments, repetition, background audio, and offensive language; later synthesis
+  should quote selectively and keep source citations.
