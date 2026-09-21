@@ -111,3 +111,16 @@ async def test_manifest_build_runs_projects_together_and_accepts_every_task(repo
     assert worked[3][0] == "website" and worked[3][1] > starts["product"] + 0.6
     assert len(threads) == 1 + 4  # the build thread plus one worker thread per task
     assert chat.run_fresh_turn.await_count >= 4
+
+    # T12: every attempt's handoff was written before its worker started, and the
+    # worker's prompt was rendered from it (attempt id, ownership, evidence).
+    handoffs = sorted(
+        (cog._store.path.with_name("builds") / f"thread-{worker.id}" / "handoffs").glob("*.json")
+    )
+    assert [h.name for h in handoffs] == sorted(
+        f"thread-{worker.id}_{task}_1.json" for task in ledger["tasks"]
+    )
+    prompts = [c.args[2] for c in chat.run_fresh_turn.call_args_list if "Your task (" in c.args[2]]
+    page = next(p for p in prompts if "website.catalog-page" in p)
+    assert "Attempt: thread-" in page and "src/pages/catalog.tsx" in page
+    assert "product.catalog-api: accepted at " in page  # evidence behind its input

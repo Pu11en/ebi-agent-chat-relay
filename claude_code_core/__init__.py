@@ -66,6 +66,7 @@ from .frontend import (
 )
 from .gowork_admission import AdmissionController, AdmissionSnapshot, Reservation
 from .gowork_capacity import CapacityDecision, CapacityPolicy
+from .gowork_handoff import WorkerHandoff, build_handoff, persist_handoff, render_worker_prompt
 from .gowork_plan import (
     OwnershipConflict,
     PlanIdentity,
@@ -195,6 +196,10 @@ __all__ = [
     "PlanIdentity",
     "PlanTree",
     "PlanValidationError",
+    "WorkerHandoff",
+    "build_handoff",
+    "persist_handoff",
+    "render_worker_prompt",
     "BuildState",
     "StaleAttemptError",
     "TaskAttempt",

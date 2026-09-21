@@ -32,6 +32,11 @@ from discord import app_commands
 from discord.ext import commands
 
 from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
+from claude_code_core.gowork_handoff import (
+    build_handoff,
+    persist_handoff,
+    render_worker_prompt,
+)
 from claude_code_core.gowork_plan import has_manifest, load_plan_tree
 from claude_code_core.gowork_records import (
     append_record,
@@ -40,6 +45,7 @@ from claude_code_core.gowork_records import (
     track_record,
 )
 from claude_code_core.gowork_schedule import ReadyTask
+from claude_code_core.gowork_state import open_build_state
 from claude_code_core.loop_store import LoopRecord, LoopStore
 from claude_code_core.task_loop import (
     LoopOutcome,
@@ -59,7 +65,6 @@ from claude_code_core.task_loop import (
     is_looks_good,
     list_plans,
     list_plans_across,
-    manifest_worker_prompt,
     merge_open_tasks,
     missing_steps_prompt,
     needs_you,
@@ -2367,13 +2372,20 @@ class TaskLoopCog(commands.Cog):
         chat = self._chat()
         settings = getattr(chat, "_backend_settings", None)
         parent: Any = getattr(running.thread, "parent", None) or running.report_target
+        plan_text = running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
         tree = load_plan_tree(running.copy.plan_path)
-        goal, _done = plan_goal(
-            running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        builds = self._store.path.with_name("builds")
+        state = open_build_state(
+            builds / f"{running.build_id}.json", tree, build_id=running.build_id
         )
+        handoff_dir = builds / running.build_id / "handoffs"
 
         async def one(task: ReadyTask) -> ManifestResult:
             assignment = tree.task(task.task_id)
+            # The worker's whole briefing is written down first (T12): a restart that
+            # delivers this attempt again reads the same file back.
+            handoff = build_handoff(state, task.task_id, plan_text=plan_text)
+            saved = persist_handoff(handoff_dir, handoff)
             project_copy, rel = await self._project_copy(running, task.project_path)
             if running.git_lock is None:
                 running.git_lock = asyncio.Lock()
@@ -2408,7 +2420,7 @@ class TaskLoopCog(commands.Cog):
             await chat.run_fresh_turn(
                 seed,
                 sub,
-                manifest_worker_prompt(assignment, cwd=cwd, goal=goal),
+                render_worker_prompt(handoff, cwd=cwd, handoff_path=saved),
                 working_dir=str(cwd),
                 result_sink=sink,
                 slot_kind="task",

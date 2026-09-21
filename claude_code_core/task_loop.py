@@ -34,12 +34,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from claude_code_core.gowork_plan import (
-    PlanValidationError,
-    TaskAssignment,
-    has_manifest,
-    load_plan_tree,
-)
+from claude_code_core.gowork_plan import PlanValidationError, has_manifest, load_plan_tree
 from claude_code_core.gowork_schedule import ReadyTask, ready_tasks
 from claude_code_core.gowork_state import StaleAttemptError, TaskStatus, open_build_state
 
@@ -1058,44 +1053,6 @@ def parallel_prompt(plan_path: Path, step: str) -> str:
         "Finish with one or two plain sentences on what you did, for a non-technical "
         "reader. The very last line must be exactly one of:",
         "DONE — the step is finished and committed",
-        "STUCK: <plain reason> — you cannot finish it this way",
-    ]
-    return "\n".join(parts)
-
-
-def manifest_worker_prompt(assignment: TaskAssignment, *, cwd: Path, goal: str | None) -> str:
-    """The prompt for one task of a manifest build (T11b; T12 makes it a persisted handoff)."""
-    parts = [
-        "[gowork build worker — for this worker only] You are one of several workers "
-        "building tasks of a plan at the same time, each in its own copy. You start "
-        "with no memory.",
-    ]
-    if goal:
-        parts += ["", f"The goal of this whole build: {goal}"]
-    parts += [
-        "",
-        f"Your task ({assignment.task_id}): {assignment.outcome}",
-        f"Work only in this folder: {cwd}",
-        "You may change only these files/folders: " + ", ".join(assignment.owned_files),
-    ]
-    if assignment.owned_resources:
-        parts.append("Resources you own: " + ", ".join(assignment.owned_resources))
-    if assignment.required_inputs:
-        parts.append("Inputs you can rely on: " + "; ".join(assignment.required_inputs))
-    parts += [
-        f"Expected output: {assignment.output}",
-        f"Acceptance check — run it and make it pass: {assignment.acceptance_check}",
-        f"This delivers agreed outcome {assignment.source_requirement}.",
-        "Other tasks are being built right now by others: don't do them, and don't edit "
-        "the plan file (the bot records results).",
-        "Commit your work with git. Leave no uncommitted changes.",
-        "",
-        "Never push, deploy, delete data, spend money or use new API keys. If the task "
-        "needs any of that, don't do it: end with STUCK and say why.",
-        "",
-        "Finish with one or two plain sentences on what you did, for a non-technical "
-        "reader. The very last line must be exactly one of:",
-        "DONE — the task is finished, checked and committed",
         "STUCK: <plain reason> — you cannot finish it this way",
     ]
     return "\n".join(parts)
