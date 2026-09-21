@@ -17,7 +17,7 @@ Try: `make dev-on`
 ## 3. Snapshots and Remote Comparison
 
 - [x] 3.1 **Depends on 1.1–1.3; owner: snapshot persistence** — Add a repository/schema for safe fingerprints, measurements, diagnostics, exceptions, and verification timestamps in `claude_discord/database/ai_setup_repo.py`; verify persistence tests prove no raw values or secrets are stored.
-- [ ] 3.2 **Depends on trusted-agent-handoffs interface and 3.1; owner: remote snapshots** — Define a bounded inventory request/reply packet and ingest trusted remote snapshots with freshness state; verify tests distinguish live, stale, unreachable, matching, missing, and deliberate-difference results.
+- [x] 3.2 **Depends on trusted-agent-handoffs interface and 3.1; owner: remote snapshots** — Define a bounded inventory request/reply packet and ingest trusted remote snapshots with freshness state; verify tests distinguish live, stale, unreachable, matching, missing, and deliberate-difference results.
 - [ ] 3.3 **Owner: comparison service** — Implement Browse by kind, Where it lives, Compare computers, search/filter, recent-change, and explicit built-in queries over snapshots; verify deterministic unit tests cover unknown measurements and modification times.
 
 ## 4. Discord My AI Setup Experience
