@@ -204,7 +204,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: edits/restart cannot accept stale results; user-requested rework is distinct from
   failure repair and cannot reset the existing attempt's repair allowance.
 
-- [ ] T20: Execution spine, only after T19: persist blocker messages and question identity.
+- [x] T20: Execution spine, only after T19: persist blocker messages and question identity.
   Scope: durable blocker ledger and posting adapter. Map planning message ID to build,
   task, attempt/version, owner/channel, question and unresolved/resolved status.
   Proof: several blockers in one thread survive reopen; repeated posting/recovery does

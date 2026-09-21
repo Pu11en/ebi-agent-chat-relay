@@ -483,3 +483,24 @@ T11 is complete (T11a–T11c).
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (436 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors). The Check's own timeout was raised to 300 s
   (real git worktrees in the cog tests take ~80 s on Windows).
+
+## T20 — Persist blocker messages and question identity
+
+- New `claude_code_core/gowork_blockers.py`: `BlockerLedger(<state dir>/gowork-blockers.json)`
+  — one file for every build, atomic writes, reloaded on every call. `Blocker` carries
+  build id, task id, attempt id (its own identity: `blocker:<attempt>`), plan id/version,
+  channel, question, created_at, posted message id/channel, resolved flag, answer, who
+  answered, the reply's message id and when. `open()` is idempotent per attempt; `by_message()`
+  maps a Discord message to exactly one blocker; `resolve()` is once-only; `unresolved()` /
+  `unposted()` filter by build; a broken file reads as empty.
+- Cog: the after-save hook now also asks: a task blocked with no automatic repair left gets
+  one question ("❓ **project** — task `x` is stuck: … Reply to this message with retry, skip,
+  or what to change") posted to the build's report channel; the message id is recorded.
+  Restart-interrupted tasks are not asked here (the restart line already said so).
+  `repost_blockers(running)` runs on resume and posts only unposted questions.
+- Tests: `tests/gowork_upgrade/test_blockers.py` (5), `test_manifest_build_cog.py` (+1: a task
+  whose check always fails uses its repair, then exactly one question is posted, recorded with
+  its message id and attempt, and recovery posts nothing twice).
+- Implementation commit: `76611e9`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (442 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).
