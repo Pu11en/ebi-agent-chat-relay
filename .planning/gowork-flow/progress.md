@@ -50,7 +50,9 @@
 - Drew chose A for thread retention: immediately archive finished worker threads after saving results, preserving history. Main planning thread and blocker messages stay available; runtime unchanged during planning.
 - Drew chose A after clarification: prefer tasks that unblock other work, while sharing fairly across builds so none waits indefinitely. Saved in the plan and prompt draft; runtime unchanged.
 - Drew chose A for mid-build changes: finish the current small task, then apply the change in a fresh task before integration. Persist the plan version and hold affected dependents while unrelated tasks continue; runtime remains unchanged during planning.
-- Next open question: default review strength before automatically integrating a build; preserve existing modes and explain the time/usage tradeoff.
+- Drew chose A for verification: tests/checks for every task and extra AI review for difficult changes before integration. Retain existing explicit modes; no review success is inferred from an unavailable reviewer.
+- Core workflow choices are recorded. Preserve the original multi-project scope and choose the implementation method next; the current draft still needs conversion into small launch-ready execution plans using the selected method.
+- No product code, runtime configuration or paid worker launch changed in this decision turn; documentation diff checked before commit.
 - One documentation patch used out-of-order contexts and did not apply; reapplied the same changes in file order successfully.
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.

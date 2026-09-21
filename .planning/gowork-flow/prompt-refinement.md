@@ -43,6 +43,10 @@ Preserve the original attempt, but do not claim it meets changed requirements.
 Assign only the intended outcome and enough context to a fresh worker.
 Preserve its result and check evidence; release execution capacity when done.
 Validate combined outputs before unblocking dependent work.
+Run relevant automated tests/checks for every task. By default, use a separate
+AI to review difficult changes before integration, respecting explicitly
+chosen execution modes. An unavailable required review is pending or blocked,
+not approval. Keep unrelated work moving while it waits.
 When a task gets stuck, keep independent work moving and attempt one automatic
 repair after the failed original attempt, within shared capacity. Keep its
 dependents waiting; do not mark a failed result complete to unblock them.
@@ -137,3 +141,5 @@ Source: local-plans/generation-wealth-feedback-gowork.md, inspected as a plan, n
 - Worker history retention settled: archive immediately when a worker finishes and its result is saved, preserving history; main planning-thread blocker messages remain available.
 - Capacity priority settled: prefer tasks that unblock other work, with fair turns so other ready builds still progress.
 - Mid-build changes settled: finish the current small task, then apply the new requirements before integration; unaffected tasks continue.
+- Verification default settled: tests/checks on every task and separate AI review for difficult changes, preserving explicit mode overrides.
+- Workflow behavior choices are recorded; implementation method remains to be selected before preparing launch-ready execution plans.

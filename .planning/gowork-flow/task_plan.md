@@ -34,6 +34,7 @@ Done when: A local practice run proves dependencies, automatic worker sizing, re
 - **Communication requirement:** short output must still supply enough context to understand it independently: name the project/goal, what changed or is blocked, why it matters, and any decision needed. Build on One Question guidance; no routine full-plan card dumps and no unexplained technical labels. Detailed worker plans remain complete.
 - **Clarification preference settled:** when an explanation is unclear, first use one concrete example from the project being discussed; label hypothetical examples and do not imply their work is already done.
 - **Local integration settled:** automatically combine each finished build into its local project after required checks and reviews pass, while other builds continue. Serialize integrations into the same project, preserve existing local edits, and check the combined result before reporting success. Conflicts follow the one-repair/blocker policy rather than forcing an overwrite. Publishing remains governed by the separate existing rules.
+- **Verification default settled:** tests and relevant automated checks for every task, plus a separate AI review for difficult changes before integration. Retain explicit cheap/careful mode overrides; balanced is the agreed default. A required review that fails to run remains pending or blocked, never silently approved.
 - Drew can try the combined result after the work is finished; publishing is a separate step.
 - **Already changed locally:** the parallel-step cap and default session capacity were raised from 3 to 10.
 - **Observed during planning:** the live session API reports a capacity of 10; the shared execution helper uses a configured semaphore. Automatic resource-based sizing is proposed, not implemented.
@@ -96,7 +97,7 @@ The Check command above is the existing baseline; every implementation task also
 - [ ] **T07: Give each worker a compact, saved assignment.** Reuse the current handoff contract, including task ID, attempt, inputs and expected result. Needs: T04. Proof: a duplicate delivery does not create another attempt, and unrelated conversation history is omitted.
 - [ ] **T08: Finish workers individually.** Persist successful or failed outcomes and release execution capacity without waiting for sibling workers; preserve results before any thread cleanup. Needs: T06c, T07. Proof: a fast worker closes while a slow sibling continues, including exception and cancellation paths.
 - [ ] **T09: Combine results in a controlled order.** Bring saved worker commits into the project's review copy; retain conflicting work for repair. Needs: T08. Proof: independent results combine and a conflict cannot release dependent tasks.
-- [ ] **T10: Make completion depend on evidence.** Run combined checks and required reviews; a missing review stays visibly unfinished under modes that require it. Needs: T09. Proof: a failed check or unavailable required review never produces a completed result.
+- [ ] **T10: Make completion depend on evidence.** Run tests/checks on every task and on combined results; default to a separate AI review for difficult changes while preserving explicit mode overrides. Needs: T09. Proof: ordinary tasks do not incur mandatory extra review in balanced mode, difficult tasks need recorded review, and a failed check or unavailable required review never produces completed/approved status.
 
 ### Recovery and Changes
 
@@ -133,9 +134,9 @@ Ask one question at a time and record the answer before moving to dependent ques
 - **Failure policy settled:** one repair attempt, independent work continues, and unresolved blockers return to the planning thread for a direct reply to the blocker message.
 - **Completion and integration settled:** no looks-good gate; automatically integrate each finished build into its local project after checks, without waiting for other builds in the master plan.
 - **Retention settled:** archive each finished worker thread immediately after saving results; preserve history, and keep blocker messages available in the main planning thread.
-- **Review strength:** retain cheap/balanced/careful behavior, or change which tasks need a separate reviewer and what happens when one is unavailable?
+- **Review default settled:** tests/checks for every task plus extra AI review for difficult changes; preserve existing explicit mode overrides and treat an unavailable required review as pending/blocked.
 - **Changes during a build settled:** finish the current small task, then apply the change before using its result; unaffected workers continue and affected dependents wait.
-- **First release boundary:** include multi-project business plans immediately, or first prove multiple lanes within one project while preserving the same data format?
+- **Scope from the original request:** retain master plans containing several projects and their child plans; implementation can prove one-project behavior first, but must not silently reduce the requested final outcome to one project.
 - **Name and completion reporting settled:** keep Go Work, report issues/workarounds in the planning thread, and finish with short bullets explaining what changed and why; no success approval question.
 - **Implementation method, after the design is settled:** choose fresh-session Go Work or small normal-session increments; this planning request does not launch either.
 
