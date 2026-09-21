@@ -4,6 +4,27 @@ The installed `lockin-workflow` command is an agent-operated CLI. Use `--help`
 and subcommand help for exact arguments. Its source remains in a verified WSL
 worktree; read the installed command's target if you need to inspect it.
 
+## Plan metadata
+
+The task graph is the scheduling contract. Each task line in `tasks.md` may
+carry a bold metadata prefix; the parser accepts exactly these keys, separated
+by `;` and closed with `.**`:
+
+| Key | Meaning |
+|---|---|
+| `Depends on: 1.1, 1.3` (or `none`) | task IDs that must be **integrated** before this one starts |
+| `owns: \`pkg/a.py\`, \`tests/\`` | the only paths this task may change; a trailing `/` owns a directory |
+| `check: \`uv run pytest tests/test_a.py -q\`` | the focused check the worker must report (else the plan-level `Check:` line) |
+| `integration owner only` | flag: only the integration owner performs this task |
+
+Rules enforced before any worker is dispatched: unknown dependencies and cycles
+are rejected and named; owned paths are relative POSIX paths and never the plan,
+`.git/`, `.worktrees/`, or `openspec/`; two tasks that may run at the same time
+must not own the same path or a directory containing it. Plans with no metadata
+parse as a legacy graph — one task at a time, today's sequential behavior —
+and are never guessed into parallel safety. Plan revision is a digest of the
+plan text; a run's state is bound to that revision and refused for another.
+
 ## Run contract
 
 Commit a manifest in the integration worktree. Give each run a unique run_id
@@ -49,13 +70,19 @@ create a reviewed revision/new run when scope changes.
 
 Invoke the CLI with absolute `--repo`, `--state-dir`, and `--api-url`, plus
 relative `--manifest`. Set `--channel-id` to this server's existing workers
-channel. Queue admission is the default: approved dependency-ready tasks enter
-Ebi's existing queue even when other projects are busy. `--max-running` bounds
-this run's outstanding workers (including uncertain submissions); it is separate
-from the relay's global execution limit. Start with three outstanding workers
-per run. Ebi's shared semaphore decides when they execute. The compatibility
-option `--no-queue-ready` waits for globally free capacity and may delay a run
-under continuous traffic; normal builds use the default.
+channel. Queue admission is the default: every approved task whose dependencies
+are integrated and whose owned paths do not overlap an active task is
+submitted, even while other projects are busy. There is **no product-level
+worker cap**: readiness is a property of the graph and the durable state alone, and
+Ebi's shared semaphore, the provider and the machine decide when submitted
+turns execute. A turn held by that infrastructure is *queued*; a task held by
+an unintegrated prerequisite is *pending* — status shows both, and they are not
+the same thing. `--max-running` remains as a compatibility bound on this run's
+outstanding submissions (including uncertain ones); it is not a `/gowork`
+worker policy, so set it to at least the size of the ready set rather than using
+it to shape parallelism. The compatibility option `--no-queue-ready` waits for
+globally free capacity and may delay a run under continuous traffic; normal
+builds use the default.
 
 1. `approve --authorization-ref "<user message permalink or scoped request>"
    --feature <id>` records approval for just that feature. Repeat for other
@@ -74,6 +101,35 @@ any finite global capacity. The relay's sessions endpoint distinguishes queued
 and running turns; use its capacity summary for status, not as a second
 admission gate before submitting workers.
 
+Intent is recorded before every spawn. A spawn sent through `/api/spawn` may
+carry `correlation_id` (the run-state correlation id, or a child split key) and
+`parent_thread_id`; Ebi records both, answers a repeated `correlation_id` with
+the existing thread instead of a duplicate, and answers
+`GET /api/correlations/<id>` so a lost spawn answer can be reconciled by lookup.
+
+## Worker workspaces
+
+Every simultaneously active task runs from its own branch and checkout, using
+the repository's ordinary session layout: branch `session/<thread-id>` and
+checkout `.worktrees/wt-<thread-id>` inside the project, both rooted at the
+exact foundation commit recorded for that task (the integration commit that
+contains all of its dependencies). The coordinator verifies, never assumes:
+
+- the session branch descends from the foundation — an older branch is refused,
+  not rebased;
+- the checkout in the slot is its own toplevel, shares this repository's common
+  Git directory, and sits on its session branch — a stray directory or another
+  project's worktree is refused, not adopted;
+- an existing checkout is reused with its partial work; a checkout Ebi removed
+  at turn end is re-created from the branch; only when neither exists are both
+  created.
+
+A clean checkout may be released after its branch and result evidence are
+durable; a checkout with tracked, untracked or ignored local files is never
+removed, and the branch is never deleted by the workflow. Workers write only
+their owned paths there — never the plan, runtime state, the integration
+checkout, or another worker's checkout — and never merge or spawn workers.
+
 ## Results and integration
 
 The worker brief names its absolute worktree, committed foundation, approved
@@ -81,28 +137,58 @@ plan, ownership, and result JSON path. Workers commit and push their assigned
 branch and write results only after focused checks. `collect` verifies result
 identity, revision, ancestry, session branch, and owned-file changes.
 Ebi removes clean session worktrees at turn end, so missing worker checkouts
-are recovered from their durable Git branch; existing ones must still be clean. Test evidence is
-reported by the worker; the integration owner must independently rerun checks.
+are recovered from their durable Git branch; existing ones must still be clean.
+Test evidence is reported by the worker; the integration owner must
+independently rerun checks.
 
+Exactly one integration owner combines verified results, in dependency order.
 Merge verified worker commits (preserving ancestry, not cherry-picking) into
-the lead's isolated worktree, then use
-`integrate --task <id> --commit <integrated-sha>`. Dependents start only from a
-foundation that includes their actual prerequisites. `watch` exits after
-handoff, so restart it after integration when approved dependent tasks remain
-pending, then end the idle manager turn. Finish with a combined
-behavior check and user try-it instructions. Keep the immutable approved plan
-snapshot even when the plan owner later updates completion checkboxes.
+the lead's isolated worktree, run the plan-level check on the combined state,
+then use `integrate --task <id> --commit <integrated-sha>`. That recorded commit
+becomes the foundation for dependents: they start only from a foundation that
+includes their actual prerequisites. A merge that does not apply cleanly leaves
+the task visible as needing integration resolution — its branch is preserved,
+it is not marked complete and not rebuilt. A failed combined check pauses
+dependent dispatch and names the affected results without discarding any branch.
+`watch` exits after handoff, so restart it after integration when approved
+dependent tasks remain pending, then end the idle manager turn. Finish with a
+combined behavior check and user try-it instructions. Keep the immutable
+approved plan snapshot even when the plan owner later updates completion
+checkboxes.
+
+### Archive after integration
+
+A worker thread is archived only after `integrate` has recorded its commit and
+the combined check passed. Post the final outcome in the worker thread and the
+parent, then request archive without locking or deleting the thread; the parent
+keeps the deep-link so the history stays reopenable. Failed, blocked,
+conflicted, ambiguous and verified-but-not-integrated workers stay open. After a
+crash between integration and archival, retry the same archive request for the
+same task and thread; an already archived thread is success, and the result
+notification is not posted twice.
 
 ## Recovery
 
 Re-run `status` and `collect`; completed work is not dispatched again. A spawn
-with an uncertain HTTP outcome stays ambiguous. Read the existing Discord
-threads and use `reconcile --task <id> --thread-id <known-thread>` only after
-matching the exact run/task to that thread. Never turn uncertainty into a new
-spawn. For an interrupted worker, read its existing worktree and result first,
-then resume that same thread within its original scope.
+with an uncertain HTTP outcome stays ambiguous. If the spawn carried a
+`correlation_id`, ask `GET /api/correlations/<id>`: a thread means the worker
+exists, 404 means it provably does not, and 503 means there is nowhere to look
+— treat the last as still ambiguous. Otherwise read the existing Discord threads
+and use `reconcile --task <id> --thread-id <known-thread>` only after matching
+the exact run/task to that thread. Never turn uncertainty into a new spawn. For
+an interrupted worker, read its existing worktree and result first, then resume
+that same thread within its original scope. A child planning thread whose
+creation was interrupted is reconciled the same way by its split key.
+
+## Rollback
 
 Only the coordinator's own transient unit is safe to stop for a pause. Pausing
 it stops future dispatch; existing workers remain independent. Ebi's red Stop
 button stops the chosen worker. The manager should tell affected workers about
 scope changes and revise the approval before any replacement work begins.
+
+Rolling the parallel path back never deletes branches, run state, results or
+child links: new plans without metadata (or legacy plans) run through the
+preserved sequential executor, automatic child creation is paused by keeping
+proposed splits together, and every existing worker branch stays available for
+later integration by the same one owner.
