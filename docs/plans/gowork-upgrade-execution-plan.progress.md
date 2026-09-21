@@ -406,3 +406,28 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `176d6ab`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (425 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T17 — Reconcile interrupted work without duplication
+
+- Core: `TaskLoop(reconcile=…)`; `_reconcile_interrupted()` runs once when the manifest loop
+  starts: the adapter salvages what it can, then every attempt still `running` is blocked with
+  "interrupted by a restart before its work was saved (attempt N) … say so to run it again",
+  and a report line says what was kept and what waits. Uncertain ownership is never
+  reassigned automatically.
+- Cog `_reconcile_interrupted`: for each running attempt, finds its side copy
+  (`work_copy.side_copy_for()`, deterministic names) — merged before the crash → saved
+  (checks on the combined copy → accept/block); committed but unmerged → merged now under the
+  build's git lock, then the same; nothing saved → left for the loop to block. Completed work
+  is never rerun.
+- Ledger: `TaskAttempt.base_commit` (recorded with the thread at start) and
+  `side_is_merged(..., base=…)` so an untouched side copy — whose tip equals its base and is
+  trivially an ancestor of HEAD — is not mistaken for merged work.
+- Abandoned reservations: admission slots live only in memory (T08); a restart starts with
+  none held, so nothing needs recovering there — noted, not coded.
+- Tests: `test_rolling_workers.py` (+1: salvaged attempt accepted and not rerun, the other
+  blocked with the restart reason and not reassigned, the rest carried on),
+  `test_manifest_build_cog.py` (+1: restart after merge / after a worker's commit / mid-work
+  through `resume_all`: two salvaged, one blocked, only the dependent page ran).
+- Implementation commit: `b0d6490`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (427 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).

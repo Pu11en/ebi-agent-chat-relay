@@ -185,7 +185,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: ordinary balanced task needs no mandatory extra review; difficult task cannot
   accept without evidence; failed checks/reviewer exceptions cannot produce success.
 
-- [ ] T17: Execution spine, only after T16: reconcile interrupted work without duplication.
+- [x] T17: Execution spine, only after T16: reconcile interrupted work without duplication.
   Scope: startup recovery. Compare durable attempts with worker/process/commit state;
   recover abandoned reservations, saved results and integration/cleanup operations.
   Proof: restart before dispatch, during execution, after result save and after merge
