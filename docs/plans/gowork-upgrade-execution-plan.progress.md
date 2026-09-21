@@ -459,3 +459,27 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `deb0e7b`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (432 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T19 — Version mid-build requirement changes
+
+- Ledger: `sync_tree(tree)` (called by `open_build_state` on every reopen, i.e. every loop
+  iteration) saves changed plan versions immediately, adds records for new tasks, moves
+  pending attempts to the new version, and opens a **rework** attempt for tasks accepted or
+  finished at an older version; returns a `SyncReport` (`last_sync`). `rework(task, reason)`:
+  a fresh attempt with `rework_reason` and `previous_commit`, `lineage_repairs` unchanged,
+  `previous_failure` cleared — distinct from `repair`. `records` lists only tasks in the
+  current tree (removed tasks are kept in the file, not counted).
+- Core: the loop reports each plan change ("📝 Plan changed (product → v3): 1 task will be
+  reworked …; their dependents wait"); a finished result whose acceptance is refused as stale
+  is kept and reworked, never accepted.
+- Handoff: `rework_reason` / `previous_commit`; the prompt says it is a rework and where the
+  earlier work is, so the worker adjusts instead of starting over.
+- Tests: `test_task_state.py` (+3: edit saved at once, stale acceptance → rework with the
+  repair budget intact and unrelated plans untouched, reopen keeps it; finished-at-old-version
+  can't be accepted but is kept; new tasks appear pending), `test_rolling_workers.py` (+1: the
+  product plan is edited while its task runs → attempt 1 kept, attempt 2 is a rework at v3 with
+  the previous commit, the page waited for it, the other tasks ran once).
+- Implementation commit: `b834a9f`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (436 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors). The Check's own timeout was raised to 300 s
+  (real git worktrees in the cog tests take ~80 s on Windows).

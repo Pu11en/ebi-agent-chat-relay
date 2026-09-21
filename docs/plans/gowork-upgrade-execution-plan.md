@@ -197,7 +197,7 @@ new code merely because this build edits it. Report that boundary honestly.
   splitting or model changes. Independent work continues; exhausted tasks become blockers.
   Proof: every failure entry point shares the budget and cannot create hidden repair loops.
 
-- [ ] T19: Execution spine, only after T18: version mid-build requirement changes.
+- [x] T19: Execution spine, only after T18: version mid-build requirement changes.
   Scope: plan synchronization and scheduler. Save new version immediately, finish current
   small task, then create fresh user-directed rework before integrating changed outputs.
   Preserve old work; hold affected dependents and keep unrelated work moving.
