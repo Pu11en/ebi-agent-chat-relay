@@ -318,3 +318,97 @@ class TestDetail:
         assert "4,000 bytes" in text
         assert "~975 tokens (estimated)" in text
         assert "2026-09-21 07:00 UTC (source modification time)" in text
+
+
+class TestDetailSnapshots:
+    """Task 4.2: details of items collected from secret-bearing sources stay safe."""
+
+    LEAKED = "sk-ant-api03-ZZaabbccddeeff112233"  # noqa: S105 — a fake
+    HOOK_TOKEN = "ghp_abcdefghijklmnopqrstuv0123456789"  # noqa: S105 — a fake
+
+    def _collected(self, tmp_path):
+        import json
+
+        from claude_discord.ai_setup_adapters import ClaudeHarnessAdapter, claude_home_root
+        from claude_discord.ai_setup_collector import CollectionContext, InventoryCollector
+
+        home = tmp_path / "home" / ".claude"
+        home.mkdir(parents=True)
+        (home / "settings.json").write_text(
+            json.dumps(
+                {
+                    "model": "opus",
+                    "env": {"ANTHROPIC_API_KEY": self.LEAKED},
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": f"guard --token={self.HOOK_TOKEN}",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "home" / ".claude.json").write_text(
+            json.dumps(
+                {
+                    "oauthAccount": {"accessToken": self.LEAKED},
+                    "mcpServers": {
+                        "docs": {
+                            "command": "npx",
+                            "args": [f"--key={self.LEAKED}"],
+                            "env": {"DOCS_TOKEN": self.LEAKED},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        collector = InventoryCollector()
+        collector.register(
+            ClaudeHarnessAdapter(claude_home_root(home, owner="drew", home=tmp_path / "home"))
+        )
+        result = collector.collect(
+            CollectionContext(
+                computer="drewai", owner="drew", collected_at=NOW, harnesses=("claude",)
+            )
+        )
+        assert result.failed_adapters == ()
+        return result.snapshot
+
+    def test_every_detail_hides_secrets_and_the_ownership_label(self, tmp_path):
+        snapshot = self._collected(tmp_path)
+        ctx = SetupViewContext(computer_name="DrewAI", local=snapshot, now=NOW)
+        assert snapshot.items, "the fixture home produced no items"
+        for entry in snapshot.items:
+            text, _ = render_item_detail(ctx, ViewState(), entry, user_id=42)
+            lowered = text.lower()
+            assert self.LEAKED not in text
+            assert self.HOOK_TOKEN not in text
+            assert "anthropic_api_key" not in lowered
+            assert "oauthaccount" not in lowered
+            assert "mega global" not in lowered and "mega_global" not in lowered
+            assert "ownership" not in lowered
+            assert len(text) <= MAX_MESSAGE_CHARS
+        docs = next(entry for entry in snapshot.items if entry.display_name == "docs")
+        text, _ = render_item_detail(ctx, ViewState(), docs, user_id=42)
+        assert "DOCS_TOKEN: satisfied (credential)" in text
+        assert "~/.claude.json" in text
+        hook = next(entry for entry in snapshot.items if entry.kind is SetupKind.HOOK)
+        text, _ = render_item_detail(ctx, ViewState(), hook, user_id=42)
+        assert "guard" in text and "[redacted]" in text
+
+    def test_browse_and_where_text_hide_the_same(self, tmp_path):
+        snapshot = self._collected(tmp_path)
+        ctx = SetupViewContext(computer_name="DrewAI", local=snapshot, now=NOW)
+        for tab in Tab:
+            text, _ = render(ctx, ViewState(tab=tab), user_id=42)
+            assert self.LEAKED not in text and self.HOOK_TOKEN not in text
+            assert "mega" not in text.lower()
