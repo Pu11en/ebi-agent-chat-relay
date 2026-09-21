@@ -20,7 +20,7 @@ Try: `uv run python -m claude_discord.main`
 - [x] 3.1 Implement the approved-root `ProjectLocator` resolver adapter and its injectable protocol without owning shared-project-catalog data; owner: a new `claude_discord/handoff_projects.py` and tests; depends on 1.1; verify Drew-owned folder lookup, nonexistent folder, symlink/path escape, and remote absolute path cases.
 - [x] 3.2 Implement inherited-authority intersection with recipient policy and blockers for destructive, deployment, paid, external-message, permission, and unclear actions; owner: a new `claude_discord/handoff_authority.py` and tests; depends on 1.1; verify read-only and authorized edits pass while broadened authority blocks.
 - [x] 3.3 Add an execution coordinator that writes state before scheduling and supports a fresh backend turn by default, an explicitly authorized existing session, or deterministic work; owner: a new `claude_discord/handoff_executor.py` and focused tests; depends on 1.2, 1.3, 3.1, and 3.2; verify capacity waits remain queued and restart reconciliation never duplicates execution.
-- [ ] 3.4 Connect executor progress to bounded visible ack/queued/running/blocked/completed/failed posts in the one job thread; owner: handoff executor/Cog adapters and tests; depends on 2.3 and 3.3; verify every durable transition can be reconstructed from Discord plus the ledger.
+- [x] 3.4 Connect executor progress to bounded visible ack/queued/running/blocked/completed/failed posts in the one job thread; owner: handoff executor/Cog adapters and tests; depends on 2.3 and 3.3; verify every durable transition can be reconstructed from Discord plus the ledger.
 
 ## 4. Result return and integration
 

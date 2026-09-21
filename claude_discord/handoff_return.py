@@ -15,6 +15,7 @@ from claude_code_core.handoffs.protocol import (
     HandoffEvent,
     HandoffEventKind,
     HandoffTask,
+    next_sequence,
 )
 from claude_code_core.handoffs.state import HandoffTrigger, Transition, apply
 
@@ -50,13 +51,14 @@ async def record_and_deliver_handoff_result(
 
     outcome = "failed" if error else "completed"
     summary = _summary(text=text, error=error)
+    last = await repo.last_sequence(task.task_id)
     event = HandoffEvent(
         event_id=_new_event_id(event_id_factory),
         kind=HandoffEventKind.RESULT,
         task_id=task.task_id,
         sender=task.recipient,
         recipient=task.sender,
-        sequence=1,
+        sequence=next_sequence(last if last is not None else 0),
         created_at=stamp,
         payload={"outcome": outcome, "summary": summary},
     )
