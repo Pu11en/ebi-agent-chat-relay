@@ -6,7 +6,7 @@
 - Checked local worktree, active sessions and claim ownership before writing.
 - Read saved OSS research and checked current group execution, review behavior and capacity.
 - Created a draft with 18 small implementation tasks, explicit dependencies, checks, research mapping and open decisions.
-- Current phase: design interview in progress; Q1 settled as automatic resource-aware sizing, potentially above ten. Drew redirected to planner instructions and OSS reuse; scheduling priority remains unanswered.
+- Current phase: design interview in progress; automatic resource-aware sizing and unblock-first scheduling with fair turns are settled. Existing planning flow and selective OSS prompt improvements remain the scope.
 - No new implementation, paid worker launches, runtime restart or publication performed.
 - Planning files are pinned to .planning/gowork-flow; previous named plans remain untouched.
 - Validation: the plan's Check command passed 168 tests in 7.76 seconds; plan-directory resolution returned the selected gowork-flow directory.
@@ -48,7 +48,8 @@
 - Drew chose A for local integration: automatically bring each checked build into the local project while other builds continue; no looks-good gate. Saved in the plan and prompt draft.
 - Integration must preserve existing edits, serialize same-project merges and verify combined results; conflicts use the existing one-repair/blocker rule. Runtime remains unchanged during planning.
 - Drew chose A for thread retention: immediately archive finished worker threads after saving results, preserving history. Main planning thread and blocker messages stay available; runtime unchanged during planning.
-- Next open question: which ready work gets scarce worker capacity first when multiple builds compete; automatic capacity sizing itself is already settled.
+- Drew chose A after clarification: prefer tasks that unblock other work, while sharing fairly across builds so none waits indefinitely. Saved in the plan and prompt draft; runtime unchanged.
+- Next open question: how a new direction in the planning thread should affect a task already running; preserve all settled decisions and use a concrete example.
 - One documentation patch used out-of-order contexts and did not apply; reapplied the same changes in file order successfully.
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.
