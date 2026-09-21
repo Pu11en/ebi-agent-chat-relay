@@ -8,6 +8,7 @@ Done when: A local practice run proves dependencies, automatic worker sizing und
 ## 1. What Is Settled
 
 - **Draft for discussion, not a build launch.** Drew requested a research-backed plan followed by grilling.
+- **Planner requirement:** everyday brainstorming, question-answering and task-writing sessions should know this workflow automatically through shared instructions and a reusable skill.
 - Keep one master planning conversation, with separate small build tasks beneath it.
 - A business can have website, product and marketing plans; each can have smaller plans of its own.
 - Plan in detail before building; later small changes remain possible.
@@ -35,6 +36,8 @@ Done when: A local practice run proves dependencies, automatic worker sizing und
 - The saved research also covers filtered handoffs and trace history from the OpenAI Agents SDK, persisted responsibility from LangGraph Swarm, reusable role views from AutoGen Studio, and saved flow state from CrewAI.
 - **Recommendation:** adapt these patterns inside the existing bot; do not choose a replacement framework without evidence that it removes more work than it adds.
 - Copying actual source later requires checking that source's license and preserving required notices; this draft proposes patterns, not vendored code.
+- **Planner-specific follow-up:** Superpowers, Get Shit Done and BMad were cloned and inspected; planner-audit.md maps the reusable parts, and planner-skill-draft contains a concrete, uninstalled skill draft, output contract, example evaluations and retained licenses.
+- Use a short global routing rule, one shared master-planning skill, small templates and saved project decisions; runtime code still owns dependency enforcement and adaptive capacity.
 
 ## 3. Proposed Everyday Flow
 
@@ -89,10 +92,13 @@ The Check command above is the existing baseline; every implementation task also
 - [ ] **T14: Show one master status in Discord.** Summarize running, waiting, blocked and ready-for-Drew tasks with the next relevant action. Needs: T04, T08, T10. Proof: mixed task states display accurately without requiring worker-thread reading.
 - [ ] **T15: Separate finished workers from Drew's review.** Keep results available after execution ends, using the chosen archive/retention policy and a local test handoff. Needs: T14 and retention decision. Proof: all workers are closed while the parent still says ready for Drew.
 - [ ] **T16: Report repeated workflow friction.** Extend existing run records with wait time, repair attempts, review outcomes and repeated owner questions. Needs: T04, T12. Proof: a saved sample produces reproducible counts; unavailable cost data stays unknown.
-- [ ] **T17: Refresh the planning instructions.** Teach the master thread to create small tasks, dependencies, checks and clear stop conditions; document any agreed plain-English launch names. Needs: T03 and workflow-naming decision. Proof: website/product/marketing examples produce valid plans without duplicate questions already answered.
-- [ ] **T18: Provide a local practice run.** Use simulated workers and machine readings to demonstrate more than ten ready tasks, automatic growth and backoff, dependent tasks, two competing plans, a failure, a restart and a plan edit. Needs: T06a-T06c and T07-T17. Proof: no paid model calls or real stress test, all assertions pass, and final results remain available for review.
+- [ ] **T17a: Refine the master-planning skill.** Connect brainstorming, saved answers, one-question grilling and detailed task-writing; adapt the inspected OSS patterns to Drew's workflow. Needs: planning-stage transition decision. Proof: a reviewed skill draft covers each stage without repeating settled questions; initial draft already exists but is not installed.
+- [ ] **T17b: Define compatible planning templates.** Capture the master record, decisions, ownership, dependencies and completion evidence; export only formats the installed runner actually supports. Needs: T17a. Proof: business examples have full requirement coverage and unsupported dependency behavior is clearly rejected or serialized through a verified supported path.
+- [ ] **T17c: Route planning sessions to the shared skill.** Install once in the shared skills directory and add a short canonical global rule; reconcile conflicting question-format instructions and preserve small-fix behavior. Needs: T17a, T17b. Proof: all three harnesses discover the same skill; no duplicate global configuration or new hooks.
+- [ ] **T17d: Evaluate planner behavior.** Check the proposed scenarios for new plans, resumed answers, ownership conflicts and tiny changes; compare live behavior only within separately authorized evaluation scope. Needs: T17b, T17c and T03 for executable dependency checks. Proof: saved evidence distinguishes static validation from actual model behavior and records any failures.
+- [ ] **T18: Provide a local practice run.** Use simulated workers and machine readings to demonstrate more than ten ready tasks, automatic growth and backoff, dependent tasks, two competing plans, a failure, a restart and a plan edit. Needs: T06a-T06c, T07-T16 and T17a-T17d. Proof: no paid model calls or real stress test, all assertions pass, and final results remain available for review.
 
-**Parallel build opportunities:** T03 and T04 can proceed after T02; T06a and T07 can proceed after T04 while T05 is built; T13, T16 and T17 can proceed once their own prerequisites exist.
+**Parallel build opportunities:** T17a-T17c can progress before scheduler implementation; T03 and T04 can proceed after T02; T06a and T07 can proceed after T04 while T05 is built; T13 and T16 can proceed once their own prerequisites exist.
 Tasks changing the same existing loop or Discord files must be sequenced or given distinct ownership even when their conceptual dependencies allow parallel work.
 Cross-project builds preserve separate local review copies and an explicit final cross-project check; they do not pretend separate repositories have one atomic merge.
 
@@ -102,7 +108,8 @@ Settled answers are listed in section 1; the following are proposals or open cho
 Ask one question at a time and record the answer before moving to dependent questions.
 
 - **Q1 settled:** automatically choose the useful worker count from independent work and available machine resources, with a protective maximum if needed; do not enforce ten forever or ask for a count each launch.
-- **Q2, next: Which ready work gets capacity first when builds compete?** Recommended: tasks that unblock other tasks, with aging so other builds still progress; alternatives are equal sharing, finishing the oldest build first or explicit project priority.
+- **Planner workflow, next:** when should brainstorming turn into detailed task-writing? Recommended: when the important decisions are settled, without a separate command; alternatives are only on request, maintaining draft tasks throughout, or completing one business area at a time.
+- **Q2, still open:** which ready work gets capacity first when builds compete? Recommended: tasks that unblock other tasks, with aging so other builds still progress; alternatives are equal sharing, finishing the oldest build first or explicit project priority.
 - **Engineering follow-through:** determine headroom thresholds, sampling, fallback and ceiling from read-only measurements and simulated tests during implementation; do not ask Drew to guess technical numbers or promise a safe count from one idle snapshot.
 - **Failure policy:** when a product task is stuck, should independent website or marketing work continue, and how much automatic repair is allowed?
 - **Completion and retention:** execution must end without waiting for Drew; decide whether finished threads are archived, deleted after results are saved, or kept as inactive history.

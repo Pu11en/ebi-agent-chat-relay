@@ -6,7 +6,7 @@
 - Checked local worktree, active sessions and claim ownership before writing.
 - Read saved OSS research and checked current group execution, review behavior and capacity.
 - Created a draft with 18 small implementation tasks, explicit dependencies, checks, research mapping and open decisions.
-- Current phase: design interview in progress; Q1 settled as automatic resource-aware sizing, potentially above ten. Q2 concerns scheduling priority when builds compete.
+- Current phase: design interview in progress; Q1 settled as automatic resource-aware sizing, potentially above ten. Drew redirected to planner instructions and OSS reuse; scheduling priority remains unanswered.
 - No new implementation, paid worker launches, runtime restart or publication performed.
 - Planning files are pinned to .planning/gowork-flow; previous named plans remain untouched.
 - Validation: the plan's Check command passed 168 tests in 7.76 seconds; plan-directory resolution returned the selected gowork-flow directory.
@@ -14,6 +14,10 @@
 - Updated capacity design from Drew's answer; split T06 into three small tasks (measurement, shared admission, automatic adjustment), bringing the draft to 20 tasks.
 - Capacity refinement verified against _run_helper.py's existing fixed semaphore; no resource thresholds invented and no machine stress test performed.
 - Documentation-only follow-up: no test rerun needed; the earlier 168-test baseline remains the last runtime validation.
+- Audited existing planning configuration and cloned three OSS references; wrote planner-audit.md and an uninstalled master-planning skill draft with templates and evaluation prompts.
+- Split T17 into four focused planner tasks, bringing the proposed build to 23 tasks. Planner skill and routing can proceed before scheduler implementation.
+- No new global instructions, shared skill installation, live model evaluation or bot restart performed.
+- Draft validation: skill-creator quick_validate passed, evaluation JSON parsed successfully, and git diff --check was clean. These are structural checks, not evidence of model behavior.
 
 ## Inspection Notes
 
@@ -22,8 +26,9 @@
 - A handoff filename probe found no match in this branch; reuse is an implementation prerequisite, not a claim that the contract was inspected.
 - git check-ignore returned 1 because the planned files are not ignored; this is expected.
 - A guessed session_capacity.py path did not exist; located the actual capacity implementation in cogs/_run_helper.py.
+- A guessed unsuffixed skill-creator path was absent; read the catalog's synced skill-creator location instead. One-question's symlink target was read successfully.
 
 ## Next Turn
 
-- Ask Q2 about capacity priority between competing builds and save Drew's answer.
+- Ask how planning transitions from brainstorming to detailed task-writing; keep scheduling priority open for a later question.
 - Keep alternatives open until answered; do not launch the draft as a build plan.

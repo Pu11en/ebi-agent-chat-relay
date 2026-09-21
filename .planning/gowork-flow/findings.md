@@ -29,3 +29,13 @@
 - Planner estimates task parallelism; runtime admission must continuously account for all builds and measured resource pressure. Scheduling priority, retention, failure policy and launch method remain decisions.
 - Prior untracked .gowork-catchup.md is unrelated and untouched.
 - No skill hooks installed and no shared active-plan pointer changed.
+
+## Planner Instructions Audit
+
+- Shared instruction links are already aligned across Claude, Codex and DeepSeek. Global rules prescribe task size, launch behavior and short answers, but do not route the whole planning lifecycle to one master skill.
+- Installed planning-with-files, grilling, one-question, to-spec, to-tickets and wayfinder cover separate parts. to-spec/to-tickets/wayfinder are manual-invocation skills; their tracker workflows need adaptation rather than blind activation.
+- One-question is a valid symlink into DESKTOP HOME; ordinary rg --files does not traverse it by default.
+- Cloned three references without running their code: Superpowers 5bf4e78011075bcfc0dc295f0724994cd123ee71, GSD bdcaab2c752d9a33a1a1ca9acf3a3c81fb991815, BMad f033e70a2c0a3751aaab17dfdd29839ac621f541.
+- Inspected brainstorming/task-writing, GSD planner fields and execution conflict checks, and BMad readiness/step-file instructions. Exact sources and adaptation boundaries are in planner-audit.md.
+- All three checked licenses are MIT; preserved license files in the draft package. No upstream installers or hooks were executed.
+- A concrete master-planning skill draft, native-compatible output contract and four proposed evaluations now exist. Not installed; no live agent benchmarks run.
