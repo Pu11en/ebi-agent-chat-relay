@@ -36,6 +36,10 @@ the project and saved plan before guessing a dependency or asking the user.
 Separate task readiness from current machine/provider capacity.
 Prioritize ready tasks that unlock more work while giving active builds fair
 turns; do not let one plan monopolize capacity indefinitely.
+When the user changes requirements during a task, record the new plan version,
+let that small task finish, then apply the change through a fresh task before
+integrating its result. Hold affected dependents; keep unrelated work moving.
+Preserve the original attempt, but do not claim it meets changed requirements.
 Assign only the intended outcome and enough context to a fresh worker.
 Preserve its result and check evidence; release execution capacity when done.
 Validate combined outputs before unblocking dependent work.
@@ -132,3 +136,4 @@ Source: local-plans/generation-wealth-feedback-gowork.md, inspected as a plan, n
 - Local integration settled: automatically after each build passes its checks, without waiting for the full master plan.
 - Worker history retention settled: archive immediately when a worker finishes and its result is saved, preserving history; main planning-thread blocker messages remain available.
 - Capacity priority settled: prefer tasks that unblock other work, with fair turns so other ready builds still progress.
+- Mid-build changes settled: finish the current small task, then apply the new requirements before integration; unaffected tasks continue.

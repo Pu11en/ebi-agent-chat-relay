@@ -14,6 +14,7 @@ Done when: A local practice run proves dependencies, automatic worker sizing, re
 - Keep one master planning conversation, with separate small build tasks beneath it.
 - A business can have website, product and marketing plans; each can have smaller plans of its own.
 - Plan in detail before building; later small changes remain possible.
+- **Changes during execution settled:** finish an affected worker's current small task, then apply Drew's changed requirements in a fresh task before integrating that result. Save the new plan version immediately, hold dependent work that needs the changed output, and let unaffected tasks continue. Retain earlier work without presenting an outdated result as completion of the revised goal.
 - **Planning interaction settled:** keep plans detailed internally, while asking short multiple-choice questions with useful distinct options until every required user decision is answered. Gather technical facts from the project instead of making Drew supply them; retain saved answers and show little at a time.
 - **Name and direction:** keep Go Work as the name and evolve its existing loops.
 - **Recommended execution shape:** one persistent coordinator tracks child plans and starts independent ready tasks within automatic capacity. Each task gets a fresh worker session; finished workers close while the coordinator retains results and advances the lanes. Existing Go Work already has parallel groups.
@@ -101,7 +102,7 @@ The Check command above is the existing baseline; every implementation task also
 
 - [ ] **T11: Recover after interruption without duplicate work.** Reconcile saved attempts with actual worker and commit state at startup. Needs: T08, T09. Proof: interruptions before dispatch, after result save and after combination resume correctly.
 - [ ] **T12: Limit repairs and isolate blockers.** Allow one repair after the original failed attempt, continue unaffected work, and keep dependent tasks blocked until a checked result is accepted. Needs: T10, T11. Proof: repair allowance survives restart and cannot reset through model escalation or task splitting; exhaustion records a blocker while independent tasks progress.
-- [ ] **T13: Handle edits to plans already running.** Save plan versions, update unstarted work and detect results based on superseded requirements. Needs: T04, T05 and change-policy decision. Proof: an older result cannot silently satisfy a changed task.
+- [ ] **T13: Handle edits to plans already running.** Save a new plan version immediately, let the affected current task finish, then schedule a fresh task to apply the change; hold affected dependents and integration while unaffected work continues. Needs: T04, T05. Proof: a mid-task change survives restart, the old attempt is preserved but cannot satisfy the revised requirement, and only checked current-version work integrates. User-requested rework is tracked separately from the one automatic failure-repair allowance.
 
 ### Drew's View and Proof
 
@@ -133,7 +134,7 @@ Ask one question at a time and record the answer before moving to dependent ques
 - **Completion and integration settled:** no looks-good gate; automatically integrate each finished build into its local project after checks, without waiting for other builds in the master plan.
 - **Retention settled:** archive each finished worker thread immediately after saving results; preserve history, and keep blocker messages available in the main planning thread.
 - **Review strength:** retain cheap/balanced/careful behavior, or change which tasks need a separate reviewer and what happens when one is unavailable?
-- **Changes during a build:** apply new directions only to unstarted tasks, stop affected workers, or finish their current attempts and then replace stale work?
+- **Changes during a build settled:** finish the current small task, then apply the change before using its result; unaffected workers continue and affected dependents wait.
 - **First release boundary:** include multi-project business plans immediately, or first prove multiple lanes within one project while preserving the same data format?
 - **Name and completion reporting settled:** keep Go Work, report issues/workarounds in the planning thread, and finish with short bullets explaining what changed and why; no success approval question.
 - **Implementation method, after the design is settled:** choose fresh-session Go Work or small normal-session increments; this planning request does not launch either.

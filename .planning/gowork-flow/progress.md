@@ -49,7 +49,8 @@
 - Integration must preserve existing edits, serialize same-project merges and verify combined results; conflicts use the existing one-repair/blocker rule. Runtime remains unchanged during planning.
 - Drew chose A for thread retention: immediately archive finished worker threads after saving results, preserving history. Main planning thread and blocker messages stay available; runtime unchanged during planning.
 - Drew chose A after clarification: prefer tasks that unblock other work, while sharing fairly across builds so none waits indefinitely. Saved in the plan and prompt draft; runtime unchanged.
-- Next open question: how a new direction in the planning thread should affect a task already running; preserve all settled decisions and use a concrete example.
+- Drew chose A for mid-build changes: finish the current small task, then apply the change in a fresh task before integration. Persist the plan version and hold affected dependents while unrelated tasks continue; runtime remains unchanged during planning.
+- Next open question: default review strength before automatically integrating a build; preserve existing modes and explain the time/usage tradeoff.
 - One documentation patch used out-of-order contexts and did not apply; reapplied the same changes in file order successfully.
 - Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
 - Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.
