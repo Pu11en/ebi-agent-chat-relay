@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -85,6 +86,12 @@ async def deliver_pending_handoff_results(
             await repo.record_delivery_failure(entry.id, now=stamp, error=str(exc))
             continue
         await repo.mark_delivered(entry.id, now=stamp)
+        await _archive_worker_thread(
+            repo,
+            bot=bot,
+            task_id=entry.task_id,
+            recipient=entry.recipient,
+        )
         delivered_any = True
     return delivered_any
 
@@ -113,6 +120,30 @@ async def _resolve_destination(bot: Any, destination: ConversationCoordinate) ->
     if not hasattr(target, "send"):
         raise ValueError(f"handoff destination {target_id} cannot receive messages")
     return target
+
+
+async def _archive_worker_thread(
+    repo: HandoffRepository,
+    *,
+    bot: Any,
+    task_id: str,
+    recipient: str,
+) -> None:
+    thread_id = await repo.get_job_thread(task_id, recipient)
+    if thread_id is None:
+        return
+
+    thread = bot.get_channel(thread_id)
+    if thread is None:
+        with contextlib.suppress(Exception):
+            thread = await bot.fetch_channel(thread_id)
+    if thread is None or not hasattr(thread, "edit"):
+        return
+
+    try:
+        await thread.edit(archived=True, reason="handoff completed")
+    except Exception:
+        logger.warning("Could not archive handoff worker thread %s", thread_id, exc_info=True)
 
 
 def _render_result_message(event: HandoffEvent) -> str:

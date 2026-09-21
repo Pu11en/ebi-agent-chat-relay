@@ -113,6 +113,62 @@ async def test_record_and_deliver_handoff_result_posts_to_origin_thread(
 
 
 @pytest.mark.asyncio
+async def test_record_and_deliver_handoff_result_archives_worker_thread_after_delivery(
+    handoff_repo: HandoffRepository,
+) -> None:
+    await _record_running_task(handoff_repo)
+    await handoff_repo.set_job_thread(TASK_ID, "drewai", 999)
+    origin_thread = SimpleNamespace(id=333, send=AsyncMock())
+    worker_thread = SimpleNamespace(id=999, edit=AsyncMock())
+    bot = MagicMock()
+    bot.get_channel.side_effect = lambda channel_id: {
+        333: origin_thread,
+        999: worker_thread,
+    }.get(channel_id)
+
+    delivered = await record_and_deliver_handoff_result(
+        repo=handoff_repo,
+        bot=bot,
+        task_id=TASK_ID,
+        local_agent_id="drewai",
+        text="Found the Pinterest visual-picker process.",
+        error=None,
+        now=NOW,
+        event_id_factory=lambda: RESULT_ID,
+    )
+
+    assert delivered is True
+    origin_thread.send.assert_awaited_once()
+    worker_thread.edit.assert_awaited_once_with(archived=True, reason="handoff completed")
+
+
+@pytest.mark.asyncio
+async def test_record_and_deliver_handoff_result_keeps_worker_open_until_origin_receives_result(
+    handoff_repo: HandoffRepository,
+) -> None:
+    await _record_running_task(handoff_repo)
+    await handoff_repo.set_job_thread(TASK_ID, "drewai", 999)
+    worker_thread = SimpleNamespace(id=999, edit=AsyncMock())
+    bot = MagicMock()
+    bot.get_channel.side_effect = lambda channel_id: worker_thread if channel_id == 999 else None
+    bot.fetch_channel = AsyncMock(side_effect=RuntimeError("missing"))
+
+    delivered = await record_and_deliver_handoff_result(
+        repo=handoff_repo,
+        bot=bot,
+        task_id=TASK_ID,
+        local_agent_id="drewai",
+        text="Found it.",
+        error=None,
+        now=NOW,
+        event_id_factory=lambda: RESULT_ID,
+    )
+
+    assert delivered is False
+    worker_thread.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_record_and_deliver_handoff_result_keeps_outbox_pending_when_origin_missing(
     handoff_repo: HandoffRepository,
 ) -> None:
