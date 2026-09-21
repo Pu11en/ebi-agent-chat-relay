@@ -112,7 +112,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: racing requests do not double-book, cancellation releases reservations, reviews
   cannot deadlock behind workers, and fairness survives reopen.
 
-- [ ] T09: Execution spine, only after T08: adapt admissions to measured resources.
+- [x] T09: Execution spine, only after T08: adapt admissions to measured resources.
   Scope: controller policy. Conservative start, bounded growth from observed peaks,
   pressure backoff, cooldown recovery, protective ceiling and missing-data fallback.
   Keep explicit provider/operator constraints separate. Critical pressure has a defined

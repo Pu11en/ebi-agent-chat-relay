@@ -150,3 +150,26 @@
   `ruff format --check`, `pyright claude_code_core/gowork_admission.py` (0 errors).
 - Open: OS/chat/coordination headroom is expressed as the capacity T09 computes from T07
   snapshots and hands to `set_capacity()`; T10 makes real process starts reserve here.
+
+## T09 — Adapt admissions to measured resources
+
+- New `claude_code_core/gowork_capacity.py`: `CapacityPolicy(start=2, ceiling=32,
+  growth_step=2, headroom_mb=4096, cooldown_ticks=3, operator_limit=None)`.
+  `decide(snapshot, peaks, held=…)` → `CapacityDecision(capacity, measured_capacity,
+  external_limit, pressure, pause_starts, cancel_up_to, reason)`.
+- Healthy: grow by at most `growth_step` per tick, never past `held + workers_that_fit(…)`
+  at the observed typical worker size, never past the ceiling. Constrained: pause new starts,
+  capacity = what is running. Critical: pause and `cancel_up_to=1` per tick (never the last
+  worker), capacity shrinks by one. Unknown (missing readings): hold at
+  `max(start, min(current, held))`, no growth, no pause. After any pressure, a cooldown of
+  healthy ticks passes before growth resumes, so the capacity is monotone through recovery.
+  `set_external_limit()` keeps an operator/provider constraint apart from the measurement and
+  applies it last; both numbers are reported.
+- Tests: `tests/gowork_upgrade/test_capacity_policy.py` (8): growth past ten on a healthy
+  host, peak-bounded fit, constrained pause, critical shedding to one, cooldown without
+  oscillation, unknown-data hold, external limit, ceiling.
+- Implementation commit: `06dd84a`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (381 passed), `ruff check`,
+  `ruff format --check`, `pyright claude_code_core/gowork_capacity.py` (0 errors).
+- Open: T10 wires HostProbe → CapacityPolicy → AdmissionController.set_capacity into the
+  real process starts (`_run_helper.py`, setup defaults, the task-loop cap).
