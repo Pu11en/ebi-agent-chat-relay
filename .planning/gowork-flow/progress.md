@@ -31,5 +31,8 @@
 
 ## Next Turn
 
-- Ask how planning transitions from brainstorming to detailed task-writing; keep scheduling priority open for a later question.
+- Preserve Drew's existing planning style. He rejected the new generic planning-workflow direction; do not ask the stage-transition question again or install the draft.
+- Clarify whether the wanted execution connection belongs in existing planner instructions, the executor, or both, using a real existing plan as evidence.
+- Existing Go Work reads task checkbox labels for grouping (open_tasks -> _groups_for -> group_prompt); detailed task bodies are not included in that grouping prompt. Workers separately read the full plan.
+- Rechecked native Goal/Done when/Check parsing and the existing transcript-feedback plan; no product code or runtime changes made.
 - Keep alternatives open until answered; do not launch the draft as a build plan.

@@ -1,5 +1,7 @@
 # Go Work: Plan Once, Build Many Things
 
+**Latest scope correction:** Drew wants to preserve his existing planning/brainstorming style. The proposed replacement master-planning skill and its stage-transition interview were not accepted. Clarify the instructions connecting existing plans to execution; T17a-T17d remain unapproved proposals, not the next implementation direction.
+
 Check: uv run pytest tests/test_task_loop.py tests/test_loop_store.py tests/test_gowork_records.py tests/test_gowork_ending.py tests/test_work_copy.py -q
 Try: uv run pytest tests/test_task_loop.py -q
 Goal: One planning conversation produces several coordinated build plans, with independent work running together and finished workers closing automatically.

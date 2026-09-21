@@ -1,5 +1,7 @@
 # How Every Planning Session Should Know the Workflow
 
+**Correction after review:** Drew clarified that the existing planning style should stay. The master-planning replacement proposed below was not accepted; treat it as historical research, not the agreed implementation. The active question is how the existing planner should prepare work for execution.
+
 ## 1. What You Already Have
 
 - **Shared instructions:** Claude, Codex and DeepSeek point to the same global rules, so small task sizing, local checks, Go Work launch instructions and your short-question preference already have a common home.

@@ -5,7 +5,7 @@ description: Guide project brainstorming, clarify requirements through short que
 
 # Master Planning
 
-Draft for this Go Work design discussion. This package is not installed or active globally.
+Not accepted as the direction for this work. Drew clarified that his existing planning style should remain; he wants clearer instructions for how plans are executed. Retained for reference only, not installed or active globally.
 
 ## Purpose
 
