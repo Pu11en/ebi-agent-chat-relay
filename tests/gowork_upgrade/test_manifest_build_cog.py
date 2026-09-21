@@ -614,3 +614,67 @@ async def test_replies_resolve_only_their_own_blocker(repo: Path) -> None:
     )
     assert tasks["website.page-styles"]["status"] == "accepted"  # untouched
     assert len(cog._blockers.unresolved(build_id=build_id)) == 1  # the retried task asked again
+
+
+async def test_looks_good_integrates_the_exact_combined_result_locally(repo: Path) -> None:
+    """T23: the finished manifest build is combined into the project through the locked
+    integration with the plan's own check; the person's unsaved notes survive; nothing is
+    pushed (the project has no remote to push to)."""
+    _plan_with_mode(repo, f"Check: `{_PY} -c pass`\n\n" + _passing_manifest())
+    cog, _chat, _threads, _worked = _cog()
+    cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    channel = _channel()
+    (repo / "notes.txt").write_text("private\n")  # untracked, stays untouched
+    worker, ledger = await _run_until_settled(cog, channel, repo / "PLAN.md")
+    assert {t["status"] for t in ledger["tasks"].values()} == {"accepted"}
+
+    message = MagicMock()
+    message.channel.id = worker.id
+    message.content = "looks good"
+    for _ in range(1500):
+        waiter = cog._waiters.get(worker.id)
+        if waiter is not None and not waiter.done() and cog.take_message(message):
+            break
+        await asyncio.sleep(0.01)
+    for _ in range(1500):
+        if not cog.running:
+            break
+        await asyncio.sleep(0.01)
+
+    assert not cog.running
+    assert len(list((repo / "product").glob("work-*.txt"))) == 1  # the build landed
+    assert (repo / "notes.txt").read_text() == "private\n"
+    assert _git(repo, "remote").strip() == ""
+    posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+    assert "added to your project" in posted and "nothing went to GitHub" in posted
+
+
+async def test_a_failing_project_check_keeps_the_build_for_repair(repo: Path) -> None:
+    # The plan's check fails only once a marker file exists — committed to the project
+    # after the build finished, so the combined result (build + newer project) fails.
+    check = f"{_PY} -c \"import os,sys; sys.exit(1 if os.path.exists('fail-here') else 0)\""
+    _plan_with_mode(repo, f"Check: `{check}`\n\n" + _passing_manifest())
+    cog, _chat, _threads, _worked = _cog()
+    cog._is_hard = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    channel = _channel()
+    worker, _ledger = await _run_until_settled(cog, channel, repo / "PLAN.md")
+    running = cog.running[0]
+    assert running.copy is not None
+    (repo / "fail-here").write_text("x\n")
+    _git(repo, "add", "fail-here")
+    _git(repo, "commit", "-qm", "the project moved on in a way that breaks the check")
+
+    message = MagicMock()
+    message.channel.id = worker.id
+    message.content = "looks good"
+    for _ in range(1500):
+        waiter = cog._waiters.get(worker.id)
+        if waiter is not None and not waiter.done() and cog.take_message(message):
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.5)
+
+    assert cog.running and running.copy.path.exists()  # the build is kept
+    assert not list((repo / "product").glob("work-*.txt"))  # the project was not changed
+    posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+    assert "couldn't keep it yet" in posted and "fails its check" in posted

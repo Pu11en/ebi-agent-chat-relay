@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -189,3 +191,81 @@ async def test_an_already_merged_side_is_recognised_without_merging_twice(
     assert not await wc.side_has_new_work(copy, side)  # so a second merge has nothing to do
     assert await wc.merge_side_copy(copy, side, keep_on_clash=True)  # harmless, only cleans up
     assert _git(copy.path, "rev-parse", "HEAD").strip() == head
+
+
+async def _build(repo: Path, tmp_path: Path, name: str, content: str) -> wc.WorkCopy:
+    copy = await wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "copies")
+    (copy.path / name).write_text(content)
+    _git(copy.path, "add", ".")
+    _git(copy.path, "commit", "-qm", f"build {name}")
+    return copy
+
+
+async def test_two_builds_for_one_project_integrate_in_turn(repo: Path, tmp_path: Path) -> None:
+    """T23: both land, one after the other, locally, with nothing pushed."""
+    a = await _build(repo, tmp_path, "a.txt", "A\n")
+    await asyncio.sleep(1.1)  # copies are named by the second they start
+    b = await _build(repo, tmp_path, "b.txt", "B\n")
+
+    first, second = await asyncio.gather(
+        wc.integrate_build(a, check=[sys.executable, "-c", "pass"]),
+        wc.integrate_build(b, check=[sys.executable, "-c", "pass"]),
+    )
+
+    assert first.ok and second.ok, (first.message, second.message)
+    assert (repo / "a.txt").read_text() == "A\n" and (repo / "b.txt").read_text() == "B\n"
+    assert not a.path.exists() and not b.path.exists()
+    assert _git(repo, "status", "--porcelain").strip() == ""
+    assert _git(repo, "remote").strip() == ""  # nowhere to push to, and nothing tried
+
+
+async def test_unrelated_unsaved_edits_survive_and_are_not_committed(
+    repo: Path, tmp_path: Path
+) -> None:
+    copy = await _build(repo, tmp_path, "a.txt", "A\n")
+    (repo / "notes.txt").write_text("my private notes\n")  # untracked
+    (repo / "app.txt").write_text("v2 in progress\n")  # tracked, unsaved
+    result = await wc.integrate_build(copy, check=None)
+
+    assert result.ok, result.message
+    assert (repo / "a.txt").exists()
+    assert (repo / "notes.txt").read_text() == "my private notes\n"
+    assert (repo / "app.txt").read_text() == "v2 in progress\n"
+    assert " M app.txt" in _git(repo, "status", "--porcelain")  # still unsaved, still theirs
+    assert "app.txt" not in _git(repo, "show", "--stat", "HEAD")
+
+
+async def test_an_unsaved_edit_the_build_also_changes_blocks_instead_of_overwriting(
+    repo: Path, tmp_path: Path
+) -> None:
+    copy = await _build(repo, tmp_path, "app.txt", "the build's app\n")
+    (repo / "app.txt").write_text("my unsaved app\n")
+    result = await wc.integrate_build(copy, check=None)
+
+    assert not result.ok and "app.txt" in result.message
+    assert (repo / "app.txt").read_text() == "my unsaved app\n"
+    assert copy.path.exists()  # the build is kept for later
+
+
+async def test_a_conflict_blocks_and_keeps_both_sides(repo: Path, tmp_path: Path) -> None:
+    copy = await _build(repo, tmp_path, "app.txt", "the build's app\n")
+    (repo / "app.txt").write_text("saved elsewhere\n")
+    _git(repo, "commit", "-qam", "project moved on")
+    result = await wc.integrate_build(copy, check=None)
+
+    assert not result.ok and "clash" in result.message and "app.txt" in result.message
+    assert (repo / "app.txt").read_text() == "saved elsewhere\n"
+    assert _git(repo, "status", "--porcelain").strip() == ""  # no half-done merge left behind
+    assert copy.path.exists() and (copy.path / "app.txt").read_text() == "the build's app\n"
+
+
+async def test_a_failing_combined_check_blocks_before_the_project_changes(
+    repo: Path, tmp_path: Path
+) -> None:
+    copy = await _build(repo, tmp_path, "a.txt", "A\n")
+    result = await wc.integrate_build(copy, check=[sys.executable, "-c", "raise SystemExit(3)"])
+
+    assert not result.ok and "check" in result.message.lower()
+    assert not (repo / "a.txt").exists()  # the project never saw the result
+    assert copy.path.exists()
+    assert not list((tmp_path / "copies").glob("*-integrate-*"))  # scratch cleaned up

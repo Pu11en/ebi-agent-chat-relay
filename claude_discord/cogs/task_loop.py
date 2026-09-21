@@ -104,6 +104,7 @@ from claude_code_core.work_copy import (
     create_side_copy,
     create_work_copy,
     head_commit,
+    integrate_build,
     keep_work,
     merge_side_copy,
     remove_side_copy,
@@ -1450,7 +1451,7 @@ class TaskLoopCog(commands.Cog):
                 await commit_all(running.copy.path, "gowork: changes from the chat afterwards")
                 tried_keep = True
                 take_build = clear_reply(reply) in _TAKE_BUILD_WORDS
-                ok, message = await keep_work(running.copy, prefer_build=take_build)
+                ok, message = await self._keep_build(running, prefer_build=take_build)
                 if not ok:
                     with contextlib.suppress(discord.HTTPException):
                         await target.send(
@@ -1619,6 +1620,23 @@ class TaskLoopCog(commands.Cog):
         finally:
             running.in_review = False
 
+    async def _keep_build(
+        self, running: _Running, *, prefer_build: bool = False
+    ) -> tuple[bool, str]:
+        """Put the build into the project. Manifest builds integrate the exact combined
+        result under the project's lock with the plan's check (T23); checkbox builds keep
+        the old merge."""
+        assert running.copy is not None
+        plan_text = running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
+        if not has_manifest(plan_text) or prefer_build:
+            return await keep_work(running.copy, prefer_build=prefer_build)
+        result = await integrate_build(running.copy, check=plan_check_command(plan_text))
+        message = result.message
+        if not result.ok and result.check_output:
+            fence = "```"
+            message += f"\n{fence}\n{result.check_output[-600:]}\n{fence}"
+        return result.ok, message
+
     async def _finish_early(self, running: _Running) -> str:
         """Keep the finished steps in the project and end the build ("wrap up")."""
         assert running.copy is not None
@@ -1626,7 +1644,7 @@ class TaskLoopCog(commands.Cog):
         checked, unchecked = count_tasks(
             running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
         )
-        ok, message = await keep_work(running.copy)
+        ok, message = await self._keep_build(running)
         if not ok:
             running.auto_finish = False
             with contextlib.suppress(discord.HTTPException):
