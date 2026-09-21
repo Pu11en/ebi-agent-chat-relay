@@ -231,7 +231,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: two same-repo builds serialize; dirty source remains intact; failed check/merge
   preserves private work and enters bounded repair; no push, PR or deploy side effect.
 
-- [ ] T24: Execution spine, only after T23: remove success approval waiters and reminders.
+- [x] T24: Execution spine, only after T23: remove success approval waiters and reminders.
   Scope: wrap-up lifecycle. Successful verified local integration ends automatically,
   posts recap and releases coordinator/worker resources; no looks-good gate. Terminal
   blocked runs retain recoverable records and actionable questions without idle workers.

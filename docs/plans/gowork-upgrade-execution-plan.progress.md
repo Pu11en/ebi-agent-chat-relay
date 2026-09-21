@@ -572,3 +572,25 @@ T11 is complete (T11a–T11c).
 - Implementation commit: `5c8f4fe`.
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (454 passed), `ruff check`,
   `ruff format --check`, `pyright` (0 errors).
+
+## T24 — Remove success approval waiters and reminders
+
+- Cog `_wrap_up`: for a manifest build whose own checks passed with nothing proposed,
+  `_auto_integrate()` runs right after the finished card — `_keep_build()` (T23 integration
+  with the plan's check), then "✅ Kept: added to your project (on this computer only …)",
+  queue note, worker-thread cleanup, build forgotten. No verdict wait, no reminders.
+  A refusal posts "⚠️ I couldn't add … yet: <reason>" and falls back to the parked wait (the
+  build stays on its branch; the person's reply is the bounded repair).
+- Ledger: `BuildState.integrated_commit` / `mark_integrated()`; a build already integrated
+  returns "kept" at once — duplicate finish or a restart cannot integrate twice, repost the
+  completion or reopen workers. Terminal blocked builds keep their ledger, side copies and
+  open questions (T20) and hold no worker slot. `request_stop` is untouched: stop means stop.
+- `_build_state` reads the plan from the project once the copy is gone.
+- Tests: `test_manifest_build_cog.py` — the main build test now proves the build lands in the
+  project on its own (integrated recorded, copy removed, no remote); the T23 tests became
+  "a verified build integrates itself" and "a project check that fails on the combined result
+  keeps the build waiting"; `test_running_identity.py`'s stop test parks both builds on failing
+  checks and closes one. `_run_until_settled` treats "ended" as settled.
+- Implementation commit: `bad8fc3`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (454 passed), `ruff check`,
+  `ruff format --check`, `pyright` (0 errors).
