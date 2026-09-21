@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +18,13 @@ from claude_code_core.loop_store import LoopStore
 from claude_discord.cogs.task_loop import TaskLoopCog
 
 FIXTURES = Path(__file__).parent / "fixtures"
+_PY = sys.executable.replace("\\", "/")  # forward slashes survive shlex on Windows
+
+
+def _passing_manifest() -> str:
+    """The validated plan with acceptance checks that pass on any machine."""
+    text = (FIXTURES / "validated-plan.md").read_text(encoding="utf-8")
+    return re.sub(r'"acceptance_check": "[^"]*"', f'"acceptance_check": "{_PY} -c pass"', text)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -32,7 +41,7 @@ def repo(tmp_path: Path) -> Path:
     for project in ("control", "product", "website", "marketing"):
         (tmp_path / project).mkdir()
         (tmp_path / project / "README.md").write_text(f"# {project}\n")
-    (tmp_path / "PLAN.md").write_text((FIXTURES / "validated-plan.md").read_text(encoding="utf-8"))
+    (tmp_path / "PLAN.md").write_text(_passing_manifest())
     _git(tmp_path, "add", ".")
     _git(tmp_path, "commit", "-qm", "init")
     return tmp_path
@@ -195,3 +204,79 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
     )
     assert all(t["archived"] for t in ledger["tasks"].values())
     assert chat.run_fresh_turn.await_count == 4  # four workers, none rerun by the retry
+
+
+async def test_combined_check_failure_blocks_the_task_and_its_dependents(repo: Path) -> None:
+    """T15: the merge lands, the combined check fails, the commit is kept, dependents wait."""
+    failing = re.sub(
+        r'"acceptance_check": "[^"]*"',
+        f'"acceptance_check": "{_PY} -c exit(1)"',
+        _passing_manifest(),
+        count=1,  # only product.catalog-api's check fails
+    )
+    (repo / "PLAN.md").write_text(failing)
+    _git(repo, "commit", "-qam", "failing check")
+    cog, _chat, threads, _worked = _cog()
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 1
+    channel.send = AsyncMock()
+
+    worker = await cog.start_loop(channel, str(repo / "PLAN.md"))
+    for _ in range(1000):
+        if cog.running and (cog.running[0].in_review or cog.running[0].waiting_for_person):
+            break
+        await asyncio.sleep(0.01)
+
+    ledger = json.loads(
+        (cog._store.path.with_name("builds") / f"thread-{worker.id}.json").read_text()
+    )
+    api = ledger["tasks"]["product.catalog-api"]
+    assert api["status"] == "blocked" and "combined check failed" in api["reason"]
+    assert api["result_commit"]  # kept for repair
+    assert ledger["tasks"]["website.catalog-page"]["status"] == "pending"
+    assert {
+        ledger["tasks"][t]["status"] for t in ("website.page-styles", "marketing.launch-post")
+    } == {"accepted"}
+
+
+async def test_a_clash_keeps_the_workers_branch(repo: Path) -> None:
+    """T15: a worker that edits outside its files and clashes loses nothing — both versions stay."""
+    cog, chat, threads, _worked = _cog()
+    original = chat.run_fresh_turn.side_effect
+
+    async def clashing(seed, thread, prompt, *, working_dir, result_sink, **slot):  # noqa: ANN001
+        if "Your task (" in prompt:
+            cwd = Path(working_dir)
+            (cwd.parent / "control" / "README.md").write_text(f"edited by {cwd.name}\n")
+            _git(cwd.parent, "commit", "-qam", f"{cwd.name} edits control")
+            await asyncio.sleep(0.2)
+            await result_sink("Edited the shared file.\nDONE", None)
+            return
+        await original(
+            seed, thread, prompt, working_dir=working_dir, result_sink=result_sink, **slot
+        )
+
+    chat.run_fresh_turn = AsyncMock(side_effect=clashing)
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 1
+    channel.send = AsyncMock()
+    await cog.start_loop(channel, str(repo / "PLAN.md"))
+    for _ in range(1000):
+        if cog.running and (cog.running[0].in_review or cog.running[0].waiting_for_person):
+            break
+        await asyncio.sleep(0.01)
+    running = cog.running[0]
+    assert running.copy is not None
+
+    ledger = json.loads(
+        (
+            cog._store.path.with_name("builds") / f"thread-{running.worker_thread_id}.json"
+        ).read_text()
+    )
+    blocked = [t for t in ledger["tasks"].values() if t["status"] == "blocked"]
+    assert blocked, "the later editors of the same file must clash"
+    for task in blocked:
+        assert "both versions kept" in task["reason"]
+        branch = task["reason"].split("branch ")[-1].rstrip(")")
+        assert branch in _git(running.copy.path, "branch", "--list", branch)  # still there
+    assert _git(running.copy.path, "status", "--porcelain").strip() == ""  # the copy is clean

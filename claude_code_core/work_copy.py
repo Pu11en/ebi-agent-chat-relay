@@ -222,18 +222,29 @@ async def side_has_new_work(copy: WorkCopy, side: SideCopy) -> bool:
     return int(count.strip() or 0) > 0
 
 
-async def merge_side_copy(copy: WorkCopy, side: SideCopy) -> bool:
+async def merge_side_copy(copy: WorkCopy, side: SideCopy, *, keep_on_clash: bool = False) -> bool:
     """Bring a parallel step's work into the build's copy; False (and no change) on a clash.
 
-    The side copy is removed either way — a step that didn't combine runs again
-    on its own, from the build's current state.
+    The side copy is removed after a successful merge. On a clash it is removed
+    too — unless *keep_on_clash*, in which case the worker's version stays on its
+    branch and worktree for repair while the build's copy is left exactly as it was.
     """
     try:
         await _git(copy.path, "merge", "--no-edit", side.branch)
-        return True
     except WorkCopyError:
         with contextlib.suppress(WorkCopyError):
             await _git(copy.path, "merge", "--abort")
+        if not keep_on_clash:
+            await remove_side_copy(copy, side)
         return False
-    finally:
-        await remove_side_copy(copy, side)
+    await remove_side_copy(copy, side)
+    return True
+
+
+async def side_is_merged(copy: WorkCopy, side: SideCopy) -> bool:
+    """True when the side branch is already in the build's copy (a merge that landed)."""
+    try:
+        await _git(copy.path, "merge-base", "--is-ancestor", side.branch, "HEAD")
+        return True
+    except WorkCopyError:
+        return False

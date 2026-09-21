@@ -21,6 +21,7 @@ import contextlib
 import datetime
 import logging
 import re
+import shlex
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -105,6 +106,7 @@ from claude_code_core.work_copy import (
     remove_side_copy,
     remove_work_copy,
     side_has_new_work,
+    side_is_merged,
 )
 from claude_code_core.work_copy import (
     _git as _wc_git,
@@ -427,6 +429,24 @@ def _fit(text: str, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
     return text[: text.rfind("\n", 0, limit - 2)] + "\n…"
+
+
+def _check_argv(command: str) -> list[str]:
+    """A task's acceptance check as an argv (no shell), or [] when there is none."""
+    text = command.strip()
+    if not text or text.lower() in ("none", "n/a", "-"):
+        return []
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return []
+
+
+def _plan_text_of(copy: WorkCopy) -> str:
+    try:
+        return copy.plan_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 class BuildAlreadyRunningError(ValueError):
@@ -2419,6 +2439,29 @@ class TaskLoopCog(commands.Cog):
             done = len(before) - len(self._build_state(running).unarchived_threads())
         return done
 
+    async def _combined_checks(
+        self, project_copy: WorkCopy, acceptance_check: str, *, cwd: Path
+    ) -> tuple[bool, list[str]]:
+        """Run the task's acceptance check, then the plan's own check, on the combined copy."""
+        results: list[str] = []
+        passed = True
+        for label, argv in (
+            ("acceptance", _check_argv(acceptance_check)),
+            ("plan", plan_check_command(_plan_text_of(project_copy))),
+        ):
+            if not argv:
+                continue
+            ok, tail = await run_check(cwd if label == "acceptance" else project_copy.path, argv)
+            last = tail.strip().splitlines()[-1] if tail.strip() else ""
+            results.append(
+                f"{label} check {'passed' if ok else 'FAILED'}: {' '.join(argv)}"
+                + (f" — {last[:200]}" if not ok and last else "")
+            )
+            passed = passed and ok
+            with contextlib.suppress(Exception):  # the check's own mess is not unsaved work
+                await _wc_git(project_copy.path, "checkout", "--", ".")
+        return passed, results
+
     async def _run_manifest_task(self, running: _Running, task: ReadyTask) -> ManifestResult:
         """Run one manifest task in its own side copy and worker thread (T11b, T13).
 
@@ -2491,35 +2534,55 @@ class TaskLoopCog(commands.Cog):
             )
             status, detail = parse_status(result.get("text"))
             ok = status == Status.DONE
+            checks: list[str] = []
+            checks_ok = True
+            # Integration is serialized per build (T15): one merge at a time, in the order
+            # results arrive, and the combined check runs before anything is accepted.
             async with running.git_lock:
-                has_work = ok and await side_has_new_work(project_copy, side)
-                landed = has_work and await merge_side_copy(project_copy, side)
+                merged_before = ok and await side_is_merged(project_copy, side)
+                has_work = ok and (merged_before or await side_has_new_work(project_copy, side))
+                if merged_before:
+                    landed = True  # a crash after the merge: reconciled, never merged twice
+                    await remove_side_copy(project_copy, side)
+                else:
+                    landed = has_work and await merge_side_copy(
+                        project_copy, side, keep_on_clash=True
+                    )
                 commit = await head_commit(project_copy.path) if landed else None
                 if ok and not has_work:
                     await remove_side_copy(project_copy, side)  # nothing there to keep
+                if landed:
+                    checks_ok, checks = await self._combined_checks(
+                        project_copy, assignment.acceptance_check, cwd=project_copy.path / rel
+                    )
             reason = detail or result.get("error") or ""
             if ok and not has_work:
                 reason = reason or "the worker reported DONE but committed no new work"
             elif has_work and not landed:
-                reason = reason or "the work did not combine with the build's copy"
+                reason = (
+                    reason or "the work clashed with the build's copy"
+                ) + f" (both versions kept: the worker's is on branch {side.branch})"
+            elif landed and not checks_ok:
+                reason = "combined check failed after merging: " + "; ".join(checks)
             elif not ok:
                 reason = (
                     reason or "the worker did not finish"
                 ) + f" (its work is kept at {side.path})"
+            accepted = landed and checks_ok
             await self._record(
                 running,
                 assignment.outcome,
-                "done alongside others" if landed else "didn't combine",
+                "done alongside others" if accepted else "didn't combine",
                 reason,
                 ai=ai,
                 seconds=time.monotonic() - started,
             )
             return ManifestResult(
                 task_id=task.task_id,
-                ok=landed,
+                ok=accepted,
                 detail=reason,
                 commit=commit,
-                checks=(f"worker ran: {assignment.acceptance_check}",) if landed else (),
+                checks=tuple(checks) if landed else (),
                 thread_id=worker_thread_id,
             )
 

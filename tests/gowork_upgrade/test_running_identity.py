@@ -9,7 +9,9 @@ one-build-per-project rule (and its switch-on-new-start behaviour).
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -21,6 +23,13 @@ from claude_code_core.loop_store import LoopStore
 from claude_discord.cogs.task_loop import BuildAlreadyRunningError, TaskLoopCog
 
 FIXTURES = Path(__file__).parent / "fixtures"
+_PY = sys.executable.replace("\\", "/")  # forward slashes survive shlex on Windows
+
+
+def _passing_manifest() -> str:
+    """The validated plan with acceptance checks that pass on any machine."""
+    text = (FIXTURES / "validated-plan.md").read_text(encoding="utf-8")
+    return re.sub(r'"acceptance_check": "[^"]*"', f'"acceptance_check": "{_PY} -c pass"', text)
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -35,7 +44,7 @@ def repo(tmp_path: Path) -> Path:
     for project in ("control", "product", "website", "marketing"):
         (tmp_path / project).mkdir()
         (tmp_path / project / "README.md").write_text(f"# {project}\n")
-    manifest = (FIXTURES / "validated-plan.md").read_text(encoding="utf-8")
+    manifest = _passing_manifest()
     (tmp_path / "PLAN-A.md").write_text(manifest.replace("Launch the business", "Plan A"))
     (tmp_path / "PLAN-B.md").write_text(manifest.replace("Launch the business", "Plan B"))
     (tmp_path / "LEGACY.md").write_text("- [ ] Task 1: a\n- [ ] Task 2: b\n")

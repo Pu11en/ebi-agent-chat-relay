@@ -172,3 +172,31 @@ async def test_the_after_save_hook_runs_only_once_the_result_is_on_disk(
 
     assert outcome.status is Status.STUCK
     assert dict(seen) == {API: "accepted", POST: "accepted", STYLES: "blocked", PAGE: "accepted"}
+
+
+async def test_a_result_whose_combined_check_failed_is_saved_but_not_accepted(
+    plan: Path, tmp_path: Path
+) -> None:
+    """T15: the commit is kept for repair, the task is blocked, dependents wait."""
+
+    class CombinedCheckFails(FakeWorker):
+        async def __call__(self, task: ReadyTask) -> ManifestResult:
+            result = await super().__call__(task)
+            if task.task_id == API:
+                return ManifestResult(
+                    API,
+                    False,
+                    "combined check failed: 2 tests broke",
+                    commit="c-api",
+                    checks=("pytest: 2 failed",),
+                )
+            return result
+
+    outcome = await _loop(plan, tmp_path, CombinedCheckFails({})).run()
+
+    assert outcome.status is Status.STUCK and "combined check failed" in outcome.detail
+    state = _state(plan, tmp_path)
+    assert state[API].status is TaskStatus.BLOCKED
+    assert state[API].result_commit == "c-api" and state[API].checks == ("pytest: 2 failed",)
+    assert state[PAGE].status is TaskStatus.PENDING
+    assert state.accepted_tasks() == (STYLES, POST)

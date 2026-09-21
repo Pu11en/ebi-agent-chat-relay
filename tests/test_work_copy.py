@@ -154,3 +154,38 @@ async def test_project_copy_needs_no_plan_and_takes_side_copies(repo: Path, tmp_
     assert await wc.head_commit(copy.path) == _git(copy.path, "rev-parse", "HEAD").strip()
     await wc.remove_work_copy(copy)
     assert not copy.path.exists()
+
+
+async def test_a_clash_can_keep_the_side_copy_for_repair(repo: Path, tmp_path: Path) -> None:
+    """T15: conflict keeps both versions — the build's and the worker's — nothing is thrown away."""
+    copy = await wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "copies")
+    side = await wc.create_side_copy(copy, "clash")
+    (copy.path / "app.txt").write_text("build version\n")
+    _git(copy.path, "commit", "-qam", "build edits app")
+    (side.path / "app.txt").write_text("worker version\n")
+    _git(side.path, "commit", "-qam", "worker edits app")
+
+    assert await wc.merge_side_copy(copy, side, keep_on_clash=True) is False
+    assert (copy.path / "app.txt").read_text() == "build version\n"  # the build's copy is clean
+    assert side.path.is_dir() and (side.path / "app.txt").read_text() == "worker version\n"
+    assert _git(copy.path, "status", "--porcelain").strip() == ""
+    assert not await wc.side_is_merged(copy, side)
+
+
+async def test_an_already_merged_side_is_recognised_without_merging_twice(
+    repo: Path, tmp_path: Path
+) -> None:
+    """T15: a crash after the merge but before the ledger write is reconciled, not repeated."""
+    copy = await wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "copies")
+    side = await wc.create_side_copy(copy, "once")
+    (side.path / "new.txt").write_text("x\n")
+    _git(side.path, "add", ".")
+    _git(side.path, "commit", "-qm", "new file")
+    assert not await wc.side_is_merged(copy, side)
+
+    _git(copy.path, "merge", "--no-edit", side.branch)  # merged… then a crash before cleanup
+    head = _git(copy.path, "rev-parse", "HEAD").strip()
+    assert await wc.side_is_merged(copy, side)  # the branch is an ancestor now
+    assert not await wc.side_has_new_work(copy, side)  # so a second merge has nothing to do
+    assert await wc.merge_side_copy(copy, side, keep_on_clash=True)  # harmless, only cleans up
+    assert _git(copy.path, "rev-parse", "HEAD").strip() == head

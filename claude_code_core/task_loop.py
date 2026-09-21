@@ -623,13 +623,16 @@ class TaskLoop:
         attempt = state[result.task_id].attempt_id
         if result.thread_id is not None:
             state.note_thread(result.task_id, attempt, thread_id=result.thread_id)
-        if result.ok and result.commit:
+        if result.commit:
+            # The commit is evidence either way: kept for repair when the combined
+            # check failed (T15), accepted when it passed.
             state.submit_result(
                 result.task_id,
                 attempt,
                 commit=result.commit,
                 checks=result.checks or ("the worker reported DONE",),
             )
+        if result.ok and result.commit:
             state.accept(result.task_id, attempt)
             await self._result(result.task_id, "done", result.detail)
         else:
