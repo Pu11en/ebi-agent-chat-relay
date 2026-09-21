@@ -1047,6 +1047,36 @@ class TestOriginSide:
         assert [e.event_id for e in events if e.kind is p.HandoffEventKind.RESULT] == [RESULT_ID]
 
     @pytest.mark.asyncio
+    async def test_a_peer_question_with_a_runaway_sequence_cannot_wedge_our_job(
+        self, repo: HandoffRepository, tmp_path: Path
+    ) -> None:
+        """LOW: sequence=MAX on a job we own used to make our own next_sequence() raise."""
+        root = tmp_path / "drewp" / "main-projects"
+        root.mkdir(parents=True)
+        channel = FakeChannel()
+        cog = _cog(repo, channel, root)
+        chat = _online_chat(cog)
+        starter = _starter(channel, make_task_event())  # drewai -> david
+        await cog.handle_message(starter, now=NOW)
+        thread = channel.threads[4242]
+        runaway = _remote_event(
+            p.HandoffEventKind.QUESTION,
+            sequence=p.MAX_SEQUENCE,
+            payload={"question": "still there?"},
+        )
+
+        receipt = await cog.handle_message(
+            _in_thread(channel, thread, runaway, DREWAI_BOT), now=NOW
+        )
+
+        assert receipt is None, "an out-of-band sequence is refused, not mirrored"
+        assert not await repo.has_event(runaway.event_id)
+        sink = chat.run_handoff_turn.await_args.kwargs["result_sink"]
+        await sink("Found it.", None)
+        job = await repo.get_job(TASK_ID, "david")
+        assert job is not None and job.state is HandoffState.COMPLETED
+
+    @pytest.mark.asyncio
     async def test_a_result_never_becomes_a_task(
         self, repo: HandoffRepository, tmp_path: Path
     ) -> None:

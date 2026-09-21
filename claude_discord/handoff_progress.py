@@ -25,6 +25,7 @@ from typing import Any
 from claude_code_core.handoffs.protocol import (
     HandoffEvent,
     HandoffEventKind,
+    HandoffProtocolError,
     HandoffTask,
     next_sequence,
 )
@@ -59,7 +60,18 @@ class HandoffProgressPoster:
     async def __call__(self, task: HandoffTask, transition: Transition) -> None:
         if transition.trigger is HandoffTrigger.OBSERVE:
             return
-        event = await self._event_for(task, transition)
+        try:
+            event = await self._event_for(task, transition)
+        except HandoffProtocolError as exc:
+            # The ledger cannot take another event for this task (sequence
+            # exhausted). The thread still learns where the job ended.
+            logger.warning(
+                "handoff %s: no ledger event for %s (%s)", task.task_id, transition.state.value, exc
+            )
+            await self._post_prose_to_job_thread(task, transition)
+            if transition.state is HandoffState.BLOCKED:
+                await self._post_blocker_to_origin(task, transition)
+            return
         if event is None:
             return
         await self._post_to_job_thread(task, event)
@@ -126,6 +138,16 @@ class HandoffProgressPoster:
             await thread.send(render_event_message(event))
         except Exception:
             logger.warning("could not post handoff %s to thread %s", event.kind, thread_id)
+
+    async def _post_prose_to_job_thread(self, task: HandoffTask, transition: Transition) -> None:
+        thread_id = await self._repo.get_job_thread(task.task_id, self._agent)
+        thread = await self._lookup(thread_id) if thread_id is not None else None
+        if thread is None:
+            return
+        note = " ".join((transition.note or "").split())[:MAX_ORIGIN_NOTE_CHARS]
+        text = f"⚠️ Handoff `{short_task_id(task.task_id)}` is {transition.state.value}: {note}"
+        with contextlib.suppress(Exception):
+            await thread.send(text)
 
     async def _post_blocker_to_origin(self, task: HandoffTask, transition: Transition) -> None:
         target_id = task.reply_to.thread_id or task.reply_to.channel_id

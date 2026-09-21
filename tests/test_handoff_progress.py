@@ -211,6 +211,42 @@ async def test_a_blocker_never_reaches_an_origin_outside_the_reply_guild(
 
 
 @pytest.mark.asyncio
+async def test_an_exhausted_sequence_still_shows_the_terminal_state_as_prose(
+    repo: HandoffRepository,
+) -> None:
+    """When no ledger event can be minted, the job thread still learns the job ended."""
+    task = _task()
+    job_thread, origin = FakeThread(4242), FakeThread(333)
+    await repo.record_task(task, now=NOW)
+    await repo.record_event(_task_event(task))
+    await repo.set_job_thread(TASK_ID, "drewai", 4242)
+    await repo.record_event(
+        p.HandoffEvent(
+            event_id="bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+            kind=p.HandoffEventKind.STATE,
+            task_id=TASK_ID,
+            sender="drewai",
+            recipient="david",
+            sequence=p.MAX_SEQUENCE,
+            created_at=NOW,
+            payload={"state": "running"},
+        )
+    )
+    poster = _poster(repo, job_thread, origin)
+    job = await repo.get_job(TASK_ID, "drewai")
+    assert job is not None
+    started = apply(job, HandoffTrigger.START, now=NOW)
+    await repo.save_transition(started)
+    failed = apply(started.job, HandoffTrigger.FAIL, now=NOW, note="sequence exhausted")
+
+    await poster(task, failed)  # must not raise
+
+    assert len(job_thread.sent) == 1
+    assert "failed" in job_thread.sent[0].lower()
+    assert parse_event_message(job_thread.sent[0]) is None, "prose, since no event could be minted"
+
+
+@pytest.mark.asyncio
 async def test_queued_and_requeued_posts_are_bounded_and_ordered(
     repo: HandoffRepository, project_root: Path
 ) -> None:

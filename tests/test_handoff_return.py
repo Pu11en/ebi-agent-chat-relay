@@ -142,6 +142,55 @@ async def test_result_is_never_delivered_to_a_channel_outside_the_reply_guild(
 
 
 @pytest.mark.asyncio
+async def test_an_exhausted_sequence_closes_the_job_as_failed_instead_of_leaving_it_running(
+    handoff_repo: HandoffRepository,
+) -> None:
+    """If no result event can be minted, the ledger still reaches a terminal state, visibly."""
+    from claude_code_core.handoffs.protocol import MAX_SEQUENCE, HandoffEvent, HandoffEventKind
+
+    await _record_running_task(handoff_repo)
+    await handoff_repo.record_event(
+        HandoffEvent(
+            event_id="bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+            kind=HandoffEventKind.STATE,
+            task_id=TASK_ID,
+            sender="david",
+            recipient="drewai",
+            sequence=MAX_SEQUENCE,
+            created_at=NOW,
+            payload={"state": "running"},
+        )
+    )
+    origin_thread = SimpleNamespace(id=333, send=AsyncMock(), guild=SimpleNamespace(id=111))
+    bot = MagicMock()
+    bot.get_channel.return_value = origin_thread
+    seen: list[str] = []
+
+    async def hook(task, transition) -> None:
+        seen.append(transition.state.value)
+
+    delivered = await record_and_deliver_handoff_result(
+        repo=handoff_repo,
+        bot=bot,
+        task_id=TASK_ID,
+        local_agent_id="drewai",
+        text="Found it.",
+        error=None,
+        now=NOW,
+        event_id_factory=lambda: RESULT_ID,
+        on_transition=hook,
+    )
+
+    assert delivered is False
+    job = await handoff_repo.get_job(TASK_ID, "drewai")
+    assert job is not None and job.state is HandoffState.FAILED
+    assert "sequence" in (job.note or "")
+    attempts = await handoff_repo.list_attempts(TASK_ID, "drewai")
+    assert attempts[0].is_finished and attempts[0].outcome == "failed"
+    assert seen == ["failed"], "the terminal transition is still announced"
+
+
+@pytest.mark.asyncio
 async def test_record_and_deliver_handoff_result_archives_worker_thread_after_delivery(
     handoff_repo: HandoffRepository,
 ) -> None:

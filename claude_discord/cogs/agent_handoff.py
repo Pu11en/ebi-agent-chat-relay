@@ -56,6 +56,11 @@ logger = logging.getLogger(__name__)
 SCAN_LIMIT = 200
 MAX_ORIGIN_LINE_CHARS = 400
 DELIVERY_INTERVAL_SECONDS = 60
+# A peer's event on a job *we* own is stored in the same ledger our own
+# events draw their sequence numbers from. A sequence far ahead of the
+# conversation (a QUESTION at MAX_SEQUENCE) would leave next_sequence()
+# nothing to mint and wedge the job; anything past this gap is refused.
+MAX_PEER_SEQUENCE_GAP = 100
 
 
 @dataclass(frozen=True)
@@ -226,6 +231,17 @@ class AgentHandoffCog(commands.Cog):
                     event.kind.value,
                     event.event_id,
                     event.sender,
+                )
+                return None
+            last = await self._repo.last_sequence(event.task_id) or 0
+            if event.sequence > last + MAX_PEER_SEQUENCE_GAP:
+                logger.warning(
+                    "refusing %s event %s from %s: sequence %d is out of band (last %d)",
+                    event.kind.value,
+                    event.event_id,
+                    event.sender,
+                    event.sequence,
+                    last,
                 )
                 return None
             duplicate = not await self._repo.record_event(event)
