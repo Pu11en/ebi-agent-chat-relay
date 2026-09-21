@@ -34,6 +34,12 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from claude_code_core.gowork_friction import (
+    FrictionEvent,
+    append_friction,
+    friction_report,
+    read_friction,
+)
 from claude_code_core.gowork_plan import PlanValidationError, has_manifest, load_plan_tree
 from claude_code_core.gowork_report import render_completion, render_progress
 from claude_code_core.gowork_schedule import ReadyTask, ready_tasks
@@ -512,6 +518,7 @@ class TaskLoop:
         review: Callable[[str, str | None], Awaitable[str | None]] | None = None,
         max_parallel: Callable[[], int] | None = None,
         project_name: str = "",
+        friction_path: Path | None = None,
         manifest_worker: ManifestWorker | None = None,
         after_manifest_result: Callable[[ManifestResult], Awaitable[None]] | None = None,
         reconcile: Callable[[BuildState], Awaitable[None]] | None = None,
@@ -549,6 +556,8 @@ class TaskLoop:
         self._manifest_worker = manifest_worker
         #: How the person knows this build in messages (T22); the folder name by default.
         self.project_name = project_name or repo_dir.name
+        #: Where what slowed this build down is written (T25); None = don't record.
+        self.friction_path = friction_path
         #: Runs after a worker's result is on disk (T14: archive its thread, never before).
         self._after_manifest_result = after_manifest_result
         #: Salvages attempts a crash left running (T17); anything still running after
@@ -584,6 +593,8 @@ class TaskLoop:
 
                 if state.last_sync:
                     sync = state.last_sync
+                    for task_id in sync.reworked_tasks:
+                        self._friction(state, task_id, "rework", "the plan changed")
                     plans = ", ".join(f"{p} → v{v}" for p, v in sync.changed_plans.items())
                     await self._report(
                         f"📝 Plan changed ({plans}): "
@@ -616,6 +627,9 @@ class TaskLoop:
                     if room > 0 and not self._stop
                     else []
                 )
+                if room <= 0 and not self._stop:
+                    for held in ready_tasks(state, running=in_flight):
+                        self._friction(state, held.task_id, "queue_wait", "no capacity yet")
                 if ready:
                     rounds += 1
                     for task in ready:
@@ -656,6 +670,33 @@ class TaskLoop:
             await asyncio.gather(*in_flight.values(), return_exceptions=True)
             raise
 
+    def _friction(self, state: BuildState, task_id: str, kind: str, detail: str = "") -> None:
+        """One friction line with this build's identity (T25). Never raises."""
+        if self.friction_path is None:
+            return
+        try:
+            record = state[task_id] if task_id and task_id in state else None
+            append_friction(
+                self.friction_path,
+                FrictionEvent(
+                    kind=kind,  # type: ignore[arg-type]
+                    build_id=self.build_id,
+                    task_id=task_id,
+                    attempt_id=record.attempt_id if record else "",
+                    plan_id=record.plan_id if record else "",
+                    plan_version=record.plan_version if record else 0,
+                    detail=detail,
+                ),
+            )
+        except Exception:
+            logger.debug("gowork: friction record failed", exc_info=True)
+
+    def friction_lines(self) -> list[str]:
+        """Plain sentences about this build's friction, for the progress file."""
+        if self.friction_path is None:
+            return []
+        return friction_report(read_friction(self.friction_path), build_id=self.build_id)
+
     async def _reconcile_interrupted(self, state: BuildState) -> None:
         """Attempts still 'running' when the loop starts belong to a crashed bot (T17)."""
         stale = [r.task_id for r in state.records if r.status is TaskStatus.RUNNING]
@@ -693,6 +734,11 @@ class TaskLoop:
         attempt = state[result.task_id].attempt_id
         if result.thread_id is not None:
             state.note_thread(result.task_id, attempt, thread_id=result.thread_id)
+        for check in result.checks:
+            if check.startswith("review ("):
+                verdict = check[len("review (") :].split(")", 1)[0]
+                note = check.split(":", 1)[-1].strip()
+                self._friction(state, result.task_id, "review", f"{verdict}: {note}")
         if result.commit:
             # The commit is evidence either way: kept for repair when the combined
             # check failed (T15), accepted when it passed.
@@ -709,6 +755,7 @@ class TaskLoop:
                 # The plan changed underneath this attempt (T19): the work is kept, and a
                 # user-directed rework — not a repair — follows at the new version.
                 state.rework(result.task_id, str(exc))
+                self._friction(state, result.task_id, "rework", str(exc))
                 await self._result(result.task_id, "reworked", str(exc))
                 await self._report(f"📝 {result.task_id} finished, but the plan changed: {exc}")
                 return
@@ -721,6 +768,7 @@ class TaskLoop:
         # attempt that knows why; an interruption does not spend it; a second failure
         # is a blocker for a person.
         if _is_repairable(reason) and state.repairs_left(result.task_id) > 0:
+            self._friction(state, result.task_id, "repair", reason)
             state.repair(result.task_id)
             await self._report(
                 f"🔧 {result.task_id} failed — trying once more with the reason: {reason[:200]}"

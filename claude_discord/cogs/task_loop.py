@@ -34,6 +34,7 @@ from discord.ext import commands
 
 from claude_code_core.build_queue import BuildQueue, QueueItem, morning_summary
 from claude_code_core.gowork_blockers import BlockerLedger
+from claude_code_core.gowork_friction import FrictionEvent, append_friction
 from claude_code_core.gowork_handoff import (
     build_handoff,
     persist_handoff,
@@ -1009,6 +1010,7 @@ class TaskLoopCog(commands.Cog):
             review=lambda step, base: self._review_step(holder[0], step, base),
             run_group=lambda steps: self._run_group(holder[0], steps),
             max_parallel=parallel_limit,
+            friction_path=self._store.path.with_name("gowork-friction.jsonl"),
             manifest_worker=lambda task: self._run_manifest_task(holder[0], task),
             after_manifest_result=lambda result: self._after_manifest_result(holder[0], result),
             reconcile=lambda state: self._reconcile_interrupted(holder[0], state),
@@ -1335,13 +1337,20 @@ class TaskLoopCog(commands.Cog):
                 )
             return "fix"
         lessons = await self._lessons(running)
-        if lessons:
+        friction = running.loop.friction_lines()
+        if lessons or friction:
             progress = running.copy.plan_path.with_name(
                 f"{running.copy.plan_path.stem}.progress.md"
             )
             with progress.open("a", encoding="utf-8") as fh:
-                fh.write("\n## Next time (from how this build went)\n")
-                fh.writelines(f"- {b}\n" for b in lessons)
+                if lessons:
+                    fh.write("\n## Next time (from how this build went)\n")
+                    fh.writelines(f"- {b}\n" for b in lessons)
+                if friction:
+                    # T25: counted from this build's own records — a note in the plan's
+                    # progress file, never an edit to anyone's planning instructions.
+                    fh.write("\n## What slowed this build down\n")
+                    fh.writelines(f"- {line}\n" for line in friction)
             await commit_all(running.copy.path, "gowork: what to do differently next time")
         with contextlib.suppress(discord.HTTPException):
             await here.send(
@@ -2624,6 +2633,18 @@ class TaskLoopCog(commands.Cog):
             question=question,
         )
         if blocker.message_id is None:
+            append_friction(
+                self._store.path.with_name("gowork-friction.jsonl"),
+                FrictionEvent(
+                    kind="question",
+                    build_id=running.build_id,
+                    task_id=task_id,
+                    attempt_id=record.attempt_id,
+                    plan_id=record.plan_id,
+                    plan_version=record.plan_version,
+                    detail=(record.reason or "")[:200],
+                ),
+            )
             await self._post_blocker(running, blocker.blocker_id, question)
 
     async def _post_blocker(self, running: _Running, blocker_id: str, question: str) -> None:

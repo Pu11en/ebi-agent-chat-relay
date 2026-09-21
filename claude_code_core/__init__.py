@@ -67,6 +67,7 @@ from .frontend import (
 from .gowork_admission import AdmissionController, AdmissionSnapshot, Reservation
 from .gowork_blockers import Blocker, BlockerLedger
 from .gowork_capacity import CapacityDecision, CapacityPolicy
+from .gowork_friction import FrictionEvent, append_friction, friction_report, friction_summary
 from .gowork_handoff import WorkerHandoff, build_handoff, persist_handoff, render_worker_prompt
 from .gowork_plan import (
     OwnershipConflict,
@@ -199,6 +200,10 @@ __all__ = [
     "PlanTree",
     "PlanValidationError",
     "WorkerHandoff",
+    "FrictionEvent",
+    "append_friction",
+    "friction_report",
+    "friction_summary",
     "build_handoff",
     "persist_handoff",
     "render_worker_prompt",

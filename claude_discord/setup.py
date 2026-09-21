@@ -386,6 +386,7 @@ async def setup_bridge(
             ),
             policy=policy,
             probe=HostProbe(),
+            friction_path=_GOWORK_STATE.with_name("gowork-friction.jsonl"),
         )
         logger.info("Session capacity: adaptive (starts at %d, measured)", policy.capacity)
     pr_completion_owner = os.getenv("CCDB_PR_COMPLETION_OWNER", "").strip()

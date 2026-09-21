@@ -359,3 +359,45 @@ async def test_a_mid_build_plan_change_reworks_only_the_affected_tasks(
     assert state[API].accepted and state[API].plan_version == 3 and state[API].lineage_repairs == 0
     assert worker.started[PAGE] >= worker.finished[API]  # PAGE waited for the reworked API
     assert list(worker.started).count(STYLES) == 1 and list(worker.started).count(POST) == 1
+
+
+async def test_friction_is_recorded_with_identity_and_reported_from_records_only(
+    plan: Path, tmp_path: Path
+) -> None:
+    """T25: a repair and a review are counted with build/task/attempt/version, and the
+    report is sentences drawn from those records only."""
+    from claude_code_core.gowork_friction import friction_summary, read_friction
+
+    class FailsOnceThenReviewed(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.api_tries = 0
+
+        async def __call__(self, task: ReadyTask) -> ManifestResult:
+            result = await super().__call__(task)
+            if task.task_id == API:
+                self.api_tries += 1
+                if self.api_tries == 1:
+                    return ManifestResult(API, False, "the tests failed")
+                return ManifestResult(
+                    API, True, "", commit="c-api", checks=("ok", "review (approve): approved")
+                )
+            return result
+
+    worker = FailsOnceThenReviewed()
+    loop = _loop(plan, tmp_path, worker)
+    loop.friction_path = tmp_path / "friction.jsonl"
+    outcome = await loop.run()
+
+    assert outcome.status is Status.COMPLETE
+    events = read_friction(tmp_path / "friction.jsonl")
+    kinds = {(e.kind, e.task_id) for e in events}
+    assert ("repair", API) in kinds and ("review", API) in kinds
+    repair = next(e for e in events if e.kind == "repair")
+    assert repair.build_id == "thread-1" and repair.attempt_id == f"thread-1:{API}:1"
+    assert repair.plan_id == "product" and repair.plan_version == 2
+    summary = friction_summary(events)
+    assert summary["repair"] == 1 and summary["review"] == 1 and summary["review_changes"] == 0
+    lines = loop.friction_lines()
+    assert "1 task needed a repair (product.catalog-api: the tests failed)" in lines
+    assert "the second AI sent back 0 of 1 reviewed tasks" in lines

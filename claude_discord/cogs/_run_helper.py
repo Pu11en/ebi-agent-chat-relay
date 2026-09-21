@@ -20,6 +20,7 @@ import contextlib
 import logging
 import re
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import discord
@@ -27,6 +28,7 @@ import discord
 from claude_code_core.frontend import Notice, NoticeLevel
 from claude_code_core.gowork_admission import AdmissionController, Reservation, SlotKind
 from claude_code_core.gowork_capacity import CapacityDecision, CapacityPolicy
+from claude_code_core.gowork_friction import FrictionEvent, append_friction
 from claude_code_core.gowork_resources import WorkerPeaks
 from claude_code_core.task_loop import MAX_PARALLEL
 
@@ -51,6 +53,7 @@ _global_admission: AdmissionController | None = None
 _capacity_policy: CapacityPolicy | None = None
 _resource_probe: Any = None
 _worker_peaks: WorkerPeaks = WorkerPeaks()
+_friction_path: Path | None = None
 
 
 def configure_session_limit(max_concurrent: int) -> None:
@@ -72,6 +75,7 @@ def configure_adaptive_limit(
     controller: AdmissionController | None,
     policy: CapacityPolicy | None,
     probe: Any = None,
+    friction_path: Path | None = None,
 ) -> None:
     """Use measured capacity instead of a fixed number (``None`` for all switches it off).
 
@@ -79,10 +83,11 @@ def configure_adaptive_limit(
     from the probe's snapshot, and an explicit ``configure_session_limit()`` still
     wins because the fixed semaphore is checked first.
     """
-    global _global_admission, _capacity_policy, _resource_probe  # noqa: PLW0603
+    global _global_admission, _capacity_policy, _resource_probe, _friction_path  # noqa: PLW0603
     _global_admission = controller
     _capacity_policy = policy
     _resource_probe = probe
+    _friction_path = friction_path
     if controller is not None and policy is not None:
         controller.set_capacity(policy.capacity)
 
@@ -94,6 +99,19 @@ def tick_capacity() -> CapacityDecision | None:
     held = _global_admission.snapshot().held
     decision = _capacity_policy.decide(_resource_probe.sample(), _worker_peaks, held=held)
     _global_admission.set_capacity(decision.capacity)
+    if decision.pause_starts and _friction_path is not None:
+        append_friction(
+            _friction_path,
+            FrictionEvent(
+                kind="capacity",
+                build_id="host",
+                task_id="",
+                attempt_id="",
+                plan_id="",
+                plan_version=0,
+                detail=decision.reason,
+            ),
+        )
     return decision
 
 
