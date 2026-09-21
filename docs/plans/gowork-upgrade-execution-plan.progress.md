@@ -127,3 +127,26 @@
 - Checked with `uv run python scripts/check_gowork_upgrade.py` (366 passed), `ruff check`,
   `ruff format --check`, `pyright claude_code_core/gowork_resources.py` (0 errors).
 - Open: T08 builds the admission controller on `workers_that_fit` + `WorkerPeaks`.
+
+## T08 — Arbitrate shared capacity with fair admission
+
+- New `claude_code_core/gowork_admission.py`: `AdmissionController(path, capacity=…,
+  review_reserve=…)`, one per host, shared by every build. `reserve(kind, build_id,
+  unblocks=…)` is an async context manager for `task`, `review` and `chat` slots.
+- Atomic on the event loop: racing requests never exceed capacity; a queued waiter that is
+  cancelled leaves the line; a holder that is cancelled releases its slot (even when admitted
+  and cancelled in the same tick). Reviews may use every slot, tasks only
+  `capacity − review_reserve`, so a review never queues behind the workers it judges. Chat is
+  counted in `held` (it shrinks what tasks may take) but is admitted immediately, always.
+- Fairness: among waiters, reviews first, then the task that unblocks the most other work,
+  then arrival order — unless a build has been passed over `AGE_LIMIT` (3) times, in which case
+  its request goes next. `admitted` / `passed_over` / `last_admitted` per build are written to the
+  JSON file on every change and reloaded on construction, so fairness survives reopen.
+  `set_capacity()` (for T09) never evicts a holder; it only changes what new requests see.
+- Tests: `tests/gowork_upgrade/test_admission.py` (7): racing, cancellation of held and queued
+  reservations, review reserve, chat accounting, ageing, fairness after reopen, capacity change.
+- Implementation commit: `7f89cdb`.
+- Checked with `uv run python scripts/check_gowork_upgrade.py` (373 passed), `ruff check`,
+  `ruff format --check`, `pyright claude_code_core/gowork_admission.py` (0 errors).
+- Open: OS/chat/coordination headroom is expressed as the capacity T09 computes from T07
+  snapshots and hands to `set_capacity()`; T10 makes real process starts reserve here.

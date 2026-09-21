@@ -105,7 +105,7 @@ new code merely because this build edits it. Report that boundary honestly.
   Proof: injectable fake snapshots cover healthy, constrained and unavailable data;
   missing/partial observations are explicit and conservative, not unlimited capacity.
 
-- [ ] T08: Execution spine, only after T07: arbitrate shared capacity with fair admission.
+- [x] T08: Execution spine, only after T07: arbitrate shared capacity with fair admission.
   Scope: one admission controller used across builds. Atomically reserve/release slots
   for tasks and reviews, account for chat, reserve OS/chat/coordination headroom; prefer
   tasks unblocking work but age waiting builds so none starves. Persist fairness state.
