@@ -42,7 +42,7 @@ Expected final files:
 
 ## Tasks
 
-- [ ] Build the transcript source inventory.
+- [x] Build the transcript source inventory.
   - Find every local transcript source dated September 18, 2026 through the current session time.
   - Check likely locations first: `/home/drewp/main-projects`, audio transcript folders, Discord/voice transcript databases, and project notes.
   - Record exact source paths, dates, speaker clues, and whether Generation Wealth appears.
