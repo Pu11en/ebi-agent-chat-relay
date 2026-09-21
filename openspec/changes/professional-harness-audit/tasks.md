@@ -29,7 +29,7 @@ Try: `uv run python -m extensions.harness_audit.cli audit --machine drewai --har
 ## 5. Integrated verification
 
 - [x] 5.1 **Depends on: 4.3; integration owner only; owns: `tests/fixtures/harness_audit/`, `docs/harness-configuration-audit.md`.** Add sanitized DrewAI/iMac-style fixtures and operator instructions, run `uv run pytest tests/test_harness_audit_*.py -q`, and verify the documented dry run produces no filesystem changes outside its output directory.
-- [ ] 5.2 **Depends on: 5.1; integration owner only; owns: no source files.** Run `uv run ruff check extensions/harness_audit tests/test_harness_audit_*.py`, `uv run pyright extensions/harness_audit`, and the project security checklist; record passing commands before any real quarantine is proposed.
+- [x] 5.2 **Depends on: 5.1; integration owner only; owns: no source files.** Run `uv run ruff check extensions/harness_audit tests/test_harness_audit_*.py`, `uv run pyright extensions/harness_audit`, and the project security checklist; record passing commands before any real quarantine is proposed.
 
 ## How to try it
 
