@@ -366,6 +366,15 @@ def check_done(before: Snapshot, after: Snapshot) -> list[str]:
     return problems
 
 
+_NOT_REPAIRABLE = ("cancelled", "interrupted by a restart", "required review unavailable")
+
+
+def _is_repairable(reason: str) -> bool:
+    """A failure of the work itself, not of the machinery around it."""
+    lowered = reason.lower()
+    return not any(marker in lowered for marker in _NOT_REPAIRABLE)
+
+
 def worker_prompt(
     plan_path: Path,
     progress_path: Path,
@@ -673,10 +682,18 @@ class TaskLoop:
         if result.ok and result.commit:
             state.accept(result.task_id, attempt)
             await self._result(result.task_id, "done", result.detail)
-        else:
-            reason = result.detail or "the worker did not finish"
-            state.block(result.task_id, reason)
-            await self._result(result.task_id, "stuck", reason)
+            return
+        reason = result.detail or "the worker did not finish"
+        state.block(result.task_id, reason)
+        await self._result(result.task_id, "stuck", reason)
+        # Exactly one automatic repair per task (T18): a genuine failure earns a fresh
+        # attempt that knows why; an interruption does not spend it; a second failure
+        # is a blocker for a person.
+        if _is_repairable(reason) and state.repairs_left(result.task_id) > 0:
+            state.repair(result.task_id)
+            await self._report(
+                f"🔧 {result.task_id} failed — trying once more with the reason: {reason[:200]}"
+            )
 
     async def _manifest_outcome(self, state: BuildState, rounds: int) -> LoopOutcome:
         records = state.records

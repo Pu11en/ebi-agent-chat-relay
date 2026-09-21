@@ -176,3 +176,27 @@ def test_two_handles_on_one_ledger_never_lose_each_others_writes(state: BuildSta
     other.mark_archived(API)
     state.accept(API, attempt.attempt_id)
     assert state[API].archived and other[API].accepted
+
+
+def test_the_repair_budget_follows_the_task_across_attempts(state: BuildState) -> None:
+    """T18: one automatic repair per task, whatever the attempt number or restart."""
+    first = state.begin(API)
+    state.block(API, "the tests failed")
+    assert state.repairs_left(API) == 1
+    repaired = state.repair(API)  # the one automatic repair
+    assert repaired.attempt == 2 and repaired.status is TaskStatus.PENDING
+    assert repaired.previous_failure == "the tests failed"
+    assert repaired.lineage_repairs == 1 and state.repairs_left(API) == 0
+    again = open_build_state(state.path, state.tree, build_id="thread-11")
+    assert again.repairs_left(API) == 0  # survives reopen
+
+    state.begin(API)
+    state.block(API, "failed again")
+    with pytest.raises(StaleAttemptError, match="repair"):
+        state.repair(API)
+    manual = state.retry(API)  # a person may always ask for another try
+    assert manual.attempt == 3 and manual.lineage_repairs == 1
+    assert manual.previous_failure == "failed again"
+    with pytest.raises(StaleAttemptError):
+        state.repair(PAGE)  # nothing failed there
+    assert first.attempt_id != repaired.attempt_id != manual.attempt_id

@@ -72,6 +72,9 @@ class WorkerHandoff:
     source_requirement: str
     decisions: tuple[str, ...]
     created_at: str
+    #: Why the previous attempt was sent back (T18): the repair worker fixes this first.
+    previous_failure: str | None = None
+    attempt: int = 1
 
     def to_json(self) -> dict:
         return {
@@ -91,6 +94,8 @@ class WorkerHandoff:
             "source_requirement": self.source_requirement,
             "decisions": list(self.decisions),
             "created_at": self.created_at,
+            "previous_failure": self.previous_failure,
+            "attempt": self.attempt,
         }
 
     @classmethod
@@ -112,6 +117,8 @@ class WorkerHandoff:
             source_requirement=str(value.get("source_requirement", "")),
             decisions=tuple(value.get("decisions") or ()),
             created_at=str(value.get("created_at", "")),
+            previous_failure=value.get("previous_failure"),
+            attempt=int(value.get("attempt", 1)),
         )
 
 
@@ -146,6 +153,8 @@ def build_handoff(state: BuildState, task_id: str, *, plan_text: str) -> WorkerH
         source_requirement=assignment.source_requirement,
         decisions=plan_decisions(plan_text),
         created_at=_dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
+        previous_failure=record.previous_failure,
+        attempt=record.attempt,
     )
 
 
@@ -199,6 +208,13 @@ def render_worker_prompt(handoff: WorkerHandoff, *, cwd: Path, handoff_path: Pat
     if handoff.decisions:
         parts += ["", "Decisions already made (follow them, don't reopen them):"]
         parts += [f"- {d}" for d in handoff.decisions]
+    if handoff.previous_failure:
+        parts += [
+            "",
+            f"This is attempt {handoff.attempt}. The previous attempt was sent back because: "
+            f"{handoff.previous_failure}",
+            "Fix that first; this is the last automatic try before a person is asked.",
+        ]
     parts += [
         "",
         f"Expected output: {handoff.expected_output}",

@@ -72,7 +72,8 @@ def _cog() -> tuple[TaskLoopCog, MagicMock, list[MagicMock], list[tuple[str, flo
         loop = asyncio.get_running_loop()
         worked.append((cwd.name, loop.time()))
         await asyncio.sleep(0.6)  # long enough for siblings to overlap despite git setup
-        (cwd / f"work-{cwd.parent.name[-24:]}.txt").write_text("done\n")  # one file per task
+        # One file per task; unique content so a repair attempt has something to commit.
+        (cwd / f"work-{cwd.parent.name[-24:]}.txt").write_text(f"done {loop.time()}\n")
         _git(cwd, "add", ".")
         _git(cwd, "commit", "-qm", f"work in {cwd.name}")
         await result_sink(f"Built {cwd.name}.\nDONE", None)
@@ -247,7 +248,8 @@ async def test_a_clash_keeps_the_workers_branch(repo: Path) -> None:
     async def clashing(seed, thread, prompt, *, working_dir, result_sink, **slot):  # noqa: ANN001
         if "Your task (" in prompt:
             cwd = Path(working_dir)
-            (cwd.parent / "control" / "README.md").write_text(f"edited by {cwd.name}\n")
+            stamp = asyncio.get_running_loop().time()
+            (cwd.parent / "control" / "README.md").write_text(f"edited by {cwd.name} {stamp}\n")
             _git(cwd.parent, "commit", "-qam", f"{cwd.name} edits control")
             await asyncio.sleep(0.2)
             await result_sink("Edited the shared file.\nDONE", None)
@@ -273,12 +275,16 @@ async def test_a_clash_keeps_the_workers_branch(repo: Path) -> None:
             cog._store.path.with_name("builds") / f"thread-{running.worker_thread_id}.json"
         ).read_text()
     )
-    blocked = [t for t in ledger["tasks"].values() if t["status"] == "blocked"]
-    assert blocked, "the later editors of the same file must clash"
-    for task in blocked:
-        assert "both versions kept" in task["reason"]
-        branch = task["reason"].split("branch ")[-1].rstrip(")")
+    # The later editors of the shared file clashed on their first attempt; their one
+    # automatic repair (T18) started from the new state and combined. The clashing
+    # attempt's branch is still there: both versions were kept.
+    clashed = [t for t in ledger["tasks"].values() if t.get("previous_failure")]
+    assert clashed, "the later editors of the same file must have clashed once"
+    for task in clashed:
+        assert "both versions kept" in task["previous_failure"]
+        branch = task["previous_failure"].split("branch ")[-1].rstrip(")")
         assert branch in _git(running.copy.path, "branch", "--list", branch)  # still there
+        assert task["attempt"] == 2
     assert _git(running.copy.path, "status", "--porcelain").strip() == ""  # the copy is clean
 
 
@@ -409,14 +415,14 @@ async def test_a_restart_keeps_finished_work_and_never_reruns_or_reassigns(repo:
         thread_id=1,
         base_commit=base,
     )
-    side = await create_side_copy(copy, "product.catalog-api")
+    side = await create_side_copy(copy, "product.catalog-api-a1")
     (side.path / "product" / "work-merged.txt").write_text("done\n")
     _git(side.path, "add", ".")
     _git(side.path, "commit", "-qm", "product work")
     _git(copy.path, "merge", "--no-edit", side.branch)
     # 2. marketing: the worker committed, the merge never happened
     state.begin("marketing.launch-post")
-    side2 = await create_side_copy(copy, "marketing.launch-post")
+    side2 = await create_side_copy(copy, "marketing.launch-post-a1")
     state.note_thread(
         "marketing.launch-post",
         state["marketing.launch-post"].attempt_id,
@@ -428,7 +434,7 @@ async def test_a_restart_keeps_finished_work_and_never_reruns_or_reassigns(repo:
     _git(side2.path, "commit", "-qm", "marketing work")
     # 3. styles: the worker was mid-flight with nothing saved
     state.begin("website.page-styles")
-    side3 = await create_side_copy(copy, "website.page-styles")
+    side3 = await create_side_copy(copy, "website.page-styles-a1")
     state.note_thread(
         "website.page-styles",
         state["website.page-styles"].attempt_id,
@@ -472,7 +478,7 @@ async def test_a_restart_keeps_finished_work_and_never_reruns_or_reassigns(repo:
     assert "restart" in tasks["website.page-styles"]["reason"]
     assert tasks["website.catalog-page"]["status"] == "accepted"  # the rest carried on
     assert (copy.path / "marketing" / "work-committed.txt").exists()
-    assert not (side_copy_for(copy, "product.catalog-api").path).exists()
+    assert not (side_copy_for(copy, "product.catalog-api-a1").path).exists()
     worked_prompts = [
         c.args[2] for c in chat.run_fresh_turn.call_args_list if "Your task (" in c.args[2]
     ]

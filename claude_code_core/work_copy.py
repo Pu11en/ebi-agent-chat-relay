@@ -198,7 +198,7 @@ class SideCopy:
 
 def side_copy_for(copy: WorkCopy, name: str) -> SideCopy:
     """Where *name*'s side copy lives (deterministic, so a restart can find it)."""
-    slug = _SLUG_RE.sub("-", name.lower()).strip("-")[:20] or "step"
+    slug = _SLUG_RE.sub("-", name.lower()).strip("-")[:48] or "step"
     return SideCopy(
         path=copy.path.parent / f"{copy.path.name}-{slug}", branch=f"{copy.branch}-{slug}"
     )

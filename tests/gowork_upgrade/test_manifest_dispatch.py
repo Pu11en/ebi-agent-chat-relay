@@ -113,7 +113,7 @@ async def test_a_failed_task_blocks_its_dependents_not_the_others(
     outcome = await loop.run()
 
     assert outcome.status is Status.STUCK and API in outcome.detail
-    assert dispatch.rounds == [[API, STYLES, POST]]  # PAGE never dispatched
+    assert dispatch.rounds == [[API, STYLES, POST], [API]]  # one repair (T18); PAGE never ran
     state = open_build_state(
         tmp_path / "state" / "build.json", load_plan_tree(plan), build_id="thread-1"
     )
@@ -134,9 +134,12 @@ async def test_reopening_carries_on_from_the_ledger(plan: Path, tmp_path: Path) 
     outcome = await _loop(plan, tmp_path, second).run()
 
     assert outcome.status is Status.COMPLETE
-    assert first.rounds == [[API, STYLES, POST], [PAGE]]  # PAGE ran once API was accepted
-    assert second.rounds == [[STYLES]]  # only the retried task was left
-    assert sum(len(r) for r in first.rounds) + sum(len(r) for r in second.rounds) == 5
+    # STYLES failed, got its one automatic repair (T18), failed again; PAGE ran once
+    # API was accepted and STYLES was no longer running.
+    assert first.rounds[0] == [API, STYLES, POST]
+    assert [r for r in first.rounds[1:] if r] and first.rounds.count([STYLES]) == 1
+    assert second.rounds == [[STYLES]]  # only the manually retried task was left
+    assert sum(len(r) for r in first.rounds) + sum(len(r) for r in second.rounds) == 6
 
 
 async def test_stop_between_rounds_is_honoured(plan: Path, tmp_path: Path) -> None:

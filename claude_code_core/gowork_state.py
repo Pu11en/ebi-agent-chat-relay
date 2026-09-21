@@ -28,6 +28,8 @@ from claude_code_core.gowork_plan import PlanTree
 
 STATE_VERSION = 1
 MAX_TEXT_CHARS = 2000
+#: Automatic repairs a task gets over its whole life in a build (T18).
+MAX_AUTO_REPAIRS = 1
 
 
 class StaleAttemptError(ValueError):
@@ -92,6 +94,10 @@ class TaskAttempt:
     archived: bool = False
     #: The commit the attempt's side copy started from (to tell saved work from none).
     base_commit: str | None = None
+    #: Automatic repairs the task has used over all its attempts (T18: at most one).
+    lineage_repairs: int = 0
+    #: Why the previous attempt was blocked, for the next attempt's handoff.
+    previous_failure: str | None = None
 
     def to_json(self) -> dict:
         return {
@@ -113,6 +119,8 @@ class TaskAttempt:
             "thread_id": self.thread_id,
             "archived": self.archived,
             "base_commit": self.base_commit,
+            "lineage_repairs": self.lineage_repairs,
+            "previous_failure": self.previous_failure,
         }
 
     @classmethod
@@ -137,6 +145,8 @@ class TaskAttempt:
                 thread_id=int(value["thread_id"]) if value.get("thread_id") is not None else None,
                 archived=bool(value.get("archived", False)),
                 base_commit=value.get("base_commit"),
+                lineage_repairs=int(value.get("lineage_repairs", 0)),
+                previous_failure=value.get("previous_failure"),
             )
         except (KeyError, ValueError, TypeError) as exc:
             raise StaleAttemptError(f"unreadable task attempt in the build state: {value}") from exc
@@ -286,17 +296,39 @@ class BuildState:
         record = self[task_id]
         if record.status is TaskStatus.RUNNING:
             raise StaleAttemptError(f"task '{task_id}' is still running; stop it before retrying")
+        return self._apply(task_id, self._next_attempt(record, record.lineage_repairs), "retried")
+
+    def repairs_left(self, task_id: str) -> int:
+        return max(0, MAX_AUTO_REPAIRS - self[task_id].lineage_repairs)
+
+    def repair(self, task_id: str) -> TaskAttempt:
+        """The one automatic repair: a fresh attempt that knows why the last one failed.
+
+        Refused when the budget is spent or nothing failed — a person may still `retry`.
+        """
+        record = self[task_id]
+        if record.status is not TaskStatus.BLOCKED:
+            raise StaleAttemptError(f"task '{task_id}' is {record.status.value}; nothing to repair")
+        if record.lineage_repairs >= MAX_AUTO_REPAIRS:
+            raise StaleAttemptError(
+                f"task '{task_id}' already used its {MAX_AUTO_REPAIRS} automatic repair"
+            )
+        fresh = self._next_attempt(record, record.lineage_repairs + 1)
+        return self._apply(task_id, fresh, "repaired", reason=record.reason)
+
+    def _next_attempt(self, record: TaskAttempt, lineage_repairs: int) -> TaskAttempt:
         number = record.attempt + 1
-        fresh = TaskAttempt(
+        return TaskAttempt(
             task_id=record.task_id,
             plan_id=record.plan_id,
             plan_version=self.plan_version(record.plan_id),
             attempt=number,
-            attempt_id=attempt_id(self.build_id, task_id, number),
+            attempt_id=attempt_id(self.build_id, record.task_id, number),
             owned_files=record.owned_files,
             owned_resources=record.owned_resources,
+            lineage_repairs=lineage_repairs,
+            previous_failure=record.reason,
         )
-        return self._apply(task_id, fresh, "retried")
 
     def retry_after_block(self, task_id: str, reason: str) -> TaskAttempt:
         self.block(task_id, reason)

@@ -444,6 +444,11 @@ def _check_argv(command: str) -> list[str]:
         return []
 
 
+def _side_name(task_id: str, attempt: int) -> str:
+    """One side copy per attempt, so a repair never destroys the clashing version it fixes."""
+    return f"{task_id}-a{attempt}"
+
+
 def _plan_text_of(copy: WorkCopy) -> str:
     try:
         return copy.plan_path.read_text(encoding="utf-8", errors="replace")
@@ -2485,7 +2490,7 @@ class TaskLoopCog(commands.Cog):
                 project_copy, rel = await self._project_copy(running, plan.project_path)
             except Exception:
                 continue  # no copy to look in: the loop blocks it with the restart reason
-            side = side_copy_for(project_copy, record.task_id)
+            side = side_copy_for(project_copy, _side_name(record.task_id, record.attempt))
             if running.git_lock is None:
                 running.git_lock = asyncio.Lock()
             async with running.git_lock:
@@ -2584,7 +2589,9 @@ class TaskLoopCog(commands.Cog):
             if running.git_lock is None:
                 running.git_lock = asyncio.Lock()
             async with running.git_lock:
-                side = await create_side_copy(project_copy, task.task_id)
+                side = await create_side_copy(
+                    project_copy, _side_name(task.task_id, handoff.attempt)
+                )
                 side_base = await head_commit(side.path)
             cwd = side.path / rel
             sub: Any = await chat.spawn_session(

@@ -234,3 +234,83 @@ async def test_attempts_left_running_by_a_crash_are_reconciled_not_reassigned(
     assert POST not in worker.started  # uncertain ownership is not reassigned
     assert state[PAGE].accepted and state[STYLES].accepted  # the rest carried on
     assert outcome.status is Status.STUCK
+
+
+async def test_a_failure_gets_exactly_one_automatic_repair(plan: Path, tmp_path: Path) -> None:
+    """T18: fail → one repair attempt with the reason → fail again → blocker. No hidden loops."""
+
+    class FailsTwice(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.attempts: list[str] = []
+
+        async def __call__(self, task: ReadyTask) -> ManifestResult:
+            result = await super().__call__(task)
+            if task.task_id == API:
+                self.attempts.append(task.task_id)
+                return ManifestResult(API, False, f"the tests failed (try {len(self.attempts)})")
+            return result
+
+    worker = FailsTwice()
+    loop = _loop(plan, tmp_path, worker)
+    outcome = await loop.run()
+
+    assert worker.attempts == [API, API]  # the original and its one repair, never a third
+    state = _state(plan, tmp_path)
+    assert state[API].status is TaskStatus.BLOCKED and state[API].attempt == 2
+    assert state[API].lineage_repairs == 1 and "try 2" in (state[API].reason or "")
+    assert outcome.status is Status.STUCK and API in outcome.detail
+    assert state.accepted_tasks() == (STYLES, POST)  # independent work continued
+
+
+async def test_a_repair_that_succeeds_is_accepted_and_the_reason_reached_the_worker(
+    plan: Path, tmp_path: Path
+) -> None:
+    class FailsOnce(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.seen_failures: list[str | None] = []
+
+        async def __call__(self, task: ReadyTask) -> ManifestResult:
+            result = await super().__call__(task)
+            if task.task_id == API:
+                self.seen_failures.append(_state(plan, tmp_path)[API].previous_failure)
+                if len(self.seen_failures) == 1:
+                    return ManifestResult(API, False, "forgot the version field")
+            return result
+
+    worker = FailsOnce()
+    outcome = await _loop(plan, tmp_path, worker).run()
+    assert outcome.status is Status.COMPLETE
+    assert worker.seen_failures == [None, "forgot the version field"]
+    assert _state(plan, tmp_path)[API].accepted and _state(plan, tmp_path)[API].attempt == 2
+
+
+async def test_the_repair_budget_survives_a_restart(plan: Path, tmp_path: Path) -> None:
+    """T18: an interrupted repair attempt does not earn the task another automatic repair."""
+    state = _state(plan, tmp_path)
+    state.begin(API)
+    state.block(API, "the tests failed")
+    state.repair(API)  # the repair attempt was running when the bot died
+    state.begin(API)
+
+    worker = FakeWorker({})
+    outcome = await _loop(plan, tmp_path, worker).run()
+    assert API not in worker.started  # blocked by the restart rule, and no third attempt
+    state = _state(plan, tmp_path)
+    assert state[API].status is TaskStatus.BLOCKED and state[API].attempt == 2
+    assert outcome.status is Status.STUCK
+
+
+async def test_interruptions_and_cancellations_do_not_spend_the_repair(
+    plan: Path, tmp_path: Path
+) -> None:
+    class Cancelled(FakeWorker):
+        async def __call__(self, task: ReadyTask) -> ManifestResult:
+            if task.task_id == API:
+                return ManifestResult(API, False, "the worker was cancelled")
+            return await super().__call__(task)
+
+    await _loop(plan, tmp_path, Cancelled({})).run()
+    state = _state(plan, tmp_path)
+    assert state[API].status is TaskStatus.BLOCKED and state[API].lineage_repairs == 0
