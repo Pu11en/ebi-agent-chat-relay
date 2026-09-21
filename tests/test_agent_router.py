@@ -174,6 +174,88 @@ async def test_agent_message_endpoint_forwards_to_remote_route(
 
 
 @pytest.mark.asyncio
+async def test_agent_project_lookup_endpoint_forwards_to_remote_project_lookup(
+    repo: NotificationRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def remote_handler(request: web.Request) -> web.Response:
+        seen["body"] = await request.json()
+        return web.json_response(
+            {
+                "status": "spawned",
+                "thread_id": "444",
+                "thread_name": "🔎 Project lookup · realpage",
+                "working_dir": "/home/drewp/main-projects",
+            },
+            status=201,
+        )
+
+    remote_app = web.Application()
+    remote_app.router.add_post("/api/project-lookup", remote_handler)
+    remote_server = TestServer(remote_app)
+    remote_client = TestClient(remote_server)
+    await remote_client.start_server()
+
+    try:
+        monkeypatch.setenv("CCDB_AGENT_ID", "david")
+        monkeypatch.setenv(
+            "CCDB_AGENT_ROUTES",
+            (
+                '{"drewai": {"url": "'
+                f"{remote_client.make_url('/api/project-lookup')}"
+                '", "aliases": ["drew", "drew ai"]}}'
+            ),
+        )
+        bot = MagicMock()
+        bot.cogs = {}
+        api = ApiServer(repo=repo, bot=bot, default_channel_id=12345)
+        server = TestServer(api.app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            resp = await client.post(
+                "/api/agents/drew/project-lookup",
+                json={"text": "find the realpage folder", "from_thread": 111},
+            )
+            assert resp.status == 201
+            body = await resp.json()
+            assert body["status"] == "spawned"
+            assert body["agent_id"] == "drewai"
+            assert body["target"] == "remote"
+            assert body["thread_id"] == "444"
+            assert seen["body"] == {
+                "text": "find the realpage folder",
+                "from_thread": 111,
+                "from_agent": "david",
+            }
+        finally:
+            await client.close()
+    finally:
+        await remote_client.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_project_lookup_endpoint_requires_lookup_text(
+    repo: NotificationRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CCDB_AGENT_ROUTES", "drewai=https://drew.example/api/project-lookup")
+    bot = MagicMock()
+    bot.cogs = {}
+    api = ApiServer(repo=repo, bot=bot, default_channel_id=12345)
+    server = TestServer(api.app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        resp = await client.post("/api/agents/drewai/project-lookup", json={})
+        assert resp.status == 400
+        body = await resp.json()
+        assert "text or query is required" in body["error"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_agent_message_endpoint_returns_404_for_unknown_agent(
     repo: NotificationRepository, monkeypatch: pytest.MonkeyPatch
 ) -> None:

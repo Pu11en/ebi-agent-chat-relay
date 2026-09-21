@@ -348,6 +348,9 @@ class ApiServer:
         self.app.router.add_get("/api/search", self.search_sessions)
         self.app.router.add_get("/api/agents", self.list_agents)
         self.app.router.add_post("/api/agents/{agent_id}/message", self.relay_agent_message)
+        self.app.router.add_post(
+            "/api/agents/{agent_id}/project-lookup", self.relay_agent_project_lookup
+        )
         self.app.router.add_post("/api/project-lookup", self.project_lookup)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
@@ -1032,6 +1035,49 @@ class ApiServer:
                 {"error": f"Remote agent '{route.agent_id}' could not be reached"},
                 status=502,
             )
+
+    async def relay_agent_project_lookup(self, request: web.Request) -> web.Response:
+        """POST /api/agents/{agent_id}/project-lookup — ask a named peer to search projects."""
+        raw_agent_id = request.match_info.get("agent_id", "")
+        try:
+            route = self.agent_directory.resolve(raw_agent_id)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except KeyError:
+            known = ", ".join(self.agent_directory.known_agent_ids()) or "none configured"
+            return web.json_response(
+                {"error": f"Unknown agent '{raw_agent_id}'. Known agents: {known}"},
+                status=404,
+            )
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        payload = dict(data)
+        query = str(payload.get("text") or payload.get("query") or "").strip()
+        if not query:
+            return web.json_response({"error": "text or query is required"}, status=400)
+        payload.setdefault("text", query)
+        payload.setdefault("from_agent", self._local_agent_id())
+
+        if route.remote_url is None:
+            return web.json_response(
+                {"error": f"Agent '{route.agent_id}' is not configured as a remote project lookup"},
+                status=400,
+            )
+        return await self._relay_to_remote_agent(route=route, data=payload)
+
+    def _local_agent_id(self) -> str:
+        """The name this bot should use when another bot sees its lookup request."""
+        for key in ("CCDB_AGENT_ID", "CCDB_BOT_NAME", "BOT_NAME"):
+            value = os.getenv(key, "").strip()
+            if value:
+                return value
+        return "ccdb"
 
     async def relay_thread_message(self, request: web.Request) -> web.Response:
         """POST /api/threads/{thread_id}/message — talk to another live session.
