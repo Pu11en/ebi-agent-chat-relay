@@ -479,6 +479,24 @@ class BuildState:
         self._document["events"].append({"at": _now(), "task": None, "change": "integrated"})
         self._write()
 
+    def project_copies(self) -> dict[str, dict[str, str]]:
+        """Work copies of the build's other repositories, by repository root."""
+        self._reload()
+        value = self._document.get("project_copies")
+        return dict(value) if isinstance(value, dict) else {}
+
+    def note_project_copy(self, repo_root: str, *, path: str, branch: str) -> None:
+        self._reload()
+        copies = self._document.setdefault("project_copies", {})
+        copies[repo_root] = {"path": path, "branch": branch}
+        self._write()
+
+    def forget_project_copy(self, repo_root: str) -> None:
+        self._reload()
+        copies = self._document.get("project_copies")
+        if isinstance(copies, dict) and copies.pop(repo_root, None) is not None:
+            self._write()
+
     def note_plan_version(self, plan_id: str, version: int) -> None:
         """Requirements changed: remember the new version so old attempts cannot be accepted."""
         self._reload()

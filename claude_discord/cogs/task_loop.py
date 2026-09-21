@@ -49,13 +49,14 @@ from claude_code_core.gowork_records import (
 )
 from claude_code_core.gowork_report import render_blocker_question
 from claude_code_core.gowork_schedule import ReadyTask
-from claude_code_core.gowork_state import open_build_state
+from claude_code_core.gowork_state import StaleAttemptError, open_build_state
 from claude_code_core.loop_store import LoopRecord, LoopStore
 from claude_code_core.task_loop import (
     LoopOutcome,
     ManifestResult,
     Status,
     TaskLoop,
+    _is_repairable,
     append_fix_task,
     append_tasks,
     checker_prompt,
@@ -660,6 +661,16 @@ class TaskLoopCog(commands.Cog):
         except (ValueError, OSError):
             return None
         return self._running_plan(repo_dir, plan.name)
+
+    async def _reply(self, interaction: Any, text: str, **kwargs: Any) -> None:
+        """Answer a slash command; after long waits its token has expired, so use the channel."""
+        try:
+            await interaction.followup.send(text, **kwargs)
+        except (discord.NotFound, discord.HTTPException):
+            channel = getattr(interaction, "channel", None)
+            if channel is not None:
+                with contextlib.suppress(Exception):
+                    await channel.send(text, **kwargs)
 
     def _busy(self, repo_dir: Path, plan_name: str, *, manifest: bool) -> bool:
         """Is a start for this plan blocked by builds already in flight?"""
@@ -1440,6 +1451,7 @@ class TaskLoopCog(commands.Cog):
                 verdict = parked_choice(reply)
                 if verdict == "throw":
                     await remove_work_copy(running.copy)
+                    await self._remove_project_copies(running)
                     with contextlib.suppress(discord.HTTPException):
                         await target.send("🗑️ Thrown away. Your real project was never touched.")
                     self._queue_note(running, "thrown away 🗑️")
@@ -1523,6 +1535,7 @@ class TaskLoopCog(commands.Cog):
         choice = parked_choice(reply)
         if choice == "throw":
             await remove_work_copy(running.copy)
+            await self._remove_project_copies(running)
             with contextlib.suppress(discord.HTTPException):
                 await target.send(
                     "🗑️ Thrown away. Your real project was never touched, "
@@ -1680,7 +1693,17 @@ class TaskLoopCog(commands.Cog):
         plan_text = running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
         if not has_manifest(plan_text) or prefer_build:
             return await keep_work(running.copy, prefer_build=prefer_build)
-        result = await integrate_build(running.copy, check=plan_check_command(plan_text))
+        check = plan_check_command(plan_text)
+        # Other repositories first: the master's copy holds the plan, so it goes last
+        # and the build is only "kept" once every project landed.
+        for copy in self._all_project_copies(running):
+            other = await integrate_build(copy, check=None)
+            if not other.ok:
+                return False, f"{copy.source_repo.name}: {other.message}"
+            with contextlib.suppress(Exception):
+                self._build_state(running).forget_project_copy(str(copy.source_repo))
+        running.project_copies = {}
+        result = await integrate_build(running.copy, check=check)
         message = result.message
         if not result.ok and result.check_output:
             fence = "```"
@@ -1697,6 +1720,7 @@ class TaskLoopCog(commands.Cog):
         ok, message = await self._keep_build(running)
         if not ok:
             running.auto_finish = False
+            running.wake = asyncio.Event()  # a stale wake-up would re-enter this at once
             with contextlib.suppress(discord.HTTPException):
                 await target.send(
                     f"⚠️ I couldn't keep {running.repo_dir.name}'s finished steps yet: {message}. "
@@ -2502,9 +2526,49 @@ class TaskLoopCog(commands.Cog):
         async with self._project_copy_lock:
             copy = running.project_copies.get(top)
             if copy is None:
+                copy = self._remembered_project_copy(running, top)
+            if copy is None:
                 copy = await create_project_copy(top, label=top.name, root=self._work_root)
-                running.project_copies[top] = copy
+                with contextlib.suppress(Exception):
+                    self._build_state(running).note_project_copy(
+                        str(top), path=str(copy.path), branch=copy.branch
+                    )
+            running.project_copies[top] = copy
         return copy, rel
+
+    def _remembered_project_copy(self, running: _Running, top: Path) -> WorkCopy | None:
+        """A copy of another repository made before a restart, if it still exists."""
+        try:
+            remembered = self._build_state(running).project_copies().get(str(top))
+        except Exception:
+            return None
+        if not remembered or not Path(remembered["path"]).is_dir():
+            return None
+        path = Path(remembered["path"])
+        return WorkCopy(source_repo=top, path=path, branch=remembered["branch"], plan_path=path)
+
+    def _all_project_copies(self, running: _Running) -> list[WorkCopy]:
+        """Every other-repository copy this build made, in memory or remembered."""
+        copies: dict[Path, WorkCopy] = dict(running.project_copies or {})
+        try:
+            for root, remembered in self._build_state(running).project_copies().items():
+                top = Path(root)
+                if top not in copies and Path(remembered["path"]).is_dir():
+                    path = Path(remembered["path"])
+                    copies[top] = WorkCopy(
+                        source_repo=top, path=path, branch=remembered["branch"], plan_path=path
+                    )
+        except Exception:
+            pass
+        return list(copies.values())
+
+    async def _remove_project_copies(self, running: _Running) -> None:
+        for copy in self._all_project_copies(running):
+            with contextlib.suppress(Exception):
+                await remove_work_copy(copy)
+            with contextlib.suppress(Exception):
+                self._build_state(running).forget_project_copy(str(copy.source_repo))
+        running.project_copies = {}
 
     def _build_state(self, running: _Running):  # noqa: ANN202
         assert running.copy is not None
@@ -2596,11 +2660,11 @@ class TaskLoopCog(commands.Cog):
         # A parked build resumes its loop; a running one picks the task up on its own.
         if not running.parked:
             return
-        for cid in (running.report_channel_id, running.worker_thread_id):
-            future = self._waiters.get(cid)
-            if future is not None and not future.done():
-                future.set_result("keep going")
-                break
+        # Only this build's own thread waiter: the report channel's may belong to
+        # another build parked from the same channel.
+        future = self._waiters.get(running.worker_thread_id)
+        if future is not None and not future.done():
+            future.set_result("keep going")
 
     async def _after_manifest_result(self, running: _Running, result: ManifestResult) -> None:
         """After a result is saved: archive its thread (T14) and, if the task is now a
@@ -2613,10 +2677,10 @@ class TaskLoopCog(commands.Cog):
         """A task blocked with no automatic repair left is a question for a person."""
         state = self._build_state(running)
         record = state[task_id]
-        if record.status.value != "blocked" or state.repairs_left(task_id) > 0:
-            return  # running, accepted, or about to be repaired on its own
-        if _is_interrupted(record.reason or ""):
-            return  # the restart message already told the person; T21 routes the reply
+        if record.status.value != "blocked":
+            return  # running or accepted
+        if state.repairs_left(task_id) > 0 and _is_repairable(record.reason or ""):
+            return  # about to be repaired on its own
         goal, _done = plan_goal(
             running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
             if running.copy is not None
@@ -2774,7 +2838,10 @@ class TaskLoopCog(commands.Cog):
                 )
             state.submit_result(record.task_id, record.attempt_id, commit=commit, checks=checks)
             if checks_ok:
-                state.accept(record.task_id, record.attempt_id)
+                try:
+                    state.accept(record.task_id, record.attempt_id)
+                except StaleAttemptError as exc:  # the plan changed while the bot was down
+                    state.rework(record.task_id, str(exc))
             else:
                 state.block(
                     record.task_id,
@@ -2783,39 +2850,54 @@ class TaskLoopCog(commands.Cog):
                 )
 
     async def _review_manifest_task(
-        self, running: _Running, outcome: str, base: str | None
+        self,
+        running: _Running,
+        outcome: str,
+        base: str | None,
+        *,
+        thread: Any,
+        cwd: Path,
     ) -> tuple[str, str]:
         """("skipped" | "approve" | "changes" | "none", detail) for one merged task (T16).
 
         Cheap mode never reviews; balanced reviews only difficult tasks; careful reviews
         every task. When a review is required, no reviewer or a broken review is "none".
+        The review runs in the task's own worker thread on the reviewer AI, so reviews
+        running side by side never touch each other's (or the build thread's) settings.
         """
         assert running.copy is not None
         if running.mode == "cheap" or not self.smart_review:
             return "skipped", "no review in this mode"
         if running.mode != "careful" and not await self._is_hard(running, outcome):
             return "skipped", "an ordinary task: checks are the evidence"
-        settings = getattr(self._chat(), "_backend_settings", None)
+        chat = self._chat()
+        settings = getattr(chat, "_backend_settings", None)
         reviewer = await self._reviewer_for(running)
-        if reviewer is None or settings is None or running.run_session is None:
+        if reviewer is None or settings is None:
             return "none", "a review is required here but no reviewer AI is configured"
-        tid = running.worker_thread_id
-        harness = await settings.current_backend(tid)
-        model = await settings.current_model(harness, tid)
-        await settings.set_backend(reviewer[0], thread_id=tid)
-        await settings.set_model(reviewer[0], reviewer[1], thread_id=tid)
+        result: dict[str, str | None] = {}
+
+        async def sink(text: str | None, error: str | None) -> None:
+            result["text"], result["error"] = text, error
+
         try:
-            text, error = await running.run_session(
+            await settings.set_backend(reviewer[0], thread_id=thread.id)
+            await settings.set_model(reviewer[0], reviewer[1], thread_id=thread.id)
+            seed = await thread.send(
+                f"-# 🔍 A second AI ({reviewer[0]} · {reviewer[1]}) is reviewing this task…"
+            )
+            await chat.run_fresh_turn(
+                seed,
+                thread,
                 review_step_prompt(running.copy.plan_path, outcome, base),
-                f"🔍 A second AI ({reviewer[0]} · {reviewer[1]}) is reviewing this task…",
+                working_dir=str(cwd),
+                result_sink=sink,
+                slot_kind="review",
+                slot_build_id=running.build_id,
             )
         except Exception as exc:
             return "none", f"the review failed to run: {exc}"
-        finally:
-            with contextlib.suppress(Exception):
-                await settings.set_backend(harness, thread_id=tid)
-                if model:
-                    await settings.set_model(harness, model, thread_id=tid)
+        text, error = result.get("text"), result.get("error")
         if error and not text:
             return "none", f"the review failed: {error}"
         return parse_review_verdict(text)
@@ -2922,7 +3004,7 @@ class TaskLoopCog(commands.Cog):
             verdict, note = "skipped", ""
             if landed and checks_ok:
                 verdict, note = await self._review_manifest_task(
-                    running, assignment.outcome, base_commit
+                    running, assignment.outcome, base_commit, thread=sub, cwd=cwd
                 )
                 if verdict != "skipped":
                     checks.append(f"review ({verdict}): {note or 'approved'}")
@@ -3149,25 +3231,26 @@ class TaskLoopCog(commands.Cog):
             )
             return
         await interaction.response.defer(thinking=True)
-        await interaction.followup.send("🔁 Getting ready…")
+        await self._reply(interaction, "🔁 Getting ready…")
         try:
             plan = plan or await self._pick_plan(channel)
         except PickDeclinedError:
             return
         if not plan:
-            await interaction.followup.send(
+            await self._reply(
+                interaction,
                 "I couldn't find a plan with `- [ ]` tasks in this project. "
-                "Ask the planner to write one, or give me the file."
+                "Ask the planner to write one, or give me the file.",
             )
             return
         report_to: Any = channel
-        await interaction.followup.send(f"📋 Plan: `{plan}`")
+        await self._reply(interaction, f"📋 Plan: `{plan}`")
         await self._close_for_switch(plan, report_to)
         settings = getattr(self._chat(), "_backend_settings", None)
         current = await settings.current_backend(parent.id) if settings else None
         picked = await self._ask_harness(report_to, current)
         if picked is None:
-            await interaction.followup.send(_NOT_PICKED)
+            await self._reply(interaction, _NOT_PICKED)
             return
         harness, model, per_step = split_per_step(*picked)
         try:
@@ -3183,12 +3266,13 @@ class TaskLoopCog(commands.Cog):
                 mode=parse_mode(mode) or (mode if mode in MODES else None),
             )
         except BuildAlreadyRunningError as exc:
-            await interaction.followup.send(f"ℹ️ {exc} — nothing new was started.")
+            await self._reply(interaction, f"ℹ️ {exc} — nothing new was started.")
             return
         except (ValueError, RuntimeError) as exc:
-            await interaction.followup.send(f"Could not start: {exc}")
+            await self._reply(interaction, f"Could not start: {exc}")
             return
-        await interaction.followup.send(
+        await self._reply(
+            interaction,
             f"Working on `{plan}` with "
             + (
                 f"the best {harness + ' ' if harness else ''}AI for each step"
@@ -3196,7 +3280,7 @@ class TaskLoopCog(commands.Cog):
                 else f"{harness or 'the thread AI'}{f' · {model}' if model else ''}"
             )
             + ". "
-            f"Worker thread: {thread.mention}"
+            f"Worker thread: {thread.mention}",
         )
 
     @app_commands.command(name="stopwork", description="Stop /gowork after the current task")

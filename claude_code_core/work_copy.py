@@ -24,6 +24,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from claude_code_core.child_env import STRIPPED_ENV_KEYS
+
 DEFAULT_ROOT = Path(
     os.environ.get("CCDB_GOWORK_ROOT", Path.home() / ".local" / "state" / "ccdb" / "gowork")
 )
@@ -123,7 +125,7 @@ async def keep_work(copy: WorkCopy, *, prefer_build: bool = False) -> tuple[bool
     """
     if not copy.path.exists():
         return False, "the build's own copy is gone from this computer"
-    plan_rel = str(copy.plan_path.relative_to(copy.path))
+    plan_rel = copy.plan_path.relative_to(copy.path).as_posix()  # git speaks '/'
     real_plan = copy.source_repo / plan_rel
     if (
         real_plan.exists()
@@ -292,7 +294,11 @@ class IntegrationResult:
 async def _run_check(cwd: Path, argv: list[str], timeout: float = 600.0) -> tuple[bool, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+            *argv,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env={k: v for k, v in os.environ.items() if k not in STRIPPED_ENV_KEYS},
         )
     except OSError as exc:
         return False, f"could not start the check: {exc}"

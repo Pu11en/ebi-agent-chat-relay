@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import shlex
 from collections.abc import Awaitable, Callable
@@ -34,6 +35,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from claude_code_core.child_env import STRIPPED_ENV_KEYS
 from claude_code_core.gowork_friction import (
     FrictionEvent,
     append_friction,
@@ -306,6 +308,9 @@ async def run_check(
             cwd=str(repo_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            # The plan (which a worker can edit) names this command: it must not
+            # inherit the bot token or the API secret.
+            env={k: v for k, v in os.environ.items() if k not in STRIPPED_ENV_KEYS},
         )
     except OSError as exc:
         return False, f"could not start the check: {exc}"
@@ -665,7 +670,7 @@ class TaskLoop:
                             logger.warning(
                                 "gowork: after-result hook failed for %s", task_id, exc_info=True
                             )
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Exception):
             for pending in in_flight.values():
                 pending.cancel()
             await asyncio.gather(*in_flight.values(), return_exceptions=True)

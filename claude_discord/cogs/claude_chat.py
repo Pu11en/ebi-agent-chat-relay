@@ -514,9 +514,35 @@ class ClaudeChatCog(commands.Cog):
             await message.channel.send(f"✅ Asked DrewAI to look for: {trigger.query}{suffix}")
         return True
 
+    @staticmethod
+    def _handoff_sender_trusted(message: Any) -> bool:
+        """Only a trusted bot account may hand a job to this bot.
+
+        A packet spawns a worker and delivers results wherever the packet says, so
+        the sender matters more than the packet. ``CCDB_HANDOFF_TRUSTED_BOT_IDS`` lists
+        the bot accounts allowed to send one; without it, a bot that is a member of
+        this server may, but a webhook or a bot from elsewhere never can.
+        """
+        if getattr(message, "webhook_id", None) is not None:
+            return False
+        author_id = getattr(getattr(message, "author", None), "id", None)
+        if not isinstance(author_id, int):
+            return False
+        allowed = {
+            int(part)
+            for part in os.getenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", "").split(",")
+            if part.strip().isdigit()
+        }
+        if allowed:
+            return author_id in allowed
+        guild = getattr(message, "guild", None)
+        return guild is not None and guild.get_member(author_id) is not None
+
     async def _try_receive_handoff_message(self, message: discord.Message) -> bool:
         """Receive a trusted handoff packet from another Discord bot."""
         if self._handoff_repo is None:
+            return False
+        if not ClaudeChatCog._handoff_sender_trusted(message):
             return False
         from ..handoff_inbox import handle_handoff_message
 
@@ -541,6 +567,18 @@ class ClaudeChatCog(commands.Cog):
         except Exception:
             logger.warning("Could not receive handoff message", exc_info=True)
             return True
+
+    def _notify_target(self, message: Any) -> int | None:
+        """Who to @mention when the session needs a person: never the bot itself."""
+        author = getattr(message, "author", None)
+        author_id = getattr(author, "id", None)
+        if isinstance(author_id, int) and not getattr(author, "bot", False):
+            return author_id
+        allowed = self._allowed_user_ids or set()
+        if len(allowed) == 1:
+            return next(iter(allowed))
+        owner = os.getenv("DISCORD_OWNER_ID", "").strip()
+        return int(owner) if owner.isdigit() else None
 
     def _handoff_worker_parent_channel(self, message: discord.Message) -> Any | None:
         channel = message.channel
@@ -1825,7 +1863,7 @@ class ClaudeChatCog(commands.Cog):
                     inbox_dashboard=dashboard,
                     claude_command=runner.command,
                     chat_only=chat_only,
-                    notify_user_id=user_message.author.id,
+                    notify_user_id=self._notify_target(user_message),
                     result_sink=result_sink,
                     backend_settings=self._backend_settings,
                     codex_command=(

@@ -168,9 +168,13 @@ async def test_chat_cog_starts_executor_after_receiving_handoff(
 ) -> None:
     monkeypatch.setenv("CCDB_AGENT_ID", "drewai")
     parent_channel = SimpleNamespace(id=222)
+    monkeypatch.setenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", "4242")  # the sending bot is trusted
     message = SimpleNamespace(
         content=format_handoff_message(_handoff_event()),
         channel=SimpleNamespace(id=777, parent=parent_channel, send=AsyncMock()),
+        author=SimpleNamespace(id=4242, bot=True),
+        webhook_id=None,
+        guild=None,
     )
     seen: dict[str, object] = {}
 

@@ -30,7 +30,8 @@ def ready_tasks(
     state: BuildState, *, running: Iterable[str] = (), limit: int | None = None
 ) -> tuple[ReadyTask, ...]:
     """Tasks that may start now, in plan order, never more than *limit*."""
-    busy = [state.tree.task(task_id).task_id for task_id in running]
+    known = {task.task_id for task in state.tree.tasks}
+    busy = [task_id for task_id in running if task_id in known]  # an edit may drop one
     chosen: list[ReadyTask] = []
     for task in state.tree.tasks:
         if limit is not None and len(chosen) >= limit:

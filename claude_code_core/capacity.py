@@ -205,7 +205,10 @@ _DESCRIBING_WORK_RE = re.compile(
 )
 
 _RETRY_AFTER_RES = (
-    re.compile(r"retry[- ]after[:=]?\s*(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m)?\b"),
+    re.compile(
+        r"retry[- ]after[:=]?\s*(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m)?\b",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"(?:try|retry) again in\s*(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m)\b",
         re.IGNORECASE,

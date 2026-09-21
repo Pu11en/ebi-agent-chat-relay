@@ -1581,7 +1581,8 @@ class ApiServer:
         else:
             body = text or "The lookup finished with no text."
             message = f"✅ DrewAI project lookup result\n\n{body}"
-        await target.send(message)
+        for start in range(0, len(message), 1900):  # Discord's 2,000-character limit
+            await target.send(message[start : start + 1900])
 
     async def list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/sessions — what every other Claude session is doing.

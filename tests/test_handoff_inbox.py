@@ -183,3 +183,35 @@ async def test_setup_bridge_attaches_handoff_repo(tmp_path) -> None:
 
     assert components.handoff_repo is bot.handoff_repo
     assert isinstance(bot.handoff_repo, HandoffRepository)
+
+
+@pytest.mark.parametrize(
+    ("env", "author_id", "webhook", "member", "expected"),
+    [
+        ("111,222", 111, None, True, True),  # listed bot
+        ("111,222", 333, None, True, False),  # bot not on the list
+        ("111", 111, 999, True, False),  # a webhook impersonating a listed bot
+        ("", 444, None, True, True),  # no list: a bot member of this server
+        ("", 444, 999, True, False),  # no list: webhooks never
+        ("", 444, None, False, False),  # no list: a bot from another server never
+    ],
+)
+def test_only_trusted_bots_may_hand_off(
+    monkeypatch: pytest.MonkeyPatch,
+    env: str,
+    author_id: int,
+    webhook: int | None,
+    member: bool,
+    expected: bool,
+) -> None:
+    """A handoff packet spawns a worker, so only trusted bot accounts may send one."""
+    from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+    monkeypatch.setenv("CCDB_HANDOFF_TRUSTED_BOT_IDS", env)
+    message = MagicMock()
+    message.author.id = author_id
+    message.author.bot = True
+    message.webhook_id = webhook
+    message.guild = MagicMock()
+    message.guild.get_member = MagicMock(return_value=MagicMock() if member else None)
+    assert ClaudeChatCog._handoff_sender_trusted(message) is expected
