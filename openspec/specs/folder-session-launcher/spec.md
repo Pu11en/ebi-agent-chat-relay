@@ -1,4 +1,9 @@
-## ADDED Requirements
+# folder-session-launcher Specification
+
+## Purpose
+TBD - created by archiving change folder-session-launcher. Update Purpose after archive.
+
+## Requirements
 
 ### Requirement: Computer-specific shortcuts
 The bot SHALL provide a persistent computer-labelled panel with Favorite folders, New session, and Resume buttons.
@@ -39,7 +44,6 @@ The launcher SHALL use its configured computer channel without asking the operat
 - **WHEN** an operator presses Browse folders
 - **THEN** project-folder suggestions appear without a text-entry modal
 
-
 ### Requirement: Navigate before starting
 Folder selection SHALL show the absolute current folder and allow child, parent,
 home and filesystem-root navigation, including pagination, without starting a model.
@@ -58,9 +62,12 @@ ignore normal framework chat there, including for administrators.
 The bot responds privately that it belongs to another category and performs no
 command action. Its native slash entry may remain visible due to Discord rules.
 
-
 ### Requirement: Keep control-center controls reachable
 The user’s existing control-center SHALL remain the entry point. The pinned
 anchor SHALL remain in place and a silent bottom shortcut SHALL be refreshed
 after channel activity, coalesced across a ten-second window. Only the saved
 bot-owned previous shortcut may be removed; other messages and threads remain.
+
+#### Scenario: Channel activity
+- **WHEN** several messages arrive in the control-center within ten seconds
+- **THEN** one silent shortcut is posted at the bottom, only the bot's previous shortcut is deleted, and the pinned anchor and every other message stay
