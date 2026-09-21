@@ -509,3 +509,21 @@ def test_every_harness_adapter_is_a_setup_adapter(tmp_path: Path):
     assert isinstance(ClaudeHarnessAdapter(root), SetupAdapter)
     assert isinstance(CodexHarnessAdapter(codex_home_root(tmp_path, owner="drew")), SetupAdapter)
     assert isinstance(DshHarnessAdapter(dsh_config_root(tmp_path, owner="drew")), SetupAdapter)
+
+
+@pytest.mark.parametrize(
+    ("command", "secret"),
+    [
+        ("curl --token hunter2Secret99 https://api.internal/notify", "hunter2Secret99"),
+        ("notify.sh --api-key Ab12cd34Ef56", "Ab12cd34Ef56"),
+        ("curl -u admin:Passw0rd! https://api.internal/notify", "Passw0rd!"),
+    ],
+)
+def test_hook_summaries_never_carry_a_flag_credential(command: str, secret: str):
+    """A hook line's credential flags reach the summary redacted, never verbatim."""
+    from claude_discord.ai_setup_adapters.harness import _safe_summary
+
+    summary = _safe_summary(command)
+    assert summary is not None
+    assert secret not in summary
+    assert summary.split()[0] == command.split()[0]
