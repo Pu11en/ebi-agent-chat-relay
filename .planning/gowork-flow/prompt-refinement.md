@@ -46,6 +46,9 @@ reply to that question as its answer, not arbitrary conversation in the thread.
 On success, close worker execution and send short bullets explaining each
 completed outcome and why it was needed. Do not ask for looks good or wait for
 a success reply. When nothing can proceed, report all unresolved blockers.
+After saving a finished worker's result, archive its Discord thread immediately;
+preserve history and work, and keep the main planning thread available. Do not
+wait for other workers or delete the worker thread as the normal cleanup path.
 Automatically combine each checked build into the local project while other
 builds continue. Serialize same-project integration, preserve existing edits,
 and verify the combined result. A conflict is a repair/blocker, not permission
@@ -125,4 +128,5 @@ Source: local-plans/generation-wealth-feedback-gowork.md, inspected as a plan, n
 - Completion settled: no looks-good gate; short what-and-why bullets, check result and issues in the planning thread.
 - Blocker answers use Discord Reply to the specific saved blocker message, not any message in that thread; runtime needs durable message-to-blocker routing.
 - Local integration settled: automatically after each build passes its checks, without waiting for the full master plan.
-- Capacity priority and worker-thread history retention remain open; execution sessions end regardless of the chosen history policy.
+- Worker history retention settled: archive immediately when a worker finishes and its result is saved, preserving history; main planning-thread blocker messages remain available.
+- Capacity priority across simultaneous builds remains open.
