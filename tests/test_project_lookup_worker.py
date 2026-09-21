@@ -25,6 +25,8 @@ def test_project_lookup_prompt_is_read_only_and_path_first() -> None:
     assert "find the Realpage folder" in prompt
     assert "exact paths" in prompt
     assert "Do not edit" in prompt
+    assert "Do not ask follow-up or multiple-choice questions" in prompt
+    assert "make the best reasonable search" in prompt
     assert "david" in prompt
     assert "1551328742977314886" in prompt
 
@@ -83,6 +85,63 @@ async def test_project_lookup_endpoint_spawns_worker_in_projects_root(
         thread_name = cog.spawn_session.await_args.kwargs["thread_name"]
         assert thread_name.startswith("🔎 Project lookup")
         assert "Pinterest keyword" in thread_name
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_project_lookup_endpoint_returns_worker_result_to_requesting_thread(
+    repo: NotificationRepository, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import discord
+
+    monkeypatch.setenv("CCDB_PROJECT_LOOKUP_ROOT", str(tmp_path))
+
+    worker_thread = MagicMock()
+    worker_thread.id = 444
+    worker_thread.name = "🔎 Project lookup"
+    worker_thread.edit = AsyncMock()
+    origin_thread = MagicMock()
+    origin_thread.id = 111
+    origin_thread.send = AsyncMock()
+    cog = MagicMock()
+    cog.spawn_session = AsyncMock(return_value=worker_thread)
+
+    channel = MagicMock(spec=discord.TextChannel)
+    bot = MagicMock()
+    bot.cogs = {"ClaudeChatCog": cog}
+    bot.get_channel.side_effect = lambda channel_id: {
+        12345: channel,
+        111: origin_thread,
+    }.get(channel_id)
+
+    api = ApiServer(repo=repo, bot=bot, default_channel_id=12345)
+    server = TestServer(api.app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        resp = await client.post(
+            "/api/project-lookup",
+            json={
+                "text": "find handoff_triggers.py",
+                "from_agent": "david",
+                "from_thread": 111,
+            },
+        )
+        assert resp.status == 201
+        sink = cog.spawn_session.await_args.kwargs["result_sink"]
+        assert sink is not None
+
+        await sink("Found `/home/drewp/main-projects/.../handoff_triggers.py`.", None)
+
+        origin_thread.send.assert_awaited_once()
+        sent = origin_thread.send.await_args.args[0]
+        assert "DrewAI project lookup result" in sent
+        assert "handoff_triggers.py" in sent
+        worker_thread.edit.assert_awaited_once_with(
+            archived=True,
+            reason="project lookup completed",
+        )
     finally:
         await client.close()
 

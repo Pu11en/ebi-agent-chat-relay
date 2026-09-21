@@ -47,6 +47,8 @@ def build_project_lookup_prompt(
         "- Return exact paths, relevant file names, and a short plain-English summary.\n"
         "- If there is a git remote, include it.\n"
         "- If nothing matches, say what you searched and the closest likely folders.\n\n"
+        "- Do not ask follow-up or multiple-choice questions; make the best reasonable search "
+        "from the request and finish with the answer.\n\n"
         "Origin:\n"
         f"{origin}\n\n"
         "Lookup request:\n"

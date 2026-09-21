@@ -1511,6 +1511,27 @@ class ApiServer:
             from_agent=from_agent,
             from_thread=from_thread,
         )
+        worker_thread_holder: dict[str, Any] = {}
+
+        async def _project_lookup_result_sink(
+            text: str | None,
+            error: str | None,
+        ) -> None:
+            if from_thread is None:
+                return
+            await self._send_project_lookup_result(
+                thread_id=from_thread,
+                text=text,
+                error=error,
+            )
+            worker_thread = worker_thread_holder.get("thread")
+            if worker_thread is not None and hasattr(worker_thread, "edit"):
+                with contextlib.suppress(Exception):
+                    await worker_thread.edit(
+                        archived=True,
+                        reason="project lookup completed",
+                    )
+
         try:
             thread = await cog.spawn_session(
                 raw,
@@ -1518,10 +1539,12 @@ class ApiServer:
                 thread_name=thread_name or project_lookup_thread_name(query),
                 auto_start=True,
                 working_dir=project_root,
+                result_sink=_project_lookup_result_sink if from_thread is not None else None,
             )
         except Exception:
             logger.exception("project lookup spawn_session failed")
             return web.json_response({"error": "project lookup worker could not start"}, status=500)
+        worker_thread_holder["thread"] = thread
 
         logger.info("Spawned project lookup worker in thread %s (%s)", thread.id, thread.name)
         return web.json_response(
@@ -1533,6 +1556,28 @@ class ApiServer:
             },
             status=201,
         )
+
+    async def _send_project_lookup_result(
+        self,
+        *,
+        thread_id: int,
+        text: str | None,
+        error: str | None,
+    ) -> None:
+        target: Any = self.bot.get_channel(thread_id)
+        if target is None:
+            with contextlib.suppress(Exception):
+                target = await self.bot.fetch_channel(thread_id)
+        if target is None or not hasattr(target, "send"):
+            logger.warning("Project lookup result target %s is not reachable", thread_id)
+            return
+
+        if error:
+            message = f"⚠️ DrewAI project lookup failed\n\n{error}"
+        else:
+            body = text or "The lookup finished with no text."
+            message = f"✅ DrewAI project lookup result\n\n{body}"
+        await target.send(message)
 
     async def list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/sessions — what every other Claude session is doing.
