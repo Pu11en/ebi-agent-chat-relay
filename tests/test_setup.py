@@ -587,8 +587,8 @@ async def test_setup_bridge_warns_when_worktree_base_dir_is_unset(
 
 
 @pytest.mark.asyncio
-async def test_setup_bridge_defaults_max_concurrent_to_3(tmp_path: object) -> None:
-    """Without env var or parameter, max_concurrent defaults to 3."""
+async def test_setup_bridge_defaults_max_concurrent_to_10(tmp_path: object) -> None:
+    """Without env var or parameter, max_concurrent defaults to 10."""
     from unittest.mock import patch
 
     from claude_discord.cogs.claude_chat import ClaudeChatCog
@@ -614,7 +614,7 @@ async def test_setup_bridge_defaults_max_concurrent_to_3(tmp_path: object) -> No
         for call in bot.add_cog.call_args_list
         if isinstance(call.args[0], ClaudeChatCog)
     )
-    assert chat_cog._max_concurrent == 3
+    assert chat_cog._max_concurrent == 10
 
 
 @pytest.mark.asyncio

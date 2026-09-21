@@ -31,7 +31,7 @@
   - If the goal isn't met, the build adds the missing steps itself, up to 3 rounds, then asks.
 - **Choosing AIs:** option "A" on the start list picks a model per step with Haiku. It stays in the
   build's AI family (Drew wants Claude only for now) and ranks models by name (`model_tier`).
-- **Side-by-side steps:** up to 3 independent steps run in their own copies and threads. The plan's
+- **Side-by-side steps:** up to 10 independent steps run in their own copies and threads. The plan's
   check and reviews still apply, and a step that doesn't combine runs again on its own.
 - **Stuck steps:** a stuck step tries the strongest model of the family, then gets split into
   smaller steps, then asks.

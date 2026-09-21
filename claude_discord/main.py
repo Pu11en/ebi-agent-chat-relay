@@ -73,7 +73,7 @@ def load_config() -> dict[str, str]:
         "allowed_tools": _env("CCDB_ALLOWED_TOOLS", "CLAUDE_ALLOWED_TOOLS", ""),
         "effort": _env("CCDB_EFFORT", "CLAUDE_EFFORT", ""),
         "append_system_prompt": os.getenv("APPEND_SYSTEM_PROMPT", ""),
-        "max_concurrent": os.getenv("MAX_CONCURRENT_SESSIONS", "3"),
+        "max_concurrent": os.getenv("MAX_CONCURRENT_SESSIONS", "10"),
         "timeout": os.getenv("SESSION_TIMEOUT_SECONDS", "300"),
         "owner_id": os.getenv("DISCORD_OWNER_ID", ""),
         "allowed_user_ids": os.getenv("CCDB_ALLOWED_USER_IDS", ""),

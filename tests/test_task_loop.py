@@ -584,6 +584,30 @@ class TestParallelGroups:
         assert tl.parse_groups("no idea", 3) == [[0], [1], [2]]
         assert tl.parse_groups("1,9 | 2", 3) == [[0], [1], [2]]
 
+    async def test_parallel_groups_can_run_up_to_ten_steps(self, repo: Path) -> None:
+        steps = [f"Task {i}" for i in range(1, 12)]
+        (repo / "PLAN.md").write_text("".join(f"- [ ] {step}\n" for step in steps))
+        _git(repo, "commit", "-qam", "eleven")
+        ran: list[list[str]] = []
+
+        async def next_group(open_steps: list[str]) -> list[str]:
+            return open_steps
+
+        async def run_group(group: list[str]) -> list[tuple[str, bool, str]]:
+            ran.append(group)
+            for step in group:
+                tl.tick_task(repo / "PLAN.md", step)
+            _git(repo, "commit", "-qam", "group")
+            return [(step, True, "ok") for step in group]
+
+        fake = _Fake(repo, [_done])
+        outcome = await fake.loop(next_group=next_group, run_group=run_group).run()
+
+        assert outcome.status == tl.Status.COMPLETE
+        assert ran == [steps[:10]]
+        assert len(fake.prompts) == 1
+        assert tl.first_unchecked((repo / "PLAN.md").read_text()) is None
+
     def test_tick_task_by_label(self, tmp_path: Path) -> None:
         plan = tmp_path / "PLAN.md"
         plan.write_text("- [ ] A one\n- [ ] B two\n")

@@ -64,6 +64,17 @@ from .frontend import (
     ThreadKey,
     derive_thread_key,
 )
+from .gowork_plan import (
+    OwnershipConflict,
+    PlanIdentity,
+    PlanTree,
+    PlanValidationError,
+    Requirement,
+    TaskAssignment,
+    load_plan_tree,
+    parse_plan_tree,
+    render_plan_manifest,
+)
 from .memory_surface import MemorySurface
 
 # Parser
@@ -159,6 +170,16 @@ __all__ = [
     "TextStream",
     "ThreadKey",
     "derive_thread_key",
+    # Go Work plan identity
+    "OwnershipConflict",
+    "PlanIdentity",
+    "PlanTree",
+    "PlanValidationError",
+    "Requirement",
+    "TaskAssignment",
+    "load_plan_tree",
+    "parse_plan_tree",
+    "render_plan_manifest",
     # Rewind
     "TurnEntry",
     "find_session_jsonl",

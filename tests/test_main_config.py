@@ -70,7 +70,7 @@ class TestLoadConfig:
         assert config["model"] == "sonnet"
         assert config["permission_mode"] == "acceptEdits"
         assert config["backend"] == "claude"  # CCDB_BACKEND default
-        assert config["max_concurrent"] == "3"
+        assert config["max_concurrent"] == "10"
         assert config["timeout"] == "300"
         assert config["custom_cogs_dir"] == ""
         assert config["frontends"] == "discord"
