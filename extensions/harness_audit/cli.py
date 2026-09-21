@@ -4,15 +4,19 @@
 
     python -m extensions.harness_audit.cli audit   --machine drewai --output DIR [roots…]
     python -m extensions.harness_audit.cli export  --output DIR --machine drewai --to FILE
-    python -m extensions.harness_audit.cli import  --output DIR --from FILE
+    python -m extensions.harness_audit.cli import  --output DIR --from FILE [--force]
     python -m extensions.harness_audit.cli compare --output DIR [--overlay FILE…]
     python -m extensions.harness_audit.cli quarantine plan --output DIR --machine M
                                                            --quarantine-dir QDIR
-    python -m extensions.harness_audit.cli quarantine apply    --manifest FILE
-    python -m extensions.harness_audit.cli quarantine rollback --manifest FILE
+    python -m extensions.harness_audit.cli quarantine apply    --manifest FILE [roots…]
+    python -m extensions.harness_audit.cli quarantine rollback --manifest FILE [roots…]
     python -m extensions.harness_audit.cli verify  --output DIR --machine M --manifest FILE
                                                    [roots…]
-    python -m extensions.harness_audit.cli rollback --manifest FILE
+    python -m extensions.harness_audit.cli rollback --manifest FILE [roots…]
+
+``apply`` and ``rollback`` take the same root options as ``audit`` because the
+manifest is data, not authority: every path it names is checked against those
+roots before anything moves.
 
 What each command may touch:
 
@@ -145,6 +149,11 @@ def build_parser() -> argparse.ArgumentParser:
     imp = commands.add_parser("import", help="validate another machine's bundle into --output")
     imp.add_argument("--output", type=Path, required=True)
     imp.add_argument("--from", dest="source", type=Path, required=True)
+    imp.add_argument(
+        "--force",
+        action="store_true",
+        help="replace a bundle already in --output for the same machine (default: refuse)",
+    )
 
     compare = commands.add_parser("compare", help="combine every bundle in --output")
     compare.add_argument("--output", type=Path, required=True)
@@ -165,8 +174,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     apply = steps.add_parser("apply", help="move the files a manifest names (hash-verified)")
     apply.add_argument("--manifest", type=Path, required=True)
+    _add_roots(apply)  # the manifest's paths are checked against these, never trusted
     rollback = steps.add_parser("rollback", help="move them back (hash-verified)")
     rollback.add_argument("--manifest", type=Path, required=True)
+    _add_roots(rollback)
 
     verify = commands.add_parser("verify", help="re-run the checks after a quarantine")
     verify.add_argument("--output", type=Path, required=True)
@@ -176,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     top_rollback = commands.add_parser("rollback", help="alias of `quarantine rollback`")
     top_rollback.add_argument("--manifest", type=Path, required=True)
+    _add_roots(top_rollback)
     return parser
 
 
@@ -355,6 +367,14 @@ def cmd_import(args: argparse.Namespace) -> int:
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     destination = _bundle_path(output, bundle.machine)
+    if destination.exists() and not args.force:
+        # A foreign bundle that claims this machine's name would otherwise
+        # replace the one the audit wrote here, and `compare` would report on
+        # someone else's inventory as if it were local.
+        raise CliError(
+            f"{destination} already exists for machine {bundle.machine.value};"
+            " pass --force to replace it"
+        )
     destination.write_text(text, encoding="utf-8")
     print(
         f"imported {bundle.machine.value} bundle with"
@@ -412,7 +432,7 @@ def cmd_quarantine_plan(args: argparse.Namespace) -> int:
 
 def cmd_quarantine_apply(args: argparse.Namespace) -> int:
     manifest = QuarantineManifest.load(args.manifest)
-    applied = apply_quarantine(manifest, now=_now())
+    applied = apply_quarantine(manifest, now=_now(), roots=_roots(args))
     applied.save(args.manifest)
     print(f"quarantined {len(applied.entries)} file(s)")
     print(f"rollback: `rollback --manifest {args.manifest}`")
@@ -421,7 +441,7 @@ def cmd_quarantine_apply(args: argparse.Namespace) -> int:
 
 def cmd_rollback(args: argparse.Namespace) -> int:
     manifest = QuarantineManifest.load(args.manifest)
-    restored = rollback_quarantine(manifest, now=_now())
+    restored = rollback_quarantine(manifest, now=_now(), roots=_roots(args))
     restored.save(args.manifest)
     print(f"restored {len(restored.entries)} file(s) by hash")
     return EXIT_OK

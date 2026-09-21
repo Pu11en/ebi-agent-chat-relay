@@ -103,7 +103,9 @@ uv run python -m extensions.harness_audit.cli import --output ~/harness-audit --
 ```
 
 `import` re-verifies the bundle through the same fail-closed redactor; a file that still matches a
-secret rule is refused and nothing is written.
+secret rule is refused and nothing is written. It also refuses to replace a bundle already in
+`--output` for the same machine name — a foreign file claiming to be `drewai` must not overwrite the
+one this machine's `audit` wrote — unless you pass `--force`.
 
 ## Step 3 — compare and read the report
 
@@ -156,17 +158,20 @@ items); hooks, MCP servers and setting keys are listed as *skipped* — edit tho
 control. Review the manifest, then:
 
 ```bash
-uv run python -m extensions.harness_audit.cli quarantine apply --manifest ~/harness-audit/quarantine-<id>.json
+uv run python -m extensions.harness_audit.cli quarantine apply --manifest ~/harness-audit/quarantine-<id>.json [same root flags as audit]
 uv run python -m extensions.harness_audit.cli verify --output ~/harness-audit --machine drewai --manifest ~/harness-audit/quarantine-<id>.json [same root flags as audit]
 ```
 
 `apply` verifies every file's hash first and aborts before moving anything on a mismatch; it moves
-files into the quarantine directory and never deletes. `verify` re-collects, re-runs the checks and
+files into the quarantine directory and never deletes. The manifest is data, not authority: `apply`
+and `rollback` take the same root flags as `audit` and refuse any entry whose original path is
+outside those roots or whose disabled location is outside `<quarantine-dir>/<manifest-id>`, so an
+edited manifest cannot move `~/.ssh/id_rsa` or plant a file elsewhere. `verify` re-collects, re-runs the checks and
 writes `verify-<id>.json`: a target passes when nothing HIGH fails and nothing is unknown on it.
 Run it on every affected machine. If something a session needs is missing:
 
 ```bash
-uv run python -m extensions.harness_audit.cli rollback --manifest ~/harness-audit/quarantine-<id>.json
+uv run python -m extensions.harness_audit.cli rollback --manifest ~/harness-audit/quarantine-<id>.json [same root flags as audit]
 ```
 
 restores every file by hash. An item is **eligible for removal** only when its verdict is Remove,

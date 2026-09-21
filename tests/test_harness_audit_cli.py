@@ -321,7 +321,7 @@ def test_quarantine_plan_apply_verify_rollback_round_trip(
     manifest_path = manifests[0]
     assert "would quarantine" in out
 
-    code, out, err = run(["quarantine", "apply", "--manifest", str(manifest_path)], capsys)
+    code, out, err = run(["quarantine", "apply", "--manifest", str(manifest_path), *args], capsys)
     assert code == 0, err
     applied = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert applied["applied_at"] and applied["entries"]
@@ -348,7 +348,7 @@ def test_quarantine_plan_apply_verify_rollback_round_trip(
     assert all(v["eligible"] is False for v in verification["removal"])
     assert "not classified Remove" in out or "not verified" in out or "failed" in out
 
-    code, out, err = run(["rollback", "--manifest", str(manifest_path)], capsys)
+    code, out, err = run(["rollback", "--manifest", str(manifest_path), *args], capsys)
     assert code == 0, err
     assert tree(home) == baseline
     rolled = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -381,10 +381,73 @@ def test_quarantine_apply_aborts_on_a_hash_mismatch(
     Path(entry["original_path"]).write_text("changed after planning\n", encoding="utf-8")
     baseline = tree(home)
     capsys.readouterr()
-    code, _, err = run(["quarantine", "apply", "--manifest", str(manifest_path)], capsys)
+    code, _, err = run(["quarantine", "apply", "--manifest", str(manifest_path), *args], capsys)
     assert code != 0
     assert "hash" in err
     assert tree(home) == baseline
+
+
+def test_quarantine_apply_refuses_a_manifest_naming_a_file_outside_the_roots(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The manifest is a file anyone can edit; the roots on the command line decide."""
+    home, args = machine_fixture(tmp_path, "drewai")
+    out_dir = tmp_path / "out"
+    assert main(["audit", "--machine", "drewai", "--output", str(out_dir), *args]) == 0
+    assert (
+        main(
+            [
+                "quarantine",
+                "plan",
+                "--output",
+                str(out_dir),
+                "--machine",
+                "drewai",
+                "--quarantine-dir",
+                str(tmp_path / "q"),
+            ]
+        )
+        == 0
+    )
+    manifest_path = next(out_dir.glob("quarantine-*.json"))
+    secret = write(tmp_path / "outside" / "id_rsa", "PRIVATE\n")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["entries"][0]["original_path"] = str(secret)
+    payload["entries"][0]["content_hash"] = (
+        "sha256:" + hashlib.sha256(secret.read_bytes()).hexdigest()
+    )
+    payload["entries"][0]["byte_size"] = secret.stat().st_size
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    baseline = tree(tmp_path)
+    capsys.readouterr()
+    code, _, err = run(["quarantine", "apply", "--manifest", str(manifest_path), *args], capsys)
+    assert code != 0
+    assert "outside" in err
+    assert tree(tmp_path) == baseline
+
+
+def test_import_refuses_to_overwrite_an_existing_bundle_without_force(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A foreign bundle that claims this machine's name must not replace the
+    bundle the audit wrote here."""
+    _, args = machine_fixture(tmp_path, "drewai")
+    out_dir = tmp_path / "out"
+    assert main(["audit", "--machine", "drewai", "--output", str(out_dir), *args]) == 0
+    local = (out_dir / "bundle-drewai.json").read_text(encoding="utf-8")
+    foreign = write(tmp_path / "foreign.json", local.replace("relay", "other-project"))
+    capsys.readouterr()
+
+    code, _, err = run(["import", "--output", str(out_dir), "--from", str(foreign)], capsys)
+    assert code != 0
+    assert "already" in err and "--force" in err
+    assert (out_dir / "bundle-drewai.json").read_text(encoding="utf-8") == local
+
+    code, _, err = run(
+        ["import", "--output", str(out_dir), "--from", str(foreign), "--force"], capsys
+    )
+    assert code == 0, err
+    assert (out_dir / "bundle-drewai.json").read_text(encoding="utf-8") != local
 
 
 # --------------------------------------------------------------------------- #
@@ -427,7 +490,7 @@ def test_every_command_leaves_model_and_effort_settings_untouched(
         == 0
     )
     manifest_path = next(out_dir.glob("quarantine-*.json"))
-    assert main(["quarantine", "apply", "--manifest", str(manifest_path)]) == 0
+    assert main(["quarantine", "apply", "--manifest", str(manifest_path), *args]) == 0
     assert (
         main(
             [
@@ -443,7 +506,7 @@ def test_every_command_leaves_model_and_effort_settings_untouched(
         )
         == 0
     )
-    assert main(["rollback", "--manifest", str(manifest_path)]) == 0
+    assert main(["rollback", "--manifest", str(manifest_path), *args]) == 0
     capsys.readouterr()
     for path, digest in settings.items():
         assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, path
