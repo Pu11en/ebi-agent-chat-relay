@@ -250,11 +250,27 @@ def _junction(target: Path, link: Path, *, directory: bool) -> None:
     _winapi.CreateJunction(str(target), str(link))
 
 
+def _is_symlink(path: Path) -> bool:
+    """Whether *path* itself is a symlink (its target is never followed)."""
+    return path.is_symlink()
+
+
 def _remove_link(path: Path) -> None:
     try:
         os.unlink(path)
     except OSError:
         os.rmdir(path)  # a directory symlink or junction on Windows
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """Whether *path*'s folder lies inside *root* — the entry itself is not followed,
+    so a link inside an owned folder counts as inside, wherever it points."""
+    try:
+        parent = Path(os.path.realpath(path.parent))
+        base = Path(os.path.realpath(root))
+    except OSError:
+        return False
+    return parent == base or base in parent.parents
 
 
 def _read(path: Path) -> str:
@@ -346,9 +362,24 @@ class _Stager:
 
     # -- pieces ------------------------------------------------------------ #
 
+    def _refuse_link(self, path: Path, what: str) -> bool:
+        """A symlinked file is never written through: the write would land wherever
+        the link points, possibly outside the home. Reported as a manual step."""
+        if not _is_symlink(path):
+            return False
+        self.report.add(
+            "manual",
+            path,
+            f"is a link; {what} was not written through it — replace the link with a "
+            "real file, or edit the target yourself",
+        )
+        return True
+
     def skill(self) -> None:
         text = render_skill()
         path = self.layout.skill_file
+        if self._refuse_link(path, "the shared guidance skill"):
+            return
         if path.is_file() and _read(path) == text:
             self.report.add("unchanged", path)
         else:
@@ -367,6 +398,8 @@ class _Stager:
 
     def upsert_block(self, path: Path) -> None:
         block = routing_block(self.layout.skill_file)
+        if self._refuse_link(path, "the routing rule"):
+            return
         if not path.exists():
             self.report.add("block", path, "created with the routing rule")
             self._record_file(path, created=True)
@@ -380,6 +413,8 @@ class _Stager:
             self._record_file(path, created=False)
             return
         backup = path.with_name(path.name + BACKUP_SUFFIX)
+        if self._refuse_link(backup, "the backup"):
+            return
         if not backup.exists():
             self.report.add("backup", backup, f"copy of {path.name} before its first change")
             if not self.dry:
@@ -537,18 +572,37 @@ def rollback_guidance(layout: GuidanceLayout) -> StageReport:
     except (OSError, ValueError) as exc:
         raise GuidanceError(f"unreadable install manifest {manifest_path}: {exc}") from exc
 
+    # Every path in the manifest is data the person (or anything else) may have
+    # edited: only what lies inside this layout's own folders is ours to touch.
+    roots = (layout.home, layout.codex_home, layout.dsh_home)
+
+    def owned(path: Path) -> bool:
+        if any(_inside(path, root) for root in roots):
+            return True
+        report.add(
+            "manual", path, "outside the layout; the manifest named it but it was left alone"
+        )
+        return False
+
     for raw in manifest.get("links", []):
         link = Path(raw)
+        if not owned(link):
+            continue
         if is_link(link):
             _remove_link(link)
             report.add("remove", link, "skill link")
 
     for raw, entry in manifest.get("instruction_files", {}).items():
         path = Path(raw)
+        if not owned(path):
+            continue
         if entry.get("link"):
-            if is_link(path) or path.is_symlink():
+            if is_link(path) or _is_symlink(path):
                 _remove_link(path)
                 report.add("remove", path, "instruction link")
+            continue
+        if _is_symlink(path):
+            report.add("manual", path, "is a link; the routing rule was not removed through it")
             continue
         if not path.is_file():
             continue
@@ -569,12 +623,15 @@ def rollback_guidance(layout: GuidanceLayout) -> StageReport:
             report.add("restore", path, "routing rule removed; later edits kept")
 
     skill_file = Path(manifest.get("skill_file") or layout.skill_file)
-    if skill_file.is_file():
+    if not owned(skill_file) or _is_symlink(skill_file):
+        skill_file = layout.skill_file  # the manifest's claim is refused; ours is the layout's
+    if skill_file.is_file() and not _is_symlink(skill_file):
         skill_file.unlink()
         report.add("remove", skill_file, "the shared guidance skill")
     manifest_path.unlink()
     report.add("remove", manifest_path)
-    created_dirs = {Path(raw) for raw in manifest.get("created_dirs", [])} | {layout.skill_dir}
+    remembered = (Path(raw) for raw in manifest.get("created_dirs", []))
+    created_dirs = {folder for folder in remembered if owned(folder)} | {layout.skill_dir}
     for folder in sorted(created_dirs, key=lambda p: len(str(p)), reverse=True):
         with contextlib.suppress(OSError):
             folder.rmdir()  # only when empty: anything of the person's stays
