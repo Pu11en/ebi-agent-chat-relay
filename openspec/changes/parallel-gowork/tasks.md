@@ -6,13 +6,13 @@ Try: `uv run python -m extensions.feature_workflow.coordinator --help`
 
 - [x] 1.1 **Depends on: none; owns: `extensions/feature_workflow/task_graph.py`, `tests/test_feature_task_graph.py`.** Parse task IDs, dependencies, owned paths, checks, and legacy checkbox plans; verify unknown nodes, cycles, protected/invalid paths, and independent ownership overlap are rejected while legacy plans become sequential graphs.
 - [x] 1.2 **Depends on: 1.1; owns: `extensions/feature_workflow/scheduler.py`, `tests/test_feature_scheduler.py`.** Compute the complete dependency-ready, non-conflicting set with no product worker cap; verify four safe tasks are all ready and unresolved/integration dependencies remain pending.
-- [ ] 1.3 **Depends on: 1.1; owns: `extensions/feature_workflow/run_state.py`, `tests/test_feature_run_state.py`.** Define atomic durable state transitions and stable correlation IDs for pending, spawning, ambiguous, dispatched, verified, integrated, queued, and blocked tasks; verify restart never converts uncertainty into duplicate dispatch.
+- [x] 1.3 **Depends on: 1.1; owns: `extensions/feature_workflow/run_state.py`, `tests/test_feature_run_state.py`.** Define atomic durable state transitions and stable correlation IDs for pending, spawning, ambiguous, dispatched, verified, integrated, queued, and blocked tasks; verify restart never converts uncertainty into duplicate dispatch.
 
 ## 2. Isolated worker evidence
 
 - [ ] 2.1 **Depends on: 1.1, 1.3; owns: `extensions/feature_workflow/worker_workspace.py`, `tests/test_feature_worker_workspace.py`.** Create/recover one approved-foundation branch and `.worktrees/wt-<thread-id>` checkout per task; verify branch ancestry, repository identity, clean-state protection, and durable-branch recovery after checkout cleanup.
 - [ ] 2.2 **Depends on: 1.1, 1.3; owns: `extensions/feature_workflow/result_verifier.py`, `tests/test_feature_result_verifier.py`.** Validate task identity, approval revision, foundation ancestry, owned changed paths, clean commit, and nonempty focused check evidence; verify each invalid evidence class is rejected before integration.
-- [ ] 2.3 **Depends on: 1.1; owns: `extensions/feature_workflow/briefing.py`, `tests/test_feature_briefing.py`.** Build the compact fresh-session task brief with goal, decision subset, dependencies, ownership, restrictions, checks, and result destination; verify it excludes the parent transcript and forbids merging or worker spawning.
+- [x] 2.3 **Depends on: 1.1; owns: `extensions/feature_workflow/briefing.py`, `tests/test_feature_briefing.py`.** Build the compact fresh-session task brief with goal, decision subset, dependencies, ownership, restrictions, checks, and result destination; verify it excludes the parent transcript and forbids merging or worker spawning.
 
 ## 3. Ready-set dispatch and integration
 
@@ -24,7 +24,7 @@ Try: `uv run python -m extensions.feature_workflow.coordinator --help`
 
 ## 4. Linked child planning
 
-- [ ] 4.1 **Depends on: none; owns: `extensions/feature_workflow/planning_models.py`, `tests/test_planning_models.py`.** Define compact child handoff, split identity, parent/child status, acknowledgement, dependency, and ownership records; verify bounded serialization contains every required field and no transcript.
+- [x] 4.1 **Depends on: none; owns: `extensions/feature_workflow/planning_models.py`, `tests/test_planning_models.py`.** Define compact child handoff, split identity, parent/child status, acknowledgement, dependency, and ownership records; verify bounded serialization contains every required field and no transcript.
 - [ ] 4.2 **Depends on: 4.1; owns: `extensions/feature_workflow/planning_registry.py`, `tests/test_planning_registry.py`.** Persist parent-child links and intent-first creation state atomically; verify restart restores links and never creates a duplicate child for the same split identity.
 - [ ] 4.3 **Depends on: 4.1; owns: `extensions/feature_workflow/split_policy.py`, `tests/test_planning_split_policy.py`.** Implement explicit-separation handling and clear/uncertain/keep-together decisions from distinct goals, acceptance criteria, dependencies, and writable scope; verify uncertain fixtures require one question and overlapping scope produces ordering/ownership guidance.
 - [ ] 4.4 **Depends on: 4.2, 4.3; owns: `extensions/feature_workflow/planning_discord.py`, `tests/test_planning_split_discord.py`.** Create linked Discord child planning threads with compact context, bounded decision updates, acknowledgements, and parent status summaries; verify two children stay isolated and completion reports exactly once.

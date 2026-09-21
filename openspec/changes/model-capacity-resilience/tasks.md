@@ -10,8 +10,8 @@ Try: `uv run pytest tests/test_capacity_recovery.py -q`
 
 ## 2. Durable pending turns
 
-- [ ] 2.1 Add failing repository tests for create, conditional claim, schedule, accept-once, expiry, and restart reload; verify the focused repository test fails before schema work.
-- [ ] 2.2 Add the zero-config SQLite schema and a dedicated recovery repository without modifying unrelated session rows; verify fresh and upgraded database tests pass.
+- [x] 2.1 Add failing repository tests for create, conditional claim, schedule, accept-once, expiry, and restart reload; verify the focused repository test fails before schema work.
+- [x] 2.2 Add the zero-config SQLite schema and a dedicated recovery repository without modifying unrelated session rows; verify fresh and upgraded database tests pass.
 - [ ] 2.3 Add a restart loader that claims only due records and reacquires normal relay admission; verify two simulated workers cannot run one turn twice.
 
 ## 3. Shared recovery coordinator

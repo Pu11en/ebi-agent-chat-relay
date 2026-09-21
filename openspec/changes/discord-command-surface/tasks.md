@@ -6,7 +6,7 @@ Try: `uv run python -m claude_discord.main`
 
 - [x] 1.1 Add failing location-classification and final-command-manifest tests in `tests/test_command_surface.py`, then add the pure coordinator types in `claude_discord/command_surface.py`; owner: these two files only; depends on nothing; verify with `uv run pytest tests/test_command_surface.py -q`.
 - [x] 1.2 Add failing session lifecycle migration/repository tests in `tests/test_session_lifecycle.py`, then add backward-compatible lifecycle, pending-close, and wrap-up fields in `claude_code_core/session_repo.py` and `claude_discord/database/models.py`; owner: those three files; depends on 1.1 only for shared state names; verify with `uv run pytest tests/test_session_lifecycle.py tests/test_repository.py -q`.
-- [ ] 1.3 Add a tested close/reopen service in `claude_discord/session_lifecycle.py` that preserves records, waits for active completion, archives without locking, and enforces typed human/workflow authority; owner: the service and `tests/test_session_lifecycle.py`; depends on 1.2; verify with `uv run pytest tests/test_session_lifecycle.py -q`.
+- [x] 1.3 Add a tested close/reopen service in `claude_discord/session_lifecycle.py` that preserves records, waits for active completion, archives without locking, and enforces typed human/workflow authority; owner: the service and `tests/test_session_lifecycle.py`; depends on 1.2; verify with `uv run pytest tests/test_session_lifecycle.py -q`.
 
 ## 2. Control-center experience
 
@@ -20,7 +20,7 @@ Try: `uv run python -m claude_discord.main`
 
 - [ ] 3.1 Refactor stop, fork, rewind, compact, clear, context, and goal into callable services while retaining existing command behavior; owner: `claude_discord/cogs/claude_chat.py`, `claude_discord/cogs/session_manage.py`, and their existing tests; depends on 1.1; verify existing focused suites remain green before adding `/session`.
 - [ ] 3.2 Add `/session` and its ephemeral Fork, Rewind, Compact, Clear, Context, and Goal view with confirmations where state is discarded; owner: a new `claude_discord/discord_ui/session_actions.py`, `tests/test_session_actions.py`, and thin command registration; depends on 3.1; verify every button calls exactly one shared service.
-- [ ] 3.3 Normalize discovered models into model-plus-harness choices and change `/switch` to direct selection with current marker, recency ordering, availability filtering, and typed search; owner: `claude_discord/model_catalog.py`, `claude_discord/cogs/backend_command.py`, and focused tests; depends on 1.1; verify `uv run pytest tests/test_model_catalog.py tests/test_backend_command.py -q`.
+- [x] 3.3 Normalize discovered models into model-plus-harness choices and change `/switch` to direct selection with current marker, recency ordering, availability filtering, and typed search; owner: `claude_discord/model_catalog.py`, `claude_discord/cogs/backend_command.py`, and focused tests; depends on 1.1; verify `uv run pytest tests/test_model_catalog.py tests/test_backend_command.py -q`.
 - [ ] 3.4 Wire `/close` and Sessions Open/Close to the lifecycle service, including persisted pending-close completion and restart reconciliation; owner: thin adapters in the chat cog/setup plus lifecycle tests; depends on 1.3 and 2.4; verify active, idle, duplicate, restart, and reopen scenarios pass.
 
 ## 4. Registration, migration, and verification

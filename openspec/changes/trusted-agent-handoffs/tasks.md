@@ -6,7 +6,7 @@ Try: `uv run python -m claude_discord.main`
 
 - [x] 1.1 Add failing packet/event validation tests, then implement bounded versioned handoff values, event kinds, UUID/sequence checks, `ProjectLocator`, and `AuthorityScope` in `claude_code_core/handoffs/protocol.py`; owner: that module and `tests/test_handoff_protocol.py`; depends on nothing; verify malformed, oversized, ambiguous-owner, absolute-path, and round-trip cases pass.
 - [x] 1.2 Add failing transition tests, then implement the accepted/queued/running/blocked/completed/failed state machine and legal retry rules in `claude_code_core/handoffs/state.py`; owner: that module and protocol tests; depends on 1.1; verify terminal events cannot create or restart work.
-- [ ] 1.3 Add handoff task, event, attempt, and result-outbox migrations plus repository methods with unique task-recipient and event-id constraints; owner: `claude_discord/database/models.py`, a new `claude_discord/database/handoff_repo.py`, and `tests/test_handoff_repository.py`; depends on 1.2; verify duplicate concurrent inserts schedule one logical task.
+- [x] 1.3 Add handoff task, event, attempt, and result-outbox migrations plus repository methods with unique task-recipient and event-id constraints; owner: `claude_discord/database/models.py`, a new `claude_discord/database/handoff_repo.py`, and `tests/test_handoff_repository.py`; depends on 1.2; verify duplicate concurrent inserts schedule one logical task.
 
 ## 2. Trust and Discord transport
 
