@@ -1625,26 +1625,6 @@ class TestUserActionMentions:
     """Messages that pause Claude for button input mention the requester."""
 
     @pytest.mark.asyncio
-    async def test_plan_approval_mentions_notify_user(
-        self, thread: MagicMock, runner: MagicMock
-    ) -> None:
-        runner.inject_tool_result = AsyncMock()
-        config = _make_config(thread, runner, notify_user_id=42)
-        p = EventProcessor(config)
-
-        await p.process(
-            StreamEvent(
-                message_type=MessageType.ASSISTANT,
-                text="Implementation plan",
-                is_plan_approval=True,
-            )
-        )
-        await _wait_for_prompt_message(thread)
-
-        assert "<@42>" in _posted_mentions(thread)
-        await p.cancel_prompts()
-
-    @pytest.mark.asyncio
     async def test_permission_request_mentions_notify_user(
         self, thread: MagicMock, runner: MagicMock
     ) -> None:

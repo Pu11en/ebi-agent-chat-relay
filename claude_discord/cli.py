@@ -117,7 +117,7 @@ def write_env(
         "CLAUDE_PERMISSION_MODE=acceptEdits",
         f"CLAUDE_WORKING_DIR={working_dir}",
         "",
-        "MAX_CONCURRENT_SESSIONS=3",
+        "MAX_CONCURRENT_SESSIONS=10",
         "SESSION_TIMEOUT_SECONDS=300",
         "# CCDB_PR_COMPLETION_OWNER=your-github-login",
     ]

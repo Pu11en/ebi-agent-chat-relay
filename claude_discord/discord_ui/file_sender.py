@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import logging
 from pathlib import Path
 
 import discord
 
+from claude_discord.discord_ui.plan_card import plan_markdown
 from claude_discord.discord_ui.render_preview import (
     is_renderable,
     preview_name,
@@ -30,6 +32,8 @@ _MAX_FILE_BYTES = 8 * 1024 * 1024  # 8 MB
 
 # Discord API hard limit: 10 files per message.
 _MAX_FILES_PER_MESSAGE = 10
+
+_PLAN_SUFFIX = ".plan.json"
 
 
 def _relative_path(file_path: str, working_dir: str | None) -> str:
@@ -144,17 +148,46 @@ def collect_discord_files_from_blobs(
     return result
 
 
+def _plan_as_markdown(f: discord.File) -> discord.File | None:
+    """Return ``x.plan.md`` for an ``x.plan.json`` attachment, else None.
+
+    Unparseable plans return None so the raw JSON is still delivered.
+    """
+    if not f.filename.lower().endswith(_PLAN_SUFFIX):
+        return None
+    pos = f.fp.tell()
+    f.fp.seek(0)
+    raw = f.fp.read()
+    f.fp.seek(pos)
+    try:
+        spec = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        logger.info("plan %s is not valid JSON; sending it raw", f.filename)
+        return None
+    if not isinstance(spec, dict):
+        return None
+    name = f.filename[: -len(_PLAN_SUFFIX)] + ".plan.md"
+    return discord.File(io.BytesIO(plan_markdown(spec).encode()), filename=name)
+
+
 async def _prepend_previews(files: list[discord.File]) -> list[discord.File]:
     """Return *files* with a PNG preview inserted before every renderable file.
 
     Discord natively inlines any PNG attachment, so this alone gives the user
     a visible preview — no Components v2 payload, no ``attachment://`` refs.
     Rendering failures are silent: the caller still gets the originals.
+
+    A ``*.plan.json`` is replaced by ``*.plan.md`` so every plan, from every
+    harness, reads as the same inline Markdown preview.
     """
     import tempfile
 
     result: list[discord.File] = []
     for f in files:
+        plan_md = _plan_as_markdown(f)
+        if plan_md is not None:
+            result.append(plan_md)
+            continue
         if is_renderable(f.filename):
             # Keep every suffix: the renderer routes on the temp file's name,
             # so `x.plan.json` must still end in `.plan.json` after the copy.

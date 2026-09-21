@@ -462,6 +462,38 @@ def test_standing_instruction_is_absent_when_not_configured():
     assert runner._with_standing_instruction("fix it") == "fix it"
 
 
+def test_standing_instruction_binds_the_sessions_coordination_values():
+    """A DSH runtime is a long-lived process shared by every thread on the same
+    route and directory, so its environment cannot carry a per-thread
+    ``DISCORD_THREAD_ID``. The per-turn instruction is the only channel that
+    can, so the relay's shell variables are bound to literals before the model
+    sees them — the copy-pasteable curl keeps working either way."""
+    runner = DshRunner(
+        api_port=9876,
+        thread_id=1547495736269340723,
+        append_system_prompt=(
+            'curl "$CCDB_API_URL/api/lounge" -d '
+            "'{\"thread_id\": \"'$DISCORD_THREAD_ID'\"}'\n"
+            'curl "$CCDB_API_URL/api/claims?resource=repo:x%23y'
+            '&thread_id=$DISCORD_THREAD_ID"'
+        ),
+    )
+
+    resolved = runner._with_standing_instruction("go")
+
+    assert "$CCDB_API_URL" not in resolved
+    assert "$DISCORD_THREAD_ID" not in resolved
+    assert "http://127.0.0.1:9876/api/lounge" in resolved
+    assert '\'{"thread_id": "1547495736269340723"}\'' in resolved
+    assert "thread_id=1547495736269340723" in resolved
+
+
+def test_standing_instruction_leaves_figures_alone_without_a_thread_or_api():
+    """Nothing to bind means nothing changes — the prompt is passed through."""
+    runner = DshRunner(append_system_prompt="run $CCDB_API_URL/api/health")
+    assert runner._with_standing_instruction("go") == ("run $CCDB_API_URL/api/health\n\ngo")
+
+
 async def test_standing_instruction_prefixes_every_turn(monkeypatch):
     """The per-turn system context (lounge, concurrency notice, file marker)
     is ephemeral and recomputed each message, so it must reach every turn —
@@ -491,6 +523,50 @@ def test_build_env_hides_the_relays_own_credentials(monkeypatch):
     env = DshRunner()._build_env()
     assert "DISCORD_BOT_TOKEN" not in env
     assert env["DEEPSEEK_API_KEY"] == "sk-deepseek"
+
+
+def test_runtime_env_carries_the_control_plane_address():
+    """``child_env`` strips the control-plane credential from everything the
+    relay inherits and requires each runner to inject it back explicitly."""
+    env = DshRunner(api_port=9876, api_secret="s3cr3t")._runtime_env()
+    assert env == {
+        "CCDB_API_URL": "http://127.0.0.1:9876",
+        "CCDB_API_SECRET": "s3cr3t",
+    }
+
+
+def test_runtime_env_is_empty_without_a_control_plane():
+    assert DshRunner()._runtime_env() == {}
+
+
+def test_build_env_injects_the_control_plane_after_stripping(monkeypatch):
+    monkeypatch.setenv("CCDB_API_URL", "http://stale.example")
+    monkeypatch.setenv("CCDB_API_SECRET", "stale")
+    env = DshRunner(api_port=9876, api_secret="fresh")._build_env()
+    assert env["CCDB_API_URL"] == "http://127.0.0.1:9876"
+    assert env["CCDB_API_SECRET"] == "fresh"
+
+
+def test_the_started_runtime_receives_the_control_plane_env(monkeypatch):
+    starts: list[dict[str, object]] = []
+
+    class Probe:
+        def __init__(self, **kwargs: object) -> None:
+            starts.append(kwargs)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        dsh_backend, "_require_sdk", lambda: type("S", (), {"DeepSeekHarness": Probe})
+    )
+
+    DshRunner(api_port=9876, api_secret="s3cr3t", working_dir="/tmp/w")._ensure_runtime()
+
+    assert starts[0]["env"] == {
+        "CCDB_API_URL": "http://127.0.0.1:9876",
+        "CCDB_API_SECRET": "s3cr3t",
+    }
 
 
 def test_the_runtime_never_inherits_transport_credentials(monkeypatch):

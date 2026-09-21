@@ -736,6 +736,36 @@ class TestParseCodexLine:
         assert event.tool_use is not None
         assert event.tool_use.tool_name == "Edit"
 
+    def test_item_completed_file_change_carries_every_path(self) -> None:
+        """codex-cli's real event is ``file_change`` (singular) with ``changes``.
+
+        Every changed path must reach the tool input so the same-file heads-up
+        sees Codex edits, not just Claude's.
+        """
+        from claude_code_core.codex_runner import _atomic_tool_completion
+
+        line = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_4",
+                    "type": "file_change",
+                    "changes": [
+                        {"path": "/repo/a.py", "kind": "update"},
+                        {"path": "/repo/b.py", "kind": "add"},
+                    ],
+                    "status": "completed",
+                },
+            }
+        )
+        event = parse_codex_line(line)
+        assert event is not None
+        assert event.tool_use is not None
+        assert event.tool_use.tool_name == "Edit"
+        assert event.tool_use.tool_input["file_paths"] == ["/repo/a.py", "/repo/b.py"]
+        assert event.tool_use.tool_input["file_path"] == "/repo/a.py"
+        assert _atomic_tool_completion(event) is not None
+
     def test_file_changes_is_atomic_and_gets_synthetic_completion(self) -> None:
         """file_changes arrives as a single item.completed with no item.started.
         It opens a tool embed + live timer, so a synthetic tool result must be

@@ -1,0 +1,9 @@
+{
+  "source_worktree": "/home/drewp/main-projects/lockin-workflow-runtime",
+  "source_directory": "extensions/feature_workflow/skill",
+  "source_commit": "13de390c801cf55b4845bde3baf24bdb5a356729",
+  "files": {
+    "SKILL.md": "4bb5e48bddcb22f928a18222ef42592a04db3051e71c0983c9b32e1aeb4f4d4a",
+    "references/coordinator.md": "5f598f46aadcab9232c4bee806c75c06f0d10f663fc4dca3d880cdb4597fdd02"
+  }
+}

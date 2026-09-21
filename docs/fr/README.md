@@ -750,7 +750,7 @@ En mode chat uniquement, les demandes de permission et les invites `AskUserQuest
 | `CLAUDE_PERMISSION_MODE` | Mode de permission pour la CLI (hérité — préférez `CCDB_PERMISSION_MODE`) | `acceptEdits` |
 | `CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` | Ignorer toutes les vérifications de permission (hérité — préférez `CCDB_DANGEROUSLY_SKIP_PERMISSIONS`) | `false` |
 | `CLAUDE_WORKING_DIR` | Répertoire de travail pour Claude (hérité — préférez `CCDB_WORKING_DIR`) | répertoire courant |
-| `MAX_CONCURRENT_SESSIONS` | Maximum de sessions CLI Claude parallèles sur tous les chemins de code (chat, skills, planificateur, webhooks) | `3` |
+| `MAX_CONCURRENT_SESSIONS` | Maximum de sessions CLI Claude parallèles sur tous les chemins de code (chat, skills, planificateur, webhooks) | `10` |
 | `SESSION_TIMEOUT_SECONDS` | Timeout d'inactivité de session | `300` |
 | `DISCORD_OWNER_ID` | ID utilisateur à @-mentionner quand Claude a besoin d'une saisie | (optionnel) |
 | `COORDINATION_CHANNEL_ID` | ID de canal utilisé comme repli par défaut pour le canal AI Lounge | (optionnel) |

@@ -106,6 +106,9 @@ async def setup_bridge(
     data_root: str | None = None,
     session_db_path: str | None = None,
     allowed_user_ids: set[int] | None = None,
+    thread_member_ids: set[int] | None = None,
+    thread_member_exclude_category_ids: set[int] | None = None,
+    thread_mute_user_ids: set[int] | None = None,
     claude_channel_id: int | None = None,
     claude_channel_ids: set[int] | None = None,
     mention_only_channel_ids: set[int] | None = None,
@@ -150,6 +153,20 @@ async def setup_bridge(
             this one file; the override is logged at startup because it is the
             only remaining way two deployments can end up sharing state.
         allowed_user_ids: Set of Discord user IDs allowed to use Claude.
+        thread_member_ids: Set of Discord user IDs auto-joined to every thread
+            ccdb creates or is active in, and pinged alongside the owner when a
+            thread needs a reply.  Defaults to ``allowed_user_ids`` (or the
+            ``CCDB_THREAD_MEMBER_IDS`` env var when that is set explicitly), so
+            granting execution adds the user to shared threads too.  Pass an
+            empty set to disable.
+        thread_member_exclude_category_ids: Discord category IDs whose threads
+            are never auto-joined.  Defaults to the
+            ``CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS`` env var (comma-separated).
+        thread_mute_user_ids: Subset of *thread_member_ids* that keeps thread
+            access but is never pinged when a thread needs a reply.  Use it to
+            stop a second operator being notified for every shared thread while
+            leaving them able to read and answer.  Defaults to the
+            ``CCDB_THREAD_MUTE_USER_IDS`` env var (comma-separated).
         claude_channel_id: Primary channel ID for Claude chat.  Kept for
                            backward compatibility.  Also used as the fallback
                            thread-creation target in SkillCommandCog.
@@ -205,6 +222,7 @@ async def setup_bridge(
     from .cogs.claude_chat import ClaudeChatCog
     from .cogs.collision_watch import CollisionWatchCog
     from .cogs.context_links import ContextLinksCog
+    from .cogs.project_launcher import ProjectLauncherCog
     from .cogs.scheduler import SchedulerCog
     from .cogs.session_manage import SessionManageCog
     from .cogs.skill_command import SkillCommandCog
@@ -220,6 +238,52 @@ async def setup_bridge(
         _all_channel_ids.add(claude_channel_id)
     if claude_channel_ids is not None:
         _all_channel_ids.update(claude_channel_ids)
+
+    _launcher_home = os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip()
+    _launcher_sessions = os.getenv("CCDB_LAUNCHER_SESSION_CHANNEL_ID", "").strip()
+    _launcher_home_id = int(_launcher_home) if _launcher_home else None
+    _launcher_session_id = int(_launcher_sessions) if _launcher_sessions else None
+    if _launcher_session_id is not None:
+        _all_channel_ids.add(_launcher_session_id)
+    from .category_scope import install_category_check
+
+    install_category_check(bot)
+
+    # Thread members — who is auto-joined to every ccdb thread.  Defaults to
+    # the authorization allowlist (so an upgrade changes nothing), with
+    # CCDB_THREAD_MEMBER_IDS narrowing it and CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS
+    # exempting whole categories.
+    from .utils.ids import parse_user_ids
+
+    if thread_member_ids is None:
+        _env_members = os.getenv("CCDB_THREAD_MEMBER_IDS", "")
+        thread_member_ids = (
+            parse_user_ids(_env_members) if _env_members.strip() else set(allowed_user_ids or ())
+        ) or None
+    if thread_member_exclude_category_ids is None:
+        thread_member_exclude_category_ids = parse_user_ids(
+            os.getenv("CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS", "")
+        )
+    # Muted members keep their thread membership and their authorization; they
+    # are only dropped from the reply-needed ping.  This is what lets an
+    # operator share every thread with a colleague without that colleague
+    # being notified for all of them.
+    if thread_mute_user_ids is None:
+        thread_mute_user_ids = parse_user_ids(os.getenv("CCDB_THREAD_MUTE_USER_IDS", ""))
+    bot.thread_member_ids = thread_member_ids  # type: ignore[attr-defined]
+    bot.thread_member_exclude_category_ids = thread_member_exclude_category_ids  # type: ignore[attr-defined]
+    bot.thread_muted_user_ids = thread_mute_user_ids  # type: ignore[attr-defined]
+    if thread_member_ids:
+        logger.info(
+            "Thread auto-join enabled for %d user(s)%s%s",
+            len(thread_member_ids),
+            (
+                f", excluding {len(thread_member_exclude_category_ids)} category(ies)"
+                if thread_member_exclude_category_ids
+                else ""
+            ),
+            (f", {len(thread_mute_user_ids)} muted" if thread_mute_user_ids else ""),
+        )
 
     # Mention-only channels — fall back to MENTION_ONLY_CHANNEL_IDS env var
     if mention_only_channel_ids is None:
@@ -286,11 +350,11 @@ async def setup_bridge(
     if thread_context_days != DEFAULT_DAYS:
         logger.info("Thread context window: %d day(s)", thread_context_days)
 
-    # Max concurrent sessions — fall back to MAX_CONCURRENT_SESSIONS env var, then 3
+    # Max concurrent sessions — fall back to MAX_CONCURRENT_SESSIONS env var, then 10
     if max_concurrent is None:
         _env_max = os.getenv("MAX_CONCURRENT_SESSIONS", "")
-        max_concurrent = int(_env_max) if _env_max.isdigit() else 3
-    if max_concurrent != 3:
+        max_concurrent = int(_env_max) if _env_max.isdigit() else 10
+    if max_concurrent != 10:
         logger.info("Max concurrent sessions: %d", max_concurrent)
 
     from .cogs._run_helper import configure_pr_completion_gate, configure_session_limit
@@ -397,6 +461,8 @@ async def setup_bridge(
         ),
         max_concurrent=max_concurrent,
         allowed_user_ids=allowed_user_ids,
+        thread_member_ids=thread_member_ids,
+        thread_member_exclude_category_ids=thread_member_exclude_category_ids,
         ask_repo=ask_repo,
         lounge_repo=lounge_repo,
         resume_repo=resume_repo,
@@ -412,6 +478,12 @@ async def setup_bridge(
     )
     await bot.add_cog(chat_cog)
     logger.info("Registered ClaudeChatCog")
+
+    # --- TaskLoopCog (auto-enabled; idle until /gowork or POST /api/loops) ---
+    from .cogs.task_loop import TaskLoopCog
+
+    await bot.add_cog(TaskLoopCog(bot, allowed_user_ids=allowed_user_ids))
+    logger.info("Registered TaskLoopCog")
 
     # --- CollisionWatchCog (auto-enabled; no-op until two sessions overlap) ---
     await bot.add_cog(
@@ -438,6 +510,19 @@ async def setup_bridge(
     if _all_channel_ids:
         # Primary channel: prefer the explicit claude_channel_id, else pick from set
         _primary_channel_id = claude_channel_id or next(iter(_all_channel_ids))
+        await bot.add_cog(
+            ProjectLauncherCog(
+                bot,
+                session_repo,
+                settings_repo,
+                chat_cog,
+                channel_id=_primary_channel_id,
+                channel_ids=_all_channel_ids,
+                working_dir=runner.working_dir,
+                home_channel_id=_launcher_home_id,
+                session_channel_id=_launcher_session_id,
+            )
+        )
         skill_cog = SkillCommandCog(
             bot,
             repo=session_repo,

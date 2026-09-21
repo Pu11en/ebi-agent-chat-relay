@@ -83,6 +83,34 @@ def _resolve_codex_sandbox_override() -> str | None:
     return value
 
 
+# codex-cli emits ``file_change`` with a ``changes`` list (exec_events.rs);
+# ``file_changes`` is the older name, kept so a stale CLI still renders.
+_FILE_CHANGE_ITEM_TYPES: frozenset[str] = frozenset({"file_change", "file_changes"})
+
+
+def _file_change_input(item: dict) -> dict:
+    """Tool input for a Codex patch, carrying every changed path.
+
+    ``file_path`` holds the first path so single-file consumers keep working;
+    ``file_paths`` holds all of them for the same-file heads-up.
+    """
+    raw_changes = item.get("changes")
+    changes = [
+        c
+        for c in (raw_changes if isinstance(raw_changes, list) else [])
+        if isinstance(c, dict) and isinstance(c.get("path"), str) and c["path"]
+    ]
+    paths = [c["path"] for c in changes]
+    description = item.get("text") or ", ".join(
+        f"{c.get('kind', 'update')} {c['path']}" for c in changes
+    )
+    tool_input: dict = {"description": description}
+    if paths:
+        tool_input["file_path"] = paths[0]
+        tool_input["file_paths"] = paths
+    return tool_input
+
+
 def parse_codex_line(line: str) -> StreamEvent | None:
     """Parse a single Codex JSONL line into a StreamEvent."""
     line = line.strip()
@@ -159,14 +187,14 @@ def parse_codex_line(line: str) -> StreamEvent | None:
                 tool_result_content=item.get("output", ""),
             )
 
-        if item_type == "file_changes":
+        if item_type in _FILE_CHANGE_ITEM_TYPES:
             return StreamEvent(
                 raw=data,
                 message_type=MessageType.ASSISTANT,
                 tool_use=ToolUseEvent(
                     tool_id=item.get("id", ""),
                     tool_name="Edit",
-                    tool_input={"description": item.get("text", "")},
+                    tool_input=_file_change_input(item),
                     category=ToolCategory.EDIT,
                 ),
             )
@@ -179,7 +207,7 @@ def parse_codex_line(line: str) -> StreamEvent | None:
 # live elapsed timer for every tool_use, and only stops it when a matching tool
 # result arrives. For atomic tools no result would ever come, so the timer would
 # accumulate forever — we synthesize a completion to close it immediately.
-_ATOMIC_ITEM_TYPES: frozenset[str] = frozenset({"file_changes"})
+_ATOMIC_ITEM_TYPES: frozenset[str] = _FILE_CHANGE_ITEM_TYPES
 _MISSING_ROLLOUT_PATTERN = re.compile(r"no rollout found for thread id", re.IGNORECASE)
 _RESUME_STREAM_DISCONNECT_PATTERN = re.compile(
     r"stream disconnected before completion:.*"

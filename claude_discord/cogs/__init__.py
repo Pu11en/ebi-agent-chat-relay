@@ -8,10 +8,12 @@ from .context_links import ContextLinksCog
 from .event_processor import EventProcessor
 from .notification_dispatch import NotificationDispatchCog
 from .ollama_command import OllamaCommandCog
+from .project_launcher import ProjectLauncherCog
 from .run_config import RunConfig
 from .scheduler import SchedulerCog
 from .session_manage import SessionManageCog
 from .skill_command import SkillCommandCog
+from .task_loop import TaskLoopCog
 from .webhook_trigger import WebhookTriggerCog
 
 __all__ = [
@@ -23,8 +25,10 @@ __all__ = [
     "RunConfig",
     "NotificationDispatchCog",
     "OllamaCommandCog",
+    "ProjectLauncherCog",
     "SchedulerCog",
     "SessionManageCog",
+    "TaskLoopCog",
     "AskCommandCog",
     "SkillCommandCog",
     "WebhookTriggerCog",

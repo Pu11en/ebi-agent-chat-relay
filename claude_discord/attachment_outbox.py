@@ -40,6 +40,20 @@ def _checkpoint(path: Path, paths: list[str]) -> None:
             os.unlink(temporary)
 
 
+async def _send_cards(surface: ConversationSurface, path: Path) -> None:
+    """Show Markdown files inline as cards before attaching them.
+
+    Best effort: a card failure must never block the attachment itself.
+    """
+    send = getattr(surface, "send_markdown_cards", None)
+    if send is None or path.suffix.lower() not in {".md", ".markdown"}:
+        return
+    try:
+        await send(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Could not render %s as cards", path, exc_info=True)
+
+
 async def deliver_pending(surface: ConversationSurface, marker: Path) -> None:
     """Keep undelivered requests across turns, including newly written markers."""
     key = str(marker.absolute())
@@ -60,6 +74,7 @@ async def deliver_pending(surface: ConversationSurface, marker: Path) -> None:
                 path = Path(paths[0])
                 if not path.is_absolute():
                     path = marker.parent / path
+                await _send_cards(surface, path)
                 await surface.deliver_files([OutboundFile(path=str(path), display_name=path.name)])
                 paths = paths[1:]
                 _checkpoint(pending, paths)

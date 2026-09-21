@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Global session slot limiter
 # ---------------------------------------------------------------------------
 _global_semaphore: asyncio.Semaphore | None = None
-_max_concurrent: int = 3
+_max_concurrent: int = 10
 _pr_completion_gate: GitHubPrCompletionGate | None = None
 
 
@@ -161,8 +161,9 @@ async def _build_system_context(config: RunConfig) -> str | None:
             config.surface.thread_key, config.prompt[:100], config.runner.working_dir
         )
         others = config.registry.list_others(config.surface.thread_key)
-        notice = config.registry.build_concurrency_notice(config.surface.thread_key)
-        parts.append(notice)
+        if not config.slim_context:
+            notice = config.registry.build_concurrency_notice(config.surface.thread_key)
+            parts.append(notice)
         logger.info(
             "Concurrency notice built for thread %d (%d other active session(s), dir=%s)",
             config.surface.thread_key,
@@ -182,18 +183,37 @@ async def _build_system_context(config: RunConfig) -> str | None:
 
     wd = config.runner.working_dir or "your current working directory"
     marker = _attachment_marker_name(config.surface.thread_key)
-    parts.append(
-        "## File Delivery\n"
-        "When you need to send files to Discord, use your Bash tool to append "
-        "each file's ABSOLUTE path (one path per line, UTF-8) to:\n"
-        f"  {wd}/{marker}\n"
-        f"Example: `echo /absolute/path/to/file >> {wd}/{marker}`\n"
-        "The bot will attach those files when this session ends.\n"
-        "When local instructions require Discord attachment for a substantial "
-        "written deliverable, save the final text as a Markdown file and append "
-        "that file path here. Otherwise, only include files the user explicitly "
-        "asked to receive."
-    )
+    if config.slim_context:
+        parts.append(
+            "To send the person a file, append its absolute path to "
+            f"{wd}/{marker} (one per line); the bot attaches it when you finish."
+        )
+    else:
+        parts.append(
+            "## File Delivery\n"
+            "When you need to send files to Discord, use your Bash tool to append "
+            "each file's ABSOLUTE path (one path per line, UTF-8) to:\n"
+            f"  {wd}/{marker}\n"
+            f"Example: `echo /absolute/path/to/file >> {wd}/{marker}`\n"
+            "The bot will attach those files when this session ends.\n"
+            "When local instructions require Discord attachment for a substantial "
+            "written deliverable, save the final text as a Markdown file and append "
+            "that file path here. Otherwise, only include files the user explicitly "
+            "asked to receive.\n\n"
+            "## Show documents as cards (the user never opens files)\n"
+            "The user only reads Discord messages. Never mention a file, path or "
+            "plan name as if they had read it. Whenever they need a document's "
+            "content (a plan, summary, review, status, research), write a "
+            "plain-English Markdown version for them and append its path to the "
+            "file above: every `.md` listed there is shown inline in the thread as "
+            "colored cards, one card per `## ` section.\n"
+            "Card rules: keep every point and detail of the source; no jargon and "
+            "no assumed context; start with `# Title`; use `## ` sections (about 3 "
+            "to 6), `### ` sub-headings, short bullets, bold for key facts and "
+            "emoji markers (✅ done, ⏳ now, ⬜ next, ⚠️ warning); no tables. Your "
+            "chat reply (the cards appear right after it) gives a short summary "
+            "and asks the next question."
+        )
 
     # Post-compact guardrail: prevent auto-execution of "pending tasks" from summary.
     if config.post_compact_rerun:

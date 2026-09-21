@@ -1,9 +1,14 @@
-"""HTML/SVG/Markdown → PNG previews for Discord inline display.
+"""HTML/SVG → PNG previews for Discord inline display.
 
-Discord natively inlines images but never HTML/SVG/Markdown. So when a bot
+Discord natively inlines images but never HTML/SVG. So when a bot
 hands us one of those, we render it with a headless browser and post the PNG
 alongside the original file. Consumers get the visual, and the raw file stays
 downloadable for anyone who wants the interactive version.
+
+Markdown is deliberately *not* rendered: Discord previews a ``.md`` attachment
+inline as expandable, scrollable text, and a screenshot of it is harder to read
+and cannot be scrolled or copied. Plans (``*.plan.json``) are turned into
+Markdown by ``file_sender`` for the same reason.
 
 Playwright + Chromium are the render engine. Both are optional at runtime:
 if either is missing (fresh install, headless server without the browser
@@ -22,8 +27,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_RENDERABLE_EXTENSIONS = {".html", ".htm", ".svg", ".md", ".markdown"}
-_PLAN_CARD_SUFFIX = ".plan.json"
+_RENDERABLE_EXTENSIONS = {".html", ".htm", ".svg"}
 
 try:
     from playwright.async_api import async_playwright  # noqa: F401
@@ -43,53 +47,17 @@ _playwright_ctx: object | None = None
 
 
 def is_renderable(filename: str) -> bool:
-    """True when *filename* can be turned into an inline PNG preview.
-
-    Covers the HTML/SVG/Markdown documents the browser renders directly, plus
-    ``*.plan.json`` planning cards routed through :mod:`plan_card`.
-    """
-    lower = filename.lower()
-    if lower.endswith(_PLAN_CARD_SUFFIX):
-        return True
+    """True when *filename* is an HTML/SVG document worth an inline PNG preview."""
     return Path(filename).suffix.lower() in _RENDERABLE_EXTENSIONS
 
 
 def preview_name(filename: str) -> str:
     """Return the preview PNG filename that pairs with *filename*.
 
-    ``docs/dash.svg`` → ``docs/dash.preview.png``; ``x.plan.json`` → ``x.plan.png``.
+    ``docs/dash.svg`` → ``docs/dash.preview.png``.
     """
-    if filename.lower().endswith(_PLAN_CARD_SUFFIX):
-        return filename[: -len(_PLAN_CARD_SUFFIX)] + ".plan.png"
     p = Path(filename)
     return str(p.with_name(f"{p.stem}.preview.png"))
-
-
-def _markdown_to_html(source: str) -> str:
-    """Wrap raw Markdown in a minimal styled HTML document.
-
-    Uses ``markdown`` if available, otherwise a naive line-oriented fallback so
-    the preview still renders something useful. Styling matches Discord's dark
-    theme so a rendered doc doesn't look like a white flash in the channel.
-    """
-    try:
-        import markdown as _md
-
-        body = _md.markdown(source, extensions=["fenced_code", "tables"])
-    except ImportError:
-        from html import escape
-
-        body = "<pre>" + escape(source) + "</pre>"
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'><style>"
-        "body{font-family:-apple-system,Segoe UI,sans-serif;background:#1e1f22;"
-        "color:#dbdee1;margin:0;padding:24px;max-width:760px}"
-        "h1,h2,h3{color:#f2f3f5}code,pre{background:#2b2d31;padding:2px 6px;"
-        "border-radius:4px;font-family:ui-monospace,Menlo,monospace;font-size:13px}"
-        "pre{padding:12px;overflow-x:auto}table{border-collapse:collapse;"
-        "background:#2b2d31}th,td{padding:6px 12px;border:1px solid #1e1f22}"
-        "a{color:#00a8fc}img{max-width:100%}</style></head><body>" + body + "</body></html>"
-    )
 
 
 async def _ensure_browser() -> object | None:
@@ -127,18 +95,6 @@ async def render_file_to_png(source: Path) -> bytes | None:
         return None
     if not is_renderable(source.name):
         return None
-    if source.name.lower().endswith(_PLAN_CARD_SUFFIX):
-        from claude_discord.discord_ui.plan_card import render_plan_card_to_png
-
-        plan_png = await render_plan_card_to_png(source)
-        if plan_png is not None and len(plan_png) > _PREVIEW_MAX_BYTES:
-            logger.info(
-                "preview for %s exceeds %d bytes; sending the raw file only",
-                source.name,
-                _PREVIEW_MAX_BYTES,
-            )
-            return None
-        return plan_png
     browser = await _ensure_browser()
     if browser is None:
         return None
@@ -149,13 +105,8 @@ async def render_file_to_png(source: Path) -> bytes | None:
             device_scale_factor=2,
         )
         try:
-            suffix = source.suffix.lower()
-            if suffix in {".md", ".markdown"}:
-                html = _markdown_to_html(source.read_text(encoding="utf-8", errors="replace"))
-                await page.set_content(html, wait_until="networkidle", timeout=_PREVIEW_TIMEOUT_MS)
-            else:
-                await page.goto(source.resolve().as_uri(), timeout=_PREVIEW_TIMEOUT_MS)
-                await page.wait_for_load_state("networkidle", timeout=_PREVIEW_TIMEOUT_MS)
+            await page.goto(source.resolve().as_uri(), timeout=_PREVIEW_TIMEOUT_MS)
+            await page.wait_for_load_state("networkidle", timeout=_PREVIEW_TIMEOUT_MS)
             png: bytes = await page.screenshot(full_page=True, type="png")
         finally:
             with contextlib.suppress(Exception):

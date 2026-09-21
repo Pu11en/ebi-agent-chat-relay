@@ -342,6 +342,8 @@ class ApiServer:
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
         # Session spawn route
         self.app.router.add_post("/api/spawn", self.spawn)
+        # Sequential task loop (fresh session per plan task)
+        self.app.router.add_post("/api/loops", self.start_task_loop)
         # Authenticated external ingest route (browser extension / webhooks)
         self.app.router.add_post("/api/ingest", self.ingest)
         # Running per-thread summaries. GET (external, token) reads the stored
@@ -998,6 +1000,21 @@ class ApiServer:
         except (TypeError, ValueError):
             return web.json_response({"error": "hop must be an integer"}, status=400)
 
+        # A /gowork build thread is Drew's to talk to directly; a session that
+        # relays "his" instructions there speaks for him and races the loop.
+        loop_cog: Any = self.bot.cogs.get("TaskLoopCog")
+        user_asked = data.get("user_asked") is True
+        if loop_cog is not None and loop_cog.is_worker_thread(thread_id) and not user_asked:
+            return web.json_response(
+                {
+                    "error": "That thread is a /gowork build. The user talks to it "
+                    "directly; don't pass anything to it. Only if the user's own latest "
+                    "message asked you to tell the build something, resend with "
+                    '"user_asked": true.'
+                },
+                status=409,
+            )
+
         now = time.monotonic()
         refusal = self.relay_guard.check(
             from_thread=from_thread, to_thread=thread_id, hop=hop, now=now
@@ -1572,6 +1589,94 @@ class ApiServer:
             },
             status=201,
         )
+
+    async def start_task_loop(self, request: web.Request) -> web.Response:
+        """POST /api/loops — work through a plan's ``- [ ]`` tasks, one per fresh session.
+
+        Meant for a planner session *after* the human said yes. The loop opens
+        one worker thread and posts progress to ``report_thread_id``.
+
+        Body (JSON):
+            plan_path: Absolute path to the plan ``.md`` inside a git repo (required).
+            fallback_harness / fallback_model: AI to switch to by itself when the
+                build's AI hits its usage limit (optional; without it the bot asks).
+            mode: "cheap", "balanced" (default) or "careful" — cost versus quality.
+            queue: true puts the plan in the build queue instead of starting now
+                ("queue it"): builds run one after another, with an 8 am summary.
+            report_thread_id: Channel or thread that gets progress lines and
+                whose parent channel hosts the worker thread (optional; defaults
+                to ``default_channel_id``).
+
+        Returns (201): ``{"status": "started", "worker_thread_id": "..."}``
+        """
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        plan_path = data.get("plan_path")
+        if not isinstance(plan_path, str) or not plan_path.strip():
+            return web.json_response({"error": "plan_path is required"}, status=400)
+
+        cog: Any = self.bot.cogs.get("TaskLoopCog")
+        if cog is None:
+            return web.json_response({"error": "TaskLoopCog is not loaded"}, status=503)
+
+        raw_report: Any = data.get("report_thread_id") or self.default_channel_id
+        try:
+            report_id = int(raw_report)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "report_thread_id must be an integer"}, status=400)
+
+        import discord as _discord
+
+        report = self.bot.get_channel(report_id)
+        if report is None:
+            try:
+                report = await self.bot.fetch_channel(report_id)
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=404)
+        parent = report.parent if isinstance(report, _discord.Thread) else report
+        if not isinstance(parent, _discord.TextChannel):
+            return web.json_response(
+                {"error": "report_thread_id must be a text channel or one of its threads"},
+                status=400,
+            )
+        raw_user: Any = data.get("user_id")
+        try:
+            notify_user_id = int(raw_user) if raw_user else None
+        except (TypeError, ValueError):
+            return web.json_response({"error": "user_id must be an integer"}, status=400)
+        harness = data.get("harness") or None
+        model = data.get("model") or None
+        fallback_harness = data.get("fallback_harness") or None
+        fallback_model = data.get("fallback_model") or None
+        if data.get("queue") is True:
+            place = await cog.enqueue(
+                report,
+                plan_path.strip(),
+                notify_user_id=notify_user_id,
+                harness=harness,
+                model=model,
+                mode=data.get("mode") or None,
+                fallback_harness=fallback_harness,
+                fallback_model=fallback_model,
+            )
+            return web.json_response({"status": "queued", "place": place}, status=202)
+        # Runs in the background: with no harness given, the bot asks in the
+        # channel and waits for Drew's typed reply before starting.
+        asyncio.create_task(
+            cog.start_asking(
+                report,
+                plan_path.strip(),
+                notify_user_id=notify_user_id,
+                harness=harness,
+                model=model,
+                fallback_harness=fallback_harness,
+                fallback_model=fallback_model,
+                mode=data.get("mode") or None,
+            )
+        )
+        return web.json_response({"status": "starting"}, status=202)
 
     # ------------------------------------------------------------------
     # Authenticated external ingest endpoint (/api/ingest)
@@ -2157,20 +2262,26 @@ class ApiServer:
         return web.json_response(response, status=201)
 
     async def _ingest_add_owner(self, thread: discord.Thread) -> None:
-        """Add the configured bot owner to an ingest thread (no-op if unset).
+        """Add the configured thread members to an ingest thread (best-effort).
 
         An ingested session runs unattended and may take many minutes; adding
-        the owner as a thread member makes the thread show up in their joined
-        list instead of having to be searched for. Errors are suppressed — this
-        is best-effort visibility, never a hard failure.
+        every configured operator as a thread member makes the thread show up
+        in their joined list instead of having to be searched for.  Falls back
+        to the single owner when no member set is configured.  Errors are
+        suppressed — this is best-effort visibility, never a hard failure.
         """
-        owner_id = getattr(self.bot, "owner_id", None)
-        if not owner_id:
-            return
+        member_ids = getattr(self.bot, "thread_member_ids", None)
+        if not isinstance(member_ids, (set, frozenset)) or not member_ids:
+            owner_id = getattr(self.bot, "owner_id", None)
+            if not owner_id:
+                return
+            member_ids = {int(owner_id)}
         with contextlib.suppress(Exception):
             import discord as _discord
 
-            await thread.add_user(_discord.Object(id=int(owner_id)))
+            for user_id in sorted(member_ids):
+                with contextlib.suppress(Exception):
+                    await thread.add_user(_discord.Object(id=int(user_id)))
 
     async def _ingest_notify_owner(self, thread: discord.Thread, body: str) -> None:
         """Post a message in *thread* that @mentions the bot owner (no-op if unset).

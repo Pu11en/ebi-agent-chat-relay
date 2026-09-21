@@ -750,7 +750,7 @@ CHAT_ONLY_CHANNEL_IDS=444,555
 | `CLAUDE_PERMISSION_MODE` | CLI 권한 모드(구버전 — `CCDB_PERMISSION_MODE` 권장) | `acceptEdits` |
 | `CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` | 모든 권한 검사 건너뛰기(구버전 — `CCDB_DANGEROUSLY_SKIP_PERMISSIONS` 권장) | `false` |
 | `CLAUDE_WORKING_DIR` | Claude 작업 디렉토리(구버전 — `CCDB_WORKING_DIR` 권장) | 현재 디렉토리 |
-| `MAX_CONCURRENT_SESSIONS` | 모든 코드 경로(채팅, 스킬, 스케줄러, webhook)에 걸친 최대 병렬 Claude CLI 세션 수 | `3` |
+| `MAX_CONCURRENT_SESSIONS` | 모든 코드 경로(채팅, 스킬, 스케줄러, webhook)에 걸친 최대 병렬 Claude CLI 세션 수 | `10` |
 | `SESSION_TIMEOUT_SECONDS` | 세션 비활성 타임아웃 | `300` |
 | `DISCORD_OWNER_ID` | Claude가 입력이 필요할 때 @멘션할 사용자 ID | (선택) |
 | `COORDINATION_CHANNEL_ID` | AI Lounge 채널의 기본 폴백으로 사용되는 채널 ID | (선택) |

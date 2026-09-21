@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import time
 from collections.abc import Callable, Coroutine
@@ -25,7 +26,6 @@ from claude_code_core.approvals import (
     elicitation_url_result,
     permission_prompt,
     permission_result,
-    plan_prompt,
     plan_result,
 )
 from claude_code_core.frontend import (
@@ -35,12 +35,13 @@ from claude_code_core.frontend import (
     Mention,
     Notice,
     NoticeLevel,
+    OutboundFile,
     StatusKind,
 )
 from claude_code_core.types import ElicitationRequest
 
 from ..claude.types import AskQuestion, MessageType, SessionState, StreamEvent, ToolUseEvent
-from ..collision import extract_written_path
+from ..collision import extract_written_paths
 from .run_config import RunConfig
 
 logger = logging.getLogger(__name__)
@@ -490,7 +491,7 @@ class EventProcessor:
         if event.todo_list is not None and not self._chat_only:
             await self._handle_todo_write(event)
 
-        # ExitPlanMode — show plan embed with Approve/Cancel buttons.
+        # ExitPlanMode — post the plan as plan.md; the user's reply approves.
         # Skip in chat_only mode.
         if event.is_plan_approval and not event.is_partial and not self._chat_only:
             await self._handle_plan_approval(event)
@@ -738,9 +739,17 @@ class EventProcessor:
         tracker = self._config.file_activity
         if tracker is None:
             return
-        path = extract_written_path(tool_use.tool_name, tool_use.tool_input)
-        if path is not None:
-            tracker.record(self._config.surface.thread_key, path, time.monotonic())
+        paths = extract_written_paths(tool_use.tool_name, tool_use.tool_input)
+        if not paths:
+            return
+        # Codex may report paths relative to its working directory; two threads
+        # can only be compared on absolute paths.
+        base = getattr(self._config.runner, "working_dir", None)
+        now = time.monotonic()
+        for path in paths:
+            if not os.path.isabs(path) and isinstance(base, str) and base:
+                path = os.path.normpath(os.path.join(base, path))
+            tracker.record(self._config.surface.thread_key, path, now)
 
     async def _handle_tool_use(self, event: StreamEvent) -> None:
         """Open a frontend-native activity for a tool call."""
@@ -772,17 +781,25 @@ class EventProcessor:
         await self._bump_stop()
 
     async def _handle_plan_approval(self, event: StreamEvent) -> None:
-        """Ask whether the finished plan may be executed (ExitPlanMode)."""
+        """Post the finished plan as ``plan.md`` and hand the turn back (ExitPlanMode).
+
+        Every harness plans the same way: a readable Markdown file, then the
+        agent's own question, answered by the user's next reply. There is no
+        approve box — only Claude Code has ExitPlanMode, and a Claude-only
+        widget would make planning look and work differently per harness.
+        """
         # ExitPlanMode does not carry a request_id in the current CLI protocol;
         # we use the session_id as a stable identifier for the inject payload.
         request_id = self._state.session_id or "plan"
-        prompt = plan_prompt(event.text or "", notify=self._notify_mention())
-        self._ask_in_background(
-            self._ask_choice(prompt, request_id, plan_result),
-            description=f"plan approval (session={request_id})",
-            request_id=request_id,
-            refusal=plan_result(None),
-        )
+        plan = (event.text or "").strip()
+        if plan:
+            try:
+                await self._config.surface.deliver_files(
+                    [OutboundFile(display_name="plan.md", blob=plan.encode())]
+                )
+            except Exception:
+                logger.warning("Failed to deliver plan.md", exc_info=True)
+        await self._config.runner.inject_tool_result(request_id, plan_result(None))
 
     async def _handle_permission_request(self, event: StreamEvent) -> None:
         """Ask whether a tool may run.

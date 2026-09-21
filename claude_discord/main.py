@@ -21,6 +21,7 @@ from .cog_loader import load_custom_cogs
 from .deployment import DataLayout
 from .setup import setup_bridge
 from .teams_integration import FrontendRouter, build_teams_runtime, parse_frontends
+from .utils.ids import build_allowed_user_ids, build_thread_member_ids, parse_user_ids
 from .utils.logger import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -72,9 +73,22 @@ def load_config() -> dict[str, str]:
         "allowed_tools": _env("CCDB_ALLOWED_TOOLS", "CLAUDE_ALLOWED_TOOLS", ""),
         "effort": _env("CCDB_EFFORT", "CLAUDE_EFFORT", ""),
         "append_system_prompt": os.getenv("APPEND_SYSTEM_PROMPT", ""),
-        "max_concurrent": os.getenv("MAX_CONCURRENT_SESSIONS", "3"),
+        "max_concurrent": os.getenv("MAX_CONCURRENT_SESSIONS", "10"),
         "timeout": os.getenv("SESSION_TIMEOUT_SECONDS", "300"),
         "owner_id": os.getenv("DISCORD_OWNER_ID", ""),
+        "allowed_user_ids": os.getenv("CCDB_ALLOWED_USER_IDS", ""),
+        # Optional narrower set of users auto-joined to every ccdb thread.
+        # Defaults to the allowed set above; an explicit list restricts who
+        # lands in threads without touching who may run Claude.
+        "thread_member_ids": os.getenv("CCDB_THREAD_MEMBER_IDS", ""),
+        # Categories whose threads are never auto-joined (comma-separated
+        # category IDs) — the per-category off switch.
+        "thread_member_exclude_category_ids": os.getenv(
+            "CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS", ""
+        ),
+        # Members who keep thread access but are never pinged when a thread
+        # needs a reply (comma-separated user IDs).  The per-user mute switch.
+        "thread_mute_user_ids": os.getenv("CCDB_THREAD_MUTE_USER_IDS", ""),
         "channel_ids": _env("CCDB_CHANNEL_IDS", "CLAUDE_CHANNEL_IDS", ""),
         "monitor_all_channels": _env(
             "CCDB_MONITOR_ALL_CHANNELS", "CLAUDE_MONITOR_ALL_CHANNELS", "false"
@@ -174,13 +188,22 @@ async def main() -> None:
 
     async with bot:
         # Full Cog auto-setup via setup_bridge
-        allowed_user_ids = {owner_id} if owner_id else None
+        allowed_user_ids = build_allowed_user_ids(owner_id, config["allowed_user_ids"])
+        thread_member_ids = build_thread_member_ids(
+            owner_id, allowed_user_ids, config["thread_member_ids"]
+        )
         components = await setup_bridge(
             bot,
             runner,
             api_server=api_server,
             backend_factory=factory,
             allowed_user_ids=allowed_user_ids,
+            thread_member_ids=thread_member_ids,
+            thread_member_exclude_category_ids=parse_user_ids(
+                config["thread_member_exclude_category_ids"]
+            )
+            or None,
+            thread_mute_user_ids=parse_user_ids(config["thread_mute_user_ids"]) or None,
             claude_channel_id=channel_id,
             claude_channel_ids=claude_channel_ids,
             data_root=os.getenv("CCDB_DATA_ROOT") or None,

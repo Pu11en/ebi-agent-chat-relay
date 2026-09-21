@@ -20,10 +20,12 @@ from .cogs.context_links import ContextLinksCog
 from .cogs.event_processor import EventProcessor
 from .cogs.notification_dispatch import NotificationDispatchCog
 from .cogs.ollama_command import OllamaCommandCog
+from .cogs.project_launcher import ProjectLauncherCog
 from .cogs.run_config import RunConfig
 from .cogs.scheduler import SchedulerCog
 from .cogs.session_manage import SessionManageCog
 from .cogs.skill_command import SkillCommandCog
+from .cogs.task_loop import TaskLoopCog
 from .cogs.webhook_trigger import WebhookTrigger, WebhookTriggerCog
 from .concurrency import ActiveSession, SessionRegistry
 from .database.notification_repo import NotificationRepository
@@ -55,9 +57,11 @@ __all__ = [
     "ActiveSession",
     "SessionRegistry",
     "SessionManageCog",
+    "TaskLoopCog",
     "CollisionWatchCog",
     "AskCommandCog",
     "OllamaCommandCog",
+    "ProjectLauncherCog",
     "SkillCommandCog",
     "SessionRepository",
     "SettingsRepository",

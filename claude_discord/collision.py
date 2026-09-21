@@ -22,25 +22,39 @@ from dataclasses import dataclass, field
 # sessions reading the same file is normal and would drown the real signal.
 WRITE_TOOL_NAMES = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 
-# How long a write keeps counting as "current work".
-ACTIVITY_WINDOW_SECONDS = 15 * 60.0
-# Per pair of threads: never re-alert about the same collision this often.
-ALERT_COOLDOWN_SECONDS = 30 * 60.0
+# How long a write keeps counting as "current work". An hour, because a thread
+# waiting for its next message is still in the middle of that work.
+ACTIVITY_WINDOW_SECONDS = 60 * 60.0
+# Per pair of threads: never re-alert about the same collision this often. Equal
+# to the window, so one overlap produces one heads-up.
+ALERT_COOLDOWN_SECONDS = 60 * 60.0
 # Bound on remembered paths per thread, so a long session cannot grow unbounded.
 MAX_PATHS_PER_THREAD = 200
 # Shared paths listed in a notice; the rest are summarised as a count.
 MAX_LISTED_PATHS = 5
 
 
-def extract_written_path(tool_name: str, tool_input: dict) -> str | None:
-    """Return the file path a tool is about to modify, if it modifies one."""
+def extract_written_paths(tool_name: str, tool_input: dict) -> list[str]:
+    """Return every file path a tool modifies.
+
+    Claude's write tools name one ``file_path``; a Codex patch carries all of
+    its files in ``file_paths``.
+    """
     if tool_name not in WRITE_TOOL_NAMES:
-        return None
-    path = tool_input.get("file_path") or tool_input.get("notebook_path")
-    if not isinstance(path, str):
-        return None
-    path = path.strip()
-    return path or None
+        return []
+    many = tool_input.get("file_paths")
+    candidates = (
+        many
+        if isinstance(many, list)
+        else [tool_input.get("file_path") or tool_input.get("notebook_path")]
+    )
+    return [p.strip() for p in candidates if isinstance(p, str) and p.strip()]
+
+
+def extract_written_path(tool_name: str, tool_input: dict) -> str | None:
+    """Return the first file path a tool is about to modify, if it modifies one."""
+    paths = extract_written_paths(tool_name, tool_input)
+    return paths[0] if paths else None
 
 
 @dataclass
@@ -69,6 +83,14 @@ class FileActivityTracker:
         """Paths this thread wrote inside the activity window."""
         paths = self._writes.get(thread_id, {})
         return {p for p, at in paths.items() if now - at <= ACTIVITY_WINDOW_SECONDS}
+
+    def written_since(self, since: float) -> set[int]:
+        """Threads with a write at or after *since*."""
+        return {t for t, paths in self._writes.items() if paths and max(paths.values()) >= since}
+
+    def thread_ids(self) -> set[int]:
+        """Every thread with remembered writes, working or idle."""
+        return set(self._writes)
 
     def snapshot(self, thread_ids: set[int], now: float) -> dict[int, set[str]]:
         """Recent paths per thread, omitting threads with no recent writes."""
@@ -130,28 +152,31 @@ class AlertLedger:
         self._last_alert[collision.threads] = now
 
 
-def format_paths(paths: tuple[str, ...]) -> str:
+def short_path(path: str) -> str:
+    """The last few parts of a path — enough to recognise the file at a glance."""
+    parts = [p for p in path.replace("\\", "/").split("/") if p]
+    return "/".join(parts[-3:]) or path
+
+
+def format_paths(paths: tuple[str, ...], *, short: bool = False) -> str:
     """Render shared paths for a notice, capping the list length."""
-    listed = ", ".join(f"`{p}`" for p in paths[:MAX_LISTED_PATHS])
+    shown = [short_path(p) if short else p for p in paths[:MAX_LISTED_PATHS]]
+    listed = ", ".join(f"`{p}`" for p in shown)
     remaining = len(paths) - MAX_LISTED_PATHS
     return f"{listed} (+{remaining} more)" if remaining > 0 else listed
 
 
 def build_collision_notice(collision: Collision, *, for_thread: int) -> str:
-    """The warning posted into a colliding thread.
+    """The heads-up posted into a colliding thread, written for the human.
 
-    It names the peer and the evidence, then points at the tools that resolve
-    it — a warning with no next step just becomes noise.
+    ``<#id>`` renders as the other thread's clickable name. The sessions get
+    their instructions from the lounge line instead.
     """
     other = collision.other(for_thread)
     return (
-        "⚠️ **Possible collision with another session**\n"
-        f"Thread `{other}` has written to the same file(s) in the last "
-        f"{int(ACTIVITY_WINDOW_SECONDS // 60)} minutes: {format_paths(collision.shared_paths)}\n"
-        "Neither of you announced this — it was detected from what you both actually edited.\n"
-        f"Look: `curl $CCDB_API_URL/api/threads/{other}/messages?limit=30` · "
-        f"talk: `POST $CCDB_API_URL/api/threads/{other}/message` · "
-        "claim next time: `POST $CCDB_API_URL/api/claims`"
+        f"⚠️ **Heads up:** <#{other}> also changed "
+        f"{format_paths(collision.shared_paths, short=True)} in the last hour. "
+        "Check it before changing the same thing here."
     )
 
 
@@ -160,8 +185,9 @@ def build_lounge_notice(collision: Collision) -> str:
     first, second = collision.threads
     return (
         f"⚠️ auto-detected collision: threads {first} and {second} both wrote "
-        f"{format_paths(collision.shared_paths)} in the last "
-        f"{int(ACTIVITY_WINDOW_SECONDS // 60)} minutes. "
-        "Whoever has commits or a PR continues; otherwise the earlier session continues. "
-        "The other should push its branch and stand down."
+        f"{format_paths(collision.shared_paths)} in the last hour. "
+        "Both may be doing different work: before touching those files again, read the "
+        "other thread (GET /api/threads/<id>/messages) and tell it what you are changing "
+        "(POST /api/threads/<id>/message). Only if it is truly the same task does the one "
+        "with commits continue while the other pushes its branch and stands down."
     )
