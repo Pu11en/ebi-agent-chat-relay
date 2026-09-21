@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import tempfile
 from collections.abc import AsyncIterator
@@ -419,3 +420,18 @@ async def test_the_loader_does_not_resume_expired_or_future_turns(
     assert resumed == []
     stored = await repo.get("future")
     assert stored is not None and stored.state is PendingTurnState.EXPIRED
+
+
+async def test_recovery_logs_name_the_turn_but_never_the_prompt_or_diagnostic(
+    repo: CapacityRecoveryRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    clock = Clock()
+    attempt, _calls = scripted(
+        AttemptResult(error="model is at capacity — token sk-ant-SECRET"), ANSWER
+    )
+    with caplog.at_level(logging.INFO, logger="claude_discord.capacity_recovery"):
+        await coordinator(repo, clock).run_turn(submission(), attempt)
+
+    text = caplog.text
+    assert "turn=turn-1" in text and "model_saturated" in text
+    assert "release notes" not in text and "SECRET" not in text

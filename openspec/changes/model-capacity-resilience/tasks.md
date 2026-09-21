@@ -23,13 +23,13 @@ Try: `uv run pytest tests/test_capacity_recovery.py -q`
 
 ## 4. Visible status and operations
 
-- [ ] 4.1 Add failing surface tests for distinct relay-queued, provider-waiting, retrying, fallback, exhausted, authentication, and permanent-error notices; verify message content names the right category.
-- [ ] 4.2 Update the existing live status rather than posting repeated alerts, including attempt count and next retry; verify a multi-retry turn produces one current recovery status and one final answer.
-- [ ] 4.3 Expose non-sensitive recovery state in session/task status APIs and logs while excluding prompts and credentials; verify API serialization and log-capture tests.
+- [x] 4.1 Add failing surface tests for distinct relay-queued, provider-waiting, retrying, fallback, exhausted, authentication, and permanent-error notices; verify message content names the right category.
+- [x] 4.2 Update the existing live status rather than posting repeated alerts, including attempt count and next retry; verify a multi-retry turn produces one current recovery status and one final answer.
+- [x] 4.3 Expose non-sensitive recovery state in session/task status APIs and logs while excluding prompts and credentials; verify API serialization and log-capture tests.
 
 ## 5. Integration and cleanup
 
-- [ ] 5.1 Add restart, late-response race, exhausted-budget, authorized-fallback, and no-authority integration tests; verify all complete without duplicate model execution or duplicate Discord answers.
+- [x] 5.1 Add restart, late-response race, exhausted-budget, authorized-fallback, and no-authority integration tests; verify all complete without duplicate model execution or duplicate Discord answers.
 - [x] 5.2 Remove the duplicate string-only `/gowork` capacity path after the shared coordinator covers its behavior; verify existing usage-limit and relay-admission tests remain green.
 - [ ] 5.3 Run `uv run ruff check claude_discord tests`, `uv run ruff format --check claude_discord tests`, `uv run pyright claude_discord`, and the full test suite; record any unrelated pre-existing failure separately.
 
