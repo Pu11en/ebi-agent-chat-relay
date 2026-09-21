@@ -1,9 +1,10 @@
-"""Identity model and parser for legacy and multi-plan Go Work documents.
+"""Identity and task-assignment parser for Go Work plan documents.
 
 New plans may contain one ``gowork-plan`` JSON fence describing a rooted plan
 tree.  Keeping identity metadata in a dedicated fence leaves the surrounding
 Markdown readable by the existing checkbox runner.  A document without the
-fence is a supported legacy single-plan tree with a deterministic identity.
+fence is a supported legacy single-plan tree whose tasks run conservatively in
+document order because the old format does not declare safe ownership.
 """
 
 from __future__ import annotations
@@ -23,6 +24,23 @@ _MANIFEST_RE = re.compile(
     r"^[ \t]*```gowork-plan[ \t]*\r?\n(?P<body>.*?)(?:\r?\n)?^[ \t]*```[ \t]*$",
     re.MULTILINE | re.DOTALL,
 )
+_TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*\S)")
+_GOAL_RE = re.compile(r"^\s*\**Goal:\**\s*(.+?)\s*$", re.IGNORECASE)
+_CHECK_RE = re.compile(r"^\s*\**Check:\**\s*`?(.+?)`?\s*$", re.IGNORECASE)
+
+_TASK_FIELDS = (
+    "id",
+    "plan_id",
+    "plan_version",
+    "outcome",
+    "dependencies",
+    "owned_files",
+    "owned_resources",
+    "required_inputs",
+    "output",
+    "acceptance_check",
+    "source_requirement",
+)
 
 
 class PlanValidationError(ValueError):
@@ -40,10 +58,28 @@ class PlanIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskAssignment:
+    """Everything a fresh worker needs to own and check one outcome."""
+
+    task_id: str
+    plan_id: str
+    plan_version: int
+    outcome: str
+    dependencies: tuple[str, ...]
+    owned_files: tuple[str, ...]
+    owned_resources: tuple[str, ...]
+    required_inputs: tuple[str, ...]
+    output: str
+    acceptance_check: str
+    source_requirement: str
+
+
+@dataclass(frozen=True, slots=True)
 class PlanTree:
     """A validated rooted tree of plans, potentially spanning projects."""
 
     plans: tuple[PlanIdentity, ...]
+    tasks: tuple[TaskAssignment, ...] = ()
     schema_version: int = SCHEMA_VERSION
     is_legacy: bool = False
 
@@ -54,6 +90,7 @@ class PlanTree:
                 f"expected {SCHEMA_VERSION}"
             )
         _validate_tree(self.plans)
+        _validate_assignments(self.plans, self.tasks)
 
     @property
     def master(self) -> PlanIdentity:
@@ -70,6 +107,17 @@ class PlanTree:
     def children(self, plan_id: str) -> tuple[PlanIdentity, ...]:
         """Return direct children in their declared order."""
         return tuple(plan for plan in self.plans if plan.parent_id == plan_id)
+
+    def task(self, task_id: str) -> TaskAssignment:
+        """Return *task_id*, raising ``KeyError`` when it is not assigned."""
+        for task in self.tasks:
+            if task.task_id == task_id:
+                return task
+        raise KeyError(task_id)
+
+    def tasks_for(self, plan_id: str) -> tuple[TaskAssignment, ...]:
+        """Return tasks owned by *plan_id* in their declared order."""
+        return tuple(task for task in self.tasks if task.plan_id == plan_id)
 
 
 def _canonical_path(value: str, base_dir: Path) -> Path:
@@ -91,6 +139,95 @@ def _validate_plan_id(value: object, index: int) -> str:
 def _validate_version(value: object, plan_id: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise PlanValidationError(f"plan '{plan_id}' version must be a positive integer")
+    return value
+
+
+def _required_field(raw: dict[str, object], field: str, index: int) -> object:
+    if field not in raw:
+        raise PlanValidationError(f"task {index} missing required field '{field}'")
+    return raw[field]
+
+
+def _non_empty_string(value: object, *, field: str, task_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise PlanValidationError(f"task {task_name} field '{field}' must be a non-empty string")
+    return value.strip()
+
+
+def _string_list(value: object, *, field: str, task_name: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise PlanValidationError(f"task {task_name} field '{field}' must be a list")
+    items: list[str] = []
+    for item_index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise PlanValidationError(
+                f"task {task_name} field '{field}' item {item_index} must be a non-empty string"
+            )
+        items.append(item.strip())
+    return tuple(items)
+
+
+def _parse_assignment(raw: object, index: int) -> TaskAssignment:
+    if not isinstance(raw, dict):
+        raise PlanValidationError(f"task {index} must be an object")
+    for field in _TASK_FIELDS:
+        _required_field(raw, field, index)
+
+    task_id = _validate_task_id(raw["id"], index)
+    task_name = f"'{task_id}'"
+    plan_id = _non_empty_string(raw["plan_id"], field="plan_id", task_name=task_name)
+    if not _ID_RE.fullmatch(plan_id):
+        raise PlanValidationError(
+            f"task {task_name} plan_id must start with a letter or number and contain only "
+            "letters, numbers, '.', '_' or '-'"
+        )
+    plan_version = raw["plan_version"]
+    if isinstance(plan_version, bool) or not isinstance(plan_version, int) or plan_version < 1:
+        raise PlanValidationError(f"task {task_name} plan_version must be a positive integer")
+    dependencies = _string_list(raw["dependencies"], field="dependencies", task_name=task_name)
+    for dependency in dependencies:
+        if not _ID_RE.fullmatch(dependency):
+            raise PlanValidationError(
+                f"task {task_name} dependency '{dependency}' is not a valid task id"
+            )
+    owned_files = _string_list(raw["owned_files"], field="owned_files", task_name=task_name)
+    owned_resources = _string_list(
+        raw["owned_resources"], field="owned_resources", task_name=task_name
+    )
+    if not owned_files and not owned_resources:
+        raise PlanValidationError(
+            f"task {task_name} must declare at least one owned file or resource"
+        )
+    required_inputs = _string_list(
+        raw["required_inputs"], field="required_inputs", task_name=task_name
+    )
+    if not required_inputs:
+        raise PlanValidationError(f"task {task_name} required_inputs must not be empty")
+    return TaskAssignment(
+        task_id=task_id,
+        plan_id=plan_id,
+        plan_version=plan_version,
+        outcome=_non_empty_string(raw["outcome"], field="outcome", task_name=task_name),
+        dependencies=dependencies,
+        owned_files=owned_files,
+        owned_resources=owned_resources,
+        required_inputs=required_inputs,
+        output=_non_empty_string(raw["output"], field="output", task_name=task_name),
+        acceptance_check=_non_empty_string(
+            raw["acceptance_check"], field="acceptance_check", task_name=task_name
+        ),
+        source_requirement=_non_empty_string(
+            raw["source_requirement"], field="source_requirement", task_name=task_name
+        ),
+    )
+
+
+def _validate_task_id(value: object, index: int) -> str:
+    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
+        raise PlanValidationError(
+            f"task {index} id must start with a letter or number and contain only "
+            "letters, numbers, '.', '_' or '-'"
+        )
     return value
 
 
@@ -152,6 +289,27 @@ def _validate_tree(plans: tuple[PlanIdentity, ...]) -> None:
         )
 
 
+def _validate_assignments(
+    plans: tuple[PlanIdentity, ...], tasks: tuple[TaskAssignment, ...]
+) -> None:
+    plans_by_id = {plan.plan_id: plan for plan in plans}
+    task_ids: set[str] = set()
+    for task in tasks:
+        if task.task_id in task_ids:
+            raise PlanValidationError(f"duplicate task id '{task.task_id}'")
+        task_ids.add(task.task_id)
+        plan = plans_by_id.get(task.plan_id)
+        if plan is None:
+            raise PlanValidationError(
+                f"task '{task.task_id}' refers to unknown plan '{task.plan_id}'"
+            )
+        if task.plan_version != plan.version:
+            raise PlanValidationError(
+                f"task '{task.task_id}' plan_version {task.plan_version} does not match "
+                f"plan '{plan.plan_id}' version {plan.version}"
+            )
+
+
 def _project_root(source_path: Path) -> Path:
     """Find the containing repository without invoking git; otherwise use the plan folder."""
     for candidate in (source_path.parent, *source_path.parents):
@@ -160,7 +318,22 @@ def _project_root(source_path: Path) -> Path:
     return source_path.parent.resolve(strict=False)
 
 
-def _legacy_tree(source_path: Path) -> PlanTree:
+def _legacy_goal(text: str) -> str | None:
+    for line in text.splitlines():
+        if match := _GOAL_RE.match(line):
+            return match.group(1).strip("* ")
+    return None
+
+
+def _legacy_check(text: str) -> str:
+    for line in text.splitlines():
+        if match := _CHECK_RE.match(line):
+            quoted = re.search(r"`([^`]+)`", line)
+            return (quoted.group(1) if quoted else match.group(1)).strip()
+    return "commit the result, tick this checkbox, and leave a clean tree"
+
+
+def _legacy_tree(text: str, source_path: Path) -> PlanTree:
     project = _project_root(source_path)
     canonical_source = source_path.resolve(strict=False)
     try:
@@ -174,7 +347,31 @@ def _legacy_tree(source_path: Path) -> PlanTree:
         version=1,
         project_path=project,
     )
-    return PlanTree(plans=(plan,), is_legacy=True)
+    labels = [
+        match.group(1).strip() for line in text.splitlines() if (match := _TASK_RE.match(line))
+    ]
+    source_requirement = _legacy_goal(text)
+    acceptance_check = _legacy_check(text)
+    tasks: list[TaskAssignment] = []
+    for index, label in enumerate(labels, start=1):
+        task_id = f"{plan.plan_id}.task-{index}"
+        dependencies = (tasks[-1].task_id,) if tasks else ()
+        tasks.append(
+            TaskAssignment(
+                task_id=task_id,
+                plan_id=plan.plan_id,
+                plan_version=plan.version,
+                outcome=label,
+                dependencies=dependencies,
+                owned_files=(),
+                owned_resources=(f"legacy-plan:{plan.plan_id}",),
+                required_inputs=("Read the complete legacy plan before working.",),
+                output=f"Completed legacy task: {label}",
+                acceptance_check=acceptance_check,
+                source_requirement=source_requirement or label,
+            )
+        )
+    return PlanTree(plans=(plan,), tasks=tuple(tasks), is_legacy=True)
 
 
 def parse_plan_tree(text: str, *, source_path: Path) -> PlanTree:
@@ -186,7 +383,7 @@ def parse_plan_tree(text: str, *, source_path: Path) -> PlanTree:
     """
     matches = list(_MANIFEST_RE.finditer(text))
     if not matches:
-        return _legacy_tree(source_path)
+        return _legacy_tree(text, source_path)
     if len(matches) > 1:
         raise PlanValidationError("plan document must contain only one gowork-plan manifest")
     try:
@@ -203,9 +400,13 @@ def parse_plan_tree(text: str, *, source_path: Path) -> PlanTree:
     raw_plans = raw.get("plans")
     if not isinstance(raw_plans, list):
         raise PlanValidationError("gowork-plan manifest plans must be a list")
+    raw_tasks = raw.get("tasks", [])
+    if not isinstance(raw_tasks, list):
+        raise PlanValidationError("gowork-plan manifest tasks must be a list")
     base_dir = source_path.resolve(strict=False).parent
     plans = tuple(_parse_identity(item, index, base_dir) for index, item in enumerate(raw_plans))
-    return PlanTree(plans=plans, schema_version=schema_version)
+    tasks = tuple(_parse_assignment(item, index) for index, item in enumerate(raw_tasks))
+    return PlanTree(plans=plans, tasks=tasks, schema_version=schema_version)
 
 
 def load_plan_tree(source_path: Path) -> PlanTree:
@@ -229,6 +430,7 @@ def render_plan_manifest(tree: PlanTree, *, relative_to: Path | None = None) -> 
     manifest: dict[str, Any] = {
         "schema_version": tree.schema_version,
         "plans": [],
+        "tasks": [],
     }
     rendered_plans: list[dict[str, object]] = []
     for plan in tree.plans:
@@ -241,5 +443,23 @@ def render_plan_manifest(tree: PlanTree, *, relative_to: Path | None = None) -> 
             item["parent_id"] = plan.parent_id
         rendered_plans.append(item)
     manifest["plans"] = rendered_plans
+    rendered_tasks: list[dict[str, object]] = []
+    for task in tree.tasks:
+        rendered_tasks.append(
+            {
+                "id": task.task_id,
+                "plan_id": task.plan_id,
+                "plan_version": task.plan_version,
+                "outcome": task.outcome,
+                "dependencies": list(task.dependencies),
+                "owned_files": list(task.owned_files),
+                "owned_resources": list(task.owned_resources),
+                "required_inputs": list(task.required_inputs),
+                "output": task.output,
+                "acceptance_check": task.acceptance_check,
+                "source_requirement": task.source_requirement,
+            }
+        )
+    manifest["tasks"] = rendered_tasks
     body = json.dumps(manifest, indent=2)
     return f"```gowork-plan\n{body}\n```\n"
