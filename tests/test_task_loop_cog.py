@@ -417,8 +417,14 @@ class TestResume:
 
 
 async def _type_when_asked(cog: TaskLoopCog, channel_id: int, text: str) -> None:
-    """Act like Drew: wait for the bot's question in *channel_id*, then type."""
-    for _ in range(500):
+    """Act like Drew: wait for the bot's question in *channel_id*, then type.
+
+    The budget is wall-clock, not a count of polls: before the question a build may
+    make several git commits, which on a loaded machine (full suite, WSL disk) took
+    longer than the old 500 x 10 ms and failed the test intermittently.
+    """
+    deadline = asyncio.get_running_loop().time() + 30
+    while asyncio.get_running_loop().time() < deadline:
         waiter = cog._waiters.get(channel_id)
         if waiter is not None and not waiter.done():
             msg = MagicMock()

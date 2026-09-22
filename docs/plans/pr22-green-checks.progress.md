@@ -256,3 +256,15 @@ Commit: `bb2afaa`.
 - The git sandbox can't commit changes — that's a hard limit that should be documented upfront so tasks aren't planned around committing. Task 1 hit this and had to be worked around, costing clarity.
 - Task 3 (debugging the Python hang) ran 111 minutes, which is long for one AI pass. Breaking deep investigation into "what's happening?" checkpoints earlier (every 20–30 min) might have surfaced the right direction faster or flagged a dead end sooner.
 - The file-permissions bug that broke tests at the very end wasn't caught until the final check. Running the test suite in a fresh/minimal environment (not the main dev machine) would have caught it much earlier, saving the follow-up fix step.
+
+## Follow-up (2026-09-22, planning session)
+
+- Build work recovered from the gowork copy onto `session/1551675041073336400` (the bot's
+  "looks good" wrongly reported the copy as gone).
+- Verified: full suite 3.13 → 5832 passed; full suite 3.12 → no hang, 5832 passed on rerun
+  (one earlier run failed `test_the_cog_briefs_each_parallel_worker_with_its_own_context`
+  intermittently; passes alone 5/5 and under CPU load).
+- `_type_when_asked` now waits up to 30 s of wall-clock time instead of 500 polls, so
+  git-heavy steps on a loaded machine no longer time out the wait for the bot's question.
+- Left: push to `release/v4.1.0` (Drew's yes), watch `gh pr checks 22`, dismiss the two
+  test-only CodeQL alerts (`tests/harness_audit_fixtures.py:30`, `tests/test_agui_backend.py:388`).
