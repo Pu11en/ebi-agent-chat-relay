@@ -115,3 +115,4 @@ After the build (not a build task — only after Drew says yes): 7. Push to `rel
   writable `.git` directory inside this workspace (objects + refs copied in for full
   history, `origin` remote re-added). Commits now work and history is preserved from
   `6a91e31`.
+- [ ] Fix: make these checks pass: Full test suite passes on Python 3.12 and 3.13 — one test (`test_every_finding_cites_local_evidence_and_official_guidance_when_required` in tests/test_harness_audit_rules.py) fails every time on both Python versions on this machine (5830/5831 pass otherwise); it fails even in a pristine environment, though the branch didn't touch that code and CI passed it before.
