@@ -251,3 +251,8 @@ not repeated this round (the failing test is Python-independent; task 6 already
 proved 3.12 parity for the same single failure).
 
 Commit: `bb2afaa`.
+
+## Next time (from how this build went)
+- The git sandbox can't commit changes — that's a hard limit that should be documented upfront so tasks aren't planned around committing. Task 1 hit this and had to be worked around, costing clarity.
+- Task 3 (debugging the Python hang) ran 111 minutes, which is long for one AI pass. Breaking deep investigation into "what's happening?" checkpoints earlier (every 20–30 min) might have surfaced the right direction faster or flagged a dead end sooner.
+- The file-permissions bug that broke tests at the very end wasn't caught until the final check. Running the test suite in a fresh/minimal environment (not the main dev machine) would have caught it much earlier, saving the follow-up fix step.
