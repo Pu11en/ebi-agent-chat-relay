@@ -216,3 +216,38 @@ Commit: (this commit)
 - Task 3 (the deep debugging fix) should have been split into smaller checkpoints — 111 minutes to find a process-wide asyncio issue is a lot of time in one step, and breaking it into "reproduce," "identify root cause," and "implement fix" would have made progress visible sooner.
 - The read-only git in the sandbox (task 1) should have been caught in setup, not discovered after the actual fix was done — it blocked a completed task from being recorded.
 - Tasks 4 and the retry on task 1 suggest success criteria or intermediate milestones weren't always clear enough upfront, leading to restarts when progress reporting broke down.
+
+## Follow-up fix: harness-audit contract test green
+
+The earlier "environment-specific" verdict for
+`tests/test_harness_audit_rules.py::test_every_finding_cites_local_evidence_and_official_guidance_when_required`
+was wrong: the test is fully hermetic (it builds its home in tmp_path). It failed
+deterministically because this machine's umask is 002, so the fixture's files
+land group-writable (mode 664). That tripped the harness-audit PERMISSIONS rule
+on a non-code file (`~/.claude/commands/verify.md`), and that FAIL path attached
+no vendor citation (`vendor_sources=()`) because the item was not a hook/setting/
+plugin — even though PERMISSIONS is a vendor-backed check whose every FAIL must
+cite an official source. CI machines run umask 022, so the finding never fired
+there; that is why CI was green while local was red.
+
+What changed:
+
+- `extensions/harness_audit/rules.py` (`_check_permissions`): the file-mode FAIL
+  now always calls `run.cite(harness, AuditCheck.PERMISSIONS)`. The evidence
+  record still marks vendor dependence only for code items (mode bits are POSIX,
+  not vendor behaviour). The test file was NOT changed.
+
+Proof:
+
+- `uv run pytest tests/test_harness_audit_rules.py -q` → `13 passed`.
+- Full suite (default 3.13, clean env): `5832 passed` — first completely green
+  full run on this machine (was `1 failed, 5831 passed`).
+- Plan `Check:` (`scripts/pr22-gate.sh`) → `386 passed`, `All checks passed!`,
+  `529 files already formatted`, exit 0.
+- `uv run pyright extensions/harness_audit/rules.py` → 0 errors.
+
+Left open: none for this box. The 3.12 full-suite rerun under the new head was
+not repeated this round (the failing test is Python-independent; task 6 already
+proved 3.12 parity for the same single failure).
+
+Commit: `bb2afaa`.
