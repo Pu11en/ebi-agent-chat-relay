@@ -462,7 +462,10 @@ def _check_permissions(run: _Run) -> None:
                 item_ids=(item.item_id,),
                 targets=(item.target,),
                 evidence=(run.local(entry, "stat-mode", f"mode {mode}", vendor=runs_code),),
-                vendor_sources=run.cite(harness, AuditCheck.PERMISSIONS) if runs_code else (),
+                # PERMISSIONS is a vendor-backed check, so every FAIL must cite
+                # an official source — even when the evidence itself (POSIX
+                # mode bits) is not vendor behaviour.
+                vendor_sources=run.cite(harness, AuditCheck.PERMISSIONS),
             )
         )
 
