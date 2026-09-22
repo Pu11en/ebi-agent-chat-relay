@@ -103,6 +103,26 @@ async def test_task_name_crlf_never_reaches_log(
         assert "FAKE-ENTRY" not in message.replace("\r", "").replace("\n", "") or True
 
 
+async def test_task_repo_create_log_has_no_crlf(
+    api_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO, logger="claude_discord.database.task_repo"):
+        resp = await api_client.post(
+            "/api/tasks",
+            json={
+                "name": f"repo{CRLF}",
+                "prompt": "hello",
+                "interval_seconds": 60,
+                "channel_id": 123,
+            },
+        )
+        assert resp.status in (201, 409)
+    messages = _logged_messages(caplog.records, "Scheduled task created")
+    assert messages, "expected the task_repo creation log line"
+    for message in messages:
+        _assert_no_crlf(message)
+
+
 # ---------------------------------------------------------------------------
 # Log injection — claim-denied log
 # ---------------------------------------------------------------------------

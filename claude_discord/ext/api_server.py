@@ -223,7 +223,6 @@ _THREAD_META_KEY = "thread_meta:{thread_id}"
 # redirect target, so each part must be free of CR/LF (header/log injection),
 # ":" (scheme smuggling) and URL delimiters before it is embedded.
 _OBSIDIAN_PART_RE = re.compile(r"[^\r\n:&?%]+")
-_OBSIDIAN_TARGET_RE = re.compile(r"obsidian://open\?vault=[^&\r\n]+&file=[^&\r\n]+")
 _CORRELATION_KEY = "thread_correlation:{correlation_id}"
 
 
@@ -747,9 +746,9 @@ class ApiServer:
                 {"error": "vault and file must not contain control or URL delimiter characters"},
                 status=400,
             )
+        # quote(safe="") percent-encodes every delimiter, so the fixed scheme and
+        # query shape cannot be altered by the values themselves.
         target = f"obsidian://open?vault={quote(vault, safe='')}&file={quote(file_path, safe='')}"
-        if _OBSIDIAN_TARGET_RE.fullmatch(target) is None:
-            return web.json_response({"error": "invalid obsidian target"}, status=400)
         raise web.HTTPFound(location=target)
 
     async def notify(self, request: web.Request) -> web.Response:
