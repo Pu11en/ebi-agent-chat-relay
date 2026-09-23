@@ -1,4 +1,4 @@
-.PHONY: setup check-setup format check test ci pr dev-on dev-off
+.PHONY: setup check-setup format check types test test-one verify ci pr dev-on dev-off
 
 # One-time setup after cloning: install uv (if needed) and register the committed git hooks.
 setup:
@@ -30,12 +30,24 @@ check:
 	uv run ruff format --check claude_discord/ claude_teams/ tests/
 	uv run ruff check claude_discord/ claude_teams/ tests/
 
-# Run the full test suite.
-test:
-	uv run pytest tests/
+# Type check — CI runs this too, and a clean ruff run does not imply it.
+types:
+	uv run pyright claude_discord/
 
-# Full CI simulation: format check + lint + tests.
-ci: check test
+# Run the full test suite in parallel (~1 minute instead of ~4).
+test:
+	uv run pytest tests/ -q -n auto
+
+# Run one file, or one test: make test-one f=tests/test_folder_search.py
+#                            make test-one f="tests/test_x.py::test_y"
+test-one:
+	uv run pytest $(f) -q
+
+# The one command to run before committing: format, lint, types, tests.
+verify: check types test
+
+# Full CI simulation: format check + lint + types + tests.
+ci: verify
 
 # Push current branch and open a PR (used after local dev testing is done).
 pr:
