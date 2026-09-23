@@ -87,6 +87,8 @@ _HELP_CATEGORY: dict[str, str | None] = {
     "session": "📌 Session",  # fork / rewind / compact / clear / context / goal in one view
     "close": "📌 Session",  # wrap up + archive through the lifecycle service; reopenable
     "new": "📌 Session",  # control center: Favorites / Recent / Browse / Create / Clone
+    "cd": "📌 Session",  # /new with the folder typed instead of picked
+    "cdnew": None,  # the same command under its older name; not advertised twice
     "settings": "🔧 Advanced",  # control center: what this computer supports
     "clear": "📌 Session",
     "rewind": "📌 Session",

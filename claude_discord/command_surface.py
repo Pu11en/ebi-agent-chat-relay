@@ -115,6 +115,19 @@ FINAL_COMMANDS: tuple[CommandSpec, ...] = (
     ),
 )
 
+#: Shortcut names that run one of the eight, so the surface stays eight commands.
+#: `/cd <folder>` is `/new` with the folder already typed — the fast path for
+#: someone who knows the folder's name and does not want a menu at all. `/cdnew`
+#: is the name this instance used before; keeping it costs one registration and
+#: saves relearning a reflex.
+SHORTCUT_ALIASES: dict[str, str] = {"cd": "new", "cdnew": "new"}
+
+#: The shortcuts `/help` names, and how. `/cdnew` is deliberately absent: it is
+#: registered so an old reflex still works, not advertised as a second way.
+SHORTCUT_SUMMARIES: dict[str, str] = {
+    "cd": "Start a session in a folder — type a few letters of its name",
+}
+
 CONTROL_CENTER_BUTTONS: tuple[ButtonSpec, ...] = (
     ButtonSpec("New session", "new"),
     ButtonSpec("Sessions", "sessions"),
@@ -200,6 +213,11 @@ def help_sections(location: SurfaceLocation) -> list[tuple[str, list[str]]]:
     commands = [
         f"`/{spec.name}` — {spec.summary}" for spec in FINAL_COMMANDS if location in spec.locations
     ]
+    commands += [
+        f"`/{alias} <folder>` — {SHORTCUT_SUMMARIES[alias]}"
+        for alias in SHORTCUT_SUMMARIES
+        if location in by_name[SHORTCUT_ALIASES[alias]].locations
+    ]
     return [("Buttons", buttons), ("Commands", commands)]
 
 
@@ -236,7 +254,7 @@ def retire_superseded_commands(
         enabled = retirement_enabled(source)
     if not enabled:
         return []
-    spared = {spec.name for spec in FINAL_COMMANDS}
+    spared = {spec.name for spec in FINAL_COMMANDS} | set(SHORTCUT_ALIASES)
     spared.update(name.strip() for name in (keep or ()) if name.strip())
     spared.update(
         name.strip() for name in source.get(RETIREMENT_KEEP_ENV, "").split(",") if name.strip()
@@ -251,4 +269,6 @@ def retire_superseded_commands(
 
 
 def _spec_for(command: str) -> CommandSpec | None:
-    return next((spec for spec in FINAL_COMMANDS if spec.name == command), None)
+    """The spec ``command`` runs, following a shortcut alias to its target."""
+    name = SHORTCUT_ALIASES.get(command, command)
+    return next((spec for spec in FINAL_COMMANDS if spec.name == name), None)

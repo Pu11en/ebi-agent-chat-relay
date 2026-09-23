@@ -58,6 +58,29 @@ Alternative considered: Claude embeds `<!-- ccdb:schedule {...} -->` in response
 
 **REST API chosen because**: clean interface, independently testable, usable by external systems, already an established ccdb pattern (`ext/api_server.py`). Claude uses its Bash tool to `curl $CCDB_API_URL/api/tasks`.
 
+## The fast loop (read this before running anything)
+
+One command before committing: **`make verify`** (format + lint + pyright + the
+whole suite in parallel, about a minute). While iterating, **`make test-one
+f=tests/test_x.py`**. `make test` alone is the parallel suite.
+
+Two things that have cost real time and are now handled — do not re-diagnose them:
+
+- **Never run bare `uv run pytest tests/` and wait.** The serial suite takes ~4
+  minutes and a tool call with a 2-minute timeout will kill it mid-run. `-n auto`
+  (via `make test`) is ~55 seconds.
+- **A test never reads the live instance's environment.** An agent session on the
+  bot's own machine inherits `CCDB_PROJECT_ROOTS`, the channel ids and
+  `CCDB_ALLOWED_CATEGORY_IDS`, which used to fail ~45 tests that pass on CI. The
+  autouse `_unconfigured_environment` fixture in `tests/conftest.py` strips
+  `CCDB_*`/`DISCORD_*`/`CLAUDE_*` for every test; a test that needs a value sets
+  it with `monkeypatch.setenv`. If you are tempted to prefix a command with
+  `env -u SOMETHING`, the fixture is the place to fix it instead.
+
+Known red on this machine, unrelated to your change:
+`tests/test_deploy_recovery.py::test_runtime_hook_loads_fallback_then_returns_to_main`
+(the rollback-pointer hook; fails locally, passes in CI).
+
 ## Development
 
 ### Setup

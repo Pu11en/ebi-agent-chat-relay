@@ -55,6 +55,7 @@ dev = [
     "pyjwt[crypto]>=2.13.0,<3.0",
     "defusedxml>=0.7,<1.0",
     "pytest-timeout>=2.3",
+    "pytest-xdist>=3.6",
 ]
 
 [tool.pytest.ini_options]

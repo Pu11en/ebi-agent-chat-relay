@@ -147,7 +147,13 @@ def test_help_sections_describe_only_what_works_where_you_are():
     assert [name for name, _ in control] == ["Buttons", "Commands"]
     buttons, commands = control[0][1], control[1][1]
     assert [line.split("**")[1] for line in buttons] == ["New session", "Sessions", "Settings"]
-    assert [line.split("`")[1] for line in commands] == ["/new", "/sessions", "/settings", "/help"]
+    assert [line.split("`")[1] for line in commands] == [
+        "/new",
+        "/sessions",
+        "/settings",
+        "/help",
+        "/cd <folder>",
+    ]
 
     session = help_sections(SurfaceLocation.MANAGED_SESSION)
     buttons, commands = session[0][1], session[1][1]
@@ -160,3 +166,23 @@ def test_help_sections_describe_only_what_works_where_you_are():
         "/help",
     ]
     assert help_sections(SurfaceLocation.UNSUPPORTED) == []
+
+
+def test_cd_is_a_shortcut_for_new_not_a_ninth_command():
+    from claude_discord.command_surface import SHORTCUT_ALIASES
+
+    assert SHORTCUT_ALIASES == {"cd": "new", "cdnew": "new"}
+    assert len(FINAL_COMMANDS) == 8, "aliases must not grow the registered surface"
+    assert surface.supports("cd", SurfaceLocation.CONTROL_CENTER)
+    assert surface.supports("cdnew", SurfaceLocation.CONTROL_CENTER)
+    assert surface.correction_for("cd", SurfaceLocation.CONTROL_CENTER) is None
+    assert "control center" in (surface.correction_for("cd", SurfaceLocation.MANAGED_SESSION) or "")
+
+
+def test_help_tells_the_control_center_about_the_cd_shortcut():
+    from claude_discord.command_surface import help_sections
+
+    sections = dict(help_sections(SurfaceLocation.CONTROL_CENTER))
+    assert any(line.startswith("`/cd ") for line in sections["Commands"])
+    session = dict(help_sections(SurfaceLocation.MANAGED_SESSION))
+    assert not any("`/cd " in line for line in session["Commands"])

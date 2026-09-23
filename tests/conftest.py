@@ -15,6 +15,25 @@ import pytest
 
 from claude_discord.claude.types import MessageType, StreamEvent
 
+#: Every test starts from an unconfigured instance. A Discord/agent session
+#: inherits the running bot's environment (CCDB_PROJECT_ROOTS, channel ids, the
+#: category boundary), and a test that reads one of those passes on CI and fails
+#: on the machine the bot runs on — 45 of them did. Sanitizing here makes a local
+#: run mean the same thing as CI; a test that wants a value sets it with
+#: monkeypatch.setenv.
+_LEAKY_PREFIXES = ("CCDB_", "DISCORD_", "CLAUDE_", "ANTHROPIC_", "CODEX_")
+_KEPT = frozenset({"CLAUDE_CODE_ENTRYPOINT"})
+
+
+@pytest.fixture(autouse=True)
+def _unconfigured_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    for name in list(os.environ):
+        if name.startswith(_LEAKY_PREFIXES) and name not in _KEPT:
+            monkeypatch.delenv(name, raising=False)
+
+
 if sys.platform == "win32" or sys.version_info[:2] == (3, 12):
     from asyncio import base_subprocess
 

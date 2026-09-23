@@ -20,6 +20,22 @@ the previous bot-owned shortcut. Worker threads, system events and the launcher�
 own controls do not trigger it. Conversation messages and the pinned anchor are
 never removed by this refresh.
 
+## Type the folder instead of walking the menus
+
+`/cd <folder>` starts a session in a folder without opening a single menu; the
+`folder` argument is autocompleted. Before anything is typed the list is the
+folders this operator used most recently, then their favorites, then what is
+under `CCDB_PROJECT_ROOTS` (projects and one level below them, scanned at most
+every 30 seconds and never on the event loop). Typing filters it: case and
+separators are ignored and scattered letters match, so `echat` reaches
+`ebi-agent-chat-relay`. A full path that no scan ever saw is still accepted,
+because the typed text is submitted as-is.
+
+`/cdnew` is the same command under its older name, and `/new` takes the same
+optional `folder` argument — with it, `/new` skips its menu entirely. An
+unauthorized user, a wrong category or an unreadable root produces an empty
+list, never an error and never a folder listing.
+
 ## Find any accessible folder
 
 **New session → Favorites / Recent / Browse folders → Start here**.

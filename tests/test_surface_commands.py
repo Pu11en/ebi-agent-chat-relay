@@ -202,7 +202,11 @@ class TestControlCenterCommands:
     @pytest.fixture
     def wired(self, cog):
         cog.launcher = SimpleNamespace(
-            show_new_session=AsyncMock(), show_sessions=AsyncMock(), show_settings=AsyncMock()
+            show_new_session=AsyncMock(),
+            show_sessions=AsyncMock(),
+            show_settings=AsyncMock(),
+            new_session=AsyncMock(),
+            folder_autocomplete=AsyncMock(return_value=["choice"]),
         )
         return cog
 
@@ -210,6 +214,22 @@ class TestControlCenterCommands:
         event = channel_interaction()
         await wired.new_command.callback(wired, event)
         wired.launcher.show_new_session.assert_awaited_once_with(event)
+
+    async def test_new_with_a_folder_skips_the_menu_and_starts_there(self, wired):
+        event = channel_interaction()
+        await wired.new_command.callback(wired, event, folder="/home/drewp/main-projects/lockin")
+        wired.launcher.new_session.assert_awaited_once_with(
+            event, "/home/drewp/main-projects/lockin"
+        )
+        wired.launcher.show_new_session.assert_not_awaited()
+
+    async def test_new_folder_autocomplete_comes_from_the_launcher(self, wired):
+        event = channel_interaction()
+        assert await wired.new_folder_autocomplete(event, "lock") == ["choice"]
+        wired.launcher.folder_autocomplete.assert_awaited_once_with(event, "lock")
+
+    async def test_new_folder_autocomplete_without_a_launcher_is_empty(self, cog):
+        assert await cog.new_folder_autocomplete(channel_interaction(), "lock") == []
 
     async def test_settings_opens_the_settings_home_in_the_control_center(self, wired):
         event = channel_interaction()

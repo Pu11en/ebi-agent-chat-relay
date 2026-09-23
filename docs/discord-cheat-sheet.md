@@ -129,8 +129,10 @@ The optional Japanese weekly-usage/credits footer has been turned off. Old test 
 
 ## 6 · The only commands to learn first
 
-**`/cdnew` — open a NEW project conversation**
-Use in #control-center. Select an existing project folder from the suggestions.
+**`/cd` — open a NEW project conversation**
+Use in #control-center. Type a few letters of the folder's name and pick it from
+the list that appears; recent folders are already listed before you type.
+`/cdnew` is the same command under its old name.
 
 **`/search` — find an existing conversation**
 Use in #control-center. Put a project name or keyword in `query`, then follow a matching thread link.
@@ -145,7 +147,7 @@ Open its existing thread and type normally.
 Use the red Stop button in that thread.
 
 **Don't use these as “continue” buttons**
-- `/cd` changes the current thread's folder and starts fresh AI context.
+- `/cd` opens a NEW conversation in the folder you type; it does not move this one.
 - `/clear` clears the session association; it is not a refresh button.
 - `/cdnew` creates another conversation; it does not reopen the old one.
 
