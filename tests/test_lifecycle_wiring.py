@@ -140,11 +140,13 @@ class TestAdapters:
         bot.fetch_channel = AsyncMock(return_value=thread)
         surface = DiscordThreadSurface(bot)
         assert await surface.archive(THREAD) is True
-        thread.edit.assert_awaited_once_with(archived=True)
-        assert "locked" not in thread.edit.call_args.kwargs
+        # Locked as well as archived: an unlocked archived thread re-opens the
+        # moment anyone posts in it, so "closed" did not stay closed.
+        thread.edit.assert_awaited_once_with(archived=True, locked=True)
         thread.send.assert_not_awaited()  # no repository, no note
         assert await surface.unarchive(THREAD) is True
-        assert thread.edit.call_args.kwargs == {"archived": False}
+        # Reopening undoes both, so nobody is left locked out of their own thread.
+        assert thread.edit.call_args.kwargs == {"archived": False, "locked": False}
 
     async def test_thread_surface_posts_the_wrap_up_before_archiving(self, repo):
         await repo.request_close(THREAD, "direct_interaction")

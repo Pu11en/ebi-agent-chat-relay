@@ -2,9 +2,9 @@
 
 The service talks to a *turn tracker* and a *conversation surface* through two
 small protocols. These are the Discord implementations: the chat cog's
-active-runner table says whether a turn is in flight, and a thread is
-archived by editing it — never locked, never deleted, so the service keeps
-its promise that closing destroys nothing.
+active-runner table says whether a turn is in flight, and a thread is closed
+by editing it — archived *and* locked, never deleted, so the service keeps its
+promise that closing destroys nothing.
 """
 
 from __future__ import annotations
@@ -39,11 +39,20 @@ class ChatTurnActivity:
 
 
 class DiscordThreadSurface:
-    """Archive and unarchive a thread. There is deliberately no lock or delete here.
+    """Close and reopen a thread: archived and locked, never deleted.
 
     The closing note is posted *before* archiving — Discord un-archives a
     thread that receives a message, so anything said after the edit would
     undo it. With a repository the note quotes the stored wrap-up.
+
+    Archiving alone was not enough, which is the whole reason lock is here: an
+    archived-but-unlocked thread comes straight back the next time *anything*
+    posts in it — a later bot notice, or the person themselves typing one more
+    line — so a closed session kept reappearing in the sidebar and "close this
+    out" visibly did nothing. Locking is not locking anyone out: the bot holds
+    manage_threads, :meth:`unarchive` clears both flags, and every reopen path
+    (Sessions -> Open, `/resume`) goes through it. Nothing is deleted, and the
+    conversation is still there when it is reopened.
     """
 
     def __init__(self, bot: Any, repo: Any | None = None) -> None:
@@ -88,8 +97,9 @@ class DiscordThreadSurface:
 
     @staticmethod
     async def _set_archived(thread: discord.Thread, archived: bool) -> bool:
+        """Archive and lock together, or unarchive and unlock together."""
         try:
-            await thread.edit(archived=archived)
+            await thread.edit(archived=archived, locked=archived)
         except discord.HTTPException:
             logger.warning("Could not set archived=%s on thread %s", archived, thread.id)
             return False
