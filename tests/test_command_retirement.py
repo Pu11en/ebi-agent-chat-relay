@@ -78,3 +78,10 @@ def test_keep_list_is_read_from_the_environment():
     retire_superseded_commands(tree, env=env)
     assert {"gowork", "resume"} <= set(tree.names)
     assert "launcher" not in tree.names
+
+
+def test_retirement_spares_the_cd_shortcuts():
+    tree = FakeTree([*REGISTERED, "cd", "cdnew"])
+    removed = retire_superseded_commands(tree, enabled=True)
+    assert {"cd", "cdnew"} <= set(tree.names)
+    assert "launcher" in removed

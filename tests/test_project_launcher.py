@@ -1208,3 +1208,57 @@ async def test_suggestions_come_from_the_catalog_when_present(catalog_cog, tmp_p
         str(tmp_path / "main" / "beta")[-100:],
         str(tmp_path / "main" / "gamma")[-100:],
     }
+
+
+# ------------------------------------------------------------------
+# /cd — typing a folder name instead of walking the menus
+# ------------------------------------------------------------------
+
+
+async def test_folder_autocomplete_offers_recents_before_anything_is_typed(
+    cog, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
+    for name in ("alpha", "beta", "gamma"):
+        (tmp_path / name).mkdir()
+    monkey = str(tmp_path / "gamma")
+    await cog.remember_folder(10, 42, monkey)
+    choices = await cog.folder_autocomplete(interaction(), "")
+    assert choices, "the list is useful before the first keystroke"
+    assert choices[0].value == monkey
+    assert all(len(choice.name) <= 100 for choice in choices)
+
+
+async def test_folder_autocomplete_filters_as_the_user_types(cog, tmp_path, monkeypatch):
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
+    (tmp_path / "ebi-agent-chat-relay").mkdir()
+    (tmp_path / "unrelated").mkdir()
+    choices = await cog.folder_autocomplete(interaction(), "echat")
+    assert [choice.value for choice in choices] == [str(tmp_path / "ebi-agent-chat-relay")]
+
+
+async def test_folder_autocomplete_never_raises_and_never_replies(cog, tmp_path, monkeypatch):
+    monkeypatch.setattr(cog, "folder_suggestions", AsyncMock(side_effect=OSError("disk gone")))
+    event = interaction()
+    assert await cog.folder_autocomplete(event, "a") == []
+    event.response.send_message.assert_not_called()
+
+
+async def test_folder_autocomplete_is_empty_for_an_unauthorized_user(cog, tmp_path, monkeypatch):
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
+    (tmp_path / "alpha").mkdir()
+    assert await cog.folder_autocomplete(interaction(user=999), "") == []
+
+
+async def test_cd_starts_a_session_in_the_typed_folder(cog, tmp_path):
+    cog.new_session = AsyncMock()
+    event = interaction()
+    await cog.cd.callback(cog, event, folder=str(tmp_path))
+    cog.new_session.assert_awaited_once_with(event, str(tmp_path))
+
+
+async def test_cdnew_is_the_same_command_under_the_old_name(cog, tmp_path):
+    cog.new_session = AsyncMock()
+    event = interaction()
+    await cog.cdnew.callback(cog, event, folder=str(tmp_path))
+    cog.new_session.assert_awaited_once_with(event, str(tmp_path))

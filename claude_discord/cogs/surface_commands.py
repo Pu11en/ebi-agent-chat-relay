@@ -219,11 +219,28 @@ class SurfaceCommandsCog(commands.Cog):
 
     # -- commands ----------------------------------------------------------
 
+    async def new_folder_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[Any]:
+        """The launcher's folder search; empty when no launcher is wired."""
+        if self.launcher is None:
+            return []
+        return await self.launcher.folder_autocomplete(interaction, current)
+
     @app_commands.command(name="new", description="Start a new session in a folder")
-    async def new_command(self, interaction: discord.Interaction) -> None:
+    @app_commands.describe(folder="Type a few letters of the folder, or leave empty for the menu")
+    @app_commands.autocomplete(folder=new_folder_autocomplete)
+    async def new_command(
+        self, interaction: discord.Interaction, folder: str | None = None
+    ) -> None:
         launcher = await self._control_flow(interaction, "new")
-        if launcher is not None:
-            await launcher.show_new_session(interaction)
+        if launcher is None:
+            return
+        # A typed folder is the whole request: no menu, no second interaction.
+        if folder and folder.strip():
+            await launcher.new_session(interaction, folder.strip())
+            return
+        await launcher.show_new_session(interaction)
 
     @app_commands.command(name="settings", description="Open the settings this computer supports")
     async def settings_command(self, interaction: discord.Interaction) -> None:

@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from ..discord_ui.session_browser import (
     browser_text,
 )
 from ..discord_ui.settings_home import SettingsHome, SupportedFeatures
+from ..folder_search import LABEL_LIMIT, choice_label, rank_folders, scan_project_folders
 from ..project_catalog import ProjectIdentity
 from ..project_creation import (
     ProjectCreationError,
@@ -38,6 +40,8 @@ from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 logger = logging.getLogger(__name__)
 _LIMIT = 25
+#: How long a folder scan is reused before the disk is read again.
+_SCAN_TTL = 30.0
 
 
 class _LauncherSessionActions:
@@ -698,6 +702,10 @@ class ProjectLauncherCog(commands.Cog):
         self.catalog = catalog
         self._favorites_lock = asyncio.Lock()
         self._panel_lock = asyncio.Lock()
+        # Folder scan for `/cd`'s autocomplete: one read per _SCAN_TTL seconds,
+        # because Discord fires autocomplete on every keystroke.
+        self._scan: list[str] | None = None
+        self._scanned_at = 0.0
         self._view: LauncherView | None = None
         self._control_row: ControlRowView | None = None
         self._shortcut_task: asyncio.Task[None] | None = None
@@ -1086,18 +1094,27 @@ class ProjectLauncherCog(commands.Cog):
             color=discord.Color.blurple(),
         )
 
-    async def authorize(self, interaction: discord.Interaction) -> bool:
+    def permitted(self, interaction: discord.Interaction) -> bool:
+        """The same test :meth:`authorize` applies, with no reply.
+
+        Autocomplete cannot send a message, so the check it needs is this one:
+        a stranger's keystrokes get an empty list, not an error and not a
+        listing of this computer's folders.
+        """
         allowed = self.chat._allowed_user_ids
         channel = interaction.channel
         channel_id = (
             channel.parent_id if isinstance(channel, discord.Thread) else interaction.channel_id
         )
-        if (
+        return not (
             interaction.guild_id is None
             or not category_allowed(channel)
             or channel_id not in self.channel_ids | {self.channel_id}
             or (allowed is not None and interaction.user.id not in allowed)
-        ):
+        )
+
+    async def authorize(self, interaction: discord.Interaction) -> bool:
+        if not self.permitted(interaction):
             await interaction.response.send_message(
                 "Use this computer's launcher in its channel with an authorized account.",
                 ephemeral=True,
@@ -1416,6 +1433,81 @@ class ProjectLauncherCog(commands.Cog):
             view=ResumeMenu(self, interaction.user.id, threads),
             ephemeral=True,
         )
+
+    # ------------------------------------------------------------------
+    # /cd — type a few letters, get the folder, get the session
+    # ------------------------------------------------------------------
+
+    def scan_roots(self) -> list[str]:
+        """Where `/cd` looks: ``CCDB_PROJECT_ROOTS``, else this computer's cwd."""
+        raw = os.environ.get("CCDB_PROJECT_ROOTS", "").split(",")
+        roots = [root.strip() for root in raw if root.strip()]
+        if not roots and self.working_dir:
+            roots = [self.working_dir]
+        return roots
+
+    async def scanned_folders(self) -> list[str]:
+        """The folder list behind autocomplete, re-read at most every _SCAN_TTL."""
+        now = time.monotonic()
+        if self._scan is not None and now - self._scanned_at < _SCAN_TTL:
+            return self._scan
+        folders = await asyncio.to_thread(scan_project_folders, self.scan_roots())
+        self._scan = folders
+        self._scanned_at = now
+        return folders
+
+    async def folder_suggestions(self, guild_id: int, user_id: int, query: str) -> list[str]:
+        """Folders to offer for ``query``: this operator's history, then the disk."""
+        candidates = await self.scanned_folders()
+        recents = await self.recents(guild_id, user_id)
+        favorites = await self.favorites(guild_id, user_id)
+        existing = await asyncio.to_thread(
+            lambda: [path for path in recents + favorites if Path(path).is_dir()]
+        )
+        return rank_folders(
+            query,
+            candidates=candidates,
+            recents=[path for path in recents if path in existing],
+            favorites=[path for path in favorites if path in existing],
+            limit=_LIMIT,
+        )
+
+    async def folder_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Never raises and never replies: a failed scan is an empty menu.
+
+        The typed text stays submittable either way, so a full path the scan
+        never saw still works.
+        """
+        if not self.permitted(interaction):
+            return []
+        try:
+            paths = await self.folder_suggestions(
+                interaction.guild_id or 0, interaction.user.id, current
+            )
+        except Exception:
+            logger.debug("Folder autocomplete unavailable", exc_info=True)
+            return []
+        return [
+            app_commands.Choice(name=choice_label(path), value=path)
+            for path in paths
+            if len(path) <= LABEL_LIMIT
+        ][:_LIMIT]
+
+    @app_commands.command(
+        name="cd", description="Start a session in a folder — type a few letters of its name"
+    )
+    @app_commands.describe(folder="Pick from the list, or paste a full folder path")
+    @app_commands.autocomplete(folder=folder_autocomplete)
+    async def cd(self, interaction: discord.Interaction, folder: str) -> None:
+        await self.new_session(interaction, folder)
+
+    @app_commands.command(name="cdnew", description="Same as /cd: start a session in a folder")
+    @app_commands.describe(folder="Pick from the list, or paste a full folder path")
+    @app_commands.autocomplete(folder=folder_autocomplete)
+    async def cdnew(self, interaction: discord.Interaction, folder: str) -> None:
+        await self.new_session(interaction, folder)
 
     @app_commands.command(
         name="launcher", description="Open this computer's folder/session buttons"
