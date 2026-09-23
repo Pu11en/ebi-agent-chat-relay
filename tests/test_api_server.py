@@ -2002,3 +2002,62 @@ class TestBinaryAttachmentMisdetectedAsZip:
         assert len(member) == 1
         assert member[0].read_bytes() == b"ElfFile\x00payload"
         assert not list(tmp_path.glob("ingest/*/teams-attachments.zip"))
+
+
+class TestCloseSession:
+    """POST /api/threads/{id}/close — a session ends itself when told to.
+
+    The authority is the person who asked in the thread, passed as ``actor``;
+    the service refuses anything else, so "the model decided it was done" is
+    still not closeable.
+    """
+
+    @pytest.fixture
+    def lifecycle(self) -> MagicMock:
+        from claude_discord.session_lifecycle import CloseOutcome, CloseState
+
+        service = MagicMock()
+        service.close = AsyncMock(
+            return_value=CloseOutcome(state=CloseState.PENDING, record=MagicMock())
+        )
+        return service
+
+    @pytest.fixture
+    async def closing_client(self, repo, bot: MagicMock, lifecycle: MagicMock) -> TestClient:
+        api = ApiServer(repo=repo, bot=bot, default_channel_id=12345)
+        api.lifecycle = lifecycle
+        server = TestServer(api.app)
+        client = TestClient(server)
+        await client.start_server()
+        yield client
+        await client.close()
+
+    async def test_close_carries_the_user_instruction_authority(self, closing_client, lifecycle):
+        from claude_code_core.session_repo import CloseAuthority
+
+        response = await closing_client.post(
+            "/api/threads/555/close", json={"actor": 488763953397235712}
+        )
+        assert response.status == 200
+        body = await response.json()
+        assert body["state"] == "pending"
+        thread_id, authorization = lifecycle.close.await_args.args
+        assert thread_id == 555
+        assert authorization.source is CloseAuthority.USER_INSTRUCTION
+        assert authorization.actor == "488763953397235712"
+
+    async def test_a_close_without_an_actor_is_refused(self, closing_client, lifecycle):
+        response = await closing_client.post("/api/threads/555/close", json={})
+        assert response.status == 400
+        lifecycle.close.assert_not_awaited()
+
+    async def test_an_unknown_thread_is_a_404(self, closing_client, lifecycle):
+        from claude_discord.session_lifecycle import CloseOutcome, CloseState
+
+        lifecycle.close.return_value = CloseOutcome(state=CloseState.NO_SESSION)
+        response = await closing_client.post("/api/threads/555/close", json={"actor": "42"})
+        assert response.status == 404
+
+    async def test_without_the_service_the_endpoint_says_so(self, client):
+        response = await client.post("/api/threads/555/close", json={"actor": "42"})
+        assert response.status == 503
