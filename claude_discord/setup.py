@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from .database.task_repo import TaskRepository
     from .discord_ui.settings_home import SettingsHome
     from .ext.api_server import ApiServer
+    from .session_lifecycle import SessionLifecycleService
 
 from .deployment import DEFAULT_DATA_ROOT, DataLayout
 
@@ -85,6 +86,10 @@ class BridgeComponents:
     #: roots, owner-aware resolution and personal favorites. The launcher, the
     #: REST control plane and custom Cogs all read this same instance.
     project_catalog: ProjectCatalogService | None = None
+    #: Close and reopen, shared with `/close` and the Sessions view, so a
+    #: session told "close this out" in the thread ends the same way a person
+    #: pressing Close would — nothing deleted, wrap-up written, thread archived.
+    lifecycle: SessionLifecycleService | None = None
 
     def apply_to_api_server(self, api_server: ApiServer) -> None:
         """Wire all optional repos to an ApiServer instance.
@@ -115,6 +120,8 @@ class BridgeComponents:
             api_server.settings_repo = self.settings_repo
         if self.project_catalog is not None:
             api_server.project_catalog = self.project_catalog
+        if self.lifecycle is not None:
+            api_server.lifecycle = self.lifecycle
         api_server.session_repo = self.session_repo
 
 
@@ -836,6 +843,7 @@ async def setup_bridge(
         handoff_repo=handoff_repo,
         settings_home=launcher_cog.settings_home if launcher_cog is not None else None,
         project_catalog=project_catalog,
+        lifecycle=lifecycle,
     )
 
     # Auto-wire repos to ApiServer and set runner.api_port if provided

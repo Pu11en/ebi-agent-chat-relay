@@ -50,6 +50,12 @@ from ..project_lookup_worker import (
     resolve_project_lookup_root,
 )
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
+from ..session_lifecycle import (
+    CloseAuthorization,
+    CloseState,
+    SessionLifecycleService,
+    close_outcome_text,
+)
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from . import ingest_manifest, teams_sync
@@ -400,6 +406,10 @@ class ApiServer:
         self.summary_repo = summary_repo
         self.claims_repo = claims_repo
         self.handoff_repo: HandoffRepository | None = None
+        # Close/reopen without destroying anything; wired by
+        # BridgeComponents.apply_to_api_server. Without it /api/threads/{id}/close
+        # answers 503 rather than archiving a thread on its own.
+        self.lifecycle: SessionLifecycleService | None = None
         # Key-value store for the generic spawn metadata (parent thread and
         # correlation id); wired by BridgeComponents.apply_to_api_server.
         # Without it the fields are validated and echoed but not persisted.
@@ -497,6 +507,7 @@ class ApiServer:
         self.app.router.add_get("/api/projects/{key}", self.get_project)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
+        self.app.router.add_post("/api/threads/{thread_id}/close", self.close_session)
         # Generic spawn metadata: which parent a thread belongs to and the
         # caller's correlation id, so a lost spawn answer can be reconciled.
         self.app.router.add_get("/api/threads/{thread_id}/metadata", self.get_thread_metadata)
@@ -3373,6 +3384,61 @@ class ApiServer:
             return web.json_response({"error": "key is required"}, status=400)
         removed = await self.summary_repo.delete(key)  # type: ignore[union-attr]
         return web.json_response({"status": "deleted" if removed else "not_found", "key": key})
+
+    # ------------------------------------------------------------------
+    # Close endpoint (/api/threads/{thread_id}/close)
+    # ------------------------------------------------------------------
+
+    async def close_session(self, request: web.Request) -> web.Response:
+        """POST /api/threads/{thread_id}/close — end a session from inside it.
+
+        This exists because "close this session" is said to the agent, in the
+        thread, and the agent had no way to carry it out: `/close` is a slash
+        command a person runs. The authority is not invented here — the caller
+        must name the ``actor`` who asked, and the request is recorded as a
+        :class:`CloseAuthority.USER_INSTRUCTION` close, so an agent deciding on
+        its own that it is finished remains unrepresentable.
+
+        A turn in flight (the usual case: the agent calls this during its own
+        final turn) is not killed. The service stores the request and returns
+        ``pending``; the wrap-up and the archive happen when the turn ends.
+        """
+        if self.lifecycle is None:
+            return web.json_response(
+                {"error": "SessionLifecycleService not configured (lifecycle is None)"},
+                status=503,
+            )
+        raw_thread = request.match_info.get("thread_id", "")
+        if not raw_thread.isdigit():
+            return web.json_response({"error": "thread_id must be numeric"}, status=400)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        if not isinstance(body, dict):
+            return web.json_response({"error": "body must be a JSON object"}, status=400)
+        actor = str(body.get("actor") or "").strip()
+        if not actor:
+            return web.json_response(
+                {"error": "actor is required: name the person who asked for the close"},
+                status=400,
+            )
+        outcome = await self.lifecycle.close(
+            int(raw_thread), CloseAuthorization.from_user_instruction(actor)
+        )
+        if outcome.state is CloseState.NO_SESSION:
+            return web.json_response(
+                {"state": outcome.state.value, "error": "no session is bound to that thread"},
+                status=404,
+            )
+        return web.json_response(
+            {
+                "state": outcome.state.value,
+                "archived": outcome.archived,
+                "wrap_up": outcome.wrap_up,
+                "message": close_outcome_text(outcome),
+            }
+        )
 
     # ------------------------------------------------------------------
     # Startup resume endpoint (/api/mark-resume)

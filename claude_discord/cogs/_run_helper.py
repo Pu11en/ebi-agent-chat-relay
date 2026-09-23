@@ -48,6 +48,7 @@ from ..capacity_recovery import (
     TurnSubmission,
 )
 from ..catalog_query import build_catalog_hint
+from ..close_hint import build_close_hint
 from ..discord_ui.ask_handler import collect_ask_answers
 from ..discord_ui.embeds import error_embed, timeout_embed
 from ..lounge import build_lounge_prompt
@@ -356,6 +357,14 @@ async def _build_system_context(config: RunConfig) -> str | None:
     # no project to choose.
     if not config.slim_context and getattr(config.runner, "api_port", None) is not None:
         parts.append(build_catalog_hint())
+        # How to close this session when asked. Injected only with an actor to
+        # name, because the endpoint refuses a close that carries no authority.
+        if config.notify_user_id is not None:
+            parts.append(
+                build_close_hint(
+                    thread_id=config.surface.thread_key, actor_id=config.notify_user_id
+                )
+            )
 
     # Post-compact guardrail: prevent auto-execution of "pending tasks" from summary.
     if config.post_compact_rerun:
