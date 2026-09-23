@@ -1,20 +1,27 @@
 """Cogs for claude-code-discord-bridge."""
 
+from .agent_handoff import AgentHandoffCog
 from .ask_command import AskCommandCog
 from .auto_upgrade import AutoUpgradeCog
 from .claude_chat import ClaudeChatCog
 from .collision_watch import CollisionWatchCog
 from .context_links import ContextLinksCog
 from .event_processor import EventProcessor
+from .my_ai_setup import MyAISetupCog
 from .notification_dispatch import NotificationDispatchCog
 from .ollama_command import OllamaCommandCog
+from .project_launcher import ProjectLauncherCog
 from .run_config import RunConfig
 from .scheduler import SchedulerCog
 from .session_manage import SessionManageCog
 from .skill_command import SkillCommandCog
+from .surface_commands import SurfaceCommandsCog
+from .task_loop import TaskLoopCog
 from .webhook_trigger import WebhookTriggerCog
 
 __all__ = [
+    "AgentHandoffCog",
+    "MyAISetupCog",
     "AutoUpgradeCog",
     "ClaudeChatCog",
     "CollisionWatchCog",
@@ -23,9 +30,12 @@ __all__ = [
     "RunConfig",
     "NotificationDispatchCog",
     "OllamaCommandCog",
+    "ProjectLauncherCog",
     "SchedulerCog",
     "SessionManageCog",
+    "TaskLoopCog",
     "AskCommandCog",
     "SkillCommandCog",
+    "SurfaceCommandsCog",
     "WebhookTriggerCog",
 ]

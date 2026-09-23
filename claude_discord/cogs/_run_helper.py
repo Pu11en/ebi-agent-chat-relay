@@ -18,18 +18,41 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
+import uuid
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 import discord
 
-from claude_code_core.frontend import Notice, NoticeLevel
+from claude_code_core.capacity_policy import (
+    FallbackTarget,
+    RecoveryPhase,
+    RecoveryStatus,
+    parse_fallback_chain,
+)
+from claude_code_core.frontend import ActivitySpec, Notice, NoticeLevel, StatusKind
+from claude_code_core.gowork_admission import AdmissionController, Reservation, SlotKind
+from claude_code_core.gowork_capacity import CapacityDecision, CapacityPolicy
+from claude_code_core.gowork_friction import FrictionEvent, append_friction
+from claude_code_core.gowork_resources import WorkerPeaks
+from claude_code_core.task_loop import MAX_PARALLEL
 
+from ..capacity_recovery import (
+    AttemptResult,
+    AttemptTarget,
+    CapacityRecoveryCoordinator,
+    TurnResult,
+    TurnSubmission,
+)
+from ..catalog_query import build_catalog_hint
 from ..discord_ui.ask_handler import collect_ask_answers
 from ..discord_ui.embeds import error_embed, timeout_embed
 from ..lounge import build_lounge_prompt
 from ..pr_completion_gate import GitHubPrCompletionGate, build_completion_prompt
-from .event_processor import EventProcessor
+from .event_processor import EventProcessor, _backend_name_from_runner
 from .run_config import RunConfig
 
 logger = logging.getLogger(__name__)
@@ -38,16 +61,62 @@ logger = logging.getLogger(__name__)
 # Global session slot limiter
 # ---------------------------------------------------------------------------
 _global_semaphore: asyncio.Semaphore | None = None
-_max_concurrent: int = 3
+_max_concurrent: int = 10
 _pr_completion_gate: GitHubPrCompletionGate | None = None
+# The adaptive path (no explicit limit): one admission controller for every
+# build, a policy that sizes it from measured resources, and the probe it reads.
+_global_admission: AdmissionController | None = None
+_capacity_policy: CapacityPolicy | None = None
+_resource_probe: Any = None
+_worker_peaks: WorkerPeaks = WorkerPeaks()
+_friction_path: Path | None = None
+# Model-capacity recovery: one coordinator for every run, the computer-wide
+# fallback chain (CCDB_CAPACITY_FALLBACK) and the factory that builds a runner
+# for a fallback target. None means "one attempt, as before".
+_capacity_coordinator: CapacityRecoveryCoordinator | None = None
+_capacity_fallback_chain: tuple[FallbackTarget, ...] = ()
+_capacity_backend_factory: Any = None
+
+
+def configure_capacity_recovery(
+    coordinator: CapacityRecoveryCoordinator | None,
+    *,
+    fallback_chain: tuple[FallbackTarget, ...] | None = None,
+    backend_factory: Any = None,
+) -> None:
+    """Install the shared recovery coordinator for every run in this process.
+
+    ``fallback_chain`` defaults to ``CCDB_CAPACITY_FALLBACK`` (``"codex:gpt-5.5,
+    claude"``) with computer authority; a run's own ``RunConfig.fallback_chain``
+    wins when set. Without a ``backend_factory`` no switch can be performed, so
+    the chain is ignored and the turn only waits.
+    """
+    global _capacity_coordinator, _capacity_fallback_chain, _capacity_backend_factory  # noqa: PLW0603
+    _capacity_coordinator = coordinator
+    _capacity_fallback_chain = (
+        parse_fallback_chain(os.environ.get("CCDB_CAPACITY_FALLBACK"), authority="computer")
+        if fallback_chain is None
+        else tuple(fallback_chain)
+    )
+    _capacity_backend_factory = backend_factory
+
+
+def capacity_coordinator() -> CapacityRecoveryCoordinator | None:
+    """The installed coordinator, for cogs that drive their own attempts."""
+    return _capacity_coordinator
+
+
+def capacity_fallback_chain() -> tuple[FallbackTarget, ...]:
+    """The computer-wide fallback chain captured at configuration time."""
+    return _capacity_fallback_chain
 
 
 def configure_session_limit(max_concurrent: int) -> None:
-    """Set the process-wide concurrent session limit.
+    """Set an explicit process-wide concurrent session limit (a fixed semaphore).
 
-    Called once from ``setup_bridge()`` during startup.  All subsequent calls to
-    ``run_claude_with_config()`` — regardless of which Cog invokes them — will
-    honour the limit.
+    Called from ``setup_bridge()`` when the operator configured a number.  Every
+    ``run_claude_with_config()`` call — whichever Cog makes it — honours it, and
+    the adaptive path is switched off.
     """
     global _global_semaphore, _max_concurrent  # noqa: PLW0603
     if type(max_concurrent) is not int or max_concurrent < 1:
@@ -56,9 +125,75 @@ def configure_session_limit(max_concurrent: int) -> None:
     _global_semaphore = asyncio.Semaphore(max_concurrent)
 
 
+def configure_adaptive_limit(
+    *,
+    controller: AdmissionController | None,
+    policy: CapacityPolicy | None,
+    probe: Any = None,
+    friction_path: Path | None = None,
+) -> None:
+    """Use measured capacity instead of a fixed number (``None`` for all switches it off).
+
+    The controller admits runs, the policy resizes it on every ``tick_capacity()``
+    from the probe's snapshot, and an explicit ``configure_session_limit()`` still
+    wins because the fixed semaphore is checked first.
+    """
+    global _global_admission, _capacity_policy, _resource_probe, _friction_path  # noqa: PLW0603
+    _global_admission = controller
+    _capacity_policy = policy
+    _resource_probe = probe
+    _friction_path = friction_path
+    if controller is not None and policy is not None:
+        controller.set_capacity(policy.capacity)
+
+
+def tick_capacity() -> CapacityDecision | None:
+    """Re-measure the host and resize the admission controller (adaptive path only)."""
+    if _global_admission is None or _capacity_policy is None or _resource_probe is None:
+        return None
+    held = _global_admission.snapshot().held
+    decision = _capacity_policy.decide(_resource_probe.sample(), _worker_peaks, held=held)
+    _global_admission.set_capacity(decision.capacity)
+    if decision.pause_starts and _friction_path is not None:
+        append_friction(
+            _friction_path,
+            FrictionEvent(
+                kind="capacity",
+                build_id="host",
+                task_id="",
+                attempt_id="",
+                plan_id="",
+                plan_version=0,
+                detail=decision.reason,
+            ),
+        )
+    return decision
+
+
+async def run_capacity_ticks(interval_seconds: float) -> None:
+    """Background loop for ``setup_bridge()``: keep the adaptive capacity current."""
+    while True:
+        try:
+            decision = tick_capacity()
+            if decision is not None and decision.pause_starts:
+                logger.info("gowork capacity: %s", decision.reason)
+        except Exception:  # never let a measurement error stop the loop
+            logger.warning("capacity tick failed", exc_info=True)
+        await asyncio.sleep(interval_seconds)
+
+
 def session_limit() -> int | None:
-    """Configured process-wide capacity, or None for unconfigured embedded use."""
-    return _max_concurrent if _global_semaphore is not None else None
+    """Process-wide capacity right now, or None for unconfigured embedded use."""
+    if _global_semaphore is not None:
+        return _max_concurrent
+    if _global_admission is not None:
+        return _global_admission.snapshot().capacity
+    return None
+
+
+def parallel_limit() -> int:
+    """How many Go Work steps may run side by side (the loop's old fixed ten)."""
+    return session_limit() or MAX_PARALLEL
 
 
 def configure_pr_completion_gate(owner: str | None) -> None:
@@ -161,8 +296,9 @@ async def _build_system_context(config: RunConfig) -> str | None:
             config.surface.thread_key, config.prompt[:100], config.runner.working_dir
         )
         others = config.registry.list_others(config.surface.thread_key)
-        notice = config.registry.build_concurrency_notice(config.surface.thread_key)
-        parts.append(notice)
+        if not config.slim_context:
+            notice = config.registry.build_concurrency_notice(config.surface.thread_key)
+            parts.append(notice)
         logger.info(
             "Concurrency notice built for thread %d (%d other active session(s), dir=%s)",
             config.surface.thread_key,
@@ -182,18 +318,44 @@ async def _build_system_context(config: RunConfig) -> str | None:
 
     wd = config.runner.working_dir or "your current working directory"
     marker = _attachment_marker_name(config.surface.thread_key)
-    parts.append(
-        "## File Delivery\n"
-        "When you need to send files to Discord, use your Bash tool to append "
-        "each file's ABSOLUTE path (one path per line, UTF-8) to:\n"
-        f"  {wd}/{marker}\n"
-        f"Example: `echo /absolute/path/to/file >> {wd}/{marker}`\n"
-        "The bot will attach those files when this session ends.\n"
-        "When local instructions require Discord attachment for a substantial "
-        "written deliverable, save the final text as a Markdown file and append "
-        "that file path here. Otherwise, only include files the user explicitly "
-        "asked to receive."
-    )
+    if config.slim_context:
+        parts.append(
+            "To send the person a file, append its absolute path to "
+            f"{wd}/{marker} (one per line); the bot attaches it when you finish."
+        )
+    else:
+        parts.append(
+            "## File Delivery\n"
+            "When you need to send files to Discord, use your Bash tool to append "
+            "each file's ABSOLUTE path (one path per line, UTF-8) to:\n"
+            f"  {wd}/{marker}\n"
+            f"Example: `echo /absolute/path/to/file >> {wd}/{marker}`\n"
+            "The bot will attach those files when this session ends.\n"
+            "When local instructions require Discord attachment for a substantial "
+            "written deliverable, save the final text as a Markdown file and append "
+            "that file path here. Otherwise, only include files the user explicitly "
+            "asked to receive.\n\n"
+            "## Show documents as cards (the user never opens files)\n"
+            "The user only reads Discord messages. Never mention a file, path or "
+            "plan name as if they had read it. Whenever they need a document's "
+            "content (a plan, summary, review, status, research), write a "
+            "plain-English Markdown version for them and append its path to the "
+            "file above: every `.md` listed there is shown inline in the thread as "
+            "colored cards, one card per `## ` section.\n"
+            "Card rules: keep every point and detail of the source; no jargon and "
+            "no assumed context; start with `# Title`; use `## ` sections (about 3 "
+            "to 6), `### ` sub-headings, short bullets, bold for key facts and "
+            "emoji markers (✅ done, ⏳ now, ⬜ next, ⚠️ warning); no tables. Your "
+            "chat reply (the cards appear right after it) gives a short summary "
+            "and asks the next question."
+        )
+
+    # Project catalog: only the invocation hint, never the projects. The hint
+    # points at the control plane, so it is worth injecting only when one is
+    # reachable; a slim (gowork) briefing works in its own fixed copy and has
+    # no project to choose.
+    if not config.slim_context and getattr(config.runner, "api_port", None) is not None:
+        parts.append(build_catalog_hint())
 
     # Post-compact guardrail: prevent auto-execution of "pending tasks" from summary.
     if config.post_compact_rerun:
@@ -437,10 +599,45 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
         # invisibly.  See: https://github.com/ebibibi/ebi-agent-chat-relay/issues/306
         config = replace(config, runner=runner)
 
-    processor = EventProcessor(config)
+    coordinator = _capacity_coordinator if config.capacity_recovery else None
+    if coordinator is None:
+        config, processor, failure = await _run_one_attempt(config)
+        turn: TurnResult | None = None
+    else:
+        config, recovered, failure, turn = await _run_recovered_turn(config, coordinator)
+        if recovered is None:
+            # The turn was already taken (a duplicate resume): nothing ran here.
+            return config.session_id
+        processor = recovered
+    if failure is not None:
+        await _emit_result_sink(config, None, failure)
+        return processor.session_id
+    if turn is not None and not turn.accepted and turn.kind != "duplicate":
+        # Recovery stopped: exhausted, needs the user, or ambiguous. The status
+        # line already said why; the sink gets the last error so callers can
+        # tell a failed turn from an empty answer.
+        await _emit_result_sink(config, None, processor.final_error or "capacity recovery stopped")
+        return processor.session_id
+    return await _finish_turn(config, processor)
 
-    # --- Session slot limiter (global semaphore) ---
+
+async def _run_one_attempt(
+    config: RunConfig,
+) -> tuple[RunConfig, EventProcessor, str | None]:
+    """One complete backend attempt under relay admission.
+
+    Returns the (possibly replaced) config, the processor that saw the stream,
+    and the exception text when the run raised — the raise is already reported
+    to the surface here, so callers only route it to the result sink.
+    """
+    runner = config.runner
+    processor = EventProcessor(config)
+    failure: str | None = None
+
+    # --- Session slot limiter: an explicit semaphore, else adaptive admission ---
     sem = _global_semaphore
+    admission = _global_admission if sem is None else None
+    reservation: Reservation | None = None
     acquired = False
     try:
         if config.registry is not None:
@@ -460,6 +657,27 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
                 )
         if sem is not None:
             await sem.acquire()
+            acquired = True
+        elif admission is not None:
+            kind: SlotKind = config.slot_kind if config.slot_kind in ("task", "review") else "chat"  # type: ignore[assignment]
+            reservation = admission.reserve(
+                kind,
+                config.slot_build_id or f"thread-{config.surface.thread_key}",
+                unblocks=config.slot_unblocks,
+            )
+            if kind != "chat" and not admission.has_room(kind):
+                with contextlib.suppress(Exception):
+                    snapshot = admission.snapshot()
+                    await config.surface.send_notice(
+                        Notice(
+                            level=NoticeLevel.SUBTLE,
+                            body=(
+                                f"⏳ Waiting for capacity ({snapshot.held} of "
+                                f"{snapshot.capacity} slots in use)"
+                            ),
+                        )
+                    )
+            await reservation.acquire()
             acquired = True
         if config.registry is not None:
             config.registry.update(config.surface.thread_key, execution_state="running")
@@ -487,19 +705,156 @@ async def run_claude_with_config(config: RunConfig) -> str | None:
         if config.status:
             with contextlib.suppress(Exception):
                 await config.status.set_error()
-        await _emit_result_sink(config, None, f"{type(exc).__name__}: {exc}")
-        return processor.session_id
+        failure = f"{type(exc).__name__}: {exc}"
     finally:
         if sem is not None and acquired:
             sem.release()
+        if reservation is not None:
+            reservation.release()
         if config.stop_view is not None:
             config.stop_view.set_queued_task(None)
         await processor.finalize()
         if config.registry is not None:
             config.registry.unregister(config.surface.thread_key)
-        if config.worktree_manager is not None and (sem is None or acquired):
+        if config.worktree_manager is not None and (
+            (sem is None and admission is None) or acquired
+        ):
             await _cleanup_session_worktree(config)
+    return config, processor, failure
 
+
+async def _run_recovered_turn(
+    config: RunConfig, coordinator: CapacityRecoveryCoordinator
+) -> tuple[RunConfig, EventProcessor | None, str | None, TurnResult]:
+    """Run the attempt through the coordinator: wait, switch, or stop per policy."""
+    backend = _backend_name_from_runner(config.runner)
+    model = getattr(config.runner, "model", None)
+    submission = TurnSubmission(
+        turn_key=config.recovery_turn_key
+        or f"{config.surface.frontend}:{config.surface.thread_key}:{uuid.uuid4().hex}",
+        frontend=config.surface.frontend,
+        thread_id=int(config.surface.thread_key),
+        session_id=config.session_id,
+        prompt=config.prompt,
+        backend=backend,
+        model=model if isinstance(model, str) else None,
+        fallback_chain=_usable_chain(config.fallback_chain or _capacity_fallback_chain),
+    )
+    presenter = _RecoveryPresenter(config)
+    last: dict[str, Any] = {}
+    attempt_config = replace(config, recovery_presents_errors=True)
+
+    async def attempt(target: AttemptTarget) -> AttemptResult:
+        cfg = attempt_config
+        if (target.backend, target.model) != (submission.backend, submission.model):
+            runner = _capacity_backend_factory.build(
+                backend=target.backend, model=target.model, thread_id=submission.thread_id
+            )
+            cfg = replace(cfg, runner=runner, session_id=None)
+            if cfg.stop_view is not None:
+                cfg.stop_view.update_runner(runner)
+        else:
+            cfg = replace(cfg, session_id=target.session_id)
+        cfg, processor, failure = await _run_one_attempt(cfg)
+        last.update(config=cfg, processor=processor, failure=failure)
+        return AttemptResult(
+            text=processor.final_assistant_text or None,
+            error=processor.final_error or failure,
+            delivered=processor.assistant_text_sent,
+            session_id=processor.session_id,
+        )
+
+    turn = await coordinator.run_turn(
+        submission,
+        attempt,
+        on_status=presenter,
+        on_switch=presenter.switch,
+        claim_token=config.recovery_claim_token,
+    )
+    await presenter.close(turn)
+    if "processor" not in last:
+        return config, None, None, turn
+    return last["config"], last["processor"], last["failure"], turn
+
+
+def _usable_chain(chain: tuple[FallbackTarget, ...]) -> tuple[FallbackTarget, ...]:
+    """A chain is only usable when a factory can build its targets."""
+    return chain if _capacity_backend_factory is not None else ()
+
+
+class _RecoveryPresenter:
+    """The one live recovery status for a turn: opened once, edited after."""
+
+    _TERMINAL = {
+        RecoveryPhase.EXHAUSTED,
+        RecoveryPhase.AUTHENTICATION,
+        RecoveryPhase.QUOTA,
+        RecoveryPhase.AMBIGUOUS,
+    }
+
+    def __init__(self, config: RunConfig) -> None:
+        self._config = config
+        self._handle: Any = None
+        self._open = False
+        # Each attempt unregisters the session when it ends; remember how it was
+        # registered so the waiting turn stays visible (as "recovering") between
+        # attempts instead of vanishing from the dashboard and the API.
+        self._registered: tuple[str, str | None] | None = None
+        if config.registry is not None:
+            for session in config.registry.list_active():
+                if session.thread_id == config.surface.thread_key:
+                    self._registered = (session.description, session.working_dir)
+
+    async def __call__(self, status: RecoveryStatus) -> None:
+        if status.phase is RecoveryPhase.PERMANENT:
+            return  # the processor's error embed already carries the diagnostic
+        if status.phase is RecoveryPhase.ACCEPTED:
+            await self._finish(status.line, ok=True)
+            return
+        config = self._config
+        if config.registry is not None:
+            if self._registered is not None:
+                config.registry.register(config.surface.thread_key, *self._registered)
+            config.registry.update(config.surface.thread_key, execution_state="recovering")
+        if config.stop_view is not None:
+            with contextlib.suppress(Exception):
+                await config.stop_view.set_label("⏳ Waiting for model capacity")
+        with contextlib.suppress(Exception):
+            if self._handle is None:
+                self._handle = await config.surface.open_activity(
+                    ActivitySpec(kind="todo", title="Model capacity", detail=status.line)
+                )
+                self._open = True
+            else:
+                await self._handle.update(status.line)
+        if status.phase in self._TERMINAL:
+            await self._finish(status.line, ok=False)
+            with contextlib.suppress(Exception):
+                await config.surface.set_status(StatusKind.ERROR)
+
+    async def switch(self, target: FallbackTarget) -> None:
+        # The FALLBACK status line already announced the switch.
+        logger.info(
+            "capacity recovery thread=%s switching to %s (%s authority)",
+            self._config.surface.thread_key,
+            target.label,
+            target.authority,
+        )
+
+    async def close(self, turn: TurnResult) -> None:
+        if self._open and turn.status is not None:
+            await self._finish(turn.status.line, ok=turn.accepted)
+
+    async def _finish(self, line: str, *, ok: bool) -> None:
+        if not self._open or self._handle is None:
+            return
+        self._open = False
+        with contextlib.suppress(Exception):
+            await self._handle.complete(line, ok=ok)
+
+
+async def _finish_turn(config: RunConfig, processor: EventProcessor) -> str | None:
+    """Everything that follows an accepted attempt: reruns, asks, the sink."""
     # After compact_boundary, rerun with a guardrail to prevent Claude from
     # auto-executing "pending tasks" from the compacted context summary.
     if processor.compact_occurred:

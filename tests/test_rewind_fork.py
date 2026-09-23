@@ -121,8 +121,10 @@ class TestRewindCommand:
         with patch("claude_discord.cogs.claude_chat.find_session_jsonl", return_value=None):
             await cog.rewind_session.callback(cog, interaction)
 
-        # DB should be cleared (fallback behaviour)
-        cog.repo.delete.assert_called_once_with(thread_id)
+        # Fallback = the shared clear: conversation id reset, bound folder kept
+        # (discord-command-surface: Clear keeps the thread and its folder).
+        cog.repo.save.assert_awaited_once_with(thread_id, "", working_dir="/tmp/work")
+        cog.repo.delete.assert_not_called()
         interaction.response.send_message.assert_called_once()
 
     @pytest.mark.asyncio
@@ -141,7 +143,8 @@ class TestRewindCommand:
         ):
             await cog.rewind_session.callback(cog, interaction)
 
-        cog.repo.delete.assert_called_once_with(thread_id)
+        cog.repo.save.assert_awaited_once_with(thread_id, "", working_dir="/tmp/work")
+        cog.repo.delete.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rewind_fallback_kills_active_runner(self) -> None:

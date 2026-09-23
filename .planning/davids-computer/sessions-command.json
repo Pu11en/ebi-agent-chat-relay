@@ -1,0 +1,38 @@
+{
+  "command": "/sessions",
+  "status": "core_design_agreed_not_implemented",
+  "user_selection": "D and B, most recent at top, only this category",
+  "required_arguments": [],
+  "default_owner_filter": "sessions_started_by_requester",
+  "optional_owner_filter": "everyone_authorized_in_current_category",
+  "history": "all_existing_sessions_including_archived",
+  "sort": "last_activity_descending",
+  "category_scope": "current_category_only",
+  "proposed_details": [
+    "Show thread title, working folder and running/idle/archived status.",
+    "Provide search and pagination for older sessions.",
+    "Refresh availability before opening or closing; omit deleted or inaccessible threads."
+  ],
+  "open_decisions": [],
+  "next_question": null,
+  "close_behavior": "Stop immediately and archive the thread; retain history and project files.",
+  "batch_close": {
+    "selection": "explicit_multi_select",
+    "user_answer": "A",
+    "action": "Stop and archive selected sessions only, preserving history and project files.",
+    "scope": "Current category and authorized accessible threads only."
+  },
+  "actions": [
+    "open",
+    "close",
+    "new_in_same_folder"
+  ],
+  "actions_user_answer": "C",
+  "new_in_same_folder": {
+    "source": "one selected session",
+    "working_dir": "same as selected session",
+    "conversation": "fresh, no inherited task or pending goal",
+    "auto_start": false,
+    "start_trigger": "first user task message in the new thread"
+  }
+}

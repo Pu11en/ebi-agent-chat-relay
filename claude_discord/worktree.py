@@ -26,6 +26,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from claude_code_core.win_subprocess import NO_WINDOW
+
 logger = logging.getLogger(__name__)
 
 # Branch pattern created by the concurrency notice template:
@@ -84,6 +86,7 @@ def _run(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess
         capture_output=True,
         text=True,
         cwd=cwd,
+        **NO_WINDOW,
     )
 
 

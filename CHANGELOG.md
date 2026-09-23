@@ -1,6 +1,6 @@
 # Changelog
 
-Last updated: 2026-08-11
+Last updated: 2026-09-21
 
 All notable changes to this project will be documented in this file.
 
@@ -8,6 +8,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+_Nothing yet._
+
+## [4.1.0] - 2026-09-21
+
+One release that finishes every build that was in flight on 2026-09-21. The plan, the
+per-task proof and every judgement call are in `docs/plans/v4.1.0-finish-all-builds.plan.md`,
+`…progress.md` and `…decisions.md`; the plain-English tour is
+`docs/plans/v4.1.0-release-notes.md`.
+
+### Added
+
+- **Go Work runs many workers per plan, not one** — a validated `gowork-plan` manifest
+  (plans, requirements, tasks with owned files and dependencies) is scheduled by code: ready
+  tasks start as capacity allows, each worker gets a compact persisted handoff and its own
+  side copy, results are combined one at a time in review copies, real check + review
+  evidence gates acceptance, exactly one automatic repair, mid-build plan edits are
+  versioned, blockers are Discord questions answered by direct reply, interrupted work is
+  reconciled after a restart without redoing it, and a checked build integrates itself with
+  no "looks good" gate. Capacity is measured (host memory/load, per-worker peaks) and admitted
+  fairly across builds instead of a fixed cap of ten. Includes the planner/communication
+  rules, a plan exporter (`gowork_export`), a guidance installer that stages into a home
+  (`gowork_guidance`), offline contract fixtures (`gowork_contracts`) and a repeatable practice
+  run: `uv run python -m claude_discord.gowork_demo`. Activation and rollback:
+  `docs/gowork-upgrade-activation.md`.
+- **Model capacity resilience** — "at capacity", quota, login and ambiguous provider failures
+  are classified, retried with a bounded policy, or moved to a fallback backend/model; stopped
+  turns are parked and resumed after a restart; `/gowork` and interactive turns share one
+  recovery coordinator; recovery state is visible in `/api` without the prompt.
+- **A final eight-command Discord surface** — control-center row (status · New session ·
+  Sessions · Settings), a New session menu (Favorites/Recent/Browse/Projects/Create/Clone),
+  a Sessions browser, a Settings home with an extension point, `/session` actions
+  (stop, clear, compact, goal, rewind, fork, context), `/close` behind one archive-only
+  lifecycle service, and a location-aware `/help`. Superseded commands retire behind
+  `CCDB_RETIRE_SUPERSEDED_COMMANDS` after live acceptance.
+- **Shared project catalog** — one owner-qualified catalog of projects (favorites, hidden,
+  recent, machine profile) feeds the launcher menus, `GET /api/projects`,
+  `POST /api/projects/resolve`, the harness query helper and path-free cross-computer
+  lookups; every path is revalidated inside an approved root before use.
+- **Trusted agent handoffs** — a bot can hand another bot a task packet: strict per-instance
+  config (agent id, guild, channel, one-to-one bot mapping, off unless complete), an
+  authority intersection enforced in the worker's argv (read-only means no edit/shell
+  tools), an executor with bounded retries and restart reconciliation, progress and blocker
+  relay to the origin, results returned in the reply guild only, and a three-bot offline
+  integration harness.
+- **My AI Setup** — Settings → My AI Setup shows what Claude Code, Codex, DSH and the Discord
+  extensions actually load on this computer (browse by kind, where it lives, compare with
+  another computer, recent changes), with every secret redacted before storage or display,
+  and an "Ask Setup Agent" button that opens one bounded session.
+- **Professional harness audit** (`python -m extensions.harness_audit.cli`) — read-only
+  discovery and collection of Claude/Codex configuration under approved roots, deterministic
+  checks (duplication, scope, size, permissions, precedence, dead config), one verdict per
+  item, parity across machines, a plain-language report, and reversible hash-verified
+  quarantine with rollback. Fails closed if a secret would leave the machine.
+- **Feature-workflow extension** — one branch and `.worktrees/wt-<thread>` per worker task,
+  a deterministic split policy for child planning threads, linked child planning threads in
+  Discord, structured worker test evidence, and `parent_thread_id` / `correlation_id` on
+  `/api/spawn` with `GET /api/correlations/{id}`.
+- **Folder session launcher finished**; the "start fresh" context nudge now works on Codex
+  (real `model_context_window`) and on DSH (labelled estimate).
+- **Automatic voice transcripts** (`extensions/voice_transcripts/`, Node) with speaker labels.
+
+### Fixed
+
+- **Sixteen security-audit findings**, each with a test: handoff intake fails closed and
+  read-only authority is enforced in argv; manifest project paths are confined and an
+  unchecked repository is never fast-forwarded; HTML/SVG previews render from bytes with
+  scripts off and every request aborted (no more `file://` reads); flag-style credentials
+  (`--token x`, `-u a:b`) are redacted from setup summaries; prompt buttons are bound to the
+  bot's allowed users; helper CLIs never inherit the bot's credentials; the guidance
+  installer refuses symlinks; quarantine stays inside audited roots; local paths stay out of
+  peer-facing errors; and more (`docs/plans/v4.1.0-finish-all-builds.progress.md`, E2).
+- **Windows**: the test suite passes on Windows (cross-platform file lock, subprocess
+  teardown, path handling); child processes spawn with `CREATE_NO_WINDOW` so a hidden bot
+  no longer flashes console windows; injected `$CCDB_API_URL` examples carry the bearer
+  header.
+
+### Removed
+
+- `extensions/project_picker/` — a duplicate of the launcher/workdir code the base already
+  had; one implementation kept.
+
+### Unreleased items folded into this version
 
 ### Added
 

@@ -64,6 +64,42 @@ from .frontend import (
     ThreadKey,
     derive_thread_key,
 )
+from .gowork_admission import AdmissionController, AdmissionSnapshot, Reservation
+from .gowork_blockers import Blocker, BlockerLedger
+from .gowork_capacity import CapacityDecision, CapacityPolicy
+from .gowork_friction import FrictionEvent, append_friction, friction_report, friction_summary
+from .gowork_handoff import WorkerHandoff, build_handoff, persist_handoff, render_worker_prompt
+from .gowork_plan import (
+    OwnershipConflict,
+    PlanIdentity,
+    PlanTree,
+    PlanValidationError,
+    Requirement,
+    TaskAssignment,
+    load_plan_tree,
+    parse_plan_tree,
+    render_plan_manifest,
+)
+from .gowork_prompts import COMMUNICATION_RULES, PLANNER_RULES, planning_prompt
+from .gowork_report import render_blocker_question, render_completion, render_progress
+from .gowork_resources import (
+    HostProbe,
+    Pressure,
+    ResourceSnapshot,
+    WorkerPeaks,
+    pressure_of,
+    workers_that_fit,
+)
+from .gowork_schedule import ReadyTask, ready_tasks
+from .gowork_state import (
+    BuildState,
+    StaleAttemptError,
+    TaskAttempt,
+    open_build_state,
+)
+from .gowork_state import (
+    TaskStatus as GoworkTaskStatus,
+)
 from .memory_surface import MemorySurface
 
 # Parser
@@ -159,6 +195,50 @@ __all__ = [
     "TextStream",
     "ThreadKey",
     "derive_thread_key",
+    # Go Work plan identity
+    "OwnershipConflict",
+    "PlanIdentity",
+    "PlanTree",
+    "PlanValidationError",
+    "WorkerHandoff",
+    "FrictionEvent",
+    "append_friction",
+    "friction_report",
+    "friction_summary",
+    "build_handoff",
+    "persist_handoff",
+    "render_worker_prompt",
+    "BuildState",
+    "StaleAttemptError",
+    "TaskAttempt",
+    "GoworkTaskStatus",
+    "open_build_state",
+    "ReadyTask",
+    "HostProbe",
+    "COMMUNICATION_RULES",
+    "PLANNER_RULES",
+    "planning_prompt",
+    "render_blocker_question",
+    "render_completion",
+    "render_progress",
+    "AdmissionController",
+    "Blocker",
+    "BlockerLedger",
+    "CapacityDecision",
+    "CapacityPolicy",
+    "AdmissionSnapshot",
+    "Reservation",
+    "Pressure",
+    "ResourceSnapshot",
+    "WorkerPeaks",
+    "pressure_of",
+    "workers_that_fit",
+    "ready_tasks",
+    "Requirement",
+    "TaskAssignment",
+    "load_plan_tree",
+    "parse_plan_tree",
+    "render_plan_manifest",
     # Rewind
     "TurnEntry",
     "find_session_jsonl",

@@ -462,6 +462,38 @@ def test_standing_instruction_is_absent_when_not_configured():
     assert runner._with_standing_instruction("fix it") == "fix it"
 
 
+def test_standing_instruction_binds_the_sessions_coordination_values():
+    """A DSH runtime is a long-lived process shared by every thread on the same
+    route and directory, so its environment cannot carry a per-thread
+    ``DISCORD_THREAD_ID``. The per-turn instruction is the only channel that
+    can, so the relay's shell variables are bound to literals before the model
+    sees them — the copy-pasteable curl keeps working either way."""
+    runner = DshRunner(
+        api_port=9876,
+        thread_id=1547495736269340723,
+        append_system_prompt=(
+            'curl "$CCDB_API_URL/api/lounge" -d '
+            "'{\"thread_id\": \"'$DISCORD_THREAD_ID'\"}'\n"
+            'curl "$CCDB_API_URL/api/claims?resource=repo:x%23y'
+            '&thread_id=$DISCORD_THREAD_ID"'
+        ),
+    )
+
+    resolved = runner._with_standing_instruction("go")
+
+    assert "$CCDB_API_URL" not in resolved
+    assert "$DISCORD_THREAD_ID" not in resolved
+    assert "http://127.0.0.1:9876/api/lounge" in resolved
+    assert '\'{"thread_id": "1547495736269340723"}\'' in resolved
+    assert "thread_id=1547495736269340723" in resolved
+
+
+def test_standing_instruction_leaves_figures_alone_without_a_thread_or_api():
+    """Nothing to bind means nothing changes — the prompt is passed through."""
+    runner = DshRunner(append_system_prompt="run $CCDB_API_URL/api/health")
+    assert runner._with_standing_instruction("go") == ("run $CCDB_API_URL/api/health\n\ngo")
+
+
 async def test_standing_instruction_prefixes_every_turn(monkeypatch):
     """The per-turn system context (lounge, concurrency notice, file marker)
     is ephemeral and recomputed each message, so it must reach every turn —
@@ -491,6 +523,50 @@ def test_build_env_hides_the_relays_own_credentials(monkeypatch):
     env = DshRunner()._build_env()
     assert "DISCORD_BOT_TOKEN" not in env
     assert env["DEEPSEEK_API_KEY"] == "sk-deepseek"
+
+
+def test_runtime_env_carries_the_control_plane_address():
+    """``child_env`` strips the control-plane credential from everything the
+    relay inherits and requires each runner to inject it back explicitly."""
+    env = DshRunner(api_port=9876, api_secret="s3cr3t")._runtime_env()
+    assert env == {
+        "CCDB_API_URL": "http://127.0.0.1:9876",
+        "CCDB_API_SECRET": "s3cr3t",
+    }
+
+
+def test_runtime_env_is_empty_without_a_control_plane():
+    assert DshRunner()._runtime_env() == {}
+
+
+def test_build_env_injects_the_control_plane_after_stripping(monkeypatch):
+    monkeypatch.setenv("CCDB_API_URL", "http://stale.example")
+    monkeypatch.setenv("CCDB_API_SECRET", "stale")
+    env = DshRunner(api_port=9876, api_secret="fresh")._build_env()
+    assert env["CCDB_API_URL"] == "http://127.0.0.1:9876"
+    assert env["CCDB_API_SECRET"] == "fresh"
+
+
+def test_the_started_runtime_receives_the_control_plane_env(monkeypatch):
+    starts: list[dict[str, object]] = []
+
+    class Probe:
+        def __init__(self, **kwargs: object) -> None:
+            starts.append(kwargs)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        dsh_backend, "_require_sdk", lambda: type("S", (), {"DeepSeekHarness": Probe})
+    )
+
+    DshRunner(api_port=9876, api_secret="s3cr3t", working_dir="/tmp/w")._ensure_runtime()
+
+    assert starts[0]["env"] == {
+        "CCDB_API_URL": "http://127.0.0.1:9876",
+        "CCDB_API_SECRET": "s3cr3t",
+    }
 
 
 def test_the_runtime_never_inherits_transport_credentials(monkeypatch):
@@ -897,3 +973,63 @@ def test_max_tokens_notice_is_session_less_so_it_renders():
     assert events[0].message_type == MessageType.SYSTEM
     assert events[0].session_id is None
     assert "truncated" in (events[0].text or "")
+
+
+# ── Context estimate (D10b) ─────────────────────────────────
+
+
+class TestContextEstimate:
+    """DSH exposes no usage, so the nudge runs on prompt + reply characters / 4."""
+
+    def test_the_estimate_is_characters_over_four_rounded_up(self):
+        assert dsh_backend.estimate_tokens("") == 0
+        assert dsh_backend.estimate_tokens("abcd") == 1
+        assert dsh_backend.estimate_tokens("abcde") == 2
+
+    def test_the_window_follows_the_model_with_an_env_override(self, monkeypatch):
+        monkeypatch.delenv("CCDB_DSH_CONTEXT_WINDOW", raising=False)
+        assert dsh_backend.context_window_for("deepseek-v4-flash") == 128_000
+        assert dsh_backend.context_window_for("glm-5.3") == 200_000
+        assert dsh_backend.context_window_for("mystery") == dsh_backend.DEFAULT_CONTEXT_WINDOW
+        monkeypatch.setenv("CCDB_DSH_CONTEXT_WINDOW", "64000")
+        assert dsh_backend.context_window_for("deepseek-v4-flash") == 64_000
+        monkeypatch.setenv("CCDB_DSH_CONTEXT_WINDOW", "lots")
+        assert dsh_backend.context_window_for("deepseek-v4-flash") == 128_000
+
+    async def test_the_closing_event_carries_an_accumulating_estimate(self, monkeypatch):
+        runner = DshRunner(model="deepseek-v4-flash")
+        runtime = FakeRuntime(FakeSession())
+        monkeypatch.setattr(runner, "_ensure_runtime", lambda: runtime)
+        session_id, _ = runner._session_for_turn(None, runner._runtime_key())
+        runtime.session.notifications = [_assistant_text(session_id, "y" * 400)]
+
+        first = (await _collect(runner, "x" * 100, session_id))[-1]
+        runtime.session.notifications = [_assistant_text(session_id, "y" * 400)]
+        second = (await _collect(runner, "x" * 100, session_id))[-1]
+
+        assert first.is_complete and first.context_estimated is True
+        assert first.context_window == 128_000
+        prompt_tokens = dsh_backend.estimate_tokens(runner._with_standing_instruction("x" * 100))
+        assert first.input_tokens == prompt_tokens + 100
+        assert second.input_tokens == 2 * (prompt_tokens + 100)
+        assert first.cache_read_tokens is None and first.cache_creation_tokens is None
+
+    async def test_a_fresh_session_starts_its_estimate_at_zero(self, monkeypatch):
+        runner = DshRunner(model="deepseek-v4-flash")
+        monkeypatch.setattr(runner, "_ensure_runtime", lambda: FakeRuntime(FakeSession()))
+
+        first = (await _collect(runner, "x" * 400))[-1]
+        other = (await _collect(runner, "x" * 400))[-1]
+
+        assert first.session_id != other.session_id
+        assert first.input_tokens == other.input_tokens
+
+    async def test_an_error_turn_still_reports_the_estimate(self, monkeypatch):
+        runner = DshRunner(model="deepseek-v4-flash")
+        session = FakeSession(error=RuntimeError("boom"))
+        monkeypatch.setattr(runner, "_ensure_runtime", lambda: FakeRuntime(session))
+
+        final = (await _collect(runner, "hello"))[-1]
+
+        assert final.error and final.context_estimated is True
+        assert final.context_window == 128_000

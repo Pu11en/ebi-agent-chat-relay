@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-code-discord-bridge"
-version = "4.0.26"
+version = "4.1.0"
 description = "Ebi Agent Chat Relay — run Claude Code, Codex, local, and AG-UI agents from Discord or Microsoft Teams"
 readme = "README.md"
 license = {text = "MIT"}
@@ -54,11 +54,15 @@ dev = [
     "pillow>=12.3.0",
     "pyjwt[crypto]>=2.13.0,<3.0",
     "defusedxml>=0.7,<1.0",
+    "pytest-timeout>=2.3",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A hung test must fail with every thread's stack, not pin CI for six hours.
+timeout = 300
+timeout_method = "thread"
 markers = [
     "real_system_context: opt out of the _build_system_context autouse patch",
 ]

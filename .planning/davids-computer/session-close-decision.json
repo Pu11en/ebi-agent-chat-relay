@@ -1,0 +1,45 @@
+{
+  "id": "session_close_behavior",
+  "status": "decided",
+  "question": "When you say close a session, what should happen to running work and its thread?",
+  "recommendation": "stop_archive",
+  "options": [
+    {
+      "id": "stop_archive",
+      "label": "Stop and archive",
+      "tradeoff": "Tidies immediately; interrupts unfinished work but keeps history and files."
+    },
+    {
+      "id": "finish_archive",
+      "label": "Finish then archive",
+      "tradeoff": "Lets work finish; the thread closes later."
+    },
+    {
+      "id": "stop_keep_open",
+      "label": "Stop only",
+      "tradeoff": "Keeps the thread visible for later."
+    },
+    {
+      "id": "choose_each_time",
+      "label": "Choose each time",
+      "tradeoff": "More control at the cost of another click."
+    }
+  ],
+  "settled": [
+    "/new takes no required arguments and guides folder selection.",
+    "/new creates a clean idle thread and does not run a model.",
+    "The first user message in the new thread starts work.",
+    "Natural-language session management stays within the category.",
+    "Control-center remains the entry point; workers threads are sessions.",
+    "One shared default system across all three categories."
+  ],
+  "selected": "stop_archive",
+  "user_answer": "A",
+  "behavior": {
+    "running_task": "stop_immediately",
+    "thread": "archive",
+    "conversation_history": "preserve",
+    "project_files": "preserve",
+    "natural_language_close": "same behavior within the current category"
+  }
+}

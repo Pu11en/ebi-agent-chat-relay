@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +19,8 @@ import urllib.request
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from extensions.feature_workflow import _filelock
 
 
 class WorkflowError(Exception):
@@ -52,6 +53,21 @@ def plan_digest(repo: Path, paths: list[str]) -> str:
     """Stable approval revision: canonical path-to-content-hash mapping."""
     return _digest(
         {name: hashlib.sha256(_file(repo, name).read_bytes()).hexdigest() for name in paths}
+    )
+
+
+def _is_test_evidence(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if not isinstance(value, dict):
+        return False
+    command = value.get("command")
+    outcome = value.get("outcome")
+    return (
+        isinstance(command, str)
+        and bool(command.strip())
+        and isinstance(outcome, str)
+        and bool(outcome.strip())
     )
 
 
@@ -89,11 +105,13 @@ def _atomic(path: Path, value: Any) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        directory_flag = getattr(os, "O_DIRECTORY", None)
+        if directory_flag is not None:  # Windows cannot fsync a directory
+            directory = os.open(path.parent, directory_flag)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -149,13 +167,13 @@ class Coordinator:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         with (self.state_dir / "lock").open("a") as stream:
             try:
-                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _filelock.lock(stream, blocking=False)
             except BlockingIOError as exc:
                 raise WorkflowError("Another coordinator holds the run lock") from exc
             try:
                 yield
             finally:
-                fcntl.flock(stream, fcntl.LOCK_UN)
+                _filelock.unlock(stream)
 
     def _save(self, state: dict) -> None:
         _atomic(self.state_dir / "state.json", state)
@@ -325,7 +343,7 @@ class Coordinator:
             f"Approved feature worker {manifest['run_id']}/{task['id']}. "
             f"Plan owner thread {feature['plan_owner']}; "
             f"integration owner {manifest['integration_owner']}.\n"
-            f"Your durable thread binding is {self.state_dir}/threads/$DISCORD_THREAD_ID.json "
+            f"Your durable thread binding is {self.state_dir / 'threads'}/$DISCORD_THREAD_ID.json "
             "(written immediately after thread creation); use it when resuming this feature.\n"
             f"Read repository instructions at {self.repo}. "
             f"First check {result}. If the result JSON already exists, do not rebuild; "
@@ -352,7 +370,8 @@ class Coordinator:
             + f"Write atomic JSON result to {result}; create its parent directory if needed. "
             f"Required fields: task={task['id']!r}, approval_digest={state['approval_digest']!r}, "
             "commit=<full 40-character commit SHA>, worktree=<absolute worktree path>, "
-            "tests=<nonempty array of actual check commands and outcomes>. "
+            "tests=<nonempty array of evidence strings or objects with nonempty command and "
+            "outcome strings>. "
             "Do not mark success until checks pass. Include evidence in your final Discord reply. "
             "The external coordinator verifies Git evidence and wakes the integration owner; "
             "do not merge your work or launch extra workers."
@@ -373,7 +392,7 @@ class Coordinator:
             if (
                 not isinstance(result["tests"], list)
                 or not result["tests"]
-                or not all(isinstance(test, str) and test.strip() for test in result["tests"])
+                or not all(_is_test_evidence(test) for test in result["tests"])
             ):
                 raise WorkflowError("Result needs actual test evidence")
             expected = self.worktree_root / f"wt-{entry['thread_id']}"

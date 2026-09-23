@@ -18,11 +18,14 @@ import os
 from dataclasses import dataclass
 
 from .database.ask_repo import PendingAskRepository
+from .database.capacity_recovery_repo import CapacityRecoveryRepository
 from .database.claims_repo import ClaimRepository
 from .database.frontend_thread_repo import FrontendThreadRepository
+from .database.handoff_repo import HandoffRepository
 from .database.ingest_repo import IngestResultRepository
 from .database.lounge_repo import LoungeRepository
 from .database.models import init_db
+from .database.project_catalog_repo import ProjectCatalogRepository
 from .database.repository import SessionRepository, UsageStatsRepository
 from .database.resume_repo import PendingResumeRepository
 from .database.settings_repo import SettingsRepository
@@ -48,6 +51,11 @@ class SessionStores:
     ingest: IngestResultRepository
     summaries: ThreadSummaryRepository
     frontend_threads: FrontendThreadRepository
+    handoffs: HandoffRepository
+    #: Turns kept alive across model-capacity retries and restarts.
+    capacity: CapacityRecoveryRepository
+    #: Personal Favorite / Hide / recency for shared-catalog projects.
+    catalog_metadata: ProjectCatalogRepository | None = None
 
 
 async def build_session_stores(session_db_path: str) -> SessionStores:
@@ -87,4 +95,7 @@ async def build_session_stores(session_db_path: str) -> SessionStores:
         ingest=ingest,
         summaries=summaries,
         frontend_threads=frontend_threads,
+        handoffs=HandoffRepository(session_db_path),
+        capacity=CapacityRecoveryRepository(session_db_path),
+        catalog_metadata=ProjectCatalogRepository(session_db_path),
     )

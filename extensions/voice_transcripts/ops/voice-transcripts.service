@@ -1,0 +1,24 @@
+[Unit]
+Description=Automatic voice transcripts using the existing Discord bot
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/main-projects/drew-ai-voice-runtime/extensions/voice_transcripts
+Environment=VOICE_BRIDGE_ENV_FILE=%h/main-projects/ebi-agent-chat-relay/.env
+Environment=VOICE_CONFIG_FILE=%h/.local/share/drew-ai-voice-transcripts/voice.env
+ExecStart=/usr/bin/flock --no-fork --nonblock %h/.local/share/drew-ai-voice-transcripts/worker.lock %h/.local/node/bin/node %h/main-projects/drew-ai-voice-runtime/extensions/voice_transcripts/src/index.mjs
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/drew-ai-voice-transcripts
+MemoryMax=1G
+CPUQuota=200%
+
+[Install]
+WantedBy=default.target

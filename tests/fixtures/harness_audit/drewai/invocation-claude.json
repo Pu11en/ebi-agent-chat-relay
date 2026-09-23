@@ -1,0 +1,24 @@
+{
+  "harness": "claude",
+  "cwd": "__HOME__/projects/relay",
+  "argv": [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "opus",
+    "--permission-mode",
+    "acceptEdits",
+    "--append-system-prompt",
+    "You are EbiBot. Private operator prompt that must stay local.",
+    "--",
+    "hello"
+  ],
+  "environment_names": [
+    "ANTHROPIC_API_KEY",
+    "CCDB_API_URL",
+    "PATH"
+  ],
+  "cli_version": "2.0.5"
+}

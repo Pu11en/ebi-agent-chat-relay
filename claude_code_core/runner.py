@@ -24,6 +24,7 @@ from .api_provider import detect_api_provider
 from .child_env import STRIPPED_ENV_KEYS, strip_transport_credentials
 from .parser import parse_line
 from .types import ImageData, MessageType, StreamEvent
+from .win_subprocess import NO_WINDOW
 
 # Re-export for backward compatibility
 __all__ = ["ClaudeRunner", "ImageData"]
@@ -90,6 +91,8 @@ class ClaudeRunner:
         images: list[ImageData] | None = None,
         fork_session: bool = False,
         effort: str | None = None,
+        tools: list[str] | None = None,
+        strict_mcp_config: bool = False,
     ) -> None:
         self.command = command
         self.model = model
@@ -97,6 +100,10 @@ class ClaudeRunner:
         self.working_dir = working_dir
         self.timeout_seconds = timeout_seconds
         self.allowed_tools = allowed_tools
+        # ``tools`` is the *available* built-in set (``--tools``), which is an
+        # enforcement; ``allowed_tools`` only pre-approves. None = CLI default.
+        self.tools = tools
+        self.strict_mcp_config = strict_mcp_config
         self.dangerously_skip_permissions = dangerously_skip_permissions
         self.include_partial_messages = include_partial_messages
         self.api_port = api_port
@@ -145,6 +152,7 @@ class ClaudeRunner:
             cwd=cwd,
             env=env,
             limit=10 * 1024 * 1024,
+            **NO_WINDOW,
         )
 
         logger.info("Claude CLI started: pid=%s", self._process.pid)
@@ -202,6 +210,8 @@ class ClaudeRunner:
             effort=(
                 self.effort if effort is _UNSET else effort  # type: ignore[arg-type]
             ),
+            tools=self.tools,
+            strict_mcp_config=self.strict_mcp_config,
         )
 
     async def inject_tool_result(self, request_id: str, data: dict) -> None:
@@ -304,6 +314,11 @@ class ClaudeRunner:
 
         if self.allowed_tools:
             args.extend(["--allowedTools", ",".join(self.allowed_tools)])
+
+        if self.tools is not None:
+            args.extend(["--tools", ",".join(self.tools)])
+        if self.strict_mcp_config:
+            args.append("--strict-mcp-config")
 
         if session_id:
             if not re.match(r"^[a-f0-9\-]+$", session_id):

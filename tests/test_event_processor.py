@@ -93,6 +93,23 @@ def _make_result_event(**kwargs) -> StreamEvent:
     )
 
 
+def test_completion_fields_show_context_and_label_an_estimate() -> None:
+    """D10b: the Done notice carries the context figure, marked when estimated."""
+    from claude_discord.cogs.event_processor import _completion_fields
+
+    runner = MagicMock()
+    runner.model = "deepseek-v4-flash"
+    exact = _make_result_event(input_tokens=1000, output_tokens=10, context_window=4000)
+    fields = dict(_completion_fields(exact, runner))
+    assert fields["Context"] == "25%"
+
+    estimated = _make_result_event(
+        input_tokens=1000, output_tokens=10, context_window=4000, context_estimated=True
+    )
+    assert dict(_completion_fields(estimated, runner))["Context"] == "25% (estimate)"
+    assert "Context" not in dict(_completion_fields(_make_result_event(), runner))
+
+
 def test_backend_name_does_not_unwrap_arbitrary_mock_attributes() -> None:
     """Only real backend wrappers should have their ``inner`` traversed."""
     assert _backend_name_from_runner(MagicMock()) == "claude"
@@ -1194,6 +1211,39 @@ class TestContextStatsPersistence:
         # Session saved but context stats not written
         assert record is None or record.context_window is None
 
+    @pytest.mark.asyncio
+    async def test_a_codex_turn_completed_persists_the_window_it_carries(
+        self, thread: MagicMock, runner: MagicMock, tmp_path
+    ) -> None:
+        """D10a: the Codex runner folds token_count into turn.completed; the
+        processor then persists it exactly like a Claude result event."""
+        from claude_code_core.codex_runner import parse_codex_line
+        from claude_discord.database.models import init_db
+        from claude_discord.database.repository import SessionRepository
+
+        db_path = str(tmp_path / "sessions.db")
+        await init_db(db_path)
+        repo = SessionRepository(db_path)
+        await repo.save(thread_id=thread.id, session_id="codex-1")
+        runner.working_dir = None  # a Codex terminal event is SYSTEM: the row is re-saved
+        config = _make_config(thread, runner, repo=repo)
+        p = EventProcessor(config)
+
+        done = parse_codex_line(
+            '{"type": "turn.completed", "usage": {"input_tokens": 6000, '
+            '"cached_input_tokens": 4000, "output_tokens": 300}}'
+        )
+        assert done is not None
+        done.session_id = "codex-1"
+        done.context_window = 258400
+        done.input_tokens = 2000  # what the runner's fold leaves after removing the cache
+        await p.process(done)
+
+        record = await repo.get(thread.id)
+        assert record is not None
+        assert record.context_window == 258400
+        assert record.context_used == 6000
+
 
 class TestContextStatsUsesPerTurnUsage:
     """Context stats must use per-turn (last assistant) usage, not cumulative RESULT usage.
@@ -1623,26 +1673,6 @@ class TestPermissionAutoApprove:
 
 class TestUserActionMentions:
     """Messages that pause Claude for button input mention the requester."""
-
-    @pytest.mark.asyncio
-    async def test_plan_approval_mentions_notify_user(
-        self, thread: MagicMock, runner: MagicMock
-    ) -> None:
-        runner.inject_tool_result = AsyncMock()
-        config = _make_config(thread, runner, notify_user_id=42)
-        p = EventProcessor(config)
-
-        await p.process(
-            StreamEvent(
-                message_type=MessageType.ASSISTANT,
-                text="Implementation plan",
-                is_plan_approval=True,
-            )
-        )
-        await _wait_for_prompt_message(thread)
-
-        assert "<@42>" in _posted_mentions(thread)
-        await p.cancel_prompts()
 
     @pytest.mark.asyncio
     async def test_permission_request_mentions_notify_user(

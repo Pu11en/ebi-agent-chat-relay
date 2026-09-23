@@ -11,6 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from claude_code_core.win_subprocess import NO_WINDOW
+
 _OWNER_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 _GRAPHQL_QUERY = """
 query($q: String!) {
@@ -71,6 +73,7 @@ def _run_graphql(search_query: str) -> str:
         capture_output=True,
         text=True,
         timeout=20,
+        **NO_WINDOW,
     )
     return completed.stdout
 

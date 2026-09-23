@@ -48,6 +48,43 @@ def _make_cog() -> ClaudeChatCog:
     return ClaudeChatCog(bot=bot, repo=repo, runner=runner)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requester", [42, 99])
+async def test_run_notifies_message_author_instead_of_server_owner(
+    monkeypatch: pytest.MonkeyPatch, requester: int
+) -> None:
+    import claude_discord.cogs.claude_chat as chat_mod
+    from claude_discord.discord_ui.thread_dashboard import ThreadStatusDashboard
+
+    cog = _make_cog()
+    channel = MagicMock(spec=discord.TextChannel)
+    dashboard = ThreadStatusDashboard(channel, owner_id=42, mention_user_ids={42, 99})
+    cog._get_dashboard = lambda: dashboard
+    cog._prepare_cross_backend_handoff = AsyncMock(return_value=(None, "work"))
+    cog._get_current_model = AsyncMock(return_value=None)
+    cog._get_allowed_tools = AsyncMock(return_value=None)
+    cog._get_current_effort = AsyncMock(return_value=None)
+    runner = MagicMock()
+    runner.command = "claude"
+    cog._build_runner_for_thread = AsyncMock(return_value=runner)
+    fake_run = AsyncMock()
+    monkeypatch.setattr(chat_mod, "run_claude_with_config", fake_run)
+    monkeypatch.setattr(chat_mod, "StatusManager", lambda *a, **k: _StubStatus())
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 123
+    thread.send = AsyncMock()
+    message = MagicMock(spec=discord.Message)
+    message.author = SimpleNamespace(id=requester, bot=False)
+
+    await cog._run_claude(message, thread, "work", None, chat_only=True)
+
+    assert fake_run.call_args.args[0].notify_user_id == requester
+    assert thread.send.call_args.args[0] == (
+        f"🟡 <@{requester}> The agent has finished — your reply is needed here."
+    )
+    assert thread.send.call_args.kwargs["allowed_mentions"].to_dict()["users"] == [requester]
+
+
 def _make_thread_interaction(thread_id: int = 12345) -> MagicMock:
     """Return an Interaction whose channel is a discord.Thread."""
     interaction = MagicMock(spec=discord.Interaction)
@@ -2497,3 +2534,247 @@ class TestGoalCommand:
 
         send_args = interaction.followup.send.call_args
         assert "◎" in send_args.args[0] or "goal" in send_args.args[0].lower()
+
+
+class TestLocationAwareHelp:
+    """discord-command-surface 4.1: /help lists only what works where it is invoked."""
+
+    def _cog(self) -> ClaudeChatCog:
+        from claude_discord.command_surface import CommandSurface
+
+        cog = _make_cog()
+        cog.command_surface = CommandSurface.for_control_centers(100)
+        cog.repo.get = AsyncMock(side_effect=lambda tid: MagicMock() if tid == 555 else None)
+        return cog
+
+    @staticmethod
+    def _interaction(channel: object) -> MagicMock:
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.channel = channel
+        interaction.channel_id = getattr(channel, "id", None)
+        interaction.guild_id = 10
+        interaction.response = MagicMock()
+        interaction.response.send_message = AsyncMock()
+        interaction.client = MagicMock()
+        interaction.client.tree.get_commands.return_value = []
+        return interaction
+
+    @pytest.mark.asyncio
+    async def test_help_in_the_control_center_lists_the_four_commands(self) -> None:
+        cog = self._cog()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 100
+        interaction = self._interaction(channel)
+        await cog.help_command.callback(cog, interaction)
+        embed = interaction.response.send_message.call_args.kwargs["embed"]
+        text = "\n".join(f"{f.name}\n{f.value}" for f in embed.fields)
+        assert "New session" in text and "Sessions" in text and "Settings" in text
+        for name in ("/new", "/sessions", "/settings", "/help"):
+            assert f"`{name}`" in text
+        for name in ("/switch", "/stop", "/session", "/close", "/launcher", "/fork"):
+            assert f"`{name}`" not in text
+        assert interaction.response.send_message.call_args.kwargs["ephemeral"] is True
+
+    @pytest.mark.asyncio
+    async def test_help_in_a_session_thread_lists_the_five_commands(self) -> None:
+        cog = self._cog()
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 555
+        thread.parent_id = 100
+        interaction = self._interaction(thread)
+        await cog.help_command.callback(cog, interaction)
+        embed = interaction.response.send_message.call_args.kwargs["embed"]
+        text = "\n".join(f"{f.name}\n{f.value}" for f in embed.fields)
+        for name in ("/switch", "/stop", "/session", "/close", "/help"):
+            assert f"`{name}`" in text
+        assert "`/new`" not in text and "`/settings`" not in text
+
+    @pytest.mark.asyncio
+    async def test_help_elsewhere_or_without_a_surface_keeps_the_full_list(self) -> None:
+        cog = self._cog()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 300
+        interaction = self._interaction(channel)
+        legacy = MagicMock()
+        legacy.name = "launcher"
+        legacy.description = "Old launcher"
+        interaction.client.tree.get_commands.return_value = [legacy]
+        await cog.help_command.callback(cog, interaction)
+        embed = interaction.response.send_message.call_args.kwargs["embed"]
+        assert "/launcher" in "\n".join(f.value for f in embed.fields)
+
+
+class TestLifecycleHooks:
+    """discord-command-surface 3.4: run finalization and startup finish pending closes."""
+
+    @pytest.mark.asyncio
+    async def test_run_finalization_completes_a_pending_close(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import claude_discord.cogs.claude_chat as chat_mod
+
+        cog = _make_cog()
+        cog.lifecycle = MagicMock()
+        cog.lifecycle.complete_pending_close = AsyncMock()
+        cog._get_dashboard = lambda: None
+        cog._prepare_cross_backend_handoff = AsyncMock(return_value=(None, "work"))
+        cog._get_current_model = AsyncMock(return_value=None)
+        cog._get_allowed_tools = AsyncMock(return_value=None)
+        cog._get_current_effort = AsyncMock(return_value=None)
+        runner = MagicMock()
+        runner.command = "claude"
+        cog._build_runner_for_thread = AsyncMock(return_value=runner)
+        monkeypatch.setattr(chat_mod, "run_claude_with_config", AsyncMock())
+        monkeypatch.setattr(chat_mod, "StatusManager", lambda *a, **k: _StubStatus())
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 123
+        thread.send = AsyncMock()
+        message = MagicMock(spec=discord.Message)
+        message.author = SimpleNamespace(id=42, bot=False)
+
+        await cog._run_claude(message, thread, "work", None, chat_only=True)
+
+        cog.lifecycle.complete_pending_close.assert_awaited_once_with(123)
+        assert 123 not in cog._active_runners  # completed only after the slot is released
+
+    @pytest.mark.asyncio
+    async def test_on_ready_reconciles_pending_closes(self) -> None:
+        cog = _make_cog()
+        cog._resume_repo = None
+        cog.lifecycle = MagicMock()
+        cog.lifecycle.reconcile_pending_closes = AsyncMock(return_value=[])
+        await cog.on_ready()
+        cog.lifecycle.reconcile_pending_closes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_hooks_are_no_ops_without_a_lifecycle_service(self) -> None:
+        cog = _make_cog()
+        cog._resume_repo = None
+        assert cog.lifecycle is None
+        await cog._complete_pending_close(123)
+        await cog.on_ready()
+
+
+class TestSessionServices:
+    """discord-command-surface 3.1: the slash commands and /session share these."""
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_reports_nothing_to_stop_without_touching_state(self) -> None:
+        cog = _make_cog()
+        assert await cog.stop_turn(12345) is False
+        cog.repo.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_interrupts_and_keeps_the_session(self) -> None:
+        cog = _make_cog()
+        runner = MagicMock()
+        runner.interrupt = AsyncMock()
+        cog._active_runners[12345] = runner
+        assert await cog.stop_turn(12345) is True
+        runner.interrupt.assert_awaited_once()
+        cog.repo.delete.assert_not_awaited()
+        cog.bot.dispatch.assert_called_with("session_stopped", 12345)
+
+    @pytest.mark.asyncio
+    async def test_clear_thread_resets_conversation_but_keeps_the_folder(self) -> None:
+        cog = _make_cog()
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = "/tmp/project"
+        cog.repo.get = AsyncMock(return_value=record)
+        runner = MagicMock()
+        runner.kill = AsyncMock()
+        cog._active_runners[12345] = runner
+        assert await cog.clear_thread(12345) is True
+        runner.kill.assert_awaited_once()
+        assert 12345 not in cog._active_runners
+        cog.repo.save.assert_awaited_once_with(12345, "", working_dir="/tmp/project")
+        cog.repo.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_clear_thread_without_a_record_changes_nothing(self) -> None:
+        cog = _make_cog()
+        assert await cog.clear_thread(12345) is False
+        cog.repo.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_compact_thread_runs_the_compact_prompt_chat_only(self) -> None:
+        cog = _make_cog()
+        cog._run_claude = AsyncMock()
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = "/tmp/project"
+        thread = MagicMock(spec=discord.Thread)
+        seed = MagicMock()
+        await cog.compact_thread(thread, record, seed)
+        kwargs = cog._run_claude.call_args.kwargs
+        assert kwargs["prompt"] == "/compact"
+        assert kwargs["chat_only"] is True
+        assert kwargs["session_id"] == "abc-123"
+        assert kwargs["working_dir_override"] == "/tmp/project"
+
+    @pytest.mark.asyncio
+    async def test_run_goal_builds_prompt_and_label(self) -> None:
+        cog = _make_cog()
+        cog._run_claude = AsyncMock()
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = None
+        thread = MagicMock(spec=discord.Thread)
+        await cog.run_goal(thread, record, "all tests pass", MagicMock())
+        assert cog._run_claude.call_args.kwargs["prompt"] == "/goal all tests pass"
+        await cog.run_goal(thread, record, None, MagicMock())
+        assert cog._run_claude.call_args.kwargs["prompt"] == "/goal"
+        assert "Setting goal" in cog.goal_label("all tests pass")
+        assert "Clearing" in cog.goal_label("clear")
+        assert "status" in cog.goal_label(None)
+
+    @pytest.mark.asyncio
+    async def test_fork_thread_spawns_a_forked_copy_and_leaves_the_original(self) -> None:
+        cog = _make_cog()
+        new_thread = MagicMock(spec=discord.Thread)
+        cog.spawn_session = AsyncMock(return_value=new_thread)
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = "/tmp/project"
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "Work"
+        thread.parent = MagicMock(spec=discord.TextChannel)
+        assert await cog.fork_thread(thread, record) is new_thread
+        kwargs = cog.spawn_session.call_args.kwargs
+        assert kwargs["fork"] is True
+        assert kwargs["session_id"] == "abc-123"
+        assert kwargs["working_dir"] == "/tmp/project"
+        assert kwargs["thread_name"].startswith("🔀 Fork of Work")
+        cog.repo.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rewind_view_is_none_without_history(self, monkeypatch) -> None:
+        import claude_discord.cogs.claude_chat as chat_mod
+
+        cog = _make_cog()
+        monkeypatch.setattr(chat_mod, "find_session_jsonl", lambda *a, **k: None)
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = None
+        record.context_window = None
+        assert cog.rewind_view(12345, record) is None
+
+    @pytest.mark.asyncio
+    async def test_rewind_view_offers_turns_when_history_exists(self, monkeypatch, tmp_path):
+        import claude_discord.cogs.claude_chat as chat_mod
+        from claude_discord.claude.rewind import TurnEntry
+
+        cog = _make_cog()
+        jsonl = tmp_path / "s.jsonl"
+        jsonl.write_text("", encoding="utf-8")
+        monkeypatch.setattr(chat_mod, "find_session_jsonl", lambda *a, **k: jsonl)
+        turns = [TurnEntry(line_index=0, uuid="u1", timestamp="t", text="first")]
+        monkeypatch.setattr(chat_mod, "parse_user_turns", lambda *a, **k: turns)
+        record = MagicMock()
+        record.session_id = "abc-123"
+        record.working_dir = None
+        record.context_window = None
+        view = cog.rewind_view(12345, record)
+        assert view is not None
+        assert view._thread_id == 12345

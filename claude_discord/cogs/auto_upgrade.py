@@ -22,6 +22,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from claude_code_core.win_subprocess import NO_WINDOW
+
 from ..protocols import DrainAware
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
@@ -567,6 +569,7 @@ class AutoUpgradeCog(commands.Cog):
             *self.config.restart_command,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            **NO_WINDOW,
         )
 
     async def _run_step(
@@ -590,6 +593,7 @@ class AutoUpgradeCog(commands.Cog):
             cwd=self.config.working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            **NO_WINDOW,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.config.step_timeout)
         output = stdout.decode("utf-8", errors="replace").strip()

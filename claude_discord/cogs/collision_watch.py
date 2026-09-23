@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 # Fast enough to catch an overlap while both sessions are still working, slow
 # enough to stay invisible in the bot's workload.
 POLL_INTERVAL_SECONDS = 60
+# A write this recent is news even if its turn already ended. Two passes, so a
+# slow or skipped pass cannot drop it.
+FRESH_WRITE_SECONDS = 2 * POLL_INTERVAL_SECONDS
 
 
 class CollisionWatchCog(commands.Cog):
@@ -85,11 +88,19 @@ class CollisionWatchCog(commands.Cog):
         if self._tracker is None or self._registry is None:
             return
 
+        # A thread waiting for its next message still counts: its recent edits
+        # are unfinished work. But one of the pair must be working now, or have
+        # written since the last pass (quick turns end between passes), or
+        # nothing new happened worth interrupting for.
         live = {s.thread_id for s in self._registry.list_active()}
-        if len(live) < 2:
+        live |= self._tracker.written_since(now - FRESH_WRITE_SECONDS)
+        if not live:
             return
+        known = self._tracker.thread_ids() | live
 
-        for collision in find_collisions(self._tracker.snapshot(live, now)):
+        for collision in find_collisions(self._tracker.snapshot(known, now)):
+            if not live.intersection(collision.threads):
+                continue
             if not self._ledger.should_alert(collision, now):
                 continue
             self._ledger.record(collision, now)

@@ -12,18 +12,22 @@ from .claude.parser import parse_line
 from .claude.runner import ClaudeRunner
 from .claude.types import MessageType, StreamEvent, ToolCategory, ToolUseEvent
 from .cog_loader import load_custom_cogs
+from .cogs.agent_handoff import AgentHandoffCog
 from .cogs.ask_command import AskCommandCog
 from .cogs.auto_upgrade import AutoUpgradeCog, UpgradeConfig
 from .cogs.claude_chat import ClaudeChatCog
 from .cogs.collision_watch import CollisionWatchCog
 from .cogs.context_links import ContextLinksCog
 from .cogs.event_processor import EventProcessor
+from .cogs.my_ai_setup import MyAISetupCog
 from .cogs.notification_dispatch import NotificationDispatchCog
 from .cogs.ollama_command import OllamaCommandCog
+from .cogs.project_launcher import ProjectLauncherCog
 from .cogs.run_config import RunConfig
 from .cogs.scheduler import SchedulerCog
 from .cogs.session_manage import SessionManageCog
 from .cogs.skill_command import SkillCommandCog
+from .cogs.task_loop import TaskLoopCog
 from .cogs.webhook_trigger import WebhookTrigger, WebhookTriggerCog
 from .concurrency import ActiveSession, SessionRegistry
 from .database.notification_repo import NotificationRepository
@@ -38,6 +42,7 @@ from .discord_ui.embeds import (
     tool_use_embed,
 )
 from .discord_ui.status import StatusManager
+from .handoff_config import HandoffConfig
 from .protocols import DrainAware
 from .session_sync import CliSession, SessionMessage, extract_recent_messages, scan_cli_sessions
 from .setup import BridgeComponents, setup_bridge
@@ -55,9 +60,14 @@ __all__ = [
     "ActiveSession",
     "SessionRegistry",
     "SessionManageCog",
+    "TaskLoopCog",
     "CollisionWatchCog",
+    "AgentHandoffCog",
+    "MyAISetupCog",
+    "HandoffConfig",
     "AskCommandCog",
     "OllamaCommandCog",
+    "ProjectLauncherCog",
     "SkillCommandCog",
     "SessionRepository",
     "SettingsRepository",

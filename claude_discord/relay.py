@@ -17,6 +17,8 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
+from .lounge import API_AUTH_CURL_FLAG
+
 # A relayed message may trigger a reply, and that reply may trigger one more
 # acknowledgement — then the conversation must reach a conclusion on its own.
 MAX_HOP = 2
@@ -101,7 +103,8 @@ def build_relay_prompt(*, text: str, from_thread: int, hop: int) -> str:
         "commits before deciding who continues. If you stand down, push your work "
         "first and say where it is.\n"
         "To answer, POST to "
-        f"$CCDB_API_URL/api/threads/{from_thread}/message with hop={hop + 1}.\n"
+        f"$CCDB_API_URL/api/threads/{from_thread}/message with hop={hop + 1} "
+        f"(send `{API_AUTH_CURL_FLAG}` like every API call).\n"
         "---\n"
         f"{text}"
     )

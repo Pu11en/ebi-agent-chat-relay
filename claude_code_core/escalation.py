@@ -34,6 +34,7 @@ from pathlib import Path
 
 from .privacy.answerability import AnswerabilityJudge, AnswerabilityVerdict
 from .privacy.gateway import GuardOutcome, PrivacyGateway
+from .win_subprocess import NO_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,7 @@ class ConsultChannel:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workdir,
                 env=env,
+                **NO_WINDOW,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(

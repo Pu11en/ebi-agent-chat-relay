@@ -84,7 +84,7 @@ async def setup(tmp_path: Path) -> tuple[Coordinator, FakeAPI, dict]:
         plan = repo / "openspec" / "changes" / name / "proposal.md"
         plan.parent.mkdir(parents=True)
         plan.write_text(f"Feature {name}: isolated demonstration.\n")
-        files = [str(plan.relative_to(repo))]
+        files = [plan.relative_to(repo).as_posix()]
         features.append(
             {
                 "id": name,
@@ -292,6 +292,54 @@ async def test_successful_result_never_respawns_and_handoff_is_durable(setup: tu
     assert len(api.messages) == 1
     assert api.messages[0]["mode"] == "queue"
     assert api.messages[0]["from_thread"] == "1001"
+
+
+async def test_structured_test_evidence_is_collected(setup: tuple) -> None:
+    coordinator, _, _ = setup
+    await coordinator.approve("Drew authorized trial", features=["alpha"])
+    await coordinator.tick()
+    await result(coordinator, "alpha")
+    file = coordinator.state_dir / "results/alpha.json"
+    payload = json.loads(file.read_text())
+    payload["tests"] = [
+        {
+            "command": "uv run pytest tests/test_alpha.py -q",
+            "outcome": "passed",
+            "detail": "3 passed",
+        }
+    ]
+    file.write_text(json.dumps(payload))
+
+    await coordinator.collect()
+
+    assert (await coordinator.status())["tasks"]["alpha"]["status"] == "verified"
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        [{}],
+        [{"command": "", "outcome": "passed"}],
+        [{"command": "uv run pytest", "outcome": ""}],
+        [{"command": "uv run pytest"}],
+        [{"outcome": "passed"}],
+        [42],
+    ],
+)
+async def test_incomplete_structured_test_evidence_is_rejected(
+    setup: tuple, evidence: list[object]
+) -> None:
+    coordinator, _, _ = setup
+    await coordinator.approve("Drew authorized trial", features=["alpha"])
+    await coordinator.tick()
+    await result(coordinator, "alpha")
+    file = coordinator.state_dir / "results/alpha.json"
+    payload = json.loads(file.read_text())
+    payload["tests"] = evidence
+    file.write_text(json.dumps(payload))
+
+    with pytest.raises(WorkflowError, match="test evidence"):
+        await coordinator.collect()
 
 
 @pytest.mark.parametrize("bad", ["ownership", "digest", "ancestry", "worktree", "dirty", "tests"])

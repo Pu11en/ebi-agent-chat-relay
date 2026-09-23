@@ -13,6 +13,8 @@ import logging
 import os
 import re
 
+from claude_code_core.win_subprocess import NO_WINDOW
+
 logger = logging.getLogger(__name__)
 
 _STATUSLINE_TIMEOUT = 10.0
@@ -126,6 +128,7 @@ async def render_statusline(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            **NO_WINDOW,
         )
         stdout, _ = await asyncio.wait_for(
             proc.communicate(json_input.encode()),

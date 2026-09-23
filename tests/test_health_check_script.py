@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "health-check.sh"
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Linux ops script: bash shebang stubs and executable bits"
+)
 
 
 def _command(path: Path, name: str, body: str) -> None:

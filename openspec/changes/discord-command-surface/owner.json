@@ -1,0 +1,12 @@
+{
+  "change": "discord-command-surface",
+  "thread_id": "1550757693784989707",
+  "plan_owner": "1550757693784989707",
+  "decisions": [
+    "Refresh one control row near the bottom and delete its previous copy.",
+    "Control-center buttons are New session, Sessions, and Settings with visible status.",
+    "Control-center commands are /new, /sessions, /settings, /help.",
+    "Session commands are /switch, /stop, /session, /close, /help.",
+    "Old commands remain until replacements are tested locally."
+  ]
+}

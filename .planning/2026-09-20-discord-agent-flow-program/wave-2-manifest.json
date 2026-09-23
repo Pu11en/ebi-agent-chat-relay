@@ -1,0 +1,181 @@
+{
+  "schema": 1,
+  "run_id": "discord-agent-flow-wave-2-20260920",
+  "foundation_sha": "d862b8fbe8e3b8a520c3a027615ec7fe77292806",
+  "integration_owner": "1550757693784989707",
+  "features": [
+    {
+      "id": "discord-command-surface",
+      "change": "discord-command-surface",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "10cfd04b20e8901b9b039953568685358bfe22cc5ff3184f5736ab93b5dd9b32",
+      "plan_files": [
+        "openspec/changes/discord-command-surface/.openspec.yaml",
+        "openspec/changes/discord-command-surface/design.md",
+        "openspec/changes/discord-command-surface/owner.json",
+        "openspec/changes/discord-command-surface/proposal.md",
+        "openspec/changes/discord-command-surface/specs/discord-command-surface/spec.md",
+        "openspec/changes/discord-command-surface/specs/session-lifecycle/spec.md",
+        "openspec/changes/discord-command-surface/tasks.md"
+      ]
+    },
+    {
+      "id": "trusted-agent-handoffs",
+      "change": "trusted-agent-handoffs",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "75ec7bf53da5f22ed264bc23496389656f0efa9d868a73dd1e3f783a60f22adf",
+      "plan_files": [
+        "openspec/changes/trusted-agent-handoffs/.openspec.yaml",
+        "openspec/changes/trusted-agent-handoffs/design.md",
+        "openspec/changes/trusted-agent-handoffs/owner.json",
+        "openspec/changes/trusted-agent-handoffs/proposal.md",
+        "openspec/changes/trusted-agent-handoffs/specs/trusted-agent-handoffs/spec.md",
+        "openspec/changes/trusted-agent-handoffs/tasks.md"
+      ]
+    },
+    {
+      "id": "shared-project-catalog",
+      "change": "shared-project-catalog",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "0dcd3a83a8cda8d6a4022b92deea9330579344e1b24fb831e395ee2808908d14",
+      "plan_files": [
+        "openspec/changes/shared-project-catalog/.openspec.yaml",
+        "openspec/changes/shared-project-catalog/design.md",
+        "openspec/changes/shared-project-catalog/owner.json",
+        "openspec/changes/shared-project-catalog/proposal.md",
+        "openspec/changes/shared-project-catalog/specs/shared-project-catalog/spec.md",
+        "openspec/changes/shared-project-catalog/tasks.md"
+      ]
+    },
+    {
+      "id": "discord-my-ai-setup",
+      "change": "discord-my-ai-setup",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "6be8e9373c81275ab317b09f45b57fd4bf676df524b9c889f3fa8ee7a228f367",
+      "plan_files": [
+        "openspec/changes/discord-my-ai-setup/.openspec.yaml",
+        "openspec/changes/discord-my-ai-setup/design.md",
+        "openspec/changes/discord-my-ai-setup/owner.json",
+        "openspec/changes/discord-my-ai-setup/proposal.md",
+        "openspec/changes/discord-my-ai-setup/specs/custom-ai-inventory/spec.md",
+        "openspec/changes/discord-my-ai-setup/tasks.md"
+      ]
+    },
+    {
+      "id": "professional-harness-audit",
+      "change": "professional-harness-audit",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "23693ec33a7eab2266ec01d6e15623191828c49159bb5b5193bdcdf8d21596f8",
+      "plan_files": [
+        "openspec/changes/professional-harness-audit/.openspec.yaml",
+        "openspec/changes/professional-harness-audit/design.md",
+        "openspec/changes/professional-harness-audit/owner.json",
+        "openspec/changes/professional-harness-audit/proposal.md",
+        "openspec/changes/professional-harness-audit/specs/harness-configuration-audit/spec.md",
+        "openspec/changes/professional-harness-audit/tasks.md"
+      ]
+    },
+    {
+      "id": "parallel-gowork",
+      "change": "parallel-gowork",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "06d8fb35b106c1908d65cb0a1c10d19823ca25eb70c804b79ec85654a87f292a",
+      "plan_files": [
+        "openspec/changes/parallel-gowork/.openspec.yaml",
+        "openspec/changes/parallel-gowork/design.md",
+        "openspec/changes/parallel-gowork/owner.json",
+        "openspec/changes/parallel-gowork/proposal.md",
+        "openspec/changes/parallel-gowork/specs/parallel-task-loop/spec.md",
+        "openspec/changes/parallel-gowork/specs/planning-thread-split/spec.md",
+        "openspec/changes/parallel-gowork/tasks.md"
+      ]
+    },
+    {
+      "id": "model-capacity-resilience",
+      "change": "model-capacity-resilience",
+      "plan_owner": "1550757693784989707",
+      "approved_revision": "f791056a343e085ae85ab69cb33d4e237f343df389ad2ad3f8e7800859c4a3b9",
+      "plan_files": [
+        "openspec/changes/model-capacity-resilience/.openspec.yaml",
+        "openspec/changes/model-capacity-resilience/design.md",
+        "openspec/changes/model-capacity-resilience/owner.json",
+        "openspec/changes/model-capacity-resilience/proposal.md",
+        "openspec/changes/model-capacity-resilience/specs/model-capacity-recovery/spec.md",
+        "openspec/changes/model-capacity-resilience/tasks.md"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "session-lifecycle-storage",
+      "feature": "discord-command-surface",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_code_core/session_repo.py",
+        "claude_discord/database/models.py",
+        "tests/test_session_lifecycle.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.2 only. Use TDD to add backward-compatible session lifecycle, pending-close, wrap-up, and authority-source persistence with existing rows defaulting to open. Keep this to schema/repository storage; do not build the close service or Discord adapters yet. Run `uv run pytest tests/test_session_lifecycle.py tests/test_repository.py -q`, ruff the owned Python files, run pyright on them, commit locally, and do not push or publish."
+    },
+    {
+      "id": "handoff-state-machine",
+      "feature": "trusted-agent-handoffs",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_code_core/handoffs/state.py",
+        "tests/test_handoff_state.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.2 only. Use TDD to implement accepted, queued, running, blocked, completed, and failed transitions plus legal safe-retry rules. Terminal events must not create or restart work; capacity waits remain queued; invalid transitions fail deterministically. Keep protocol values unchanged. Run `uv run pytest tests/test_handoff_state.py tests/test_handoff_protocol.py -q`, ruff the owned Python files, run pyright, commit locally, and do not push or publish."
+    },
+    {
+      "id": "catalog-discovery",
+      "feature": "shared-project-catalog",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_discord/project_catalog.py",
+        "tests/test_project_catalog.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.2 only. Use TDD to add bounded one-level discovery across approved roots with deterministic ordering, refresh behavior, stable identities, and unavailable-root data. Include direct child directories only; never recurse, treat files as projects, or escape approved roots. Run `uv run pytest tests/test_project_catalog.py -q`, ruff the owned Python files, run pyright, commit locally, and do not push or publish."
+    },
+    {
+      "id": "setup-redaction-boundary",
+      "feature": "discord-my-ai-setup",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_discord/ai_setup_redaction.py",
+        "tests/test_ai_setup_redaction.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.2 only. Use TDD to add safe metadata construction and fail-closed secret redaction for inventory items and diagnostics. Exclude tokens, passwords, private keys, environment values, connector secrets, and raw unsafe config; expose only safe presence/prerequisite facts. Run `uv run pytest tests/test_ai_setup_redaction.py tests/test_ai_setup_inventory.py -q`, ruff the owned Python files, run pyright, commit locally, and do not push or publish."
+    },
+    {
+      "id": "audit-redaction-boundary",
+      "feature": "professional-harness-audit",
+      "depends_on": [],
+      "owned_paths": [
+        "extensions/harness_audit/redaction.py",
+        "tests/test_harness_audit_redaction.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.2 only. Use TDD to implement safe audit metadata and fail-closed secret redaction. Fixture credentials, cookies, private keys, environment values, and private bodies must never appear in serialized bundles, while safe identifiers, sizes, permissions, and hashes remain usable. Run `uv run pytest tests/test_harness_audit_redaction.py tests/test_harness_audit_models.py -q`, ruff the owned Python files, run pyright, commit locally, and do not push or publish."
+    },
+    {
+      "id": "gowork-ready-scheduler",
+      "feature": "parallel-gowork",
+      "depends_on": [],
+      "owned_paths": [
+        "extensions/feature_workflow/scheduler.py",
+        "tests/test_feature_scheduler.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.2 only. Use TDD to compute the complete dependency-ready, non-conflicting set from the versioned task graph with no product worker cap. Four safe tasks must all be ready; unresolved or unintegrated dependencies and active ownership conflicts remain pending with explicit reasons. Do not alter the existing coordinator yet. Run `uv run pytest tests/test_feature_scheduler.py tests/test_feature_task_graph.py -q`, ruff the owned Python files, run pyright, commit locally, and do not push or publish."
+    },
+    {
+      "id": "capacity-phrase-fixtures",
+      "feature": "model-capacity-resilience",
+      "depends_on": [],
+      "owned_paths": [
+        "claude_code_core/capacity.py",
+        "tests/test_capacity_recovery.py"
+      ],
+      "prompt": "Implement OpenSpec task 1.3 only. Use TDD to add backend phrase fixtures for observed `model at capacity` variants and false-positive sentences, then refine the conservative classifier so supported harnesses share the same categories. Structured codes still win and unknown or ambiguous errors stay terminal. Do not add retries or persistence yet. Run `uv run pytest tests/test_capacity_recovery.py -q`, ruff the owned Python files, run pyright, commit locally, and do not push or publish."
+    }
+  ]
+}

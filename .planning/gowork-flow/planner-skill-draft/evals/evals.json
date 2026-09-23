@@ -1,0 +1,29 @@
+{
+  "skill_name": "master-planning",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I want to plan a business with a website, a product and marketing in this thread. I want detailed plans before anything starts building.",
+      "expected_output": "One master planning record with separate lanes and recorded dependencies; a short question about an unresolved goal; no build launch or paid agents.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "We already decided it should choose as many workers as my computer can handle, including over ten. Continue planning from that answer.",
+      "expected_output": "Preserves automatic capacity as settled; distinguishes planner eligibility from runtime admission; asks one new relevant question without reopening the numeric worker count.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Turn our agreed plan into build tasks: two tasks edit the same config, a website task needs a product API that is not built, and the current runner only understands checklists.",
+      "expected_output": "Records ownership conflicts and API dependency, checks coverage, produces compatible task checkboxes, and explains unsupported scheduling without claiming the current runner enforces metadata.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Fix the misspelled Save label in the existing settings button; keep everything else as it is.",
+      "expected_output": "Does not trigger the full master-planning workflow or a broad interview for an already scoped small fix.",
+      "files": []
+    }
+  ]
+}

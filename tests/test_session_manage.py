@@ -18,6 +18,7 @@ def _make_record(
     model: str | None = "sonnet",
     context_window: int | None = None,
     context_used: int | None = None,
+    backend: str | None = None,
 ) -> SessionRecord:
     return SessionRecord(
         thread_id=thread_id,
@@ -26,6 +27,7 @@ def _make_record(
         model=model,
         origin=origin,
         summary=summary,
+        backend=backend,
         context_window=context_window,
         context_used=context_used,
         created_at="2026-02-19 10:00:00",
@@ -180,6 +182,26 @@ class TestContextCommand:
         embed = call_args.kwargs.get("embed")
         assert embed is not None
         assert "67" in embed.description  # 134000/200000 = 67%
+        assert "estimate" not in embed.description.lower()
+
+    async def test_context_on_dsh_is_labelled_an_estimate(self):
+        """D10b: DSH reports no usage, so its figure is characters / 4 — say so."""
+        from claude_discord.cogs.session_manage import SessionManageCog
+
+        bot = MagicMock()
+        repo = MagicMock()
+        repo.get = AsyncMock(
+            return_value=_make_record(context_window=128000, context_used=64000, backend="dsh")
+        )
+        cog = SessionManageCog(bot=bot, repo=repo)
+
+        interaction = _make_thread_interaction()
+        await cog.context_show.callback(cog, interaction)
+
+        embed = interaction.response.send_message.call_args.kwargs.get("embed")
+        assert embed is not None
+        assert "50%" in embed.description
+        assert "estimate" in embed.description.lower()
 
 
 class TestUsageCommand:
@@ -232,3 +254,40 @@ class TestUsageCommand:
         assert embed is not None
         # Should show utilization percentage
         assert "61" in embed.description
+
+
+class TestSessionsBrowserRouting:
+    """discord-command-surface 4.1: /sessions keeps its registration, gains the browser."""
+
+    async def test_sessions_routes_to_the_browser_when_one_is_attached(self):
+        cog = _make_cog()
+        cog.session_browser = AsyncMock()
+        interaction = _make_channel_interaction()
+        await cog.sessions_list.callback(cog, interaction, query="api")
+        cog.session_browser.assert_awaited_once_with(interaction, "api")
+        cog.repo.list_all.assert_not_called()
+
+    async def test_sessions_without_a_browser_keeps_the_legacy_list(self):
+        cog = _make_cog()
+        cog.repo.list_all = AsyncMock(return_value=[])
+        interaction = _make_channel_interaction()
+        await cog.sessions_list.callback(cog, interaction)
+        cog.repo.list_all.assert_awaited_once()
+
+
+class TestContextService:
+    """discord-command-surface 3.1: /context and the /session Context button share this."""
+
+    def test_context_embed_is_none_without_stats(self):
+        from claude_discord.cogs.session_manage import context_embed
+
+        assert context_embed(None, "thread") is None
+        assert context_embed(_make_record(context_window=None, context_used=None), "t") is None
+
+    def test_context_embed_reports_usage_without_changing_anything(self):
+        from claude_discord.cogs.session_manage import context_embed
+
+        embed = context_embed(_make_record(context_window=200000, context_used=134000), "work")
+        assert embed is not None
+        assert "67%" in embed.description
+        assert "work" in embed.title

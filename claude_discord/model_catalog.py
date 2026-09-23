@@ -253,8 +253,24 @@ CODEX_MODELS_CACHE = "models_cache.json"
 CODEX_LISTED_VISIBILITY = "list"
 
 
-def _codex_home(env: Mapping[str, str]) -> Path:
-    return Path(env.get("CODEX_HOME") or os.path.join(Path.home(), ".codex"))
+def _codex_home_candidates(env: Mapping[str, str]) -> list[Path]:
+    """Every ``CODEX_HOME`` that may hold a model cache, most specific first.
+
+    ccdb runs the Codex CLI with its own ``CODEX_HOME`` (for auth/skill
+    isolation), but the CLI writes ``models_cache.json`` into the home whose
+    credentials it fetched the catalog with — on a machine where Codex was
+    first run normally that is the user's default ``~/.codex``. Reading only
+    the configured home therefore hid every model the cache listed (only the
+    fallback's three remained), so both locations are tried.
+    """
+    homes: list[Path] = []
+    configured = env.get("CODEX_HOME")
+    if configured:
+        homes.append(Path(configured))
+    default = Path.home() / ".codex"
+    if default not in homes:
+        homes.append(default)
+    return homes
 
 
 def parse_codex_models(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -296,21 +312,27 @@ def codex_model_choices(
 ) -> list[tuple[str, str]]:
     """Suggestions for the Codex ``/model`` autocomplete, read from disk.
 
-    Returns ``fallback`` unchanged when the cache is absent, unreadable or
-    empty — a user who has never run the Codex CLI must still get suggestions.
-    No caching: this is a local file read, and the CLI rewrites it whenever the
-    catalog changes.
+    Returns ``fallback`` unchanged when no candidate home has a readable,
+    non-empty cache — a user who has never run the Codex CLI must still get
+    suggestions. No caching: this is a local file read, and the CLI rewrites
+    the catalog whenever it changes.
     """
     env = os.environ if env is None else env
     if env.get("CCDB_MODEL_DISCOVERY", "1").strip().lower() in {"0", "false", "no", "off"}:
         return fallback
-    try:
-        raw = (_codex_home(env) / CODEX_MODELS_CACHE).read_text(encoding="utf-8")
-        choices = parse_codex_models(json.loads(raw))
-    except (OSError, ValueError, AttributeError, TypeError) as exc:
-        logger.warning("Codex model discovery failed, using static suggestions: %s", exc)
-        return fallback
-    return choices or fallback
+    tried: list[str] = []
+    for home in _codex_home_candidates(env):
+        try:
+            raw = (home / CODEX_MODELS_CACHE).read_text(encoding="utf-8")
+            choices = parse_codex_models(json.loads(raw))
+        except (OSError, ValueError, AttributeError, TypeError) as exc:
+            tried.append(f"{home}: {exc}")
+            continue
+        if choices:
+            return choices
+        tried.append(f"{home}: empty catalog")
+    logger.warning("Codex model discovery found no catalog, using static suggestions: %s", tried)
+    return fallback
 
 
 # ── DSH routes (DeepSeek and Z.ai) ─────────────────────────────────────

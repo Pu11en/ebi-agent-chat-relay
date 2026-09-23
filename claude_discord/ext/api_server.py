@@ -32,13 +32,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from aiohttp import web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
+from ..agent_router import AgentRoute, parse_agent_routes
+from ..catalog_service import entry_to_dict, project_to_dict, resolution_to_dict
 from ..discord_ui.file_sender import send_file_blobs
-from ..lounge import length_hint
+from ..handoff_status import load_handoff_status, render_handoff_status
+from ..lounge import API_AUTH_HEADER, length_hint
+from ..project_catalog import DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, RootStatus, normalize_token
+from ..project_lookup_worker import (
+    build_project_lookup_prompt,
+    project_lookup_harness,
+    project_lookup_thread_name,
+    resolve_project_lookup_root,
+)
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
@@ -50,12 +60,15 @@ if TYPE_CHECKING:
     import discord
     from discord.ext.commands import Bot
 
+    from ..catalog_service import ProjectCatalogService
     from ..database.claims_repo import ClaimRepository
+    from ..database.handoff_repo import HandoffRepository
     from ..database.ingest_repo import IngestResultRepository
     from ..database.lounge_repo import LoungeRepository
     from ..database.notification_repo import NotificationRepository
     from ..database.repository import SessionRepository
     from ..database.resume_repo import PendingResumeRepository
+    from ..database.settings_repo import SettingsRepository
     from ..database.summary_repo import ThreadSummaryRepository
     from ..database.task_repo import TaskRepository
 
@@ -93,6 +106,84 @@ _MAX_THREAD_MESSAGE_CHARS = 2000
 # Cap on a relayed message. A relay is a short coordination note ("I started at
 # 13:02 on branch X, stand down"), not a payload channel.
 _MAX_RELAY_TEXT_CHARS = 4000
+# Bounds on what a catalog query may carry: a folder name or an owner phrase,
+# never a document. Anything larger is refused before the catalog is asked.
+_CATALOG_TEXT_MAX = 200
+_CATALOG_OWNER_MAX = 64
+_CATALOG_KEY_MAX = 512
+
+
+def _catalog_text(value: object, *, field: str, required: bool) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    text = value.strip()
+    if required and not text:
+        raise ValueError(f"{field} is required")
+    if len(text) > _CATALOG_TEXT_MAX:
+        raise ValueError(f"{field} must be at most {_CATALOG_TEXT_MAX} characters")
+    if any(ch < " " for ch in text):
+        raise ValueError(f"{field} must not contain control characters")
+    return text
+
+
+def _catalog_owner(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("owner must be a string")
+    owner = value.strip()
+    if not owner:
+        return None
+    if len(owner) > _CATALOG_OWNER_MAX:
+        raise ValueError(f"owner must be at most {_CATALOG_OWNER_MAX} characters")
+    # Same rule the identity uses: at least one letter or digit.
+    normalize_token(owner, kind="owner")
+    return owner
+
+
+def _catalog_limit(value: str | None) -> int:
+    if value is None or not value.strip():
+        return DEFAULT_QUERY_LIMIT
+    try:
+        limit = int(value)
+    except ValueError:
+        raise ValueError("limit must be an integer") from None
+    if not 1 <= limit <= MAX_QUERY_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_QUERY_LIMIT}")
+    return limit
+
+
+def _catalog_flag(value: str | None, *, field: str) -> bool:
+    if value is None:
+        return False
+    lowered = value.strip().lower()
+    if lowered in ("1", "true", "yes"):
+        return True
+    if lowered in ("", "0", "false", "no"):
+        return False
+    raise ValueError(f"{field} must be 1 or 0")
+
+
+def _catalog_user(guild: str | None, user: str | None) -> tuple[int | None, int | None]:
+    if guild is None and user is None:
+        return None, None
+    if guild is None or user is None:
+        raise ValueError("guild_id and user_id must be given together")
+    try:
+        return int(guild), int(user)
+    except ValueError:
+        raise ValueError("guild_id and user_id must be integers") from None
+
+
+def _root_status_to_dict(status: RootStatus) -> dict[str, Any]:
+    return {
+        "key": status.root.key,
+        "label": status.root.label,
+        "availability": status.availability.value,
+        "reason": status.reason,
+    }
 
 
 def _serialize_thread_message(message: Any) -> dict[str, object]:
@@ -119,6 +210,49 @@ def _serialize_thread_message(message: Any) -> dict[str, object]:
 _DEFAULT_MAX_BODY_BYTES = _MAX_INGEST_TOTAL_BYTES * 4 // 3 + 1024 * 1024
 # Characters allowed in a saved attachment filename; everything else → "_".
 _UNSAFE_FILENAME_RE = re.compile(r"[^\w.\-]+")
+
+# /api/spawn correlation/parent metadata. A caller that records "spawning"
+# before the request and then loses the answer must be able to ask whether a
+# spawn with *this* identity happened, instead of spawning again. The identity
+# is the caller's (a run-state correlation id, a split key such as
+# "<parent-thread>:<slug>"), so the shape is loose but bounded and path-safe.
+_CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,119}$")
+_THREAD_META_KEY = "thread_meta:{thread_id}"
+
+# GET /obsidian redirect hardening: the two query values fully control the
+# redirect target, so each part must be free of CR/LF (header/log injection),
+# ":" (scheme smuggling) and URL delimiters before it is embedded.
+_OBSIDIAN_PART_RE = re.compile(r"[^\r\n:&?%]+")
+_CORRELATION_KEY = "thread_correlation:{correlation_id}"
+
+
+def _parse_spawn_metadata(
+    data: dict[str, Any],
+) -> tuple[int | None, str | None, str | None]:
+    """Validate the optional ``parent_thread_id`` / ``correlation_id`` spawn fields.
+
+    Returns ``(parent_thread_id, correlation_id, error)``; a non-empty *error* is
+    the 400 message and the other two are then meaningless.
+    """
+    parent: int | None = None
+    raw_parent = data.get("parent_thread_id")
+    if raw_parent is not None:
+        try:
+            parent = int(raw_parent) if not isinstance(raw_parent, bool | float) else 0
+        except (TypeError, ValueError):
+            parent = 0
+        if parent <= 0:
+            return None, None, "parent_thread_id must be a positive integer"
+    correlation = data.get("correlation_id")
+    if correlation is not None and (
+        not isinstance(correlation, str) or not _CORRELATION_ID_RE.fullmatch(correlation)
+    ):
+        return (
+            None,
+            None,
+            "correlation_id must be 1-120 characters of letters, digits, '.', '_', ':' or '-'",
+        )
+    return parent, correlation, None
 
 
 def _safe_attachment_name(raw: object, index: int) -> str:
@@ -265,6 +399,15 @@ class ApiServer:
         self.ingest_repo = ingest_repo
         self.summary_repo = summary_repo
         self.claims_repo = claims_repo
+        self.handoff_repo: HandoffRepository | None = None
+        # Key-value store for the generic spawn metadata (parent thread and
+        # correlation id); wired by BridgeComponents.apply_to_api_server.
+        # Without it the fields are validated and echoed but not persisted.
+        self.settings_repo: SettingsRepository | None = None
+        # The shared project catalog behind /api/projects; wired by
+        # BridgeComponents.apply_to_api_server. Without it the catalog
+        # endpoints answer 503 rather than scanning anything on their own.
+        self.project_catalog: ProjectCatalogService | None = None
         # Where Claude Code transcripts live, for /api/search?body=1. Falls back
         # to the standard ~/.claude/projects location so body search is
         # Zero-Config wherever Claude Code has run.
@@ -289,6 +432,8 @@ class ApiServer:
         # Loop/rate brake for thread-to-thread relays. Process-local by design:
         # after a restart there are no in-flight relay chains to protect.
         self.relay_guard = RelayGuard()
+        # Friendly names for relay targets, e.g. "drewai" -> a Discord thread.
+        self.agent_directory = parse_agent_routes(os.getenv("CCDB_AGENT_ROUTES"))
         # AI Lounge Discord mirror (OPTIONAL, human-facing). When a channel is
         # configured, lounge messages are echoed there so a human can watch the
         # AI-to-AI chatter in Discord. Leave it unset to run the lounge DB-only:
@@ -338,10 +483,30 @@ class ApiServer:
         # Cross-session observability routes (requires session_repo)
         self.app.router.add_get("/api/sessions", self.list_sessions)
         self.app.router.add_get("/api/search", self.search_sessions)
+        self.app.router.add_get("/api/agents", self.list_agents)
+        self.app.router.add_get("/api/handoffs/status", self.handoff_status)
+        self.app.router.add_post("/api/agents/{agent_id}/message", self.relay_agent_message)
+        self.app.router.add_post(
+            "/api/agents/{agent_id}/project-lookup", self.relay_agent_project_lookup
+        )
+        self.app.router.add_post("/api/project-lookup", self.project_lookup)
+        # Shared project catalog (requires project_catalog): bounded metadata
+        # only, never a folder's contents. Local app only — never external.
+        self.app.router.add_get("/api/projects", self.list_projects)
+        self.app.router.add_post("/api/projects/resolve", self.resolve_project)
+        self.app.router.add_get("/api/projects/{key}", self.get_project)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
+        # Generic spawn metadata: which parent a thread belongs to and the
+        # caller's correlation id, so a lost spawn answer can be reconciled.
+        self.app.router.add_get("/api/threads/{thread_id}/metadata", self.get_thread_metadata)
+        self.app.router.add_get(
+            "/api/correlations/{correlation_id}", self.get_thread_by_correlation
+        )
         # Session spawn route
         self.app.router.add_post("/api/spawn", self.spawn)
+        # Sequential task loop (fresh session per plan task)
+        self.app.router.add_post("/api/loops", self.start_task_loop)
         # Authenticated external ingest route (browser extension / webhooks)
         self.app.router.add_post("/api/ingest", self.ingest)
         # Running per-thread summaries. GET (external, token) reads the stored
@@ -528,6 +693,33 @@ class ApiServer:
             }
         )
 
+    async def handoff_status(self, request: web.Request) -> web.Response:
+        """GET /api/handoffs/status — compact view of handoff jobs."""
+        if self.handoff_repo is None:
+            return web.json_response(
+                {"error": "Handoff ledger not configured (handoff_repo is None)"},
+                status=503,
+            )
+
+        recipient = request.rel_url.query.get("recipient")
+        try:
+            limit = int(request.rel_url.query.get("limit", "20"))
+        except ValueError:
+            return web.json_response({"error": "limit must be an integer"}, status=400)
+
+        summary = await load_handoff_status(
+            self.handoff_repo,
+            recipient=recipient.strip().lower() if recipient else None,
+            limit=limit,
+        )
+        return web.json_response(
+            {
+                "counts": summary.counts,
+                "items": [item.to_dict() for item in summary.items],
+                "text": render_handoff_status(summary),
+            }
+        )
+
     async def open_obsidian(self, request: web.Request) -> web.Response:
         """GET /open/obsidian — redirect to ``obsidian://open`` URI.
 
@@ -542,6 +734,20 @@ class ApiServer:
             return web.json_response(
                 {"error": "vault and file query parameters are required"}, status=400
             )
+        # The redirect target is fully controlled by these two query values, so
+        # reject anything that could break out of the intended obsidian:// form:
+        # CR/LF (header/log injection), ":" (scheme smuggling), and the URL
+        # delimiters "&", "?" and "%" (query-structure rewriting).
+        if (
+            _OBSIDIAN_PART_RE.fullmatch(vault) is None
+            or _OBSIDIAN_PART_RE.fullmatch(file_path) is None
+        ):
+            return web.json_response(
+                {"error": "vault and file must not contain control or URL delimiter characters"},
+                status=400,
+            )
+        # quote(safe="") percent-encodes every delimiter, so the fixed scheme and
+        # query shape cannot be altered by the values themselves.
         target = f"obsidian://open?vault={quote(vault, safe='')}&file={quote(file_path, safe='')}"
         raise web.HTTPFound(location=target)
 
@@ -752,7 +958,11 @@ class ApiServer:
             logger.warning("Failed to create task: %s", exc)
             return web.json_response({"error": "Task name already exists"}, status=409)
 
-        logger.info("Task registered via API: id=%d, name=%s", task_id, _sanitize_log(data["name"]))
+        logger.info(
+            "Task registered via API: id=%d, name=%s",
+            task_id,
+            str(data["name"]).replace("\r", "").replace("\n", ""),
+        )
         return web.json_response({"status": "created", "id": task_id}, status=201)
 
     async def list_tasks(self, request: web.Request) -> web.Response:
@@ -939,6 +1149,130 @@ class ApiServer:
     # Session spawn endpoint (/api/spawn)
     # ------------------------------------------------------------------
 
+    async def list_agents(self, _request: web.Request) -> web.Response:
+        """GET /api/agents — list friendly relay names this bot knows."""
+        return web.json_response(
+            {"agents": [route.to_public_dict() for route in self.agent_directory.routes]}
+        )
+
+    async def relay_agent_message(self, request: web.Request) -> web.Response:
+        """POST /api/agents/{agent_id}/message — talk to a named live session.
+
+        This is the ergonomic layer over ``/api/threads/{thread_id}/message``:
+        peer agents can say "drewai" or "imac" without knowing the destination
+        Discord thread ID.
+        """
+        raw_agent_id = request.match_info.get("agent_id", "")
+        try:
+            route = self.agent_directory.resolve(raw_agent_id)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except KeyError:
+            known = ", ".join(self.agent_directory.known_agent_ids()) or "none configured"
+            return web.json_response(
+                {"error": f"Unknown agent '{raw_agent_id}'. Known agents: {known}"},
+                status=404,
+            )
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        if route.remote_url is not None:
+            return await self._relay_to_remote_agent(route=route, data=data)
+
+        if route.thread_id is None:
+            return web.json_response({"error": "Agent route has no thread target"}, status=500)
+        return await self._relay_to_thread(
+            thread_id=route.thread_id,
+            data=data,
+            response_extra={"agent_id": route.agent_id},
+        )
+
+    async def _relay_to_remote_agent(self, *, route: AgentRoute, data: object) -> web.Response:
+        """Forward a named-agent relay to another ccdb control plane."""
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        if route.remote_url is None:
+            return web.json_response({"error": "Agent route has no remote target"}, status=500)
+
+        headers = {"Content-Type": "application/json"}
+        if route.bearer_token:
+            headers["Authorization"] = f"Bearer {route.bearer_token}"
+
+        try:
+            async with (
+                ClientSession(timeout=ClientTimeout(total=10)) as session,
+                session.post(route.remote_url, json=data, headers=headers) as resp,
+            ):
+                raw = await resp.text()
+                content_type = resp.headers.get("Content-Type", "")
+                if "application/json" in content_type:
+                    try:
+                        payload = json.loads(raw)
+                    except json.JSONDecodeError:
+                        payload = {"status": "remote_error", "body": raw}
+                else:
+                    payload = {"status": "remote_response", "body": raw}
+                if isinstance(payload, dict):
+                    payload.setdefault("agent_id", route.agent_id)
+                    payload.setdefault("target", "remote")
+                return web.json_response(payload, status=resp.status)
+        except TimeoutError:
+            return web.json_response(
+                {"error": f"Remote agent '{route.agent_id}' timed out"},
+                status=504,
+            )
+        except ClientError:
+            return web.json_response(
+                {"error": f"Remote agent '{route.agent_id}' could not be reached"},
+                status=502,
+            )
+
+    async def relay_agent_project_lookup(self, request: web.Request) -> web.Response:
+        """POST /api/agents/{agent_id}/project-lookup — ask a named peer to search projects."""
+        raw_agent_id = request.match_info.get("agent_id", "")
+        try:
+            route = self.agent_directory.resolve(raw_agent_id)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except KeyError:
+            known = ", ".join(self.agent_directory.known_agent_ids()) or "none configured"
+            return web.json_response(
+                {"error": f"Unknown agent '{raw_agent_id}'. Known agents: {known}"},
+                status=404,
+            )
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        payload = dict(data)
+        query = str(payload.get("text") or payload.get("query") or "").strip()
+        if not query:
+            return web.json_response({"error": "text or query is required"}, status=400)
+        payload.setdefault("text", query)
+        payload.setdefault("from_agent", self._local_agent_id())
+
+        if route.remote_url is None:
+            return web.json_response(
+                {"error": f"Agent '{route.agent_id}' is not configured as a remote project lookup"},
+                status=400,
+            )
+        return await self._relay_to_remote_agent(route=route, data=payload)
+
+    def _local_agent_id(self) -> str:
+        """The name this bot should use when another bot sees its lookup request."""
+        for key in ("CCDB_AGENT_ID", "CCDB_BOT_NAME", "BOT_NAME"):
+            value = os.getenv(key, "").strip()
+            if value:
+                return value
+        return "ccdb"
+
     async def relay_thread_message(self, request: web.Request) -> web.Response:
         """POST /api/threads/{thread_id}/message — talk to another live session.
 
@@ -973,6 +1307,18 @@ class ApiServer:
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
+        return await self._relay_to_thread(thread_id=thread_id, data=data)
+
+    async def _relay_to_thread(
+        self,
+        *,
+        thread_id: int,
+        data: object,
+        response_extra: dict[str, object] | None = None,
+    ) -> web.Response:
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
         text = str(data.get("text") or "").strip()
         if not text:
             return web.json_response({"error": "text is required"}, status=400)
@@ -997,6 +1343,21 @@ class ApiServer:
             hop = int(data.get("hop", 0))
         except (TypeError, ValueError):
             return web.json_response({"error": "hop must be an integer"}, status=400)
+
+        # A /gowork build thread is Drew's to talk to directly; a session that
+        # relays "his" instructions there speaks for him and races the loop.
+        loop_cog: Any = self.bot.cogs.get("TaskLoopCog")
+        user_asked = data.get("user_asked") is True
+        if loop_cog is not None and loop_cog.is_worker_thread(thread_id) and not user_asked:
+            return web.json_response(
+                {
+                    "error": "That thread is a /gowork build. The user talks to it "
+                    "directly; don't pass anything to it. Only if the user's own latest "
+                    "message asked you to tell the build something, resend with "
+                    '"user_asked": true.'
+                },
+                status=409,
+            )
 
         now = time.monotonic()
         refusal = self.relay_guard.check(
@@ -1033,13 +1394,19 @@ class ApiServer:
         )
         logger.info(
             "Relayed message: thread %s → thread %s (mode=%s, hop=%s)",
-            from_thread,
-            thread_id,
-            mode,
-            hop,
+            str(from_thread).replace("\r", "").replace("\n", ""),
+            str(thread_id).replace("\r", "").replace("\n", ""),
+            str(mode).replace("\r", "").replace("\n", ""),
+            str(hop).replace("\r", "").replace("\n", ""),
         )
         return web.json_response(
-            {"status": "delivered", "thread_id": thread_id, "mode": mode, "hop": hop},
+            {
+                "status": "delivered",
+                **(response_extra or {}),
+                "thread_id": thread_id,
+                "mode": mode,
+                "hop": hop,
+            },
             status=202,
         )
 
@@ -1129,9 +1496,9 @@ class ApiServer:
         if not acquired:
             logger.info(
                 "Claim denied: %s wanted by thread %s, held by thread %s",
-                _sanitize_log(resource),
-                thread_id,
-                claim.thread_id,
+                resource.replace("\r", "").replace("\n", ""),
+                str(thread_id).replace("\r", "").replace("\n", ""),
+                str(claim.thread_id).replace("\r", "").replace("\n", ""),
             )
             return web.json_response(
                 {"status": "held", "claim": self._claim_json(claim)},
@@ -1240,6 +1607,242 @@ class ApiServer:
             return registry.list_active()
         return []
 
+    # ------------------------------------------------------------------
+    # Shared project catalog — the one query surface every harness uses
+    # ------------------------------------------------------------------
+
+    async def list_projects(self, request: web.Request) -> web.Response:
+        """GET /api/projects — bounded list/search of this computer's catalog.
+
+        Query: ``q`` (name substring, may carry an owner phrase), ``owner``,
+        ``limit`` (1..MAX_QUERY_LIMIT), ``refresh`` (``1``/``0``) and, for a
+        personal view, both ``guild_id`` and ``user_id``. Answers with project
+        metadata (identity, label, availability, actions) plus root
+        availability. A remote or unknown owner yields no projects — reaching
+        another computer is the handoff subsystem's job, not a directory
+        listing's.
+        """
+        catalog = self.project_catalog
+        if catalog is None:
+            return web.json_response({"error": "project catalog is not configured"}, status=503)
+        params = request.query
+        try:
+            text = _catalog_text(params.get("q", ""), field="q", required=False)
+            owner = _catalog_owner(params.get("owner"))
+            limit = _catalog_limit(params.get("limit"))
+            refresh = _catalog_flag(params.get("refresh"), field="refresh")
+            guild_id, user_id = _catalog_user(params.get("guild_id"), params.get("user_id"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        listing = await catalog.list_projects(
+            guild_id, user_id, query=text, owner=owner, limit=limit, refresh=refresh
+        )
+        return web.json_response(
+            {
+                "computer": catalog.local_qualifier,
+                "projects": [entry_to_dict(entry) for entry in listing.entries],
+                "roots": [_root_status_to_dict(status) for status in listing.roots],
+                "truncated": listing.truncated,
+            }
+        )
+
+    async def resolve_project(self, request: web.Request) -> web.Response:
+        """POST /api/projects/resolve — one typed resolution for one request.
+
+        Body: ``{"text": "...", "owner": "..."}`` (owner optional). The answer
+        is one of ``local_available`` (with the canonical path),
+        ``local_unavailable``, ``remote_target`` (owner-qualified, deliberately
+        path-free), ``ambiguous_owner`` (ask, never guess) or ``no_match``.
+        """
+        catalog = self.project_catalog
+        if catalog is None:
+            return web.json_response({"error": "project catalog is not configured"}, status=503)
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        try:
+            text = _catalog_text(data.get("text"), field="text", required=True)
+            owner = _catalog_owner(data.get("owner"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        result = await catalog.resolve(text, owner=owner)
+        return web.json_response(resolution_to_dict(result))
+
+    async def get_project(self, request: web.Request) -> web.Response:
+        """GET /api/projects/{key} — revalidate one identity this computer issued.
+
+        404 for a key this computer never issued (another computer, an unknown
+        root, a malformed key). A known project whose folder is gone or which
+        resolves outside its root is answered with its availability and
+        ``working_directory: null`` — a caller cannot bind what is not there.
+        """
+        catalog = self.project_catalog
+        if catalog is None:
+            return web.json_response({"error": "project catalog is not configured"}, status=503)
+        key = request.match_info.get("key", "")
+        if len(key) > _CATALOG_KEY_MAX:
+            return web.json_response({"error": "key is too long"}, status=400)
+        project = await catalog.find(key)
+        if project is None:
+            return web.json_response({"error": "unknown catalog project"}, status=404)
+        payload = project_to_dict(project)
+        directory = project.working_directory
+        payload["working_directory"] = str(directory) if directory is not None else None
+        payload["locally_verified"] = True
+        return web.json_response(payload)
+
+    async def project_lookup(self, request: web.Request) -> web.Response:
+        """POST /api/project-lookup — spawn a read-only worker in Drew's projects root."""
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        query = str(data.get("text") or data.get("query") or "").strip()
+        if not query:
+            return web.json_response({"error": "text or query is required"}, status=400)
+
+        try:
+            # Same precedence as the Discord-envelope path: configuration first,
+            # the runner's working directory only when nothing is configured.
+            project_root = resolve_project_lookup_root(fallback=self.working_dir)
+        except ValueError:
+            # The caller is remote; the path we looked at stays in the log.
+            logger.warning("project lookup root is not usable", exc_info=True)
+            return web.json_response(
+                {"error": "project lookup root is not configured or not a directory"},
+                status=503,
+            )
+
+        raw_from_thread = data.get("from_thread")
+        from_thread: int | None = None
+        if raw_from_thread is not None:
+            try:
+                from_thread = int(raw_from_thread)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "from_thread must be an integer"}, status=400)
+
+        raw_channel_id = data.get("channel_id") or self.default_channel_id
+        if not raw_channel_id:
+            return web.json_response({"error": "No channel specified"}, status=400)
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "channel_id must be an integer"}, status=400)
+
+        from ..cogs.claude_chat import ClaudeChatCog  # avoid circular import at module level
+
+        cog: ClaudeChatCog | None = self.bot.cogs.get("ClaudeChatCog")  # type: ignore[assignment]
+        if cog is None:
+            return web.json_response({"error": "ClaudeChatCog is not loaded"}, status=503)
+
+        import discord as _discord
+
+        raw = self.bot.get_channel(channel_id)
+        if raw is None:
+            try:
+                raw = await self.bot.fetch_channel(channel_id)
+            except Exception:
+                logger.warning("could not fetch channel %s", channel_id, exc_info=True)
+                return web.json_response({"error": "channel could not be fetched"}, status=500)
+        if not isinstance(raw, _discord.TextChannel):
+            return web.json_response(
+                {"error": "Channel must be a text channel that supports threads"},
+                status=400,
+            )
+
+        from_agent = data.get("from_agent")
+        if from_agent is not None and not isinstance(from_agent, str):
+            return web.json_response({"error": "from_agent must be a string"}, status=400)
+        thread_name = data.get("thread_name")
+        if thread_name is not None and not isinstance(thread_name, str):
+            return web.json_response({"error": "thread_name must be a string"}, status=400)
+
+        prompt = build_project_lookup_prompt(
+            query=query,
+            project_root=project_root,
+            from_agent=from_agent,
+            from_thread=from_thread,
+        )
+        lookup_backend, lookup_model = project_lookup_harness()
+        worker_thread_holder: dict[str, Any] = {}
+
+        async def _project_lookup_result_sink(
+            text: str | None,
+            error: str | None,
+        ) -> None:
+            if from_thread is None:
+                return
+            await self._send_project_lookup_result(
+                thread_id=from_thread,
+                text=text,
+                error=error,
+            )
+            worker_thread = worker_thread_holder.get("thread")
+            if worker_thread is not None and hasattr(worker_thread, "edit"):
+                with contextlib.suppress(Exception):
+                    await worker_thread.edit(
+                        archived=True,
+                        reason="project lookup completed",
+                    )
+
+        try:
+            thread = await cog.spawn_session(
+                raw,
+                prompt,
+                thread_name=thread_name or project_lookup_thread_name(query),
+                auto_start=True,
+                working_dir=project_root,
+                result_sink=_project_lookup_result_sink if from_thread is not None else None,
+                backend=lookup_backend,
+                model=lookup_model,
+                read_only=True,  # a lookup never edits: enforced in argv, not by the prompt
+            )
+        except Exception:
+            logger.exception("project lookup spawn_session failed")
+            return web.json_response({"error": "project lookup worker could not start"}, status=500)
+        worker_thread_holder["thread"] = thread
+
+        logger.info("Spawned project lookup worker in thread %s (%s)", thread.id, thread.name)
+        return web.json_response(
+            {
+                "status": "spawned",
+                "thread_id": str(thread.id),
+                "thread_name": thread.name,
+                "working_dir": project_root,
+            },
+            status=201,
+        )
+
+    async def _send_project_lookup_result(
+        self,
+        *,
+        thread_id: int,
+        text: str | None,
+        error: str | None,
+    ) -> None:
+        target: Any = self.bot.get_channel(thread_id)
+        if target is None:
+            with contextlib.suppress(Exception):
+                target = await self.bot.fetch_channel(thread_id)
+        if target is None or not hasattr(target, "send"):
+            logger.warning("Project lookup result target %s is not reachable", thread_id)
+            return
+
+        if error:
+            message = f"⚠️ DrewAI project lookup failed\n\n{error}"
+        else:
+            body = text or "The lookup finished with no text."
+            message = f"✅ DrewAI project lookup result\n\n{body}"
+        for start in range(0, len(message), 1900):  # Discord's 2,000-character limit
+            await target.send(message[start : start + 1900])
+
     async def list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/sessions — what every other Claude session is doing.
 
@@ -1287,12 +1890,19 @@ class ApiServer:
             thread_names=self._thread_names(thread_ids),
         )
 
-        from ..cogs._run_helper import session_limit
+        from ..cogs._run_helper import capacity_coordinator, session_limit
 
+        # Provider recovery is reported apart from relay admission: "queued" is
+        # a local slot wait, "recovery" is a turn the provider could not answer
+        # yet. Each entry is category and timing only — never the prompt.
+        coordinator = capacity_coordinator()
+        recovery = list(coordinator.snapshot().values()) if coordinator is not None else []
         capacity = {
             "limit": session_limit(),
             "running": sum(v["state"] == STATE_RUNNING for v in views),
             "queued": sum(v["state"] == "queued" for v in views),
+            "recovering": len(recovery),
+            "recovery": recovery,
         }
         state_filter = request.rel_url.query.get("state")
         if state_filter in {STATE_RUNNING, "queued", STATE_HISTORY}:
@@ -1513,8 +2123,9 @@ class ApiServer:
         if raw is None:
             try:
                 raw = await self.bot.fetch_channel(channel_id)
-            except Exception as exc:
-                return web.json_response({"error": str(exc)}, status=500)
+            except Exception:
+                logger.warning("could not fetch channel %s", channel_id, exc_info=True)
+                return web.json_response({"error": "channel could not be fetched"}, status=500)
 
         if not isinstance(raw, _discord.TextChannel):
             return web.json_response(
@@ -1549,6 +2160,16 @@ class ApiServer:
         if att_err is not None:
             return att_err
 
+        parent_thread_id, correlation_id, meta_err = _parse_spawn_metadata(data)
+        if meta_err is not None:
+            return web.json_response({"error": meta_err}, status=400)
+        if correlation_id is not None:
+            # The same identity again is the same spawn: answer with the thread
+            # that already exists rather than opening a duplicate.
+            existing = await self._thread_for_correlation(correlation_id)
+            if existing is not None:
+                return web.json_response({"status": "existing", **existing}, status=200)
+
         try:
             thread = await cog.spawn_session(
                 raw,
@@ -1564,14 +2185,195 @@ class ApiServer:
             return web.json_response({"error": str(exc)}, status=500)
 
         logger.info("Spawned new Claude session in thread %s (%s)", thread.id, thread.name)
+        await self._record_thread_metadata(thread.id, parent_thread_id, correlation_id)
         return web.json_response(
             {
                 "status": "spawned",
                 "thread_id": str(thread.id),
                 "thread_name": thread.name,
+                "parent_thread_id": None if parent_thread_id is None else str(parent_thread_id),
+                "correlation_id": correlation_id,
             },
             status=201,
         )
+
+    async def _record_thread_metadata(
+        self, thread_id: int, parent_thread_id: int | None, correlation_id: str | None
+    ) -> None:
+        """Persist the spawn's parent/correlation metadata, if there is a store for it."""
+        if parent_thread_id is None and correlation_id is None:
+            return
+        if self.settings_repo is None:
+            logger.warning(
+                "spawn metadata for thread %s not persisted: no settings repository", thread_id
+            )
+            return
+        record = {
+            "thread_id": str(thread_id),
+            "parent_thread_id": None if parent_thread_id is None else str(parent_thread_id),
+            "correlation_id": correlation_id,
+        }
+        await self.settings_repo.set(
+            _THREAD_META_KEY.format(thread_id=thread_id), json.dumps(record, sort_keys=True)
+        )
+        if correlation_id is not None:
+            await self.settings_repo.set(
+                _CORRELATION_KEY.format(correlation_id=correlation_id), str(thread_id)
+            )
+
+    async def _thread_metadata(self, thread_id: int) -> dict[str, Any] | None:
+        if self.settings_repo is None:
+            return None
+        raw = await self.settings_repo.get(_THREAD_META_KEY.format(thread_id=thread_id))
+        if not raw:
+            return None
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("unreadable spawn metadata for thread %s", thread_id)
+            return None
+        return record if isinstance(record, dict) else None
+
+    async def _thread_for_correlation(self, correlation_id: str) -> dict[str, Any] | None:
+        if self.settings_repo is None:
+            return None
+        raw = await self.settings_repo.get(_CORRELATION_KEY.format(correlation_id=correlation_id))
+        if not raw or not raw.isdigit():
+            return None
+        record = await self._thread_metadata(int(raw))
+        return record or {
+            "thread_id": raw,
+            "parent_thread_id": None,
+            "correlation_id": correlation_id,
+        }
+
+    async def get_thread_metadata(self, request: web.Request) -> web.Response:
+        """GET /api/threads/{thread_id}/metadata — parent and correlation id of a spawn."""
+        raw_thread_id = request.match_info.get("thread_id", "")
+        if not raw_thread_id.isdigit():
+            return web.json_response({"error": "thread_id must be an integer"}, status=400)
+        if self.settings_repo is None:
+            return web.json_response({"error": "thread metadata store not configured"}, status=503)
+        record = await self._thread_metadata(int(raw_thread_id))
+        if record is None:
+            return web.json_response({"error": "no metadata for this thread"}, status=404)
+        return web.json_response(record)
+
+    async def get_thread_by_correlation(self, request: web.Request) -> web.Response:
+        """GET /api/correlations/{correlation_id} — the thread a spawn identity produced.
+
+        404 means the control plane has no record of that identity (it never
+        spawned here, or was spawned without one). 503 means there is no store
+        to ask, which a caller must not read as absence.
+        """
+        correlation_id = request.match_info.get("correlation_id", "")
+        if not _CORRELATION_ID_RE.fullmatch(correlation_id):
+            return web.json_response({"error": "invalid correlation_id"}, status=400)
+        if self.settings_repo is None:
+            return web.json_response({"error": "thread metadata store not configured"}, status=503)
+        record = await self._thread_for_correlation(correlation_id)
+        if record is None:
+            return web.json_response({"error": "unknown correlation_id"}, status=404)
+        return web.json_response(record)
+
+    async def start_task_loop(self, request: web.Request) -> web.Response:
+        """POST /api/loops — work through a plan's ``- [ ]`` tasks, one per fresh session.
+
+        Meant for a planner session *after* the human said yes. The loop opens
+        one worker thread and posts progress to ``report_thread_id``.
+
+        Body (JSON):
+            plan_path: Absolute path to the plan ``.md`` inside a git repo (required).
+            fallback_harness / fallback_model: AI to switch to by itself when the
+                build's AI hits its usage limit (optional; without it the bot asks).
+            mode: "cheap", "balanced" (default) or "careful" — cost versus quality.
+            queue: true puts the plan in the build queue instead of starting now
+                ("queue it"): builds run one after another, with an 8 am summary.
+            report_thread_id: Channel or thread that gets progress lines and
+                whose parent channel hosts the worker thread (optional; defaults
+                to ``default_channel_id``).
+
+        Returns (201): ``{"status": "started", "worker_thread_id": "..."}``
+        """
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        plan_path = data.get("plan_path")
+        if not isinstance(plan_path, str) or not plan_path.strip():
+            return web.json_response({"error": "plan_path is required"}, status=400)
+
+        cog: Any = self.bot.cogs.get("TaskLoopCog")
+        if cog is None:
+            return web.json_response({"error": "TaskLoopCog is not loaded"}, status=503)
+
+        raw_report: Any = data.get("report_thread_id") or self.default_channel_id
+        try:
+            report_id = int(raw_report)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "report_thread_id must be an integer"}, status=400)
+
+        import discord as _discord
+
+        report = self.bot.get_channel(report_id)
+        if report is None:
+            try:
+                report = await self.bot.fetch_channel(report_id)
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=404)
+        parent = report.parent if isinstance(report, _discord.Thread) else report
+        if not isinstance(parent, _discord.TextChannel):
+            return web.json_response(
+                {"error": "report_thread_id must be a text channel or one of its threads"},
+                status=400,
+            )
+        raw_user: Any = data.get("user_id")
+        try:
+            notify_user_id = int(raw_user) if raw_user else None
+        except (TypeError, ValueError):
+            return web.json_response({"error": "user_id must be an integer"}, status=400)
+        harness = data.get("harness") or None
+        model = data.get("model") or None
+        fallback_harness = data.get("fallback_harness") or None
+        fallback_model = data.get("fallback_model") or None
+        if data.get("queue") is True:
+            place = await cog.enqueue(
+                report,
+                plan_path.strip(),
+                notify_user_id=notify_user_id,
+                harness=harness,
+                model=model,
+                mode=data.get("mode") or None,
+                fallback_harness=fallback_harness,
+                fallback_model=fallback_model,
+            )
+            return web.json_response({"status": "queued", "place": place}, status=202)
+        # A plan that is already being built is answered with that build (T11c):
+        # a repeated request must never open a second one.
+        running = await cog.find_running(plan_path.strip())
+        if running is not None:
+            return web.json_response(
+                {
+                    "status": "running",
+                    "thread_id": running.worker_thread_id,
+                    "build_id": running.build_id,
+                }
+            )
+        # Runs in the background: with no harness given, the bot asks in the
+        # channel and waits for Drew's typed reply before starting.
+        asyncio.create_task(
+            cog.start_asking(
+                report,
+                plan_path.strip(),
+                notify_user_id=notify_user_id,
+                harness=harness,
+                model=model,
+                fallback_harness=fallback_harness,
+                fallback_model=fallback_model,
+                mode=data.get("mode") or None,
+            )
+        )
+        return web.json_response({"status": "starting"}, status=202)
 
     # ------------------------------------------------------------------
     # Authenticated external ingest endpoint (/api/ingest)
@@ -1889,6 +2691,7 @@ class ApiServer:
                 "文脈を完全に復元できるようにするのが目的です。"
                 "Bash ツールで次を実行します（要約は JSON として正しくエスケープすること）:\n"
                 f'  curl -sS -X POST "$CCDB_API_URL/api/ingest/summary" \\\n'
+                f'    -H "{API_AUTH_HEADER}" \\\n'
                 f'    -H "Content-Type: application/json" \\\n'
                 f"    --data-binary @/tmp/ccdb_summary_{result_id}.json\n"
                 f"  # 事前に /tmp/ccdb_summary_{result_id}.json へ "
@@ -1988,8 +2791,9 @@ class ApiServer:
         if raw is None:
             try:
                 raw = await self.bot.fetch_channel(channel_id)
-            except Exception as exc:
-                return web.json_response({"error": str(exc)}, status=500)
+            except Exception:
+                logger.warning("could not fetch channel %s", channel_id, exc_info=True)
+                return web.json_response({"error": "channel could not be fetched"}, status=500)
 
         if not isinstance(raw, _discord.TextChannel):
             return web.json_response(
@@ -2157,20 +2961,26 @@ class ApiServer:
         return web.json_response(response, status=201)
 
     async def _ingest_add_owner(self, thread: discord.Thread) -> None:
-        """Add the configured bot owner to an ingest thread (no-op if unset).
+        """Add the configured thread members to an ingest thread (best-effort).
 
         An ingested session runs unattended and may take many minutes; adding
-        the owner as a thread member makes the thread show up in their joined
-        list instead of having to be searched for. Errors are suppressed — this
-        is best-effort visibility, never a hard failure.
+        every configured operator as a thread member makes the thread show up
+        in their joined list instead of having to be searched for.  Falls back
+        to the single owner when no member set is configured.  Errors are
+        suppressed — this is best-effort visibility, never a hard failure.
         """
-        owner_id = getattr(self.bot, "owner_id", None)
-        if not owner_id:
-            return
+        member_ids = getattr(self.bot, "thread_member_ids", None)
+        if not isinstance(member_ids, (set, frozenset)) or not member_ids:
+            owner_id = getattr(self.bot, "owner_id", None)
+            if not owner_id:
+                return
+            member_ids = {int(owner_id)}
         with contextlib.suppress(Exception):
             import discord as _discord
 
-            await thread.add_user(_discord.Object(id=int(owner_id)))
+            for user_id in sorted(member_ids):
+                with contextlib.suppress(Exception):
+                    await thread.add_user(_discord.Object(id=int(user_id)))
 
     async def _ingest_notify_owner(self, thread: discord.Thread, body: str) -> None:
         """Post a message in *thread* that @mentions the bot owner (no-op if unset).
@@ -2495,9 +3305,10 @@ class ApiServer:
     async def save_thread_summary(self, request: web.Request) -> web.Response:
         """POST /api/ingest/summary — save an updated running summary.
 
-        Internal control-plane endpoint (localhost, no token — same trust model
-        as /api/tasks): the Claude session spawned by an ingest run calls this
-        with its own ``result_id`` after drafting a reply. ccdb resolves the
+        Internal control-plane endpoint (localhost, behind the global
+        ``api_secret`` middleware — same trust model as /api/tasks): the Claude
+        session spawned by an ingest run calls this with its own ``result_id``
+        after drafting a reply. ccdb resolves the
         ``summary_key`` and the pending marker from the ingest row, so the marker
         only advances when a summary is actually saved (a failed session leaves
         the marker untouched and the same diff is re-exported next time).
@@ -2642,8 +3453,8 @@ class ApiServer:
         logger.info(
             "Thread %d marked for resume (reason=%s, session_id=%s)",
             thread_id,
-            _sanitize_log(reason),
-            _sanitize_log(session_id),
+            str(reason).replace("\r", "").replace("\n", ""),
+            str(session_id).replace("\r", "").replace("\n", ""),
         )
         return web.json_response({"status": "marked", "id": row_id}, status=201)
 

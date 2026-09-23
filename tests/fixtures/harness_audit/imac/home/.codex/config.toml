@@ -1,0 +1,4 @@
+model = "gpt-5-mini"
+model_reasoning_effort = "medium"
+[mcp_servers.github]
+command = "gh-mcp"

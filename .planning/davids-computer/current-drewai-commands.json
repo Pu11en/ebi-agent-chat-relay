@@ -1,0 +1,217 @@
+{
+  "source": "Live Discord guild commands for DrewAI, checked 2026-09-18; not a remote installation check",
+  "commands": [
+    {
+      "name": "help",
+      "description": "Show available commands and how to use the bot",
+      "subcommands": []
+    },
+    {
+      "name": "stop",
+      "description": "Stop the active session (session is preserved)",
+      "subcommands": []
+    },
+    {
+      "name": "compact",
+      "description": "Manually compact (summarize) the conversation to free context space",
+      "subcommands": []
+    },
+    {
+      "name": "goal",
+      "description": "Set a completion condition \u2014 Claude keeps working until it's met",
+      "subcommands": []
+    },
+    {
+      "name": "clear",
+      "description": "Reset the Claude Code session for this thread",
+      "subcommands": []
+    },
+    {
+      "name": "rewind",
+      "description": "Go back to an earlier point in the conversation",
+      "subcommands": []
+    },
+    {
+      "name": "fork",
+      "description": "Branch this conversation into a new thread",
+      "subcommands": []
+    },
+    {
+      "name": "tools-show",
+      "description": "Show current allowed tools",
+      "subcommands": []
+    },
+    {
+      "name": "tools-set",
+      "description": "Change allowed tools via select menu",
+      "subcommands": []
+    },
+    {
+      "name": "tools-reset",
+      "description": "Reset allowed tools to .env default",
+      "subcommands": []
+    },
+    {
+      "name": "sync-settings",
+      "description": "View or change session sync settings",
+      "subcommands": []
+    },
+    {
+      "name": "resume",
+      "description": "Resume a previous session in a new thread",
+      "subcommands": []
+    },
+    {
+      "name": "resume-info",
+      "description": "Show the CLI command to resume this thread's session",
+      "subcommands": []
+    },
+    {
+      "name": "sessions",
+      "description": "List all known Claude Code sessions",
+      "subcommands": []
+    },
+    {
+      "name": "search",
+      "description": "Find a past thread by keyword (add body:True to grep full conversations)",
+      "subcommands": []
+    },
+    {
+      "name": "sync-sessions",
+      "description": "Import CLI sessions from Claude Code as Discord threads",
+      "subcommands": []
+    },
+    {
+      "name": "worktree-list",
+      "description": "List all active Claude Code session worktrees",
+      "subcommands": []
+    },
+    {
+      "name": "worktree-cleanup",
+      "description": "Remove clean orphaned session worktrees",
+      "subcommands": []
+    },
+    {
+      "name": "context",
+      "description": "Show the context window usage for this thread's session",
+      "subcommands": []
+    },
+    {
+      "name": "usage",
+      "description": "Show Claude Code rate limit usage and weekly activity",
+      "subcommands": []
+    },
+    {
+      "name": "skill",
+      "description": "Run a Claude Code skill",
+      "subcommands": []
+    },
+    {
+      "name": "model",
+      "description": "Show, select, or install a model for the current backend",
+      "subcommands": [
+        {
+          "name": "show",
+          "description": "Show the current model selection"
+        },
+        {
+          "name": "set",
+          "description": "Select a model for the current backend"
+        },
+        {
+          "name": "install",
+          "description": "Install and select an Ollama model for the local backend"
+        }
+      ]
+    },
+    {
+      "name": "backend",
+      "description": "Show or switch the AI backend",
+      "subcommands": []
+    },
+    {
+      "name": "effort",
+      "description": "Show or set the reasoning effort for the current backend",
+      "subcommands": []
+    },
+    {
+      "name": "engine-status",
+      "description": "Show/set whether the Codex usage line appears after each turn",
+      "subcommands": []
+    },
+    {
+      "name": "ollama",
+      "description": "Inspect and manage the local Ollama runtime",
+      "subcommands": [
+        {
+          "name": "status",
+          "description": "Check the local runtime end to end"
+        },
+        {
+          "name": "list",
+          "description": "List the models installed on the server"
+        },
+        {
+          "name": "ps",
+          "description": "Show which models are loaded in memory right now"
+        },
+        {
+          "name": "show",
+          "description": "Show the details of one installed model"
+        },
+        {
+          "name": "pull",
+          "description": "Download a model onto the server"
+        },
+        {
+          "name": "rm",
+          "description": "Delete an installed model and free its disk space"
+        },
+        {
+          "name": "use",
+          "description": "Select an installed model for the local backend"
+        }
+      ]
+    },
+    {
+      "name": "upgrade",
+      "description": "Manually trigger a package upgrade",
+      "subcommands": []
+    },
+    {
+      "name": "remind",
+      "description": "Set a reminder at a specific time!",
+      "subcommands": []
+    },
+    {
+      "name": "cd",
+      "description": "Retarget THIS thread to a folder (starts a fresh session there)",
+      "subcommands": []
+    },
+    {
+      "name": "cdnew",
+      "description": "Open a NEW session in a folder",
+      "subcommands": []
+    },
+    {
+      "name": "gowork",
+      "description": "Work through the plan, one task at a time",
+      "subcommands": []
+    },
+    {
+      "name": "stopwork",
+      "description": "Stop /gowork after the current task",
+      "subcommands": []
+    },
+    {
+      "name": "switch",
+      "description": "Switch AI and model in one step (pick from the list)",
+      "subcommands": []
+    },
+    {
+      "name": "launcher",
+      "description": "Open this computer's folder/session buttons",
+      "subcommands": []
+    }
+  ]
+}

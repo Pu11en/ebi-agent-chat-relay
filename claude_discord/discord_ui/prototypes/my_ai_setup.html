@@ -1,0 +1,958 @@
+<!doctype html>
+<!--
+  THROWAWAY UI PROTOTYPE
+  Question: How should Drew's custom AI setup appear inside Discord Settings?
+  Three variants are switchable with ?variant=a, ?variant=b, and ?variant=c.
+  Preview: python -m http.server 8765 --directory claude_discord/discord_ui/prototypes
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>My AI Setup prototype</title>
+  <meta name="description" content="Throwaway Discord UI prototype for browsing Drew's custom AI setup.">
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #000000;
+      --discord: #181818;
+      --panel: #1f1f1f;
+      --raised: #272727;
+      --hover: #313131;
+      --warm: #131209;
+      --text: #f6f7fb;
+      --muted: #a8adb8;
+      --faint: #777d8b;
+      --blue: #8aadf4;
+      --purple: #c6a0f6;
+      --green: #a6da95;
+      --yellow: #eed49f;
+      --red: #ed8796;
+      --line: #3a3c43;
+      --ease: cubic-bezier(0.32, 0.72, 0, 1);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--page);
+      color: var(--text);
+      font-family: Geist, Manrope, sans-serif;
+      font-size: 16px;
+      line-height: 24px;
+    }
+
+    button, input, select { font: inherit; }
+    button, select { color: inherit; }
+
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 2px;
+    }
+
+    button:active { transform: scale(0.98); }
+
+    .prototype-note {
+      max-width: 1180px;
+      margin: 24px auto 0;
+      padding: 12px 16px;
+      border: 1px solid #494b54;
+      border-radius: 12px;
+      background: var(--warm);
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 20px;
+    }
+
+    .discord-shell {
+      width: min(1180px, calc(100vw - 48px));
+      min-height: 720px;
+      margin: 24px auto 96px;
+      display: grid;
+      grid-template-columns: 80px 240px 1fr;
+      overflow: hidden;
+      border: 1px solid #3a3c43;
+      border-radius: 16px;
+      background: var(--discord);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
+    }
+
+    .server-rail {
+      padding: 16px 12px;
+      background: var(--warm);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .server-dot {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background: var(--raised);
+      color: var(--muted);
+      font-weight: 700;
+      transition: all 700ms var(--ease);
+    }
+
+    .server-dot.active {
+      border-radius: 12px;
+      background: #5865f2;
+      color: white;
+    }
+
+    .channel-rail {
+      padding: 16px 12px;
+      background: var(--panel);
+      border-right: 1px solid #35373e;
+    }
+
+    .workspace-name {
+      margin: 0 4px 16px;
+      font-size: 16px;
+      line-height: 24px;
+      font-weight: 700;
+      text-wrap: balance;
+    }
+
+    .channel-group {
+      margin-top: 24px;
+      color: var(--faint);
+      font-size: 12px;
+      line-height: 16px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .channel {
+      width: 100%;
+      margin-top: 4px;
+      padding: 8px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+      transition: all 700ms var(--ease);
+    }
+
+    .channel:hover,
+    .channel.active { background: var(--raised); color: var(--text); }
+
+    .content {
+      min-width: 0;
+      background: var(--discord);
+    }
+
+    .channel-header {
+      min-height: 56px;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #35373e;
+    }
+
+    .channel-title { font-size: 16px; font-weight: 700; }
+    .channel-topic { color: var(--muted); font-size: 14px; line-height: 20px; }
+
+    .chat {
+      padding: 32px;
+      overflow: hidden;
+    }
+
+    .message {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .avatar {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background: #5865f2;
+      color: white;
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .message-meta {
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+
+    .bot-name { font-weight: 700; }
+    .bot-badge {
+      padding: 0 4px;
+      border-radius: 4px;
+      background: #5865f2;
+      color: white;
+      font-size: 12px;
+      line-height: 16px;
+    }
+    .timestamp { color: var(--faint); font-size: 12px; line-height: 16px; }
+
+    .embed {
+      max-width: 780px;
+      padding: 24px;
+      border: 1px solid #43454e;
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .eyebrow {
+      color: var(--blue);
+      font-size: 12px;
+      line-height: 16px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      margin-bottom: 4px;
+      font-size: 24px;
+      line-height: 32px;
+      font-weight: 700;
+      text-wrap: balance;
+    }
+    h2 {
+      margin-bottom: 8px;
+      font-size: 18px;
+      line-height: 28px;
+      font-weight: 700;
+    }
+    h3 {
+      margin-bottom: 4px;
+      font-size: 16px;
+      line-height: 24px;
+      font-weight: 700;
+    }
+    p { margin-bottom: 16px; color: var(--muted); text-wrap: pretty; }
+
+    .summary-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 16px 0 24px;
+    }
+
+    .stat {
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: var(--raised);
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 20px;
+    }
+    .stat strong { color: var(--text); }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .control,
+    .primary,
+    .ghost {
+      min-height: 40px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 20px;
+      font-weight: 700;
+      transition: all 700ms var(--ease);
+    }
+
+    .control,
+    .ghost {
+      border: 1px solid #4a4c56;
+      background: var(--raised);
+    }
+    .control:hover,
+    .ghost:hover { background: var(--hover); }
+    .primary { border: 1px solid #5865f2; background: #5865f2; color: white; }
+    .primary:hover { background: #6d78f4; }
+
+    select.control { min-width: 144px; }
+
+    .view-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      margin-bottom: 16px;
+      padding: 4px;
+      border-radius: 12px;
+      background: var(--raised);
+    }
+
+    .tab {
+      padding: 8px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 20px;
+      font-weight: 700;
+      transition: all 700ms var(--ease);
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { background: var(--hover); color: var(--text); }
+
+    .variant-a-grid {
+      display: grid;
+      grid-template-columns: 176px minmax(0, 1fr) 208px;
+      gap: 16px;
+    }
+
+    .type-nav,
+    .detail-panel,
+    .scope-lane,
+    .matrix-wrap,
+    .recent-panel {
+      border: 1px solid #41434c;
+      border-radius: 12px;
+      background: var(--raised);
+    }
+
+    .type-nav { padding: 8px; }
+    .type-button {
+      width: 100%;
+      padding: 8px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 20px;
+      transition: all 700ms var(--ease);
+    }
+    .type-button:hover,
+    .type-button.active { background: var(--hover); color: var(--text); }
+    .type-button span { float: right; color: var(--faint); }
+
+    .item-list { display: grid; gap: 8px; }
+
+    .item {
+      padding: 12px;
+      border: 1px solid #41434c;
+      border-radius: 12px;
+      background: var(--raised);
+      cursor: pointer;
+      transition: all 700ms var(--ease);
+    }
+    .item:hover,
+    .item.selected { border-color: var(--blue); background: var(--hover); }
+
+    .item-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .item-name { font-weight: 700; }
+    .item-copy { margin: 4px 0 0; color: var(--muted); font-size: 14px; line-height: 20px; }
+
+    .badge-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      background: #313131;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 16px;
+    }
+    .badge.blue { color: var(--blue); }
+    .badge.green { color: var(--green); }
+    .badge.purple { color: var(--purple); }
+    .badge.yellow { color: var(--yellow); }
+
+    .detail-panel { padding: 16px; }
+    .detail-label { margin-top: 16px; color: var(--faint); font-size: 12px; line-height: 16px; text-transform: uppercase; }
+    .detail-value { color: var(--text); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+    .detail-actions { display: grid; gap: 8px; margin-top: 24px; }
+
+    .scope-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .scope-lane { padding: 12px; }
+    .scope-heading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+    .scope-count { color: var(--faint); font-size: 12px; line-height: 16px; }
+    .scope-card {
+      margin-top: 8px;
+      padding: 8px;
+      border-radius: 8px;
+      background: var(--hover);
+      font-size: 14px;
+      line-height: 20px;
+      cursor: pointer;
+      transition: all 700ms var(--ease);
+    }
+    .scope-card:hover { transform: translateY(-2px); }
+    .scope-card small { display: block; color: var(--muted); font-size: 12px; line-height: 16px; }
+
+    .scope-footer {
+      display: grid;
+      grid-template-columns: 1fr 240px;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .activity-strip,
+    .agent-card {
+      padding: 16px;
+      border-radius: 12px;
+      background: var(--raised);
+      border: 1px solid #41434c;
+    }
+    .activity-line { margin-top: 8px; color: var(--muted); font-size: 14px; line-height: 20px; }
+    .activity-line strong { color: var(--text); }
+
+    .variant-c-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 216px;
+      gap: 12px;
+    }
+    .matrix-wrap { overflow: hidden; }
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      line-height: 20px;
+    }
+    .matrix th,
+    .matrix td { padding: 12px; border-bottom: 1px solid #41434c; text-align: center; }
+    .matrix th:first-child,
+    .matrix td:first-child { text-align: left; }
+    .matrix tr:last-child td { border-bottom: 0; }
+    .matrix th { color: var(--muted); font-size: 12px; line-height: 16px; }
+    .ok { color: var(--green); }
+    .different { color: var(--yellow); }
+    .none { color: var(--faint); }
+    .recent-panel { padding: 16px; }
+    .recent-entry { padding: 12px 0; border-bottom: 1px solid #41434c; }
+    .recent-entry:last-child { border-bottom: 0; }
+    .recent-entry small { display: block; color: var(--faint); font-size: 12px; line-height: 16px; }
+
+    .pagination {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 16px;
+      color: var(--faint);
+      font-size: 12px;
+      line-height: 16px;
+    }
+
+    .prototype-switcher {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      z-index: 30;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px;
+      border: 1px solid #585b66;
+      border-radius: 9999px;
+      background: rgba(19, 18, 9, 0.92);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.64);
+      backdrop-filter: blur(24px);
+    }
+    .switch-button {
+      width: 40px;
+      height: 40px;
+      border: 0;
+      border-radius: 9999px;
+      background: var(--raised);
+      cursor: pointer;
+      transition: all 700ms var(--ease);
+    }
+    .switch-button:hover { background: var(--hover); }
+    .switch-label { min-width: 208px; text-align: center; font-size: 14px; line-height: 20px; font-weight: 700; }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: none;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(24px);
+    }
+    .modal-backdrop.open { display: grid; }
+    .modal {
+      width: min(480px, 100%);
+      padding: 24px;
+      border: 1px solid #535661;
+      border-radius: 16px;
+      background: var(--panel);
+    }
+    .modal input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #535661;
+      border-radius: 8px;
+      background: var(--raised);
+      color: var(--text);
+    }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+    .toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 50;
+      max-width: 360px;
+      padding: 12px 16px;
+      border: 1px solid #535661;
+      border-radius: 12px;
+      background: var(--panel);
+      color: var(--text);
+      opacity: 0;
+      transform: translateY(16px);
+      pointer-events: none;
+      transition: all 700ms var(--ease);
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 980px) {
+      .discord-shell { grid-template-columns: 64px 1fr; }
+      .channel-rail { display: none; }
+      .variant-a-grid { grid-template-columns: 152px minmax(0, 1fr); }
+      .detail-panel { grid-column: 1 / -1; }
+      .scope-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-note">
+    Throwaway prototype. All three versions include browsing, filters, computer comparison,
+    search, recent changes, and an agent management path. No button changes real settings.
+  </div>
+
+  <main class="discord-shell" aria-label="Discord preview">
+    <nav class="server-rail" aria-label="Servers">
+      <div class="server-dot active" aria-label="Drew AI">D</div>
+      <div class="server-dot" aria-label="iMac">i</div>
+      <div class="server-dot" aria-label="David">Da</div>
+      <div class="server-dot" aria-label="Add server">+</div>
+    </nav>
+
+    <aside class="channel-rail">
+      <div class="workspace-name">Drew AI workspace</div>
+      <div class="channel-group">Control center</div>
+      <button class="channel"># start here</button>
+      <button class="channel active"># settings</button>
+      <div class="channel-group">Sessions</div>
+      <button class="channel"># command cleanup</button>
+      <button class="channel"># handoff planning</button>
+      <button class="channel"># codex review</button>
+    </aside>
+
+    <section class="content">
+      <header class="channel-header">
+        <div>
+          <div class="channel-title"># settings</div>
+          <div class="channel-topic">Control center settings for this computer</div>
+        </div>
+        <div class="channel-topic">DrewAI online</div>
+      </header>
+
+      <div class="chat">
+        <article class="message">
+          <div class="avatar">D</div>
+          <div>
+            <div class="message-meta">
+              <span class="bot-name">DrewAI</span>
+              <span class="bot-badge">APP</span>
+              <span class="timestamp">Today at 3:42 PM</span>
+            </div>
+            <div class="embed" id="variant-root"></div>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <nav class="prototype-switcher" aria-label="Prototype variants">
+    <button class="switch-button" id="previous-variant" aria-label="Previous variant">←</button>
+    <div class="switch-label" id="variant-label"></div>
+    <button class="switch-button" id="next-variant" aria-label="Next variant">→</button>
+  </nav>
+
+  <div class="modal-backdrop" id="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title">
+    <div class="modal">
+      <div class="eyebrow">Search your setup</div>
+      <h2 id="search-title">Find a customization</h2>
+      <p>Search names, descriptions, computers, projects, or where an item is stored.</p>
+      <input id="search-input" aria-label="Search customizations" placeholder="Try planning, Codex, or global">
+      <div class="modal-actions">
+        <button class="ghost" data-close-modal>Cancel</button>
+        <button class="primary" data-run-search>Search setup</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const variantNames = {
+      a: "A · Browse by kind",
+      b: "B · See where it lives",
+      c: "C · Compare computers"
+    };
+
+    const itemData = [
+      {
+        name: "Drew communication preferences",
+        type: "Preferences",
+        scope: "Everywhere",
+        location: "Shared instructions",
+        size: "9.1 KB",
+        note: "Short replies, one question at a time, and Discord cards for long material."
+      },
+      {
+        name: "One question",
+        type: "Skills",
+        scope: "Everywhere",
+        location: "Global skills",
+        size: "2.7 KB",
+        note: "Walks through choices one focused question at a time."
+      },
+      {
+        name: "AI Lounge",
+        type: "Add ons",
+        scope: "DrewAI and iMac",
+        location: "Discord bridge",
+        size: "8.4 KB",
+        note: "Shares short activity notes between active Discord sessions."
+      },
+      {
+        name: "Codex Discord profile",
+        type: "Harness settings",
+        scope: "DrewAI and iMac",
+        location: "Codex profile",
+        size: "High reasoning",
+        note: "Controls the model, reasoning level, permissions, and working folders."
+      },
+      {
+        name: "Landing page design",
+        type: "Skills",
+        scope: "Everywhere",
+        location: "Global skills",
+        size: "14.8 KB",
+        note: "Design rules used when an agent builds or reviews a web interface."
+      },
+      {
+        name: "CCDB project instructions",
+        type: "Instructions",
+        scope: "One project",
+        location: "ebi agent chat relay",
+        size: "27.5 KB",
+        note: "Architecture, test rules, security checks, and project conventions."
+      }
+    ];
+
+    function commonHeader(title, description) {
+      return `
+        <div class="eyebrow">Settings › My AI Setup</div>
+        <h1>${title}</h1>
+        <p>${description}</p>
+        <div class="summary-row">
+          <div class="stat"><strong>42</strong> custom items</div>
+          <div class="stat"><strong>3</strong> computers</div>
+          <div class="stat"><strong>11</strong> project only</div>
+          <div class="stat"><strong>4</strong> changed this week</div>
+        </div>
+        <div class="toolbar">
+          <button class="control" data-search>Search</button>
+          <select class="control" aria-label="Filter by computer">
+            <option>All computers</option>
+            <option>DrewAI</option>
+            <option>iMac</option>
+            <option>David</option>
+          </select>
+          <select class="control" aria-label="Filter by location">
+            <option>Every location</option>
+            <option>Shared</option>
+            <option>Computer</option>
+            <option>Project</option>
+          </select>
+          <button class="primary" data-agent>Ask setup agent</button>
+        </div>`;
+    }
+
+    function viewTabs(active) {
+      return `
+        <div class="view-tabs" role="tablist" aria-label="Inventory views">
+          ${["Browse", "Compare", "Recent"].map(label => `
+            <button class="tab ${active === label ? "active" : ""}" data-view="${label}">${label}</button>
+          `).join("")}
+        </div>`;
+    }
+
+    function itemMarkup(item, index) {
+      return `
+        <article class="item ${index === 0 ? "selected" : ""}" data-item-index="${index}">
+          <div class="item-top">
+            <span class="item-name">${item.name}</span>
+            <span class="badge blue">${item.type}</span>
+          </div>
+          <p class="item-copy">${item.note}</p>
+          <div class="badge-row">
+            <span class="badge green">${item.scope}</span>
+            <span class="badge">${item.location}</span>
+            <span class="badge yellow">${item.size}</span>
+          </div>
+        </article>`;
+    }
+
+    function renderVariantA() {
+      const item = itemData[0];
+      return `
+        ${commonHeader("Your custom setup, sorted by kind", "Browse what you added or changed. Built in defaults stay hidden unless you ask to see them.")}
+        ${viewTabs("Browse")}
+        <div class="variant-a-grid">
+          <nav class="type-nav" aria-label="Customization types">
+            <button class="type-button active">Everything <span>42</span></button>
+            <button class="type-button">Preferences <span>6</span></button>
+            <button class="type-button">Instructions <span>5</span></button>
+            <button class="type-button">Skills <span>18</span></button>
+            <button class="type-button">Tools <span>4</span></button>
+            <button class="type-button">Add ons <span>5</span></button>
+            <button class="type-button">Harness settings <span>4</span></button>
+          </nav>
+          <section class="item-list" aria-label="Custom setup items">
+            ${itemData.slice(0, 4).map(itemMarkup).join("")}
+          </section>
+          <aside class="detail-panel" id="detail-panel">
+            <div class="eyebrow">Selected item</div>
+            <h3>${item.name}</h3>
+            <p class="item-copy">${item.note}</p>
+            <div class="detail-label">Applies to</div>
+            <div class="detail-value">${item.scope}</div>
+            <div class="detail-label">Stored in</div>
+            <div class="detail-value">${item.location}</div>
+            <div class="detail-label">Size</div>
+            <div class="detail-value">${item.size}</div>
+            <div class="detail-actions">
+              <button class="primary" data-agent>Ask agent about this</button>
+              <button class="ghost" data-toast="Opening the source is simulated in this prototype.">Show source</button>
+            </div>
+          </aside>
+        </div>
+        <div class="pagination"><span>Showing 1 through 4 of 42</span><span>Page 1 of 11</span></div>`;
+    }
+
+    function scopeCard(name, type, detail) {
+      return `<div class="scope-card" data-toast="Selected ${name}."><strong>${name}</strong><small>${type} · ${detail}</small></div>`;
+    }
+
+    function renderVariantB() {
+      return `
+        ${commonHeader("See where every customization lives", "Start with scope so global preferences, computer settings, and project rules never blur together.")}
+        ${viewTabs("Browse")}
+        <div class="scope-grid">
+          <section class="scope-lane">
+            <div class="scope-heading"><h3>Everywhere</h3><span class="scope-count">13 items</span></div>
+            ${scopeCard("Drew preferences", "Preferences", "9.1 KB")}
+            ${scopeCard("One question", "Skill", "2.7 KB")}
+            ${scopeCard("Shared memory", "Instructions", "8 notes")}
+          </section>
+          <section class="scope-lane">
+            <div class="scope-heading"><h3>Drew profile</h3><span class="scope-count">9 items</span></div>
+            ${scopeCard("AI Lounge", "Add on", "DrewAI and iMac")}
+            ${scopeCard("File delivery", "Tool", "DrewAI and iMac")}
+            ${scopeCard("Control center", "Commands", "3 actions")}
+          </section>
+          <section class="scope-lane">
+            <div class="scope-heading"><h3>Computers</h3><span class="scope-count">9 items</span></div>
+            ${scopeCard("Codex profile", "DrewAI", "High reasoning")}
+            ${scopeCard("Local model", "iMac", "Available")}
+            ${scopeCard("David profile", "David", "Separate subscription")}
+          </section>
+          <section class="scope-lane">
+            <div class="scope-heading"><h3>Projects</h3><span class="scope-count">11 items</span></div>
+            ${scopeCard("CCDB rules", "Instructions", "27.5 KB")}
+            ${scopeCard("Python quality", "Skill", "CCDB only")}
+            ${scopeCard("Upwork research", "Tools", "Upwork only")}
+          </section>
+        </div>
+        <div class="scope-footer">
+          <section class="activity-strip">
+            <h3>Recent changes</h3>
+            <div class="activity-line"><strong>Yesterday</strong> · Added domain modeling skill everywhere</div>
+            <div class="activity-line"><strong>Friday</strong> · Updated Codex model for DrewAI</div>
+            <div class="activity-line"><strong>Thursday</strong> · Added project instructions to Upwork</div>
+          </section>
+          <aside class="agent-card">
+            <h3>Need to change something?</h3>
+            <p class="item-copy">Select an item, then let the setup agent explain where it belongs before making changes.</p>
+            <button class="primary" data-agent>Start setup review</button>
+          </aside>
+        </div>`;
+    }
+
+    function renderVariantC() {
+      return `
+        ${commonHeader("Compare your computers at a glance", "See what matches, what differs by subscription, and where each custom item is active.")}
+        ${viewTabs("Compare")}
+        <div class="variant-c-grid">
+          <section class="matrix-wrap">
+            <table class="matrix">
+              <thead>
+                <tr><th>Custom area</th><th>DrewAI</th><th>iMac</th><th>David</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><strong>Shared preferences</strong><br><span class="channel-topic">6 items</span></td><td class="ok">Same</td><td class="ok">Same</td><td class="different">Own profile</td></tr>
+                <tr><td><strong>Skills</strong><br><span class="channel-topic">18 installed</span></td><td class="ok">18</td><td class="ok">18</td><td class="different">11</td></tr>
+                <tr><td><strong>Tools and plugins</strong><br><span class="channel-topic">9 configured</span></td><td class="ok">9</td><td class="different">8</td><td class="different">5</td></tr>
+                <tr><td><strong>Codex settings</strong><br><span class="channel-topic">Model and reasoning</span></td><td class="different">High</td><td class="different">High</td><td class="none">Not installed</td></tr>
+                <tr><td><strong>Project instructions</strong><br><span class="channel-topic">Changes by folder</span></td><td class="ok">Visible</td><td class="ok">Visible</td><td class="different">Limited</td></tr>
+                <tr><td><strong>Discord add ons</strong><br><span class="channel-topic">5 custom features</span></td><td class="ok">5</td><td class="ok">5</td><td class="different">3</td></tr>
+              </tbody>
+            </table>
+          </section>
+          <aside class="recent-panel">
+            <div class="eyebrow">Recent</div>
+            <h3>What changed</h3>
+            <div class="recent-entry"><strong>Domain modeling</strong><small>Added everywhere · Yesterday</small></div>
+            <div class="recent-entry"><strong>Codex model</strong><small>DrewAI and iMac · Friday</small></div>
+            <div class="recent-entry"><strong>Upwork tools</strong><small>One project · Thursday</small></div>
+            <button class="primary" data-agent style="width: 100%; margin-top: 16px;">Ask setup agent</button>
+          </aside>
+        </div>
+        <div class="pagination"><span>Select any row to see the exact items behind it</span><span>Updated 4 minutes ago</span></div>`;
+    }
+
+    const renderers = { a: renderVariantA, b: renderVariantB, c: renderVariantC };
+    const variants = Object.keys(renderers);
+    const params = new URLSearchParams(window.location.search);
+    let current = params.get("variant") || "a";
+    if (!renderers[current]) current = "a";
+
+    function setVariant(next) {
+      current = next;
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set("variant", current);
+      window.history.replaceState({}, "", nextUrl);
+      render();
+    }
+
+    function cycle(direction) {
+      const index = variants.indexOf(current);
+      setVariant(variants[(index + direction + variants.length) % variants.length]);
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      toast.textContent = message;
+      toast.classList.add("show");
+      window.setTimeout(() => toast.classList.remove("show"), 2400);
+    }
+
+    function bindInteractions() {
+      document.querySelectorAll("[data-search]").forEach(button => {
+        button.addEventListener("click", () => {
+          document.getElementById("search-modal").classList.add("open");
+          window.setTimeout(() => document.getElementById("search-input").focus(), 0);
+        });
+      });
+
+      document.querySelectorAll("[data-agent]").forEach(button => {
+        button.addEventListener("click", () => showToast("A setup management session would open with this item attached."));
+      });
+
+      document.querySelectorAll("[data-toast]").forEach(button => {
+        button.addEventListener("click", () => showToast(button.dataset.toast));
+      });
+
+      document.querySelectorAll("[data-view]").forEach(button => {
+        button.addEventListener("click", () => {
+          const target = button.dataset.view;
+          if (target === "Compare") setVariant("c");
+          else if (target === "Recent") setVariant("b");
+          else setVariant("a");
+        });
+      });
+
+      document.querySelectorAll("[data-item-index]").forEach(card => {
+        card.addEventListener("click", () => {
+          document.querySelectorAll("[data-item-index]").forEach(item => item.classList.remove("selected"));
+          card.classList.add("selected");
+          const item = itemData[Number(card.dataset.itemIndex)];
+          const panel = document.getElementById("detail-panel");
+          if (!panel) return;
+          panel.innerHTML = `
+            <div class="eyebrow">Selected item</div>
+            <h3>${item.name}</h3>
+            <p class="item-copy">${item.note}</p>
+            <div class="detail-label">Applies to</div><div class="detail-value">${item.scope}</div>
+            <div class="detail-label">Stored in</div><div class="detail-value">${item.location}</div>
+            <div class="detail-label">Size</div><div class="detail-value">${item.size}</div>
+            <div class="detail-actions"><button class="primary" data-agent>Ask agent about this</button><button class="ghost" data-toast="Opening the source is simulated in this prototype.">Show source</button></div>`;
+          bindInteractions();
+        });
+      });
+    }
+
+    function render() {
+      document.getElementById("variant-root").innerHTML = renderers[current]();
+      document.getElementById("variant-label").textContent = variantNames[current];
+      bindInteractions();
+    }
+
+    document.getElementById("previous-variant").addEventListener("click", () => cycle(-1));
+    document.getElementById("next-variant").addEventListener("click", () => cycle(1));
+    document.querySelector("[data-close-modal]").addEventListener("click", () => document.getElementById("search-modal").classList.remove("open"));
+    document.querySelector("[data-run-search]").addEventListener("click", () => {
+      const value = document.getElementById("search-input").value.trim();
+      document.getElementById("search-modal").classList.remove("open");
+      showToast(value ? `Showing custom items matching “${value}”.` : "Showing every custom item.");
+    });
+    document.getElementById("search-modal").addEventListener("click", event => {
+      if (event.target.id === "search-modal") event.currentTarget.classList.remove("open");
+    });
+    document.addEventListener("keydown", event => {
+      const tag = document.activeElement && document.activeElement.tagName;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) || document.activeElement?.isContentEditable) return;
+      if (event.key === "ArrowLeft") cycle(-1);
+      if (event.key === "ArrowRight") cycle(1);
+      if (event.key === "Escape") document.getElementById("search-modal").classList.remove("open");
+    });
+
+    render();
+  </script>
+</body>
+</html>

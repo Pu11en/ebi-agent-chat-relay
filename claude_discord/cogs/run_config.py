@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from claude_code_core.backend import SessionBackend
+from claude_code_core.capacity_policy import FallbackTarget
 from claude_code_core.frontend import ConversationSurface
 
 from ..claude.types import ImageData
@@ -95,6 +96,9 @@ class RunConfig:
     # When True, a compact guardrail was already injected into --append-system-prompt
     # for this run. Prevents infinite interrupt→rerun loops if compact fires again.
     post_compact_rerun: bool = False
+    # A gowork build step: it works in its own copy, so it gets a slim briefing —
+    # no concurrency notice (nothing can collide with it) and one-line file rules.
+    slim_context: bool = False
     # True only for the single automatic rerun created by the owner-PR
     # completion gate. Prevents a genuinely blocked PR from causing a loop.
     pr_completion_gate_rerun: bool = False
@@ -122,6 +126,30 @@ class RunConfig:
     # Which frontend created this session mapping. Historical callers remain
     # Discord by default; the Teams host sets this explicitly.
     session_origin: str = "discord"
+    # What kind of admission slot this run takes on the adaptive capacity path:
+    # "chat" (never queued), "task" (a Go Work worker) or "review" (the build's
+    # own check, which keeps a reserved slot so it cannot queue behind workers).
+    slot_kind: str = "chat"
+    # The Go Work build this run belongs to, for fair admission between builds.
+    slot_build_id: str = ""
+    # How many other tasks this one unblocks; the controller prefers higher.
+    slot_unblocks: int = 0
+
+    # Model-capacity recovery (claude_discord.capacity_recovery). A turn keeps
+    # its key across retries and restarts; the loader passes the claim token it
+    # already holds so the coordinator continues that turn instead of a new one.
+    # ``fallback_chain`` is the explicitly authorized chain captured for this
+    # turn; empty falls back to the computer-wide chain configured in
+    # ``_run_helper`` (CCDB_CAPACITY_FALLBACK). ``capacity_recovery=False`` runs
+    # one attempt only, as before the coordinator existed.
+    recovery_turn_key: str | None = None
+    recovery_claim_token: str | None = None
+    fallback_chain: tuple[FallbackTarget, ...] = ()
+    capacity_recovery: bool = True
+    # Set by the run helper while a coordinator owns this run: the processor then
+    # leaves recoverable capacity errors to the recovery status instead of
+    # posting an error embed per attempt.
+    recovery_presents_errors: bool = False
 
     # Prevent accidental field mutation — RunConfig is a value object.
     # Use dataclasses.replace() to create modified copies.

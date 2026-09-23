@@ -1,0 +1,11 @@
+{
+  "links": {
+    "__HOME__/.claude/CLAUDE.md": "__HOME__/AGENTS.md",
+    "__HOME__/.codex/AGENTS.md": "__HOME__/AGENTS.md"
+  },
+  "modes": {
+    "__HOME__/.claude/settings.json": 384,
+    "__HOME__/.codex/config.toml": 384,
+    "__HOME__/AGENTS.md": 420
+  }
+}

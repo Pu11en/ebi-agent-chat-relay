@@ -864,6 +864,193 @@ class TestSpawn:
         assert resp.status == 400
 
 
+class TestSpawnMetadata:
+    """Generic correlation/parent metadata on /api/spawn (parallel-gowork 5.1).
+
+    A coordinator that records "spawning" before the request and then loses the
+    answer needs one thing from the control plane: a way to ask "did the spawn
+    with *this* identity happen?" without spawning again. The fields are
+    generic — any caller may set them — and optional, so existing consumers
+    see no change.
+    """
+
+    PARENT = 1550757693784989707
+    CORRELATION = "1550757693784989707:weekly-digest-1a2b3c4d"
+
+    @pytest.fixture
+    def mock_cog(self) -> MagicMock:
+        thread = MagicMock()
+        thread.id = 999888777
+        thread.name = "Test thread"
+        cog = MagicMock()
+        cog.spawn_session = AsyncMock(return_value=thread)
+        return cog
+
+    @pytest.fixture
+    async def settings_repo(self):
+        from claude_discord.database.models import init_db
+        from claude_discord.database.settings_repo import SettingsRepository
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        await init_db(path)
+        yield SettingsRepository(path)
+        os.unlink(path)
+
+    @pytest.fixture
+    async def meta_client(
+        self, repo: NotificationRepository, mock_cog: MagicMock, settings_repo
+    ) -> TestClient:
+        import discord
+
+        bot = MagicMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.send = AsyncMock()
+        bot.get_channel.return_value = channel
+        bot.cogs = {"ClaudeChatCog": mock_cog}
+        api = ApiServer(repo=repo, bot=bot, default_channel_id=12345)
+        api.settings_repo = settings_repo
+        server = TestServer(api.app)
+        client = TestClient(server)
+        await client.start_server()
+        yield client
+        await client.close()
+
+    @pytest.fixture
+    async def bare_client(self, repo: NotificationRepository, mock_cog: MagicMock) -> TestClient:
+        """No settings repo wired: the fields are accepted and echoed, not stored."""
+        import discord
+
+        bot = MagicMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.send = AsyncMock()
+        bot.get_channel.return_value = channel
+        bot.cogs = {"ClaudeChatCog": mock_cog}
+        api = ApiServer(repo=repo, bot=bot, default_channel_id=12345)
+        server = TestServer(api.app)
+        client = TestClient(server)
+        await client.start_server()
+        yield client
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_spawn_without_metadata_is_unchanged(self, meta_client: TestClient) -> None:
+        resp = await meta_client.post("/api/spawn", json={"prompt": "Hello"})
+        assert resp.status == 201
+        data = await resp.json()
+        assert data["status"] == "spawned"
+        assert data["parent_thread_id"] is None
+        assert data["correlation_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_spawn_echoes_and_records_metadata(
+        self, meta_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        resp = await meta_client.post(
+            "/api/spawn",
+            json={
+                "prompt": "Plan the digest",
+                "parent_thread_id": self.PARENT,
+                "correlation_id": self.CORRELATION,
+            },
+        )
+        assert resp.status == 201
+        data = await resp.json()
+        assert data["thread_id"] == "999888777"
+        assert data["parent_thread_id"] == str(self.PARENT)
+        assert data["correlation_id"] == self.CORRELATION
+        mock_cog.spawn_session.assert_awaited_once()
+
+        found = await meta_client.get(f"/api/correlations/{self.CORRELATION}")
+        assert found.status == 200
+        body = await found.json()
+        assert body["thread_id"] == "999888777"
+        assert body["parent_thread_id"] == str(self.PARENT)
+        assert body["correlation_id"] == self.CORRELATION
+
+        meta = await meta_client.get("/api/threads/999888777/metadata")
+        assert meta.status == 200
+        assert (await meta.json())["parent_thread_id"] == str(self.PARENT)
+
+    @pytest.mark.asyncio
+    async def test_repeated_correlation_returns_the_existing_thread_without_spawning(
+        self, meta_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        body = {"prompt": "Plan the digest", "correlation_id": self.CORRELATION}
+        first = await meta_client.post("/api/spawn", json=body)
+        assert first.status == 201
+        second = await meta_client.post("/api/spawn", json=body)
+        assert second.status == 200
+        data = await second.json()
+        assert data["status"] == "existing"
+        assert data["thread_id"] == "999888777"
+        assert data["correlation_id"] == self.CORRELATION
+        assert mock_cog.spawn_session.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unknown_correlation_is_404(self, meta_client: TestClient) -> None:
+        resp = await meta_client.get("/api/correlations/never-spawned")
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_thread_without_metadata_is_404(self, meta_client: TestClient) -> None:
+        resp = await meta_client.get("/api/threads/424242/metadata")
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_lookup_without_a_store_is_503_not_absent(self, bare_client: TestClient) -> None:
+        """'Not stored anywhere' must not read as 'provably never spawned'."""
+        resp = await bare_client.get(f"/api/correlations/{self.CORRELATION}")
+        assert resp.status == 503
+
+    @pytest.mark.asyncio
+    async def test_bare_server_still_accepts_and_echoes_the_fields(
+        self, bare_client: TestClient
+    ) -> None:
+        resp = await bare_client.post(
+            "/api/spawn",
+            json={"prompt": "Hello", "parent_thread_id": self.PARENT, "correlation_id": "abc"},
+        )
+        assert resp.status == 201
+        data = await resp.json()
+        assert data["parent_thread_id"] == str(self.PARENT)
+        assert data["correlation_id"] == "abc"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["abc", 0, -5, 1.5, True])
+    async def test_invalid_parent_thread_id_is_400(
+        self, meta_client: TestClient, mock_cog: MagicMock, value: object
+    ) -> None:
+        resp = await meta_client.post(
+            "/api/spawn", json={"prompt": "Hello", "parent_thread_id": value}
+        )
+        assert resp.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["", " ", "has space", "a/b", "x" * 121, 7, "../etc"])
+    async def test_invalid_correlation_id_is_400(
+        self, meta_client: TestClient, mock_cog: MagicMock, value: object
+    ) -> None:
+        resp = await meta_client.post(
+            "/api/spawn", json={"prompt": "Hello", "correlation_id": value}
+        )
+        assert resp.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_metadata_routes_are_not_on_the_external_listener(
+        self, repo: NotificationRepository
+    ) -> None:
+        api = ApiServer(repo=repo, bot=MagicMock(), default_channel_id=12345)
+        external = {resource.canonical for resource in api.external_app.router.resources()}
+        assert "/api/correlations/{correlation_id}" not in external
+        assert "/api/threads/{thread_id}/metadata" not in external
+        internal = {resource.canonical for resource in api.app.router.resources()}
+        assert "/api/correlations/{correlation_id}" in internal
+        assert "/api/threads/{thread_id}/metadata" in internal
+
+
 class TestMarkResume:
     """Tests for POST /api/mark-resume endpoint."""
 

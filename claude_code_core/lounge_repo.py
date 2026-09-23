@@ -86,7 +86,11 @@ class LoungeRepository:
             posted_at=row["posted_at"],
             thread_id=row["thread_id"],
         )
-        logger.info("Lounge message posted by %r (id=%d)", label, result.id)
+        logger.info(
+            "Lounge message posted by %s (id=%d)",
+            label.replace("\r", "").replace("\n", ""),
+            result.id,
+        )
         return result
 
     async def get_recent(self, limit: int = 10) -> list[LoungeMessage]:

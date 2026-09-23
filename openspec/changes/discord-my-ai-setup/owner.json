@@ -1,0 +1,12 @@
+{
+  "change": "discord-my-ai-setup",
+  "thread_id": "1550757693784989707",
+  "plan_owner": "1550757693784989707",
+  "decisions": [
+    "The view lives in Discord at Settings -> My AI Setup.",
+    "Browse by kind opens first; Where it lives and Compare computers are tabs.",
+    "Include search, filters, recent changes, and Ask Setup Agent.",
+    "Show custom additions; built-in defaults are hidden unless requested.",
+    "No visible Mega Global screen and no unsafe direct-edit controls."
+  ]
+}

@@ -40,6 +40,7 @@ async def test_setup_bridge_registers_core_cogs(tmp_path: object) -> None:
     assert "ClaudeChatCog" in cog_names
     assert "SessionManageCog" in cog_names
     assert "SkillCommandCog" in cog_names
+    assert "ProjectLauncherCog" in cog_names
     assert isinstance(result, BridgeComponents)
 
 
@@ -309,6 +310,40 @@ def test_apply_to_api_server_is_idempotent() -> None:
 
     assert api_server.task_repo is task_repo
     assert api_server.lounge_repo is lounge_repo
+
+
+def test_apply_to_api_server_wires_settings_repo_for_thread_metadata() -> None:
+    """The spawn correlation/parent metadata persists through the settings store.
+
+    Without this wiring /api/spawn would accept the fields and forget them, and
+    a coordinator recovering from a lost spawn answer could never look its
+    thread up again (parallel-gowork 5.1).
+    """
+    from claude_discord.database.repository import SessionRepository
+    from claude_discord.database.settings_repo import SettingsRepository
+
+    session_repo = MagicMock(spec=SessionRepository)
+    settings_repo = MagicMock(spec=SettingsRepository)
+    components = BridgeComponents(session_repo=session_repo, settings_repo=settings_repo)
+    api_server = _make_api_server()
+    api_server.settings_repo = None
+
+    components.apply_to_api_server(api_server)
+
+    assert api_server.settings_repo is settings_repo
+
+
+def test_apply_to_api_server_keeps_an_existing_settings_repo_when_none_given() -> None:
+    from claude_discord.database.repository import SessionRepository
+
+    components = BridgeComponents(session_repo=MagicMock(spec=SessionRepository))
+    api_server = _make_api_server()
+    existing = MagicMock()
+    api_server.settings_repo = existing
+
+    components.apply_to_api_server(api_server)
+
+    assert api_server.settings_repo is existing
 
 
 @pytest.mark.asyncio
@@ -586,8 +621,8 @@ async def test_setup_bridge_warns_when_worktree_base_dir_is_unset(
 
 
 @pytest.mark.asyncio
-async def test_setup_bridge_defaults_max_concurrent_to_3(tmp_path: object) -> None:
-    """Without env var or parameter, max_concurrent defaults to 3."""
+async def test_setup_bridge_defaults_max_concurrent_to_10(tmp_path: object) -> None:
+    """Without env var or parameter, max_concurrent defaults to 10."""
     from unittest.mock import patch
 
     from claude_discord.cogs.claude_chat import ClaudeChatCog
@@ -613,7 +648,7 @@ async def test_setup_bridge_defaults_max_concurrent_to_3(tmp_path: object) -> No
         for call in bot.add_cog.call_args_list
         if isinstance(call.args[0], ClaudeChatCog)
     )
-    assert chat_cog._max_concurrent == 3
+    assert chat_cog._max_concurrent == 10
 
 
 @pytest.mark.asyncio
@@ -635,3 +670,101 @@ async def test_setup_bridge_accepts_codex_runner(tmp_path: object) -> None:
     cog_names = [call.args[0].__class__.__name__ for call in bot.add_cog.call_args_list]
     assert "ClaudeChatCog" in cog_names
     assert isinstance(result, BridgeComponents)
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_reads_thread_mute_env(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CCDB_THREAD_MUTE_USER_IDS silences the ping without removing membership."""
+    from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+    monkeypatch.setenv("CCDB_THREAD_MUTE_USER_IDS", "43,44")
+    bot = _make_bot()
+    runner = _make_runner()
+
+    await setup_bridge(
+        bot,
+        runner,
+        session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+        claude_channel_id=12345,
+        thread_member_ids={42, 43, 44},
+        enable_scheduler=False,
+    )
+
+    assert bot.thread_muted_user_ids == {43, 44}
+    chat_cog = next(
+        call.args[0]
+        for call in bot.add_cog.call_args_list
+        if isinstance(call.args[0], ClaudeChatCog)
+    )
+    # A muted user keeps their thread membership; only the ping is dropped.
+    assert chat_cog._thread_member_ids == {42, 43, 44}
+
+
+async def test_launcher_home_and_workers_are_separate(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCDB_LAUNCHER_CHANNEL_ID", "500")
+    monkeypatch.setenv("CCDB_LAUNCHER_SESSION_CHANNEL_ID", "600")
+    bot = _make_bot()
+    await setup_bridge(
+        bot,
+        _make_runner(),
+        session_db_path=str(tmp_path / "sessions.db"),
+        claude_channel_id=100,
+        enable_scheduler=False,
+    )
+    cogs = {type(call.args[0]).__name__: call.args[0] for call in bot.add_cog.call_args_list}
+    launcher = cogs["ProjectLauncherCog"]
+    assert launcher.channel_id == 500
+    assert launcher.session_channel_id == 600
+    assert cogs["ClaudeChatCog"]._channel_ids == {100, 600}
+
+
+@pytest.mark.asyncio
+async def test_setup_bridge_shares_one_project_catalog_with_every_consumer(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built-in cogs, the API server and custom Cogs all see the same catalog instance."""
+    from claude_discord.catalog_service import ProjectCatalogService
+    from claude_discord.cogs.project_launcher import ProjectLauncherCog
+
+    monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
+    bot = _make_bot()
+    runner = _make_runner()
+    runner.working_dir = str(tmp_path)
+    runner.api_port = None
+    api_server = MagicMock()
+    api_server.port = 8080
+    api_server.api_secret = None
+
+    components = await setup_bridge(
+        bot,
+        runner,
+        api_server=api_server,
+        session_db_path=str(tmp_path / "sessions.db"),  # type: ignore[operator]
+        claude_channel_id=12345,
+        enable_scheduler=False,
+    )
+
+    catalog = components.project_catalog
+    assert isinstance(catalog, ProjectCatalogService)
+    launcher = next(
+        call.args[0]
+        for call in bot.add_cog.call_args_list
+        if isinstance(call.args[0], ProjectLauncherCog)
+    )
+    assert launcher.catalog is catalog
+    assert api_server.project_catalog is catalog
+    assert [str(root.path) for root in catalog.roots] == [str(tmp_path)]
+    assert catalog.metadata is not None
+
+
+def test_apply_to_api_server_wires_the_project_catalog() -> None:
+    from claude_discord.catalog_config import CatalogConfig
+    from claude_discord.catalog_service import ProjectCatalogService
+
+    catalog = ProjectCatalogService(CatalogConfig.from_env({}, fallback_root="/tmp"), None)
+    components = BridgeComponents(session_repo=MagicMock(), project_catalog=catalog)
+    api_server = MagicMock()
+    components.apply_to_api_server(api_server)
+    assert api_server.project_catalog is catalog

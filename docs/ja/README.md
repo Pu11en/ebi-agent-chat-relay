@@ -906,7 +906,7 @@ CHAT_ONLY_CHANNEL_IDS=444,555
 | `CLAUDE_PERMISSION_MODE` | CLI のパーミッションモード（旧名 — `CCDB_PERMISSION_MODE` を推奨） | `auto` |
 | `CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` | 全パーミッションチェックをスキップ（旧名 — `CCDB_DANGEROUSLY_SKIP_PERMISSIONS` を推奨） | `false` |
 | `CLAUDE_WORKING_DIR` | Claude の作業ディレクトリ（旧名 — `CCDB_WORKING_DIR` を推奨） | カレントディレクトリ |
-| `MAX_CONCURRENT_SESSIONS` | 最大並行 Claude CLI セッション数（チャット・スキル・スケジューラ・Webhook の全パスに適用） | `3` |
+| `MAX_CONCURRENT_SESSIONS` | 最大並行 Claude CLI セッション数（チャット・スキル・スケジューラ・Webhook の全パスに適用） | `10` |
 | `SESSION_TIMEOUT_SECONDS` | セッションの**アイドル**タイムアウト（秒）。出力が届くたびにリセットされるため、アクティブなストリームはこの値を超えて継続しうる。`0` でデッドラインを明示的に無効化 | `300` |
 | `CCDB_PR_COMPLETION_OWNER` | 指定したGitHub所有者の非Draft `session/<thread_id>` PRが残っている場合、同じAIを1回だけ自動継続して完了または具体的なブロッカー報告まで進める。認証済み`gh`が必要。 | （オプション） |
 | `DISCORD_OWNER_ID` | Claude が入力待ちのとき @mention する Discord ユーザー ID | （オプション） |

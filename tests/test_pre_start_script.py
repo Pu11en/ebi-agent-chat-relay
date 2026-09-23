@@ -5,9 +5,16 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Linux ops script: bash shebang stubs and executable bits"
+)
 
 
 def test_pre_start_finds_uv_in_user_local_bin_with_systemd_path(tmp_path: Path) -> None:

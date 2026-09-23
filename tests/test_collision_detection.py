@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -25,6 +26,7 @@ from claude_discord.collision import (
     FileActivityTracker,
     build_collision_notice,
     extract_written_path,
+    extract_written_paths,
     find_collisions,
 )
 from claude_discord.concurrency import SessionRegistry
@@ -55,6 +57,17 @@ def test_read_only_tools_are_ignored(tool: str) -> None:
 @pytest.mark.parametrize("payload", [{}, {"file_path": ""}, {"file_path": 42}])
 def test_missing_or_unusable_paths_yield_none(payload: dict) -> None:
     assert extract_written_path("Edit", payload) is None
+
+
+def test_multi_file_edit_yields_every_path() -> None:
+    """A Codex patch changes several files in one event."""
+    payload = {"file_path": "/r/a.py", "file_paths": ["/r/a.py", "/r/b.py"]}
+    assert extract_written_paths("Edit", payload) == ["/r/a.py", "/r/b.py"]
+
+
+def test_single_file_edit_yields_one_path() -> None:
+    assert extract_written_paths("Edit", {"file_path": SHARED}) == [SHARED]
+    assert extract_written_paths("Read", {"file_path": SHARED}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -135,12 +148,21 @@ def test_ledger_suppresses_repeats_until_the_cooldown_passes() -> None:
     assert ledger.should_alert(collision, now=ALERT_COOLDOWN_SECONDS + 1) is True
 
 
-def test_notice_names_the_peer_the_files_and_what_to_do() -> None:
+def test_notice_is_a_plain_heads_up_with_a_thread_link() -> None:
     text = build_collision_notice(Collision(threads=(A, B), shared_paths=(SHARED,)), for_thread=A)
 
-    assert str(B) in text
-    assert SHARED in text
-    assert "/api/threads" in text and "/api/claims" in text
+    assert f"<#{B}>" in text  # Discord renders this as the thread's clickable name
+    assert "repo/parser.py" in text
+    assert "curl" not in text and "/api/" not in text  # a human reads this
+
+
+def test_notice_tells_how_to_authenticate_the_api_calls() -> None:
+    """The endpoints it points at are behind bearer auth; a pointer without the
+    header sends the session straight into a 401."""
+    text = build_collision_notice(Collision(threads=(A, B), shared_paths=(SHARED,)), for_thread=A)
+
+    if "$CCDB_API_URL" in text:
+        assert "Authorization: Bearer $CCDB_API_SECRET" in text
 
 
 # ---------------------------------------------------------------------------
@@ -204,19 +226,61 @@ async def test_repeat_pass_does_not_warn_twice() -> None:
     assert threads[A].send.await_count == 1
 
 
-async def test_idle_peer_is_not_a_collision() -> None:
-    """A finished session's edits must not keep flagging a live one."""
+async def test_idle_peer_that_changed_the_file_recently_still_counts() -> None:
+    """A thread waiting for its next message is still working on that file."""
     threads = {A: _make_thread(A), B: _make_thread(B)}
     bot = _make_bot(threads)
-    bot.session_registry.register(A, "task a", None)  # B is no longer running
+    bot.session_registry.register(A, "task a", None)  # B is idle between messages
     bot.file_activity.record(A, SHARED, now=0.0)
     bot.file_activity.record(B, SHARED, now=0.0)
     cog = _make_cog(bot)
 
     await cog._check_once(now=1.0)
 
+    threads[A].send.assert_awaited_once()
+    threads[B].send.assert_awaited_once()
+
+
+async def test_old_edits_are_not_a_collision() -> None:
+    """Edits older than the window are finished work, not a clash."""
+    threads = {A: _make_thread(A), B: _make_thread(B)}
+    bot = _make_bot(threads)
+    bot.session_registry.register(A, "task a", None)
+    bot.file_activity.record(B, SHARED, now=0.0)
+    bot.file_activity.record(A, SHARED, now=ACTIVITY_WINDOW_SECONDS + 10)
+    cog = _make_cog(bot)
+
+    await cog._check_once(now=ACTIVITY_WINDOW_SECONDS + 11)
+
     threads[A].send.assert_not_awaited()
     cog._lounge_repo.post.assert_not_awaited()
+
+
+async def test_a_turn_that_just_ended_still_counts() -> None:
+    """Quick turns finish between watcher passes; a fresh write is still news."""
+    threads = {A: _make_thread(A), B: _make_thread(B)}
+    bot = _make_bot(threads)
+    bot.file_activity.record(A, SHARED, now=0.0)
+    bot.file_activity.record(B, SHARED, now=100.0)  # B's turn already ended
+    cog = _make_cog(bot)
+
+    await cog._check_once(now=130.0)
+
+    threads[A].send.assert_awaited_once()
+    threads[B].send.assert_awaited_once()
+
+
+async def test_two_idle_threads_are_left_alone() -> None:
+    """Only a pair with someone still working is worth interrupting."""
+    threads = {A: _make_thread(A), B: _make_thread(B)}
+    bot = _make_bot(threads)
+    bot.file_activity.record(A, SHARED, now=0.0)
+    bot.file_activity.record(B, SHARED, now=0.0)
+    cog = _make_cog(bot)
+
+    await cog._check_once(now=600.0)
+
+    threads[A].send.assert_not_awaited()
 
 
 async def test_thread_send_failure_does_not_stop_the_other_warning() -> None:
@@ -278,6 +342,21 @@ async def test_event_processor_records_written_paths() -> None:
     await processor.process(_tool_event("Edit", {"file_path": SHARED}))
 
     assert tracker.recent_paths(A, now=0.0) == {SHARED}
+
+
+async def test_event_processor_records_every_codex_path_resolving_relative_ones() -> None:
+    tracker = FileActivityTracker()
+    processor = _processor(tracker)
+    processor._config.runner.working_dir = "/home/ebi/repo"
+
+    await processor.process(
+        _tool_event("Edit", {"file_path": "a.py", "file_paths": ["a.py", "/abs/b.py"]})
+    )
+
+    assert tracker.recent_paths(A, now=0.0) == {
+        os.path.normpath("/home/ebi/repo/a.py"),
+        "/abs/b.py",
+    }
 
 
 async def test_event_processor_ignores_reads() -> None:

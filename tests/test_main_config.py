@@ -70,7 +70,7 @@ class TestLoadConfig:
         assert config["model"] == "sonnet"
         assert config["permission_mode"] == "acceptEdits"
         assert config["backend"] == "claude"  # CCDB_BACKEND default
-        assert config["max_concurrent"] == "3"
+        assert config["max_concurrent"] == "10"
         assert config["timeout"] == "300"
         assert config["custom_cogs_dir"] == ""
         assert config["frontends"] == "discord"
@@ -228,6 +228,85 @@ class TestAllowedToolsParsing:
     def test_trailing_comma(self) -> None:
         result = self._parse_allowed_tools("Bash,Read,")
         assert result == ["Bash", "Read"]
+
+
+class TestAllowedUserIdParsing:
+    """Tests for CCDB_ALLOWED_USER_IDS parsing and the owner union."""
+
+    def test_parse_comma_separated(self) -> None:
+        from claude_discord.main import parse_user_ids
+
+        assert parse_user_ids("111,222") == {111, 222}
+
+    def test_parse_ignores_blanks_and_non_numeric(self) -> None:
+        from claude_discord.main import parse_user_ids
+
+        assert parse_user_ids(" 111 , ,abc,222,") == {111, 222}
+
+    def test_parse_empty_is_empty(self) -> None:
+        from claude_discord.main import parse_user_ids
+
+        assert parse_user_ids("") == set()
+
+    def test_build_unions_owner_and_extras(self) -> None:
+        from claude_discord.main import build_allowed_user_ids
+
+        assert build_allowed_user_ids(1, "2,3") == {1, 2, 3}
+
+    def test_build_owner_only(self) -> None:
+        from claude_discord.main import build_allowed_user_ids
+
+        assert build_allowed_user_ids(1, "") == {1}
+
+    def test_build_extras_without_owner(self) -> None:
+        from claude_discord.main import build_allowed_user_ids
+
+        assert build_allowed_user_ids(None, "2") == {2}
+
+    def test_build_nothing_configured_is_none(self) -> None:
+        from claude_discord.main import build_allowed_user_ids
+
+        assert build_allowed_user_ids(None, "") is None
+
+    def test_load_config_reads_allowed_user_ids(self) -> None:
+        from claude_discord.main import load_config
+
+        with (
+            patch("claude_discord.main.load_dotenv"),
+            patch.dict(
+                "os.environ",
+                {
+                    "DISCORD_BOT_TOKEN": "tok",
+                    "DISCORD_CHANNEL_ID": "111",
+                    "DISCORD_OWNER_ID": "999",
+                    "CCDB_ALLOWED_USER_IDS": "222,333",
+                },
+                clear=True,
+            ),
+        ):
+            config = load_config()
+
+        assert config["allowed_user_ids"] == "222,333"
+
+    def test_load_config_reads_thread_mute_user_ids(self) -> None:
+        from claude_discord.main import load_config
+
+        with (
+            patch("claude_discord.main.load_dotenv"),
+            patch.dict(
+                "os.environ",
+                {
+                    "DISCORD_BOT_TOKEN": "tok",
+                    "DISCORD_CHANNEL_ID": "111",
+                    "DISCORD_OWNER_ID": "999",
+                    "CCDB_THREAD_MUTE_USER_IDS": "444,555",
+                },
+                clear=True,
+            ),
+        ):
+            config = load_config()
+
+        assert config["thread_mute_user_ids"] == "444,555"
 
 
 class TestExampleCogImports:

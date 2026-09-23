@@ -105,6 +105,10 @@ class StopView(discord.ui.View):
             self._queued_task.cancel()
         else:
             await self._runner.interrupt()
+        channel_id = getattr(interaction.channel, "id", None)
+        if channel_id is not None:
+            with contextlib.suppress(Exception):
+                interaction.client.dispatch("session_stopped", channel_id)
 
         with contextlib.suppress(discord.HTTPException):
             await interaction.followup.send(embed=stopped_embed())

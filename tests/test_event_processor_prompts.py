@@ -118,18 +118,20 @@ class TestPlanApproval:
             message_type=MessageType.ASSISTANT, is_plan_approval=True, text="1. do the thing"
         )
 
-    async def test_approval_is_asked_and_injected_against_the_session_id(self) -> None:
-        surface = MemorySurface(answers=[[approvals.APPROVE]])
+    async def test_plan_is_posted_as_markdown_file_without_an_approve_box(self) -> None:
+        """Every harness plans the same way: a readable plan.md, and approval is
+        the user's next reply — no button box that only Claude Code has."""
+        surface = MemorySurface()
         runner = _runner()
         processor = _processor(surface, runner, session_id="session-9")
 
         await processor.process(self._event())
         await processor.wait_for_prompts()
 
-        assert "do the thing" in surface.prompts[0].question
-        runner.inject_tool_result.assert_awaited_once_with("session-9", {"approved": True})
+        assert surface.prompts == []
+        assert surface.conformance_delivered_files == ["plan.md"]
 
-    async def test_unanswered_plan_cancels(self) -> None:
+    async def test_plan_hands_the_turn_back_instead_of_executing(self) -> None:
         surface = MemorySurface()
         runner = _runner()
         processor = _processor(surface, runner, session_id="session-9")

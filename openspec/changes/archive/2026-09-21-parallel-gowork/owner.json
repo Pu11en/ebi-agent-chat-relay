@@ -1,0 +1,13 @@
+{
+  "change": "parallel-gowork",
+  "thread_id": "1550757693784989707",
+  "plan_owner": "1550757693784989707",
+  "decisions": [
+    "Start every dependency-ready task with non-overlapping owned files.",
+    "No fixed /gowork worker cap; actual infrastructure may queue execution.",
+    "Every simultaneous task gets an isolated branch and worktree.",
+    "One integration owner combines verified results.",
+    "Automatically split clear independent builds and send compact child context.",
+    "Archive a worker thread only after its result is verified, integrated, and passes the combined check; keep every attention-needed thread open, preserve a reopenable link, and never delete or lock it."
+  ]
+}

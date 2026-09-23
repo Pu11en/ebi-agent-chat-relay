@@ -750,7 +750,7 @@ CHAT_ONLY_CHANNEL_IDS=444,555
 | `CLAUDE_PERMISSION_MODE` | CLI 权限模式（旧名称——推荐 `CCDB_PERMISSION_MODE`） | `acceptEdits` |
 | `CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` | 跳过所有权限检查（旧名称——推荐 `CCDB_DANGEROUSLY_SKIP_PERMISSIONS`） | `false` |
 | `CLAUDE_WORKING_DIR` | Claude 的工作目录（旧名称——推荐 `CCDB_WORKING_DIR`） | 当前目录 |
-| `MAX_CONCURRENT_SESSIONS` | 跨所有代码路径（聊天、技能、调度器、webhook）的最大并行 Claude CLI 会话数 | `3` |
+| `MAX_CONCURRENT_SESSIONS` | 跨所有代码路径（聊天、技能、调度器、webhook）的最大并行 Claude CLI 会话数 | `10` |
 | `SESSION_TIMEOUT_SECONDS` | 会话不活跃超时 | `300` |
 | `DISCORD_OWNER_ID` | Claude 需要输入时 @提及 的用户 ID | （可选） |
 | `COORDINATION_CHANNEL_ID` | 用作 AI 休息室频道默认回退的频道 ID | （可选） |

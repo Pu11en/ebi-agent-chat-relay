@@ -19,9 +19,11 @@ if TYPE_CHECKING:
 
     from .backend_factory import BackendFactory
     from .backend_settings import BackendSettings
+    from .catalog_service import ProjectCatalogService
     from .database.ask_repo import PendingAskRepository
     from .database.claims_repo import ClaimRepository
     from .database.frontend_thread_repo import FrontendThreadRepository
+    from .database.handoff_repo import HandoffRepository
     from .database.ingest_repo import IngestResultRepository
     from .database.lounge_repo import LoungeRepository
     from .database.notification_repo import NotificationRepository
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from .database.settings_repo import SettingsRepository
     from .database.summary_repo import ThreadSummaryRepository
     from .database.task_repo import TaskRepository
+    from .discord_ui.settings_home import SettingsHome
     from .ext.api_server import ApiServer
 
 from .deployment import DEFAULT_DATA_ROOT, DataLayout
@@ -69,10 +72,19 @@ class BridgeComponents:
     settings_repo: SettingsRepository | None = None
     ask_repo: PendingAskRepository | None = None
     usage_repo: UsageStatsRepository | None = None
+    handoff_repo: HandoffRepository | None = None
     #: The scheduled-notification store the API server writes through, exposed
     #: so a custom Cog scheduling a reminder lands in the same database the
     #: dispatcher reads.  A Cog that opens its own file writes into a void.
     notification_repo: NotificationRepository | None = None
+    #: The Settings entry list this computer shows. A custom Cog adds its own
+    #: entry with ``components.settings_home.add(SettingsEntry(...))`` — no
+    #: subclassing, no wiring. None when no channel is configured.
+    settings_home: SettingsHome | None = None
+    #: The one project catalog this computer runs: discovery under the approved
+    #: roots, owner-aware resolution and personal favorites. The launcher, the
+    #: REST control plane and custom Cogs all read this same instance.
+    project_catalog: ProjectCatalogService | None = None
 
     def apply_to_api_server(self, api_server: ApiServer) -> None:
         """Wire all optional repos to an ApiServer instance.
@@ -95,6 +107,14 @@ class BridgeComponents:
             api_server.ingest_repo = self.ingest_repo
         if self.summary_repo is not None:
             api_server.summary_repo = self.summary_repo
+        if self.handoff_repo is not None:
+            api_server.handoff_repo = self.handoff_repo
+        if self.settings_repo is not None:
+            # Persists the generic spawn metadata (parent thread, correlation id)
+            # behind /api/spawn and /api/correlations/{id}.
+            api_server.settings_repo = self.settings_repo
+        if self.project_catalog is not None:
+            api_server.project_catalog = self.project_catalog
         api_server.session_repo = self.session_repo
 
 
@@ -106,6 +126,9 @@ async def setup_bridge(
     data_root: str | None = None,
     session_db_path: str | None = None,
     allowed_user_ids: set[int] | None = None,
+    thread_member_ids: set[int] | None = None,
+    thread_member_exclude_category_ids: set[int] | None = None,
+    thread_mute_user_ids: set[int] | None = None,
     claude_channel_id: int | None = None,
     claude_channel_ids: set[int] | None = None,
     mention_only_channel_ids: set[int] | None = None,
@@ -150,6 +173,20 @@ async def setup_bridge(
             this one file; the override is logged at startup because it is the
             only remaining way two deployments can end up sharing state.
         allowed_user_ids: Set of Discord user IDs allowed to use Claude.
+        thread_member_ids: Set of Discord user IDs auto-joined to every thread
+            ccdb creates or is active in, and pinged alongside the owner when a
+            thread needs a reply.  Defaults to ``allowed_user_ids`` (or the
+            ``CCDB_THREAD_MEMBER_IDS`` env var when that is set explicitly), so
+            granting execution adds the user to shared threads too.  Pass an
+            empty set to disable.
+        thread_member_exclude_category_ids: Discord category IDs whose threads
+            are never auto-joined.  Defaults to the
+            ``CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS`` env var (comma-separated).
+        thread_mute_user_ids: Subset of *thread_member_ids* that keeps thread
+            access but is never pinged when a thread needs a reply.  Use it to
+            stop a second operator being notified for every shared thread while
+            leaving them able to read and answer.  Defaults to the
+            ``CCDB_THREAD_MUTE_USER_IDS`` env var (comma-separated).
         claude_channel_id: Primary channel ID for Claude chat.  Kept for
                            backward compatibility.  Also used as the fallback
                            thread-creation target in SkillCommandCog.
@@ -205,6 +242,7 @@ async def setup_bridge(
     from .cogs.claude_chat import ClaudeChatCog
     from .cogs.collision_watch import CollisionWatchCog
     from .cogs.context_links import ContextLinksCog
+    from .cogs.project_launcher import ProjectLauncherCog
     from .cogs.scheduler import SchedulerCog
     from .cogs.session_manage import SessionManageCog
     from .cogs.skill_command import SkillCommandCog
@@ -220,6 +258,52 @@ async def setup_bridge(
         _all_channel_ids.add(claude_channel_id)
     if claude_channel_ids is not None:
         _all_channel_ids.update(claude_channel_ids)
+
+    _launcher_home = os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip()
+    _launcher_sessions = os.getenv("CCDB_LAUNCHER_SESSION_CHANNEL_ID", "").strip()
+    _launcher_home_id = int(_launcher_home) if _launcher_home else None
+    _launcher_session_id = int(_launcher_sessions) if _launcher_sessions else None
+    if _launcher_session_id is not None:
+        _all_channel_ids.add(_launcher_session_id)
+    from .category_scope import install_category_check
+
+    install_category_check(bot)
+
+    # Thread members — who is auto-joined to every ccdb thread.  Defaults to
+    # the authorization allowlist (so an upgrade changes nothing), with
+    # CCDB_THREAD_MEMBER_IDS narrowing it and CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS
+    # exempting whole categories.
+    from .utils.ids import parse_user_ids
+
+    if thread_member_ids is None:
+        _env_members = os.getenv("CCDB_THREAD_MEMBER_IDS", "")
+        thread_member_ids = (
+            parse_user_ids(_env_members) if _env_members.strip() else set(allowed_user_ids or ())
+        ) or None
+    if thread_member_exclude_category_ids is None:
+        thread_member_exclude_category_ids = parse_user_ids(
+            os.getenv("CCDB_THREAD_MEMBER_EXCLUDE_CATEGORY_IDS", "")
+        )
+    # Muted members keep their thread membership and their authorization; they
+    # are only dropped from the reply-needed ping.  This is what lets an
+    # operator share every thread with a colleague without that colleague
+    # being notified for all of them.
+    if thread_mute_user_ids is None:
+        thread_mute_user_ids = parse_user_ids(os.getenv("CCDB_THREAD_MUTE_USER_IDS", ""))
+    bot.thread_member_ids = thread_member_ids  # type: ignore[attr-defined]
+    bot.thread_member_exclude_category_ids = thread_member_exclude_category_ids  # type: ignore[attr-defined]
+    bot.thread_muted_user_ids = thread_mute_user_ids  # type: ignore[attr-defined]
+    if thread_member_ids:
+        logger.info(
+            "Thread auto-join enabled for %d user(s)%s%s",
+            len(thread_member_ids),
+            (
+                f", excluding {len(thread_member_exclude_category_ids)} category(ies)"
+                if thread_member_exclude_category_ids
+                else ""
+            ),
+            (f", {len(thread_mute_user_ids)} muted" if thread_mute_user_ids else ""),
+        )
 
     # Mention-only channels — fall back to MENTION_ONLY_CHANNEL_IDS env var
     if mention_only_channel_ids is None:
@@ -286,16 +370,41 @@ async def setup_bridge(
     if thread_context_days != DEFAULT_DAYS:
         logger.info("Thread context window: %d day(s)", thread_context_days)
 
-    # Max concurrent sessions — fall back to MAX_CONCURRENT_SESSIONS env var, then 3
+    # Max concurrent sessions. An explicit number (parameter or MAX_CONCURRENT_SESSIONS)
+    # is a fixed limit on every run. Without one, capacity is measured: Go Work workers
+    # reserve slots that grow with the host's health, and chat is never queued.
+    from .cogs._run_helper import (
+        configure_adaptive_limit,
+        configure_pr_completion_gate,
+        configure_session_limit,
+    )
+
+    _env_max = os.getenv("MAX_CONCURRENT_SESSIONS", "")
+    explicit_limit = max_concurrent is not None or _env_max.isdigit()
     if max_concurrent is None:
-        _env_max = os.getenv("MAX_CONCURRENT_SESSIONS", "")
-        max_concurrent = int(_env_max) if _env_max.isdigit() else 3
-    if max_concurrent != 3:
-        logger.info("Max concurrent sessions: %d", max_concurrent)
+        max_concurrent = int(_env_max) if _env_max.isdigit() else 10
+    if explicit_limit:
+        logger.info("Max concurrent sessions: %d (fixed)", max_concurrent)
+        configure_session_limit(max_concurrent)
+        configure_adaptive_limit(controller=None, policy=None, probe=None)
+    else:
+        from claude_code_core.gowork_admission import AdmissionController
+        from claude_code_core.gowork_capacity import CapacityPolicy
+        from claude_code_core.gowork_resources import HostProbe
+        from claude_code_core.loop_store import DEFAULT_PATH as _GOWORK_STATE
 
-    from .cogs._run_helper import configure_pr_completion_gate, configure_session_limit
-
-    configure_session_limit(max_concurrent)
+        policy = CapacityPolicy()
+        configure_adaptive_limit(
+            controller=AdmissionController(
+                _GOWORK_STATE.with_name("gowork-admission.json"),
+                capacity=policy.capacity,
+                review_reserve=1,
+            ),
+            policy=policy,
+            probe=HostProbe(),
+            friction_path=_GOWORK_STATE.with_name("gowork-friction.jsonl"),
+        )
+        logger.info("Session capacity: adaptive (starts at %d, measured)", policy.capacity)
     pr_completion_owner = os.getenv("CCDB_PR_COMPLETION_OWNER", "").strip()
     configure_pr_completion_gate(pr_completion_owner or None)
     if pr_completion_owner:
@@ -359,11 +468,44 @@ async def setup_bridge(
     usage_repo = stores.usage
     ingest_repo = stores.ingest
     summary_repo = stores.summaries
+    handoff_repo = stores.handoffs
+
+    # --- Shared project catalog (auto-enabled) ---
+    # One instance for every consumer. Roots come from CCDB_PROJECT_ROOTS (the
+    # runner's working directory when nothing is configured); a malformed
+    # profile file is a configuration error and is reported, not hidden.
+    from .catalog_config import CatalogConfig
+    from .catalog_service import ProjectCatalogService
+
+    project_catalog: ProjectCatalogService | None = None
+    try:
+        project_catalog = ProjectCatalogService(
+            CatalogConfig.from_env(fallback_root=runner.working_dir),
+            stores.catalog_metadata,
+            settings=settings_repo,
+        )
+    except ValueError:
+        logger.exception("Project catalog configuration is malformed; catalog disabled")
 
     # Attach repos to bot so generic cogs (e.g. AutoUpgradeCog) can discover them
     # without a hard import dependency on ccdb internals.
     bot.session_repo = session_repo  # type: ignore[attr-defined]
     bot.resume_repo = resume_repo  # type: ignore[attr-defined]
+    bot.handoff_repo = handoff_repo  # type: ignore[attr-defined]
+    bot.capacity_repo = stores.capacity  # type: ignore[attr-defined]
+
+    # --- Model-capacity recovery (auto-enabled) ---
+    # Every run goes through one coordinator: a "model at capacity" answer
+    # waits and retries within bounds instead of ending the turn, survives a
+    # restart via the capacity_pending_turns table, and may switch only along
+    # CCDB_CAPACITY_FALLBACK. CCDB_CAPACITY_RETRY=0 turns the scheduling off.
+    from .capacity_recovery import CapacityRecoveryCoordinator
+    from .cogs._run_helper import configure_capacity_recovery
+
+    configure_capacity_recovery(
+        CapacityRecoveryCoordinator(store=stores.capacity),
+        backend_factory=backend_factory,
+    )
 
     # --- Thread inbox (optional — THREAD_INBOX_ENABLED=true) ---
     if enable_thread_inbox:
@@ -397,10 +539,13 @@ async def setup_bridge(
         ),
         max_concurrent=max_concurrent,
         allowed_user_ids=allowed_user_ids,
+        thread_member_ids=thread_member_ids,
+        thread_member_exclude_category_ids=thread_member_exclude_category_ids,
         ask_repo=ask_repo,
         lounge_repo=lounge_repo,
         resume_repo=resume_repo,
         settings_repo=settings_repo,
+        handoff_repo=handoff_repo,
         channel_ids=_all_channel_ids or None,
         mention_only_channel_ids=mention_only_channel_ids or None,
         inline_reply_channel_ids=inline_reply_channel_ids or None,
@@ -409,9 +554,91 @@ async def setup_bridge(
         monitor_all_channels=monitor_all_channels,
         mention_anywhere=mention_anywhere,
         thread_context_days=thread_context_days,
+        capacity_repo=stores.capacity,
     )
     await bot.add_cog(chat_cog)
     logger.info("Registered ClaudeChatCog")
+
+    # --- SurfaceCommandsCog: the location-aware final surface (/session, ...) ---
+    # Control centers are the configured channels; a thread counts as a session
+    # only when a record is bound to it, so an unconfigured bot fails closed.
+    from .cogs.surface_commands import SurfaceCommandsCog
+    from .command_surface import CommandSurface
+    from .lifecycle_adapters import build_lifecycle_service
+
+    command_surface = CommandSurface.from_ids([*_all_channel_ids, _launcher_home_id])
+    # One close/reopen service behind /close, the Sessions buttons, run
+    # finalization and startup reconciliation. It archives; it never deletes.
+    lifecycle = build_lifecycle_service(bot, chat_cog, session_repo)
+    chat_cog.lifecycle = lifecycle
+    chat_cog.command_surface = command_surface  # makes /help location-aware
+    surface_cog = SurfaceCommandsCog(
+        bot,
+        surface=command_surface,
+        repo=session_repo,
+        chat=chat_cog,
+        lifecycle=lifecycle,
+    )
+    await bot.add_cog(surface_cog)
+    logger.info("Registered SurfaceCommandsCog")
+
+    # --- AgentHandoffCog (enabled only by a complete CCDB_HANDOFF_* configuration) ---
+    from .cogs.agent_handoff import AgentHandoffCog
+    from .handoff_config import HandoffConfig, HandoffConfigError
+
+    try:
+        handoff_config = HandoffConfig.from_env()
+    except HandoffConfigError:
+        logger.exception("Handoff configuration is malformed; trusted handoffs stay disabled")
+        handoff_config = None
+    if handoff_config is not None:
+        # With a catalog, an inbound locator resolves through the same approved
+        # roots New session uses (plus the env-configured owner roots and pins).
+        project_resolver = None
+        if project_catalog is not None:
+            from .catalog_handoff import catalog_project_resolver
+
+            project_resolver = catalog_project_resolver(
+                project_catalog, fallback_lookup_root=runner.working_dir
+            )
+        await bot.add_cog(
+            AgentHandoffCog(
+                bot,
+                repo=handoff_repo,
+                config=handoff_config,
+                chat=chat_cog,
+                fallback_lookup_root=runner.working_dir,
+                project_resolver=project_resolver,
+            )
+        )
+        logger.info(
+            "Registered AgentHandoffCog (agent=%s, peers=%s)",
+            handoff_config.local_agent_id,
+            ", ".join(handoff_config.peers),
+        )
+    else:
+        from .handoff_config import legacy_trusted_bot_ids
+
+        legacy_bots = legacy_trusted_bot_ids()
+        legacy_agent = os.getenv("CCDB_AGENT_ID", "").strip()
+        if legacy_bots and legacy_agent:
+            logger.info(
+                "Legacy handoff intake enabled for agent %s from %d trusted bot account(s)",
+                legacy_agent,
+                len(legacy_bots),
+            )
+        else:
+            # Said once, here, so the receive path can stay quiet per message.
+            logger.info(
+                "Handoffs disabled: set CCDB_HANDOFF_TRUSTED_BOT_IDS and CCDB_AGENT_ID, "
+                "or a complete CCDB_HANDOFF_* configuration, to accept handoff packets"
+            )
+
+    # --- TaskLoopCog (auto-enabled; idle until /gowork or POST /api/loops) ---
+    from .cogs.task_loop import TaskLoopCog
+
+    await bot.add_cog(TaskLoopCog(bot, allowed_user_ids=allowed_user_ids))
+    logger.info("Registered TaskLoopCog")
 
     # --- CollisionWatchCog (auto-enabled; no-op until two sessions overlap) ---
     await bot.add_cog(
@@ -435,9 +662,31 @@ async def setup_bridge(
     logger.info("Registered SessionManageCog")
 
     # --- SkillCommandCog (requires at least one channel ID) ---
+    launcher_cog: ProjectLauncherCog | None = None
     if _all_channel_ids:
         # Primary channel: prefer the explicit claude_channel_id, else pick from set
         _primary_channel_id = claude_channel_id or next(iter(_all_channel_ids))
+        launcher_cog = ProjectLauncherCog(
+            bot,
+            session_repo,
+            settings_repo,
+            chat_cog,
+            channel_id=_primary_channel_id,
+            channel_ids=_all_channel_ids,
+            working_dir=runner.working_dir,
+            home_channel_id=_launcher_home_id,
+            session_channel_id=_launcher_session_id,
+            backend_settings=backend_settings,
+            backend_factory=backend_factory,
+            lifecycle=lifecycle,
+            catalog=project_catalog,
+        )
+        await bot.add_cog(launcher_cog)
+        # /new, /sessions and /settings are the launcher's flows spelled as
+        # commands; /sessions keeps its SessionManageCog registration and is
+        # routed to the browser so no command name is registered twice.
+        surface_cog.launcher = launcher_cog
+        session_manage_cog.session_browser = surface_cog.open_sessions
         skill_cog = SkillCommandCog(
             bot,
             repo=session_repo,
@@ -448,6 +697,37 @@ async def setup_bridge(
         )
         await bot.add_cog(skill_cog)
         logger.info("Registered SkillCommandCog")
+
+    # --- MyAISetupCog (Settings → My AI Setup; read-only inventory) ---
+    # Registers one Settings entry; no command of its own. Reads only the
+    # declared roots (~/.claude, the Codex home, the DSH config, the custom
+    # Cogs directory, the working directory as one project) and runs no model.
+    from .ai_setup_local import LocalRoots, build_local_collector
+    from .cogs.my_ai_setup import MyAISetupCog
+    from .database.ai_setup_repo import AISetupRepository
+
+    try:
+        ai_setup_repo = AISetupRepository(session_db_path)
+        await ai_setup_repo.init_db()
+        ai_setup_roots = LocalRoots.from_env(working_dir=runner.working_dir)
+        ai_setup_cog = MyAISetupCog(
+            bot,
+            repo=ai_setup_repo,
+            collector=build_local_collector(ai_setup_roots, tree=bot.tree),
+            chat=chat_cog,
+            allowed_user_ids=allowed_user_ids,
+            owner=ai_setup_roots.owner,
+            settings_home=launcher_cog.settings_home if launcher_cog is not None else None,
+            trusted_computers=[
+                name.strip()
+                for name in os.getenv("CCDB_AI_SETUP_TRUSTED_COMPUTERS", "").split(",")
+                if name.strip()
+            ],
+        )
+        await bot.add_cog(ai_setup_cog)
+        logger.info("Registered MyAISetupCog")
+    except Exception:  # noqa: BLE001 — an inventory problem must not stop the bot
+        logger.exception("MyAISetupCog was not registered")
 
     # --- SchedulerCog (optional) ---
     task_repo: TaskRepository | None = None
@@ -529,6 +809,15 @@ async def setup_bridge(
         # raises deliberately, and the chat path surfaces it on first use.
         logger.exception("Could not register AskCommandCog")
 
+    # Task 4.4: superseded registrations go only after recorded acceptance,
+    # behind CCDB_RETIRE_SUPERSEDED_COMMANDS (off by default). Registration
+    # only — services and stored state stay, so switching it off restores them.
+    from .command_surface import retire_superseded_commands
+
+    retired = retire_superseded_commands(bot.tree)
+    if retired:
+        logger.info("Retired superseded commands: %s", ", ".join(sorted(retired)))
+
     components = BridgeComponents(
         session_repo=session_repo,
         task_repo=task_repo,
@@ -544,6 +833,9 @@ async def setup_bridge(
         settings_repo=settings_repo,
         ask_repo=ask_repo,
         usage_repo=usage_repo,
+        handoff_repo=handoff_repo,
+        settings_home=launcher_cog.settings_home if launcher_cog is not None else None,
+        project_catalog=project_catalog,
     )
 
     # Auto-wire repos to ApiServer and set runner.api_port if provided

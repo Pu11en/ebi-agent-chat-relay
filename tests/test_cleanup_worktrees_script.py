@@ -10,12 +10,17 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "cleanup_worktrees.sh"
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Linux ops script: bash shebang stubs and executable bits"
+)
 
 
 def _init_repo_with_worktree(base: Path) -> tuple[Path, Path]:

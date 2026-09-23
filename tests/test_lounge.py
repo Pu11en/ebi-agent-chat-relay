@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +27,24 @@ from claude_discord.lounge import (
     build_lounge_prompt,
     length_hint,
 )
+
+AUTH_HEADER = "Authorization: Bearer $CCDB_API_SECRET"
+
+
+def _curl_commands(text: str) -> list[str]:
+    """Return each ``curl`` invocation inside the prompt's bash blocks as one line.
+
+    Continuation lines (ending in a backslash) are folded back onto their
+    command so a header on its own line still counts for that command.
+    """
+    commands: list[str] = []
+    for block in re.findall(r"```bash\n(.*?)```", text, flags=re.S):
+        folded = re.sub(r"\\\n\s*", " ", block)
+        commands.extend(
+            line.strip() for line in folded.splitlines() if line.strip().startswith("curl")
+        )
+    return commands
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -237,6 +256,30 @@ class TestBuildLoungePrompt:
         result = build_lounge_prompt([])
         assert "thread_id" in result
         assert "DISCORD_THREAD_ID" in result
+
+    def test_every_api_example_carries_the_bearer_header(self) -> None:
+        """Every $CCDB_API_URL call except /api/health sits behind bearer auth
+        once CCDB_API_SECRET is configured, and the runner exports that secret
+        into the session's environment. An example without the header is a
+        401 waiting to happen — and a session that trusts the example simply
+        skips the coordination step instead of retrying.
+        """
+        result = build_lounge_prompt([])
+        commands = _curl_commands(result)
+        api_calls = [c for c in commands if "$CCDB_API_URL" in c]
+        # post · look (sessions, thread messages) · claim · release · talk
+        assert len(api_calls) >= 6
+        for cmd in api_calls:
+            assert AUTH_HEADER in cmd, cmd
+
+    def test_api_examples_render_single_braces(self) -> None:
+        """The JSON bodies must be pasteable — a formatted template must not
+        leak its escaped ``{{`` / ``}}`` into the prompt.
+        """
+        result = build_lounge_prompt([])
+        assert "{{" not in result
+        assert "}}" not in result
+        assert '{"message":' in result
 
     def test_prompt_draws_the_line_between_lounge_and_apis(self) -> None:
         """The prompt tells sessions to use the APIs for discovery/locking, not the lounge."""

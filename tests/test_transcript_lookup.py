@@ -42,7 +42,7 @@ def test_searches_every_project_directory(tmp_path) -> None:
     _write(tmp_path / "-home-ebi-scheduler" / f"{_SID}.jsonl", "right one")
     found = find_transcript(_SID, str(tmp_path))
     assert found is not None
-    assert found.endswith(f"-home-ebi-scheduler/{_SID}.jsonl")
+    assert found == str(tmp_path / "-home-ebi-scheduler" / f"{_SID}.jsonl")
 
 
 def test_unknown_session_is_none(tmp_path) -> None:

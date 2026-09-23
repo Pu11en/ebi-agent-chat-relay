@@ -907,7 +907,7 @@ for idle deadlines, attachment retries, credentials and startup rollback.
 | `CLAUDE_PERMISSION_MODE` | Permission mode for CLI (legacy — prefer `CCDB_PERMISSION_MODE`) | `acceptEdits` |
 | `CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS` | Skip all permission checks (legacy — prefer `CCDB_DANGEROUSLY_SKIP_PERMISSIONS`) | `false` |
 | `CLAUDE_WORKING_DIR` | Working directory for Claude (legacy — prefer `CCDB_WORKING_DIR`) | current dir |
-| `MAX_CONCURRENT_SESSIONS` | Max parallel Claude CLI sessions across all code paths (chat, skills, scheduler, webhooks) | `3` |
+| `MAX_CONCURRENT_SESSIONS` | Max parallel Claude CLI sessions across all code paths (chat, skills, scheduler, webhooks) | `10` |
 | `SESSION_TIMEOUT_SECONDS` | Session **idle** timeout in seconds — reset every time output arrives, so an active stream may outlive it. Set `0` to disable the deadline explicitly | `300` |
 | `CCDB_PR_COMPLETION_OWNER` | GitHub owner whose non-draft `session/<thread_id>` PRs trigger one automatic completion continuation. Requires authenticated `gh`; disabled when empty. | (optional) |
 | `DISCORD_OWNER_ID` | User ID to @-mention when Claude needs input | (optional) |

@@ -216,7 +216,10 @@ class TaskRepository:
             row_id = cursor.lastrowid
         assert row_id is not None
         logger.info(
-            "Scheduled task created: id=%d, name=%s, interval=%ds", row_id, name, interval_seconds
+            "Scheduled task created: id=%d, name=%s, interval=%ds",
+            row_id,
+            name.replace("\r", "").replace("\n", ""),
+            interval_seconds,
         )
         return row_id
 

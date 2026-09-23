@@ -92,6 +92,10 @@ class _InterruptibleProcess(_FakeProcess):
         self.returncode = 1
         self.interrupted.set()
 
+    def terminate(self) -> None:
+        # On Windows the runner interrupts with terminate() instead of SIGINT.
+        self.send_signal(0)
+
 
 class _CompletesBeforeExitProcess(_FakeProcess):
     """Process that emits turn.completed before its natural exit is observed."""
@@ -736,6 +740,36 @@ class TestParseCodexLine:
         assert event.tool_use is not None
         assert event.tool_use.tool_name == "Edit"
 
+    def test_item_completed_file_change_carries_every_path(self) -> None:
+        """codex-cli's real event is ``file_change`` (singular) with ``changes``.
+
+        Every changed path must reach the tool input so the same-file heads-up
+        sees Codex edits, not just Claude's.
+        """
+        from claude_code_core.codex_runner import _atomic_tool_completion
+
+        line = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_4",
+                    "type": "file_change",
+                    "changes": [
+                        {"path": "/repo/a.py", "kind": "update"},
+                        {"path": "/repo/b.py", "kind": "add"},
+                    ],
+                    "status": "completed",
+                },
+            }
+        )
+        event = parse_codex_line(line)
+        assert event is not None
+        assert event.tool_use is not None
+        assert event.tool_use.tool_name == "Edit"
+        assert event.tool_use.tool_input["file_paths"] == ["/repo/a.py", "/repo/b.py"]
+        assert event.tool_use.tool_input["file_path"] == "/repo/a.py"
+        assert _atomic_tool_completion(event) is not None
+
     def test_file_changes_is_atomic_and_gets_synthetic_completion(self) -> None:
         """file_changes arrives as a single item.completed with no item.started.
         It opens a tool embed + live timer, so a synthetic tool result must be
@@ -782,6 +816,99 @@ class TestParseCodexLine:
         assert event is not None
         assert event.error is not None
         assert event.is_complete is True
+
+
+class TestContextWindowFromTokenCount:
+    """D10a: the start-fresh nudge needs the window and the used tokens on Codex.
+
+    Codex reports ``model_context_window`` on its ``token_count`` event, not on
+    ``turn.completed``. The runner carries the last one seen into the terminal
+    event so the event processor persists ``context_window``/``context_used``
+    exactly as it does for Claude.
+    """
+
+    TOKEN_COUNT = {
+        "type": "token_count",
+        "info": {
+            "total_token_usage": {
+                "input_tokens": 9000,
+                "cached_input_tokens": 4000,
+                "output_tokens": 800,
+            },
+            "last_token_usage": {
+                "input_tokens": 6000,
+                "cached_input_tokens": 4000,
+                "output_tokens": 300,
+            },
+            "model_context_window": 258400,
+        },
+    }
+
+    def test_token_count_line_parses_into_a_silent_system_event(self) -> None:
+        event = parse_codex_line(json.dumps(self.TOKEN_COUNT))
+        assert event is not None
+        assert event.message_type is MessageType.SYSTEM
+        assert event.is_complete is False
+        assert event.text is None
+        assert event.context_window == 258400
+        assert event.input_tokens == 6000
+
+    def test_token_count_without_info_is_ignored(self) -> None:
+        assert parse_codex_line(json.dumps({"type": "token_count"})) is None
+
+    @pytest.mark.asyncio
+    async def test_turn_completed_carries_the_window_and_used_tokens(self, monkeypatch) -> None:
+        lines = [
+            json.dumps({"type": "thread.started", "thread_id": "t-1"}).encode(),
+            json.dumps(self.TOKEN_COUNT).encode(),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 6000,
+                        "cached_input_tokens": 4000,
+                        "output_tokens": 300,
+                    },
+                }
+            ).encode(),
+        ]
+        process = _FakeProcess(stdout_lines=lines)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        runner = CodexRunner(command="codex")
+
+        events = [event async for event in runner.run("hello")]
+
+        done = [e for e in events if e.is_complete]
+        assert len(done) == 1
+        assert done[0].context_window == 258400
+        # Codex counts cached tokens inside input; Claude does not. The
+        # processor adds input + cache_read, so the fold makes them disjoint:
+        # 2000 fresh + 4000 cached = the 6000 tokens the model actually held.
+        assert done[0].input_tokens == 2000
+        assert done[0].cache_read_tokens == 4000
+        assert done[0].output_tokens == 300
+
+    @pytest.mark.asyncio
+    async def test_turn_completed_without_a_token_count_has_no_window(self, monkeypatch) -> None:
+        lines = [json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10}}).encode()]
+        process = _FakeProcess(stdout_lines=lines)
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        events = [event async for event in CodexRunner(command="codex").run("hello")]
+        assert events[-1].context_window is None
 
 
 class TestCodexRunnerArgvStructure:

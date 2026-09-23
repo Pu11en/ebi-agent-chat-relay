@@ -117,3 +117,15 @@ def test_section_order_matches_known_sections() -> None:
         + "\n".join(f"  /{name!r}: {section!r}" for name, section in sorted(bad.items()))
         + f"\n\nKnown sections: {sorted(known_sections)}"
     )
+
+
+def test_final_surface_and_legacy_commands_coexist_until_retirement() -> None:
+    """discord-command-surface 4.1: the eight final commands sit beside the old ones."""
+    from claude_discord.command_surface import FINAL_COMMANDS
+
+    registered = _collect_app_command_names()
+    final = {spec.name for spec in FINAL_COMMANDS}
+    assert final <= registered, sorted(final - registered)
+    # Superseded entry points stay registered during the compatibility phase (4.4 retires them).
+    legacy = {"launcher", "resume", "fork", "rewind", "compact", "clear", "goal", "context"}
+    assert legacy <= registered, sorted(legacy - registered)
