@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,55 @@ logger = logging.getLogger(__name__)
 _LIMIT = 25
 #: How long a folder scan is reused before the disk is read again.
 _SCAN_TTL = 30.0
+
+
+def _ccdb_scratch_root() -> Path:
+    """The directory ccdb cuts its own disposable copies into.
+
+    Resolved on each call rather than imported from ``loop_store.DEFAULT_PATH``:
+    that constant is frozen at import, so a relocated state directory would be
+    invisible here for the life of the process.
+    """
+    raw = os.environ.get("CCDB_GOWORK_STATE", "").strip()
+    if raw:
+        return Path(raw).parent
+    return Path.home() / ".local" / "state" / "ccdb"
+
+
+def _is_a_place(path: str) -> bool:
+    """Whether ``path`` is somewhere a person works, rather than ccdb's scratch.
+
+    `/gowork` builds, per-task worktrees and staging copies all live under
+    ccdb's state directory. They appear in the session table like any other
+    folder and dominated the list, but they are deleted when the work ends, so
+    offering one is offering a folder that will not be there — and the project
+    they were cut from is in the list already, on its own. Excluding the whole
+    state directory is the rule; naming each kind of scratch folder is a list
+    that goes stale on the next feature.
+    """
+    try:
+        return not Path(path).is_relative_to(_ccdb_scratch_root())
+    except (OSError, ValueError):  # pragma: no cover - a path neither side can parse
+        return True
+
+
+#: How far back the session table is read for "folders I was just in". Well
+#: past the 25 the menu can show, so duplicates and folderless sessions thin it
+#: out without the list running short.
+_SESSION_HISTORY = 100
+
+
+#: Turning this off makes the control center a place you type in and nothing
+#: else. Default on, because removing a consumer's only visible entry point on
+#: upgrade would be a change nobody asked for.
+CONTROL_PANEL_ENV = "CCDB_CONTROL_CENTER_PANEL"
+_PANEL_OFF = frozenset({"0", "off", "false", "no", "none"})
+
+
+def control_panel_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether this instance publishes the pinned panel and the control row."""
+    source = os.environ if env is None else env
+    return source.get(CONTROL_PANEL_ENV, "").strip().lower() not in _PANEL_OFF
 
 
 class _LauncherSessionActions:
@@ -686,7 +736,9 @@ class ProjectLauncherCog(commands.Cog):
         self.settings = settings
         self.chat = chat
         self.channel_id = home_channel_id or channel_id
-        self.channel_ids = set(channel_ids)
+        # The control center is one of the launcher's own channels: a quick chat
+        # typed there opens a thread under it, and Sessions gates on the parent.
+        self.channel_ids = set(channel_ids) | ({home_channel_id} if home_channel_id else set())
         self.session_channel_id = session_channel_id
         self.working_dir = working_dir
         # Optional: lets the status line and new-thread notice name the default
@@ -706,6 +758,11 @@ class ProjectLauncherCog(commands.Cog):
         # because Discord fires autocomplete on every keystroke.
         self._scan: list[str] | None = None
         self._scanned_at = 0.0
+        # The folders this computer actually worked in, read from the session
+        # table and cached on the same interval as the scan — autocomplete
+        # fires on every keystroke, and this must not be a query per letter.
+        self._session_folders: list[str] | None = None
+        self._session_folders_at = 0.0
         self._view: LauncherView | None = None
         self._control_row: ControlRowView | None = None
         self._shortcut_task: asyncio.Task[None] | None = None
@@ -776,7 +833,8 @@ class ProjectLauncherCog(commands.Cog):
     async def control_content(self) -> str:
         return (
             f"{await self.status_block()}\n"
-            "-# **New session** starts a folder-bound thread · **Sessions** finds work · "
+            "-# **Just type here** for a quick chat — no folder, no menus · "
+            "**New session** starts a folder-bound thread · **Sessions** finds work · "
             "**Settings** shows what this computer supports"
         )
 
@@ -975,7 +1033,7 @@ class ProjectLauncherCog(commands.Cog):
         if not await self.authorize(interaction):
             return
         await interaction.response.defer(ephemeral=True)
-        recent = await self.recents(interaction.guild_id or 0, interaction.user.id)
+        recent = await self.recent_folders(interaction.guild_id or 0, interaction.user.id)
         recent = await asyncio.to_thread(lambda: [p for p in recent if Path(p).is_dir()])
         if not recent:
             await interaction.edit_original_response(
@@ -1157,6 +1215,47 @@ class ProjectLauncherCog(commands.Cog):
             raise ValueError("Saved recent folders are invalid; ask the bot to repair them.")
         return values[:_LIMIT]
 
+    async def session_folders(self) -> list[str]:
+        """Folders from this computer's sessions, most recently used first.
+
+        The launcher's own recents list records a start *through the launcher*
+        and nothing else. Work continues in a thread for days afterwards and
+        sessions begin plenty of other ways, so that list answers "where do I
+        work" with a few stale launches. The session table already orders every
+        folder by when it was last used, which is the question actually being
+        asked. A failed read is an empty list, never an exception: autocomplete
+        degrades to the stored list rather than going blank.
+        """
+        now = time.monotonic()
+        if self._session_folders is not None and now - self._session_folders_at < _SCAN_TTL:
+            return self._session_folders
+        try:
+            records = await self.repo.list_all(limit=_SESSION_HISTORY)
+        except Exception:
+            logger.debug("Session history unavailable for folder suggestions", exc_info=True)
+            return self._session_folders or []
+        folders: list[str] = []
+        for record in records:
+            path = getattr(record, "working_dir", None)
+            if isinstance(path, str) and path and path not in folders and _is_a_place(path):
+                folders.append(path)
+        self._session_folders = folders
+        self._session_folders_at = now
+        return folders
+
+    async def recent_folders(self, guild_id: int, user_id: int) -> list[str]:
+        """What to offer first: where work actually happened, then launcher starts.
+
+        Kept separate from :meth:`recents` on purpose — that one is the stored
+        list :meth:`remember_folder` reads and rewrites, and folding session
+        history into it would copy the history into storage on the next launch.
+        """
+        merged = list(await self.session_folders())
+        for path in await self.recents(guild_id, user_id):
+            if path not in merged:
+                merged.append(path)
+        return merged[:_LIMIT]
+
     async def remember_folder(self, guild_id: int, user_id: int, path: str) -> None:
         async with self._favorites_lock:
             previous = await self.recents(guild_id, user_id)
@@ -1234,7 +1333,9 @@ class ProjectLauncherCog(commands.Cog):
         if not manage:
             recent_folders = [
                 path
-                for path in await self.recents(interaction.guild_id or 0, interaction.user.id)
+                for path in await self.recent_folders(
+                    interaction.guild_id or 0, interaction.user.id
+                )
                 if path not in folders
             ]
             recent_folders = await asyncio.to_thread(
@@ -1459,7 +1560,7 @@ class ProjectLauncherCog(commands.Cog):
     async def folder_suggestions(self, guild_id: int, user_id: int, query: str) -> list[str]:
         """Folders to offer for ``query``: this operator's history, then the disk."""
         candidates = await self.scanned_folders()
-        recents = await self.recents(guild_id, user_id)
+        recents = await self.recent_folders(guild_id, user_id)
         favorites = await self.favorites(guild_id, user_id)
         existing = await asyncio.to_thread(
             lambda: [path for path in recents + favorites if Path(path).is_dir()]
@@ -1471,6 +1572,20 @@ class ProjectLauncherCog(commands.Cog):
             favorites=[path for path in favorites if path in existing],
             limit=_LIMIT,
         )
+
+    async def resolve_folder_phrase(self, guild_id: int, user_id: int, phrase: str) -> str | None:
+        """The folder a spoken name refers to, or ``None`` when nothing matches.
+
+        The same ranking `/cd` autocompletes with, so "boa" reaches the boa
+        folder for the same reasons and with the same recency preference. A
+        phrase that matches nothing returns ``None`` rather than the closest
+        thing on disk: the caller's fallback is a plain chat, and a plain chat
+        is better than a session silently bound to the wrong folder.
+        """
+        if not phrase.strip():
+            return None
+        matches = await self.folder_suggestions(guild_id, user_id, phrase)
+        return matches[0] if matches else None
 
     async def folder_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -1520,6 +1635,8 @@ class ProjectLauncherCog(commands.Cog):
 
     @commands.Cog.listener("on_message")
     async def keep_launcher_visible(self, message: discord.Message) -> None:
+        if not control_panel_enabled():
+            return
         if message.channel.id != self.channel_id or message.type not in (
             discord.MessageType.default,
             discord.MessageType.reply,
@@ -1563,6 +1680,8 @@ class ProjectLauncherCog(commands.Cog):
         leaves an extra row for the next repair pass, never a missing one.
         The pinned anchor and channel history are never touched.
         """
+        if not control_panel_enabled():
+            return
         async with self._panel_lock:
             channel = self.bot.get_channel(self.channel_id)
             if not isinstance(channel, discord.TextChannel):
@@ -1595,8 +1714,44 @@ class ProjectLauncherCog(commands.Cog):
                 return
         await self.refresh_shortcut()
 
+    async def remove_panel(self) -> None:
+        """Take down the panel and the control row this instance published.
+
+        Turning the panel off has to clear what is already posted, not merely
+        stop publishing more: a switch that leaves the old buttons pinned in
+        place has changed nothing the person can actually see. Only the two
+        messages ccdb tracked by id and still owns are touched — a message
+        someone else wrote, or one that is already gone, is left alone and the
+        stale id is forgotten either way.
+        """
+        channel = self.bot.get_channel(self.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        for key in (
+            f"launcher.panel:{self.channel_id}",
+            f"launcher.shortcut:{self.channel_id}",
+        ):
+            saved = await self.settings.get(key)
+            if not saved or not saved.isdigit():
+                continue
+            try:
+                message = await channel.fetch_message(int(saved))
+            except discord.HTTPException:
+                message = None
+            if message is not None and self.bot.user and message.author.id == self.bot.user.id:
+                with contextlib.suppress(discord.HTTPException):
+                    if message.pinned:
+                        await message.unpin(reason="Control center panel turned off")
+                    await message.delete()
+            await self.settings.delete(key)
+
     @commands.Cog.listener()
     async def on_ready(self) -> None:
+        if not control_panel_enabled():
+            async with self._panel_lock:
+                with contextlib.suppress(discord.HTTPException):
+                    await self.remove_panel()
+            return
         async with self._panel_lock:
             channel = self.bot.get_channel(self.channel_id)
             if not isinstance(channel, discord.TextChannel):

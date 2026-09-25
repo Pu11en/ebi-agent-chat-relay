@@ -414,3 +414,89 @@ class TestForkCommand:
 
         call_kwargs = mock_spawn.call_args.kwargs
         assert call_kwargs.get("fork") is True
+
+
+# ---------------------------------------------------------------------------
+# A fork gets its own transcript
+# ---------------------------------------------------------------------------
+
+
+class TestForkTranscriptIsCopied:
+    """Two threads must never share one transcript — they interleave if they do."""
+
+    def _write_transcript(self, tmp_path: Path, session_id: str) -> Path:
+        import json
+
+        project = tmp_path / ".claude" / "projects" / "-tmp-work"
+        project.mkdir(parents=True)
+        jsonl = project / f"{session_id}.jsonl"
+        jsonl.write_text(
+            "\n".join(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "sessionId": session_id,
+                        "message": {"role": "user", "content": f"turn {i}"},
+                    }
+                )
+                for i in range(3)
+            )
+            + "\n"
+        )
+        return jsonl
+
+    def test_copy_returns_a_new_id_and_rewrites_every_session_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        from claude_code_core import rewind
+
+        source = self._write_transcript(tmp_path, "sess-abc")
+        monkeypatch.setattr(rewind, "_CLAUDE_PROJECTS_DIR", tmp_path / ".claude" / "projects")
+
+        new_id = rewind.copy_session_jsonl("sess-abc", "/tmp/work")
+
+        assert new_id is not None and new_id != "sess-abc"
+        copy = source.with_name(f"{new_id}.jsonl")
+        entries = [json.loads(line) for line in copy.read_text().splitlines()]
+        assert len(entries) == 3
+        assert {e["sessionId"] for e in entries} == {new_id}
+        # the parent's own transcript is untouched
+        assert all(
+            json.loads(line)["sessionId"] == "sess-abc" for line in source.read_text().splitlines()
+        )
+
+    def test_copy_returns_none_when_there_is_no_transcript(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from claude_code_core import rewind
+
+        monkeypatch.setattr(rewind, "_CLAUDE_PROJECTS_DIR", tmp_path / "empty")
+        assert rewind.copy_session_jsonl("sess-missing", "/tmp/work") is None
+
+    @pytest.mark.asyncio
+    async def test_fork_spawns_with_the_copied_session_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The new thread resumes its own copy, so the parent never sees its turns."""
+        from claude_code_core import rewind
+
+        self._write_transcript(tmp_path, "sess-abc")
+        monkeypatch.setattr(rewind, "_CLAUDE_PROJECTS_DIR", tmp_path / ".claude" / "projects")
+
+        cog = _make_cog()
+        record = _make_session_record(session_id="sess-abc", working_dir="/tmp/work")
+        thread = MagicMock(spec=discord.Thread)
+        thread.id = 12345
+        thread.name = "the aldus"
+        thread.parent = MagicMock(spec=discord.TextChannel)
+
+        new_thread = MagicMock(spec=discord.Thread)
+        with patch.object(cog, "spawn_session", new=AsyncMock(return_value=new_thread)) as spawn:
+            await cog.fork_thread(thread, record)
+
+        kwargs = spawn.call_args.kwargs
+        assert kwargs["session_id"] != "sess-abc"
+        # the copy is already separate, so the CLI flag is not what separates them
+        assert kwargs["fork"] is False

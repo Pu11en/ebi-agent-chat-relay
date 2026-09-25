@@ -9,8 +9,7 @@ already identifies the computer. Buttons always belong to the bot that posted th
 
 Set `CCDB_LAUNCHER_CHANNEL_ID` to the existing control-center channel and
 `CCDB_LAUNCHER_SESSION_CHANNEL_ID` to its workers channel. The workers channel is
-automatically included in chat routing. Normal messages in the launcher channel
-do not start chat sessions. Existing channels and threads remain available.
+automatically included in chat routing. Existing channels and threads remain available.
 When unset, existing consumers keep their original primary-channel launcher and
 create sessions under the invoking channel. The framework does not create channels.
 
@@ -19,6 +18,54 @@ coalescing delay adds a silent three-button shortcut at the bottom, replacing on
 the previous bot-owned shortcut. Worker threads, system events and the launcher’s
 own controls do not trigger it. Conversation messages and the pinned anchor are
 never removed by this refresh.
+
+## No panel at all
+
+`CCDB_CONTROL_CENTER_PANEL=off` makes the control center a place you type in and
+nothing else: no pinned panel, no republished control row, no buttons. Everything
+those buttons opened is already a slash command — `/cd` and `/new` for a
+folder-bound session, `/sessions` for old ones, `/settings` for what this computer
+supports — and a quick chat needs none of them.
+
+The switch removes what is already posted, not just future publishing: on the
+next start the pinned panel is unpinned and deleted, the saved control row is
+deleted, and both stored ids are forgotten. Only the two messages ccdb tracked
+by id and still owns are touched. Default is on, because dropping a consumer's
+only visible entry point on upgrade is not a change they asked for.
+
+Turning it back on republishes both on the next start.
+
+## Type nothing but the question
+
+A normal message in the launcher channel starts a **quick chat**: a thread off
+that message, running the message as its first task, bound to no folder — it
+works where this instance's runner works by default, like any other unbound
+thread. It is the shortest path there is to the agent, and it costs the control
+center nothing: the bot's own control row is still shut out, so the row it
+republishes after every message never starts a session. Replies inside the
+thread continue that session, exactly as they do under any chat channel.
+
+Use **New session** or `/cd` when the work belongs to a folder; use a quick chat
+for the questions that do not.
+
+## What the list recommends first
+
+Before anything is typed, `/cd` offers the folders this computer *worked in*
+most recently, newest first — read from the session table, which records every
+folder and when it was last used. The launcher's own recents list is still
+there, after them, but it only ever recorded a start made *through the
+launcher*: work continues in a thread for days afterwards and sessions begin
+plenty of other ways, so on its own it answered "where do I work" with a few
+stale launches.
+
+Two rules keep that list honest. Folders under ccdb's state directory are
+excluded — `/gowork` builds and per-task worktrees appear in the session table
+like anything else, but they are deleted when the work ends, so offering one is
+offering a folder that will not be there; the project they were cut from is
+already listed on its own. And once something *is* typed, match quality still
+decides first: recency orders equally good matches, it never promotes a folder
+that barely matches. The session read is cached on the same interval as the
+folder scan, because autocomplete fires on every keystroke.
 
 ## Type the folder instead of walking the menus
 

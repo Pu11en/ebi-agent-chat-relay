@@ -144,6 +144,11 @@ def _fuzzy_runs(query: str, text: str) -> int | None:
     return runs
 
 
+#: Index of the disk-scan group in :func:`rank_folders`. Everything before it
+#: is this operator's own history and therefore has a recency to sort by.
+_SCAN_GROUP = 2
+
+
 def rank_folders(
     query: str,
     *,
@@ -166,7 +171,7 @@ def rank_folders(
                 groups[path] = group
                 order[path] = len(order)
     needle = _normalize(query)
-    scored: list[tuple[tuple[int, int, int, int, int, int], str]] = []
+    scored: list[tuple[tuple[int, int, int, int, int, int, int], str]] = []
     for path in groups:
         score = _score(needle, path)
         if score is None:
@@ -174,11 +179,20 @@ def rank_folders(
         tier, runs = score
         if not needle:
             # Nothing typed: history order is the answer, not the filesystem's.
-            scored.append(((0, groups[path], 0, 0, 0, order[path]), path))
+            scored.append(((0, groups[path], order[path], 0, 0, 0, order[path]), path))
             continue
         entry = Path(path)
+        # Among equally good matches, history is ordered by *recency* and the
+        # disk scan by path shape. Ranking a folder the person just worked in
+        # behind a shorter path answers a question about the filesystem when
+        # they asked "which of these did I have open". Scan results have no
+        # recency to sort by, so they keep the shape tiebreakers.
+        history = order[path] if groups[path] < _SCAN_GROUP else 0
         scored.append(
-            ((tier, groups[path], runs, len(entry.parts), len(entry.name), order[path]), path)
+            (
+                (tier, groups[path], history, runs, len(entry.parts), len(entry.name), order[path]),
+                path,
+            )
         )
     scored.sort()
     return [path for _, path in scored[:limit]]

@@ -16,6 +16,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -53,6 +54,7 @@ from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
 from ..handoff_sender import build_project_lookup_handoff_event, send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
+from ..session_request import SessionRequest, mentions_a_session, read_session_request
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ._run_helper import run_claude_with_config
 from .context_nudge import ContextNudger
@@ -124,6 +126,27 @@ _HELP_CATEGORY: dict[str, str | None] = {
 
 # Section display order in the embed.
 _HELP_SECTION_ORDER: list[str] = ["📌 Session", "🤖 Model", "⚡ Effort", "🔧 Advanced"]
+
+
+def control_center_id() -> int | None:
+    """This instance's control center channel, or None when it has none.
+
+    Read per message rather than cached at construction: the launcher channel
+    is configured by env, and changing it should not need a restart. A function
+    rather than a cog attribute because both the message guard and the scope
+    check need it, and neither should have to be given a cog to ask.
+    """
+    raw = os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def is_control_center(channel: Any) -> bool:
+    """Whether *channel* is the control center itself, or a thread under it."""
+    home = control_center_id()
+    if home is None:
+        return False
+    root = channel.parent_id if isinstance(channel, discord.Thread) else channel.id
+    return root == home
 
 
 class ClaudeChatCog(commands.Cog):
@@ -236,6 +259,56 @@ class ClaudeChatCog(commands.Cog):
         self.lifecycle: SessionLifecycleService | None = None
         # The location coordinator; set by setup_bridge(). None keeps /help global.
         self.command_surface: CommandSurface | None = None
+
+    async def _close_requested(self, thread_id: int) -> bool:
+        """Whether this thread's session is closing or already closed.
+
+        Read from the stored record rather than from the lifecycle service, so
+        a close asked for by *any* entry point (`/close`, the Sessions browser,
+        `POST /api/threads/{id}/close`) is visible here.
+        """
+        try:
+            record = await self.repo.get(thread_id)
+        except Exception:
+            logger.debug("Could not read the session row for thread %s", thread_id, exc_info=True)
+            return False
+        return record is not None and not record.is_open
+
+    async def _finish_turn(
+        self,
+        thread: discord.Thread | discord.TextChannel,
+        *,
+        dashboard: ThreadStatusDashboard | None,
+        description: str,
+        notify_user_id: int | None,
+    ) -> None:
+        """End the turn's bookkeeping — and say nothing at all when it closed the session.
+
+        Discord un-archives a thread the moment anything posts in it. So the
+        reply-needed ping and the context nudge, harmless after any other turn,
+        undo the archive of the turn that closed the session: the thread was
+        archived, locked, and back in the sidebar a second later. `/close` while
+        idle was always fine — it answers ephemerally and posts nothing. It is
+        the close asked for *during* a turn, which is every close the agent
+        carries out itself, that this exists for.
+        """
+        closing = await self._close_requested(thread.id)
+        # The close asked for during this turn waits for exactly this point: the
+        # run slot is released, so the lifecycle sees the thread as idle.
+        await self._complete_pending_close(thread.id)
+        if closing:
+            if dashboard is not None:
+                await dashboard.remove(thread.id)
+            return
+        if dashboard is not None:
+            await dashboard.set_state(
+                thread.id,
+                ThreadState.WAITING_INPUT,
+                description,
+                thread=thread,
+                notify_user_id=notify_user_id,
+            )
+        self.context_nudger.after_turn(thread)
 
     async def _complete_pending_close(self, thread_id: int) -> None:
         """Finish a `/close` that was requested while this thread's turn ran.
@@ -404,7 +477,11 @@ class ClaudeChatCog(commands.Cog):
 
         if not category_allowed(message.channel):
             return
-        if str(message.channel.id) == os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip():
+        # The control center is a chat channel too — typing there is the fastest
+        # way to ask for something, and it used to be the one place a typed
+        # message did nothing. The launcher's own control row must never be that
+        # message, so the bot is still shut out here.
+        if is_control_center(message.channel) and message.author.bot:
             return
 
         if message.author.bot:
@@ -443,8 +520,13 @@ class ClaudeChatCog(commands.Cog):
         if self._is_no_mention_scope(message.channel):
             if isinstance(message.channel, discord.Thread):
                 await self._handle_thread_reply(message)
-            else:
-                await self._handle_new_conversation(message)
+                return
+            # "Make me a session about Boa in the boa folder" is a folder-bound
+            # session asked for the way a person says it. Declining is free and
+            # lands on the quick chat below, so this only ever wins outright.
+            if is_control_center(message.channel) and await self._try_folder_session(message):
+                return
+            await self._handle_new_conversation(message)
             return
 
         # Everywhere else: answer only when summoned, and answer *there*.
@@ -746,6 +828,8 @@ class ClaudeChatCog(commands.Cog):
             return False
         if root in self._channel_ids:
             return True
+        if root == control_center_id():
+            return True
         return self._monitor_all_channels and getattr(channel, "guild", None) is not None
 
     def _is_summoned(self, message: discord.Message) -> bool:
@@ -1027,10 +1111,20 @@ class ClaudeChatCog(commands.Cog):
         )
 
     async def fork_thread(self, thread: discord.Thread, record: SessionRecord) -> discord.Thread:
-        """A separate thread that continues this conversation; the original is untouched."""
+        """A separate thread that continues this conversation; the original is untouched.
+
+        "Separate" has to mean a separate transcript, not just a separate
+        thread. Two threads resuming one session id append to one file and read
+        each other's turns back as their own history, so the fork gets its own
+        copy of the transcript up front and ``--fork-session`` stops being the
+        only thing standing between the two conversations.
+        """
+        from claude_code_core.rewind import copy_session_jsonl
+
         parent_channel = getattr(thread, "parent", None)
         if not isinstance(parent_channel, discord.TextChannel):
             raise ValueError("Cannot create a fork: unable to find the parent channel.")
+        forked_id = copy_session_jsonl(record.session_id, record.working_dir)
         return await self.spawn_session(
             channel=parent_channel,
             prompt=(
@@ -1038,8 +1132,8 @@ class ClaudeChatCog(commands.Cog):
                 "Continue from where we left off."
             ),
             thread_name=f"🔀 Fork of {thread.name}"[:100],
-            session_id=record.session_id,
-            fork=True,
+            session_id=forked_id or record.session_id,
+            fork=forked_id is None,
             working_dir=record.working_dir,
         )
 
@@ -1289,6 +1383,93 @@ class ClaudeChatCog(commands.Cog):
             working_dir_override=record.working_dir if record else None,
             chat_only=(root_id or 0) in self._chat_only_channel_ids,
             interrupt_existing=True,
+        )
+
+    async def _read_session_request(self, message: discord.Message) -> SessionRequest | None:
+        """Ask whether this message is "open a session in <folder>", and which folder."""
+        launcher: Any = self.bot.cogs.get("ProjectLauncherCog")
+        folders = [
+            Path(path).name
+            for path in await launcher.recent_folders(
+                getattr(message.guild, "id", 0) or 0, message.author.id
+            )
+        ]
+        for path in await launcher.scanned_folders():
+            name = Path(path).name
+            if name not in folders:
+                folders.append(name)
+        return await read_session_request(
+            message.content or "",
+            folders=folders,
+            claude_command=self.runner.command,
+            env=self.runner._build_env(),
+        )
+
+    async def _try_folder_session(self, message: discord.Message) -> bool:
+        """Open a folder-bound thread when the message asks for one; else decline.
+
+        Typed in the control center, "make me a session about Boa in the boa
+        folder" used to become a quick chat whose agent then opened the real
+        thread — two threads for one session, which is the clutter this channel
+        was cleared out to avoid. Resolving the folder *before* anything is
+        created makes one message one thread.
+
+        Every uncertainty answers ``False``: no launcher, a message that never
+        mentions a session, a model that cannot be reached, a folder name that
+        matches nothing on this computer. The caller then opens the quick chat
+        it would have opened anyway — the cost of declining is nothing, and the
+        cost of guessing wrong is a session pointed at the wrong folder.
+        """
+        if self.bot.cogs.get("ProjectLauncherCog") is None:
+            return False
+        if not mentions_a_session(message.content or ""):
+            return False
+        try:
+            request = await self._read_session_request(message)
+            if request is None:
+                return False
+            launcher: Any = self.bot.cogs.get("ProjectLauncherCog")
+            folder = await launcher.resolve_folder_phrase(
+                getattr(message.guild, "id", 0) or 0, message.author.id, request.folder
+            )
+            if folder is None:
+                return False
+            await self._start_folder_thread(message, folder, request.task)
+            return True
+        except Exception:
+            logger.warning("Could not read a session request; using a quick chat", exc_info=True)
+            return False
+
+    async def _start_folder_thread(self, message: discord.Message, folder: str, task: str) -> None:
+        """A thread off *message*, bound to *folder*, already working on *task*.
+
+        An empty task is a real answer, not a failure: "make me a session in
+        boa" is a request for a place to work, so the thread is bound and left
+        idle exactly as `/cd` leaves it.
+        """
+        thread = await message.create_thread(
+            name=(task or Path(folder).name)[:100],
+            auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+        )
+        await self.repo.save(thread.id, "", working_dir=folder)
+        await self._ensure_thread_members(thread)
+        await thread.send(
+            f"📂 Working folder: `{folder}`",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        if not task:
+            await thread.send(
+                "Send your task here to begin; replies continue this session.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        await self._run_claude(
+            message,
+            thread,
+            task,
+            session_id=None,
+            working_dir_override=folder,
+            chat_only=message.channel.id in self._chat_only_channel_ids,
         )
 
     async def _handle_new_conversation(self, message: discord.Message) -> None:
@@ -2167,17 +2348,13 @@ class ClaudeChatCog(commands.Cog):
             if self._active_tasks.get(thread.id) is current_task:
                 self._active_tasks.pop(thread.id, None)
 
-            # A /close asked for during this turn waits for exactly this point:
-            # the slot is released, so the lifecycle sees the thread as idle.
-            await self._complete_pending_close(thread.id)
-
-            # Notify this message's author, independently of shared thread membership.
-            if dashboard is not None:
-                await dashboard.set_state(
-                    thread.id,
-                    ThreadState.WAITING_INPUT,
-                    description,
-                    thread=thread,
-                    notify_user_id=user_message.author.id,
-                )
-            self.context_nudger.after_turn(thread)
+            # The pending close, the reply-needed notice (addressed to this
+            # message's author, independently of shared thread membership) and
+            # the context nudge — in the one order that does not un-archive a
+            # thread this turn just closed.
+            await self._finish_turn(
+                thread,
+                dashboard=dashboard,
+                description=description,
+                notify_user_id=user_message.author.id,
+            )

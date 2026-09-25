@@ -5,7 +5,7 @@
 LOG=/home/drewp/main-projects/ebi-agent-chat-relay/.ccdb-live-restart.log
 say() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
-say "deferred restart armed (feat/cd-folder-autocomplete: /cd autocomplete + sessions in control-center)"
+say "deferred restart armed (feat/quick-chat-and-a-close-that-sticks: short-by-default replies, cards only when asked)"
 sleep 75
 
 deadline=$(( $(date +%s) + 480 ))
