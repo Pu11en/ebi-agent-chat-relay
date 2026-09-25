@@ -91,3 +91,46 @@ def test_label_shows_the_folder_name_and_where_it_lives():
 def test_scattered_letters_prefer_the_folder_they_land_in_fewest_pieces(tmp_path: Path):
     relay, health = make(tmp_path, "ebi-agent-chat-relay", "epic-health")
     assert rank_folders("echat", candidates=[health, relay])[0] == relay
+
+
+# --- recency is the tiebreaker, not path shape -----------------------------
+
+
+def test_within_one_match_tier_the_more_recent_folder_wins():
+    """Two equally good matches: the one worked in last comes first.
+
+    The tiebreakers used to be the path's shape — fewer parts, shorter name —
+    which is a fact about the filesystem, not about the person typing. Asked for
+    "the ones you recommend me", the answer is what they were just in.
+    """
+    # Same folder name, so the same match tier; only the path shape differs.
+    shallow = "/home/d/boa"
+    deep = "/home/d/projects/clients/2026/boa"
+    ranked = rank_folders(
+        "boa",
+        candidates=[shallow, deep],
+        recents=[deep, shallow],  # deep was worked in most recently
+    )
+    assert ranked[0] == deep
+
+
+def test_a_better_match_still_beats_a_more_recent_one():
+    """Recency orders equals; it does not promote a folder that barely matches.
+
+    Without this, typing the exact name of a folder would surface whatever was
+    opened last instead — the autocomplete would stop answering what was typed.
+    """
+    exact = "/home/d/projects/boa"
+    scattered = "/home/d/projects/big-order-archive"
+    ranked = rank_folders(
+        "boa",
+        candidates=[exact, scattered],
+        recents=[scattered],  # most recent, but only a scattered match
+    )
+    assert ranked[0] == exact
+
+
+def test_with_nothing_typed_the_order_is_purely_most_recent_first():
+    recents = ["/a/third", "/a/second", "/a/first"]
+    ranked = rank_folders("", candidates=["/a/first", "/a/second", "/a/third"], recents=recents)
+    assert ranked[: len(recents)] == recents

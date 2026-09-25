@@ -45,6 +45,42 @@ _LIMIT = 25
 _SCAN_TTL = 30.0
 
 
+def _ccdb_scratch_root() -> Path:
+    """The directory ccdb cuts its own disposable copies into.
+
+    Resolved on each call rather than imported from ``loop_store.DEFAULT_PATH``:
+    that constant is frozen at import, so a relocated state directory would be
+    invisible here for the life of the process.
+    """
+    raw = os.environ.get("CCDB_GOWORK_STATE", "").strip()
+    if raw:
+        return Path(raw).parent
+    return Path.home() / ".local" / "state" / "ccdb"
+
+
+def _is_a_place(path: str) -> bool:
+    """Whether ``path`` is somewhere a person works, rather than ccdb's scratch.
+
+    `/gowork` builds, per-task worktrees and staging copies all live under
+    ccdb's state directory. They appear in the session table like any other
+    folder and dominated the list, but they are deleted when the work ends, so
+    offering one is offering a folder that will not be there — and the project
+    they were cut from is in the list already, on its own. Excluding the whole
+    state directory is the rule; naming each kind of scratch folder is a list
+    that goes stale on the next feature.
+    """
+    try:
+        return not Path(path).is_relative_to(_ccdb_scratch_root())
+    except (OSError, ValueError):  # pragma: no cover - a path neither side can parse
+        return True
+
+
+#: How far back the session table is read for "folders I was just in". Well
+#: past the 25 the menu can show, so duplicates and folderless sessions thin it
+#: out without the list running short.
+_SESSION_HISTORY = 100
+
+
 #: Turning this off makes the control center a place you type in and nothing
 #: else. Default on, because removing a consumer's only visible entry point on
 #: upgrade would be a change nobody asked for.
@@ -722,6 +758,11 @@ class ProjectLauncherCog(commands.Cog):
         # because Discord fires autocomplete on every keystroke.
         self._scan: list[str] | None = None
         self._scanned_at = 0.0
+        # The folders this computer actually worked in, read from the session
+        # table and cached on the same interval as the scan — autocomplete
+        # fires on every keystroke, and this must not be a query per letter.
+        self._session_folders: list[str] | None = None
+        self._session_folders_at = 0.0
         self._view: LauncherView | None = None
         self._control_row: ControlRowView | None = None
         self._shortcut_task: asyncio.Task[None] | None = None
@@ -992,7 +1033,7 @@ class ProjectLauncherCog(commands.Cog):
         if not await self.authorize(interaction):
             return
         await interaction.response.defer(ephemeral=True)
-        recent = await self.recents(interaction.guild_id or 0, interaction.user.id)
+        recent = await self.recent_folders(interaction.guild_id or 0, interaction.user.id)
         recent = await asyncio.to_thread(lambda: [p for p in recent if Path(p).is_dir()])
         if not recent:
             await interaction.edit_original_response(
@@ -1174,6 +1215,47 @@ class ProjectLauncherCog(commands.Cog):
             raise ValueError("Saved recent folders are invalid; ask the bot to repair them.")
         return values[:_LIMIT]
 
+    async def session_folders(self) -> list[str]:
+        """Folders from this computer's sessions, most recently used first.
+
+        The launcher's own recents list records a start *through the launcher*
+        and nothing else. Work continues in a thread for days afterwards and
+        sessions begin plenty of other ways, so that list answers "where do I
+        work" with a few stale launches. The session table already orders every
+        folder by when it was last used, which is the question actually being
+        asked. A failed read is an empty list, never an exception: autocomplete
+        degrades to the stored list rather than going blank.
+        """
+        now = time.monotonic()
+        if self._session_folders is not None and now - self._session_folders_at < _SCAN_TTL:
+            return self._session_folders
+        try:
+            records = await self.repo.list_all(limit=_SESSION_HISTORY)
+        except Exception:
+            logger.debug("Session history unavailable for folder suggestions", exc_info=True)
+            return self._session_folders or []
+        folders: list[str] = []
+        for record in records:
+            path = getattr(record, "working_dir", None)
+            if isinstance(path, str) and path and path not in folders and _is_a_place(path):
+                folders.append(path)
+        self._session_folders = folders
+        self._session_folders_at = now
+        return folders
+
+    async def recent_folders(self, guild_id: int, user_id: int) -> list[str]:
+        """What to offer first: where work actually happened, then launcher starts.
+
+        Kept separate from :meth:`recents` on purpose — that one is the stored
+        list :meth:`remember_folder` reads and rewrites, and folding session
+        history into it would copy the history into storage on the next launch.
+        """
+        merged = list(await self.session_folders())
+        for path in await self.recents(guild_id, user_id):
+            if path not in merged:
+                merged.append(path)
+        return merged[:_LIMIT]
+
     async def remember_folder(self, guild_id: int, user_id: int, path: str) -> None:
         async with self._favorites_lock:
             previous = await self.recents(guild_id, user_id)
@@ -1251,7 +1333,9 @@ class ProjectLauncherCog(commands.Cog):
         if not manage:
             recent_folders = [
                 path
-                for path in await self.recents(interaction.guild_id or 0, interaction.user.id)
+                for path in await self.recent_folders(
+                    interaction.guild_id or 0, interaction.user.id
+                )
                 if path not in folders
             ]
             recent_folders = await asyncio.to_thread(
@@ -1476,7 +1560,7 @@ class ProjectLauncherCog(commands.Cog):
     async def folder_suggestions(self, guild_id: int, user_id: int, query: str) -> list[str]:
         """Folders to offer for ``query``: this operator's history, then the disk."""
         candidates = await self.scanned_folders()
-        recents = await self.recents(guild_id, user_id)
+        recents = await self.recent_folders(guild_id, user_id)
         favorites = await self.favorites(guild_id, user_id)
         existing = await asyncio.to_thread(
             lambda: [path for path in recents + favorites if Path(path).is_dir()]

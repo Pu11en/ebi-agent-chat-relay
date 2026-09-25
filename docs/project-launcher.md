@@ -48,6 +48,25 @@ thread continue that session, exactly as they do under any chat channel.
 Use **New session** or `/cd` when the work belongs to a folder; use a quick chat
 for the questions that do not.
 
+## What the list recommends first
+
+Before anything is typed, `/cd` offers the folders this computer *worked in*
+most recently, newest first — read from the session table, which records every
+folder and when it was last used. The launcher's own recents list is still
+there, after them, but it only ever recorded a start made *through the
+launcher*: work continues in a thread for days afterwards and sessions begin
+plenty of other ways, so on its own it answered "where do I work" with a few
+stale launches.
+
+Two rules keep that list honest. Folders under ccdb's state directory are
+excluded — `/gowork` builds and per-task worktrees appear in the session table
+like anything else, but they are deleted when the work ends, so offering one is
+offering a folder that will not be there; the project they were cut from is
+already listed on its own. And once something *is* typed, match quality still
+decides first: recency orders equally good matches, it never promotes a folder
+that barely matches. The session read is cached on the same interval as the
+folder scan, because autocomplete fires on every keystroke.
+
 ## Type the folder instead of walking the menus
 
 `/cd <folder>` starts a session in a folder without opening a single menu; the
