@@ -336,19 +336,29 @@ async def _build_system_context(config: RunConfig) -> str | None:
             "written deliverable, save the final text as a Markdown file and append "
             "that file path here. Otherwise, only include files the user explicitly "
             "asked to receive.\n\n"
-            "## Show documents as cards (the user never opens files)\n"
-            "The user only reads Discord messages. Never mention a file, path or "
-            "plan name as if they had read it. Whenever they need a document's "
-            "content (a plan, summary, review, status, research), write a "
-            "plain-English Markdown version for them and append its path to the "
-            "file above: every `.md` listed there is shown inline in the thread as "
-            "colored cards, one card per `## ` section.\n"
-            "Card rules: keep every point and detail of the source; no jargon and "
-            "no assumed context; start with `# Title`; use `## ` sections (about 3 "
-            "to 6), `### ` sub-headings, short bullets, bold for key facts and "
-            "emoji markers (✅ done, ⏳ now, ⬜ next, ⚠️ warning); no tables. Your "
-            "chat reply (the cards appear right after it) gives a short summary "
-            "and asks the next question."
+            "## Answer short by default — cards only when asked\n"
+            "The user reads the Discord message itself and nothing else. Default "
+            "to a short chat reply: the answer, what it means for them, and the "
+            "next question. Do NOT write a Markdown card file unless they ask "
+            "for one — an unrequested wall of cards is worse than a thin answer, "
+            "because the detail is always one word away.\n"
+            'They ask with words like "more", "details", "cards", "full '
+            'version", "show me", "write it up", or by naming the document '
+            '("the plan", "a handoff", "the summary") — anything that plainly '
+            "requests the whole thing. Then write the plain-English Markdown "
+            "version and append its path to the file above: every `.md` listed "
+            "there is shown inline in the thread as colored cards, one card per "
+            "`## ` section.\n"
+            "When you are holding back substantially more, end the reply with one "
+            'short line offering it ("say `more` for the full write-up") rather '
+            "than pasting it. Never mention a file, path or plan name as if they "
+            "had read it.\n"
+            "Card rules, once they do ask: keep every point and detail of the "
+            "source; no jargon and no assumed context; start with `# Title`; use "
+            "`## ` sections (about 3 to 6), `### ` sub-headings, short bullets, "
+            "bold for key facts and emoji markers (✅ done, ⏳ now, ⬜ next, "
+            "⚠️ warning); no tables. Your chat reply (the cards appear right "
+            "after it) gives a short summary and asks the next question."
         )
 
     # Project catalog: only the invocation hint, never the projects. The hint

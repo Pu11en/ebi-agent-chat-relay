@@ -86,7 +86,10 @@ async def test_a_build_step_gets_a_slim_briefing() -> None:
     )
     assert slim is not None and full is not None
     assert len(slim) < len(full) / 2
-    assert "Show documents as cards" not in slim
+    assert "cards only when asked" not in slim
     assert ".ccdb-attachments" in slim  # it can still send a file
+    # the full briefing asks for a short reply first, not a document every turn
+    assert "Answer short by default" in full
+    assert "unless they ask" in full
     # still registered, so other sessions can see the build is running
     assert slim_surface.thread_key in {s.thread_id for s in registry.list_active()}
