@@ -126,6 +126,27 @@ _HELP_CATEGORY: dict[str, str | None] = {
 _HELP_SECTION_ORDER: list[str] = ["📌 Session", "🤖 Model", "⚡ Effort", "🔧 Advanced"]
 
 
+def control_center_id() -> int | None:
+    """This instance's control center channel, or None when it has none.
+
+    Read per message rather than cached at construction: the launcher channel
+    is configured by env, and changing it should not need a restart. A function
+    rather than a cog attribute because both the message guard and the scope
+    check need it, and neither should have to be given a cog to ask.
+    """
+    raw = os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def is_control_center(channel: Any) -> bool:
+    """Whether *channel* is the control center itself, or a thread under it."""
+    home = control_center_id()
+    if home is None:
+        return False
+    root = channel.parent_id if isinstance(channel, discord.Thread) else channel.id
+    return root == home
+
+
 class ClaudeChatCog(commands.Cog):
     """Cog that handles Claude Code conversations via Discord threads."""
 
@@ -404,7 +425,11 @@ class ClaudeChatCog(commands.Cog):
 
         if not category_allowed(message.channel):
             return
-        if str(message.channel.id) == os.getenv("CCDB_LAUNCHER_CHANNEL_ID", "").strip():
+        # The control center is a chat channel too — typing there is the fastest
+        # way to ask for something, and it used to be the one place a typed
+        # message did nothing. The launcher's own control row must never be that
+        # message, so the bot is still shut out here.
+        if is_control_center(message.channel) and message.author.bot:
             return
 
         if message.author.bot:
@@ -745,6 +770,8 @@ class ClaudeChatCog(commands.Cog):
         if root in self._mention_only_channel_ids:
             return False
         if root in self._channel_ids:
+            return True
+        if root == control_center_id():
             return True
         return self._monitor_all_channels and getattr(channel, "guild", None) is not None
 

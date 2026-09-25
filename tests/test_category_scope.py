@@ -82,7 +82,13 @@ async def test_chat_outside_category_never_joins_or_starts(monkeypatch):
     cog._handle_thread_reply.assert_not_awaited()
 
 
-async def test_launcher_channel_messages_do_not_start_chat(monkeypatch):
+async def test_the_launcher_control_row_does_not_start_chat(monkeypatch):
+    """Typing in the control center starts a session; the bot's own row never does.
+
+    See tests/test_quick_chat.py for the other half — a typed message there is
+    a quick chat, which is why this guard is about the author and not the
+    channel any more.
+    """
     from claude_discord.cogs.claude_chat import ClaudeChatCog
 
     monkeypatch.delenv("CCDB_ALLOWED_CATEGORY_IDS", raising=False)
@@ -91,11 +97,13 @@ async def test_launcher_channel_messages_do_not_start_chat(monkeypatch):
         _allowed_user_ids=None,
         _is_no_mention_scope=lambda channel: True,
         _handle_new_conversation=AsyncMock(),
+        _try_receive_handoff_message=AsyncMock(return_value=False),
     )
     message = SimpleNamespace(
-        author=SimpleNamespace(bot=False),
+        author=SimpleNamespace(bot=True),
         type=discord.MessageType.default,
         channel=SimpleNamespace(id=500),
     )
     await ClaudeChatCog.on_message(cog, message)
     cog._handle_new_conversation.assert_not_awaited()
+    cog._try_receive_handoff_message.assert_not_awaited()

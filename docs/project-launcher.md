@@ -9,8 +9,7 @@ already identifies the computer. Buttons always belong to the bot that posted th
 
 Set `CCDB_LAUNCHER_CHANNEL_ID` to the existing control-center channel and
 `CCDB_LAUNCHER_SESSION_CHANNEL_ID` to its workers channel. The workers channel is
-automatically included in chat routing. Normal messages in the launcher channel
-do not start chat sessions. Existing channels and threads remain available.
+automatically included in chat routing. Existing channels and threads remain available.
 When unset, existing consumers keep their original primary-channel launcher and
 create sessions under the invoking channel. The framework does not create channels.
 
@@ -19,6 +18,19 @@ coalescing delay adds a silent three-button shortcut at the bottom, replacing on
 the previous bot-owned shortcut. Worker threads, system events and the launcher’s
 own controls do not trigger it. Conversation messages and the pinned anchor are
 never removed by this refresh.
+
+## Type nothing but the question
+
+A normal message in the launcher channel starts a **quick chat**: a thread off
+that message, running the message as its first task, bound to no folder — it
+works where this instance's runner works by default, like any other unbound
+thread. It is the shortest path there is to the agent, and it costs the control
+center nothing: the bot's own control row is still shut out, so the row it
+republishes after every message never starts a session. Replies inside the
+thread continue that session, exactly as they do under any chat channel.
+
+Use **New session** or `/cd` when the work belongs to a folder; use a quick chat
+for the questions that do not.
 
 ## Type the folder instead of walking the menus
 

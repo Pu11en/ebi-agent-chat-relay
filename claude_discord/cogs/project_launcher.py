@@ -686,7 +686,9 @@ class ProjectLauncherCog(commands.Cog):
         self.settings = settings
         self.chat = chat
         self.channel_id = home_channel_id or channel_id
-        self.channel_ids = set(channel_ids)
+        # The control center is one of the launcher's own channels: a quick chat
+        # typed there opens a thread under it, and Sessions gates on the parent.
+        self.channel_ids = set(channel_ids) | ({home_channel_id} if home_channel_id else set())
         self.session_channel_id = session_channel_id
         self.working_dir = working_dir
         # Optional: lets the status line and new-thread notice name the default
@@ -776,7 +778,8 @@ class ProjectLauncherCog(commands.Cog):
     async def control_content(self) -> str:
         return (
             f"{await self.status_block()}\n"
-            "-# **New session** starts a folder-bound thread · **Sessions** finds work · "
+            "-# **Just type here** for a quick chat — no folder, no menus · "
+            "**New session** starts a folder-bound thread · **Sessions** finds work · "
             "**Settings** shows what this computer supports"
         )
 
