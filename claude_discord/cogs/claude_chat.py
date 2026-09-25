@@ -258,6 +258,56 @@ class ClaudeChatCog(commands.Cog):
         # The location coordinator; set by setup_bridge(). None keeps /help global.
         self.command_surface: CommandSurface | None = None
 
+    async def _close_requested(self, thread_id: int) -> bool:
+        """Whether this thread's session is closing or already closed.
+
+        Read from the stored record rather than from the lifecycle service, so
+        a close asked for by *any* entry point (`/close`, the Sessions browser,
+        `POST /api/threads/{id}/close`) is visible here.
+        """
+        try:
+            record = await self.repo.get(thread_id)
+        except Exception:
+            logger.debug("Could not read the session row for thread %s", thread_id, exc_info=True)
+            return False
+        return record is not None and not record.is_open
+
+    async def _finish_turn(
+        self,
+        thread: discord.Thread | discord.TextChannel,
+        *,
+        dashboard: ThreadStatusDashboard | None,
+        description: str,
+        notify_user_id: int | None,
+    ) -> None:
+        """End the turn's bookkeeping — and say nothing at all when it closed the session.
+
+        Discord un-archives a thread the moment anything posts in it. So the
+        reply-needed ping and the context nudge, harmless after any other turn,
+        undo the archive of the turn that closed the session: the thread was
+        archived, locked, and back in the sidebar a second later. `/close` while
+        idle was always fine — it answers ephemerally and posts nothing. It is
+        the close asked for *during* a turn, which is every close the agent
+        carries out itself, that this exists for.
+        """
+        closing = await self._close_requested(thread.id)
+        # The close asked for during this turn waits for exactly this point: the
+        # run slot is released, so the lifecycle sees the thread as idle.
+        await self._complete_pending_close(thread.id)
+        if closing:
+            if dashboard is not None:
+                await dashboard.remove(thread.id)
+            return
+        if dashboard is not None:
+            await dashboard.set_state(
+                thread.id,
+                ThreadState.WAITING_INPUT,
+                description,
+                thread=thread,
+                notify_user_id=notify_user_id,
+            )
+        self.context_nudger.after_turn(thread)
+
     async def _complete_pending_close(self, thread_id: int) -> None:
         """Finish a `/close` that was requested while this thread's turn ran.
 
@@ -2194,17 +2244,13 @@ class ClaudeChatCog(commands.Cog):
             if self._active_tasks.get(thread.id) is current_task:
                 self._active_tasks.pop(thread.id, None)
 
-            # A /close asked for during this turn waits for exactly this point:
-            # the slot is released, so the lifecycle sees the thread as idle.
-            await self._complete_pending_close(thread.id)
-
-            # Notify this message's author, independently of shared thread membership.
-            if dashboard is not None:
-                await dashboard.set_state(
-                    thread.id,
-                    ThreadState.WAITING_INPUT,
-                    description,
-                    thread=thread,
-                    notify_user_id=user_message.author.id,
-                )
-            self.context_nudger.after_turn(thread)
+            # The pending close, the reply-needed notice (addressed to this
+            # message's author, independently of shared thread membership) and
+            # the context nudge — in the one order that does not un-archive a
+            # thread this turn just closed.
+            await self._finish_turn(
+                thread,
+                dashboard=dashboard,
+                description=description,
+                notify_user_id=user_message.author.id,
+            )
