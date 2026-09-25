@@ -1111,10 +1111,20 @@ class ClaudeChatCog(commands.Cog):
         )
 
     async def fork_thread(self, thread: discord.Thread, record: SessionRecord) -> discord.Thread:
-        """A separate thread that continues this conversation; the original is untouched."""
+        """A separate thread that continues this conversation; the original is untouched.
+
+        "Separate" has to mean a separate transcript, not just a separate
+        thread. Two threads resuming one session id append to one file and read
+        each other's turns back as their own history, so the fork gets its own
+        copy of the transcript up front and ``--fork-session`` stops being the
+        only thing standing between the two conversations.
+        """
+        from claude_code_core.rewind import copy_session_jsonl
+
         parent_channel = getattr(thread, "parent", None)
         if not isinstance(parent_channel, discord.TextChannel):
             raise ValueError("Cannot create a fork: unable to find the parent channel.")
+        forked_id = copy_session_jsonl(record.session_id, record.working_dir)
         return await self.spawn_session(
             channel=parent_channel,
             prompt=(
@@ -1122,8 +1132,8 @@ class ClaudeChatCog(commands.Cog):
                 "Continue from where we left off."
             ),
             thread_name=f"🔀 Fork of {thread.name}"[:100],
-            session_id=record.session_id,
-            fork=True,
+            session_id=forked_id or record.session_id,
+            fork=forked_id is None,
             working_dir=record.working_dir,
         )
 

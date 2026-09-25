@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -159,3 +160,54 @@ def _extract_text(content: object) -> str:
                 parts.append(block.strip())
         return " ".join(p for p in parts if p)
     return ""
+
+
+def copy_session_jsonl(session_id: str, working_dir: str | None) -> str | None:
+    """Copy a session transcript to a fresh session id and return that id.
+
+    A fork has to be a *separate* conversation, and sharing the parent's
+    session id does not make one: ``--resume <id>`` appends to the transcript
+    named by that id, so two threads holding the same id interleave their turns
+    into one file and each one reads the other's messages back as its own
+    history. Measured on 2026-09-25 against a live pair of threads — 688 lines,
+    two unrelated conversations, the user asking mid-thread why he was being
+    told about the other one.
+
+    ``--resume --fork-session`` is meant to prevent exactly that and is passed,
+    but the same measurement shows the forked turn landing in the parent's file
+    anyway, so the separation cannot rest on the flag being honoured. Copying
+    the transcript ourselves makes the fork independent from its first turn:
+    every ``sessionId`` field is rewritten to the new id, so the CLI resumes a
+    file that agrees with its own name.
+
+    Returns ``None`` when the transcript cannot be found or copied — the caller
+    then falls back to sharing the id, which is no worse than before.
+    """
+    source = find_session_jsonl(session_id, working_dir)
+    if source is None:
+        logger.info("No transcript for session %s — fork shares the parent id", session_id)
+        return None
+
+    new_id = str(uuid.uuid4())
+    destination = source.with_name(f"{new_id}.jsonl")
+    try:
+        with source.open() as src, destination.open("w") as dst:
+            for line in src:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    dst.write(line + "\n")
+                    continue
+                if isinstance(entry, dict) and entry.get("sessionId"):
+                    entry["sessionId"] = new_id
+                dst.write(json.dumps(entry) + "\n")
+    except OSError:
+        logger.error("Failed to copy transcript %s for a fork", source, exc_info=True)
+        destination.unlink(missing_ok=True)
+        return None
+
+    logger.info("Forked transcript %s -> %s", source.name, destination.name)
+    return new_id
