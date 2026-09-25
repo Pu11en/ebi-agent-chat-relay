@@ -37,6 +37,7 @@ def _cog(**overrides):
         _try_send_drewai_lookup_handoff=AsyncMock(return_value=False),
         _try_receive_handoff_message=AsyncMock(return_value=False),
         _claimed_by_task_loop=lambda message: False,
+        _try_folder_session=AsyncMock(return_value=False),
         _handle_new_conversation=AsyncMock(),
         _handle_thread_reply=AsyncMock(),
         _handle_mention=AsyncMock(),

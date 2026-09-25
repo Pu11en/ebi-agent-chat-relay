@@ -1573,6 +1573,20 @@ class ProjectLauncherCog(commands.Cog):
             limit=_LIMIT,
         )
 
+    async def resolve_folder_phrase(self, guild_id: int, user_id: int, phrase: str) -> str | None:
+        """The folder a spoken name refers to, or ``None`` when nothing matches.
+
+        The same ranking `/cd` autocompletes with, so "boa" reaches the boa
+        folder for the same reasons and with the same recency preference. A
+        phrase that matches nothing returns ``None`` rather than the closest
+        thing on disk: the caller's fallback is a plain chat, and a plain chat
+        is better than a session silently bound to the wrong folder.
+        """
+        if not phrase.strip():
+            return None
+        matches = await self.folder_suggestions(guild_id, user_id, phrase)
+        return matches[0] if matches else None
+
     async def folder_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:

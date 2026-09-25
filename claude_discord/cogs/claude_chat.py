@@ -16,6 +16,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -53,6 +54,7 @@ from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
 from ..handoff_sender import build_project_lookup_handoff_event, send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
+from ..session_request import SessionRequest, mentions_a_session, read_session_request
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ._run_helper import run_claude_with_config
 from .context_nudge import ContextNudger
@@ -518,8 +520,13 @@ class ClaudeChatCog(commands.Cog):
         if self._is_no_mention_scope(message.channel):
             if isinstance(message.channel, discord.Thread):
                 await self._handle_thread_reply(message)
-            else:
-                await self._handle_new_conversation(message)
+                return
+            # "Make me a session about Boa in the boa folder" is a folder-bound
+            # session asked for the way a person says it. Declining is free and
+            # lands on the quick chat below, so this only ever wins outright.
+            if is_control_center(message.channel) and await self._try_folder_session(message):
+                return
+            await self._handle_new_conversation(message)
             return
 
         # Everywhere else: answer only when summoned, and answer *there*.
@@ -1366,6 +1373,93 @@ class ClaudeChatCog(commands.Cog):
             working_dir_override=record.working_dir if record else None,
             chat_only=(root_id or 0) in self._chat_only_channel_ids,
             interrupt_existing=True,
+        )
+
+    async def _read_session_request(self, message: discord.Message) -> SessionRequest | None:
+        """Ask whether this message is "open a session in <folder>", and which folder."""
+        launcher: Any = self.bot.cogs.get("ProjectLauncherCog")
+        folders = [
+            Path(path).name
+            for path in await launcher.recent_folders(
+                getattr(message.guild, "id", 0) or 0, message.author.id
+            )
+        ]
+        for path in await launcher.scanned_folders():
+            name = Path(path).name
+            if name not in folders:
+                folders.append(name)
+        return await read_session_request(
+            message.content or "",
+            folders=folders,
+            claude_command=self.runner.command,
+            env=self.runner._build_env(),
+        )
+
+    async def _try_folder_session(self, message: discord.Message) -> bool:
+        """Open a folder-bound thread when the message asks for one; else decline.
+
+        Typed in the control center, "make me a session about Boa in the boa
+        folder" used to become a quick chat whose agent then opened the real
+        thread — two threads for one session, which is the clutter this channel
+        was cleared out to avoid. Resolving the folder *before* anything is
+        created makes one message one thread.
+
+        Every uncertainty answers ``False``: no launcher, a message that never
+        mentions a session, a model that cannot be reached, a folder name that
+        matches nothing on this computer. The caller then opens the quick chat
+        it would have opened anyway — the cost of declining is nothing, and the
+        cost of guessing wrong is a session pointed at the wrong folder.
+        """
+        if self.bot.cogs.get("ProjectLauncherCog") is None:
+            return False
+        if not mentions_a_session(message.content or ""):
+            return False
+        try:
+            request = await self._read_session_request(message)
+            if request is None:
+                return False
+            launcher: Any = self.bot.cogs.get("ProjectLauncherCog")
+            folder = await launcher.resolve_folder_phrase(
+                getattr(message.guild, "id", 0) or 0, message.author.id, request.folder
+            )
+            if folder is None:
+                return False
+            await self._start_folder_thread(message, folder, request.task)
+            return True
+        except Exception:
+            logger.warning("Could not read a session request; using a quick chat", exc_info=True)
+            return False
+
+    async def _start_folder_thread(self, message: discord.Message, folder: str, task: str) -> None:
+        """A thread off *message*, bound to *folder*, already working on *task*.
+
+        An empty task is a real answer, not a failure: "make me a session in
+        boa" is a request for a place to work, so the thread is bound and left
+        idle exactly as `/cd` leaves it.
+        """
+        thread = await message.create_thread(
+            name=(task or Path(folder).name)[:100],
+            auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+        )
+        await self.repo.save(thread.id, "", working_dir=folder)
+        await self._ensure_thread_members(thread)
+        await thread.send(
+            f"📂 Working folder: `{folder}`",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        if not task:
+            await thread.send(
+                "Send your task here to begin; replies continue this session.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        await self._run_claude(
+            message,
+            thread,
+            task,
+            session_id=None,
+            working_dir_override=folder,
+            chat_only=message.channel.id in self._chat_only_channel_ids,
         )
 
     async def _handle_new_conversation(self, message: discord.Message) -> None:
