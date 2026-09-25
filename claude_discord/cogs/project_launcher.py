@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,19 @@ logger = logging.getLogger(__name__)
 _LIMIT = 25
 #: How long a folder scan is reused before the disk is read again.
 _SCAN_TTL = 30.0
+
+
+#: Turning this off makes the control center a place you type in and nothing
+#: else. Default on, because removing a consumer's only visible entry point on
+#: upgrade would be a change nobody asked for.
+CONTROL_PANEL_ENV = "CCDB_CONTROL_CENTER_PANEL"
+_PANEL_OFF = frozenset({"0", "off", "false", "no", "none"})
+
+
+def control_panel_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether this instance publishes the pinned panel and the control row."""
+    source = os.environ if env is None else env
+    return source.get(CONTROL_PANEL_ENV, "").strip().lower() not in _PANEL_OFF
 
 
 class _LauncherSessionActions:
@@ -1523,6 +1537,8 @@ class ProjectLauncherCog(commands.Cog):
 
     @commands.Cog.listener("on_message")
     async def keep_launcher_visible(self, message: discord.Message) -> None:
+        if not control_panel_enabled():
+            return
         if message.channel.id != self.channel_id or message.type not in (
             discord.MessageType.default,
             discord.MessageType.reply,
@@ -1566,6 +1582,8 @@ class ProjectLauncherCog(commands.Cog):
         leaves an extra row for the next repair pass, never a missing one.
         The pinned anchor and channel history are never touched.
         """
+        if not control_panel_enabled():
+            return
         async with self._panel_lock:
             channel = self.bot.get_channel(self.channel_id)
             if not isinstance(channel, discord.TextChannel):
@@ -1598,8 +1616,44 @@ class ProjectLauncherCog(commands.Cog):
                 return
         await self.refresh_shortcut()
 
+    async def remove_panel(self) -> None:
+        """Take down the panel and the control row this instance published.
+
+        Turning the panel off has to clear what is already posted, not merely
+        stop publishing more: a switch that leaves the old buttons pinned in
+        place has changed nothing the person can actually see. Only the two
+        messages ccdb tracked by id and still owns are touched — a message
+        someone else wrote, or one that is already gone, is left alone and the
+        stale id is forgotten either way.
+        """
+        channel = self.bot.get_channel(self.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        for key in (
+            f"launcher.panel:{self.channel_id}",
+            f"launcher.shortcut:{self.channel_id}",
+        ):
+            saved = await self.settings.get(key)
+            if not saved or not saved.isdigit():
+                continue
+            try:
+                message = await channel.fetch_message(int(saved))
+            except discord.HTTPException:
+                message = None
+            if message is not None and self.bot.user and message.author.id == self.bot.user.id:
+                with contextlib.suppress(discord.HTTPException):
+                    if message.pinned:
+                        await message.unpin(reason="Control center panel turned off")
+                    await message.delete()
+            await self.settings.delete(key)
+
     @commands.Cog.listener()
     async def on_ready(self) -> None:
+        if not control_panel_enabled():
+            async with self._panel_lock:
+                with contextlib.suppress(discord.HTTPException):
+                    await self.remove_panel()
+            return
         async with self._panel_lock:
             channel = self.bot.get_channel(self.channel_id)
             if not isinstance(channel, discord.TextChannel):

@@ -19,6 +19,22 @@ the previous bot-owned shortcut. Worker threads, system events and the launcher�
 own controls do not trigger it. Conversation messages and the pinned anchor are
 never removed by this refresh.
 
+## No panel at all
+
+`CCDB_CONTROL_CENTER_PANEL=off` makes the control center a place you type in and
+nothing else: no pinned panel, no republished control row, no buttons. Everything
+those buttons opened is already a slash command — `/cd` and `/new` for a
+folder-bound session, `/sessions` for old ones, `/settings` for what this computer
+supports — and a quick chat needs none of them.
+
+The switch removes what is already posted, not just future publishing: on the
+next start the pinned panel is unpinned and deleted, the saved control row is
+deleted, and both stored ids are forgotten. Only the two messages ccdb tracked
+by id and still owns are touched. Default is on, because dropping a consumer's
+only visible entry point on upgrade is not a change they asked for.
+
+Turning it back on republishes both on the next start.
+
 ## Type nothing but the question
 
 A normal message in the launcher channel starts a **quick chat**: a thread off
