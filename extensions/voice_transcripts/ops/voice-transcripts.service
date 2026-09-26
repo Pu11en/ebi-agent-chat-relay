@@ -17,7 +17,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.local/share/drew-ai-voice-transcripts
-MemoryMax=1G
+MemoryMax=2G
 CPUQuota=200%
 
 [Install]

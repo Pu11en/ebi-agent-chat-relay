@@ -63,13 +63,98 @@ and refuses to create duplicate named rooms. Set `VOICE_GUILD_ID`,
 `VOICE_BRIDGE_ENV_FILE` before invoking it. Inspect the receipt if provisioning
 stops partway through. Discord voice-channel messages cannot be pinned.
 
+## Spoken commands (optional, off by default)
+
+Transcription only listens. With `VOICE_CONTROL_ENABLED=true`, `CCDB_API_URL`
+and (if the control plane has one) `CCDB_API_SECRET` in the voice config file,
+the owner can also steer a session without leaving the room:
+
+- **"Make a new session in the aldus folder and <what to do>."** No tag — there
+  is no thread yet, and nobody says that phrase in conversation. The folder is
+  matched on how it *sounds*, because the recogniser writes "oldest" for "aldus"
+  and no amount of clearer speech fixes a word outside its vocabulary. If nothing
+  matches, a session is opened in the projects root anyway and told what was
+  heard, so it can be corrected by talking to its tag instead of repeating the
+  whole request.
+- **Just say the tag, then talk.** "Alpha, run the tests" · "okay and bravo,
+  check DKIM" · "hey charlie can you push that". The tag names the thread and
+  everything after it is the instruction — no sentence template to remember. A
+  tag only counts as an address when nothing but throat-clearing precedes it
+  ("okay", "and", "hey", "uh"…), so "the delta between the two runs was small"
+  is left alone even though `delta` is a tag.
+- **"Bravo, switch to opus" · "use codex" · "move this to ollama" · "what model
+  are you on?"** Choosing the agent is not asking the thread to do anything, so
+  it happens without waking the session — which matters precisely when it
+  matters: a thread whose plan has run out cannot be asked to change its own
+  model. Model *aliases* (`opus`, `sonnet`, `haiku`, `fable`) and backend names
+  are recognised, with the spellings a transcript actually produces ("oh pus",
+  "code x", "deep seek"); a version string is never guessed into a setting. The
+  change applies from the thread's next turn and is written through the same
+  store `/backend` and `/model` use, so voice and Discord cannot disagree.
+- **Say the tag.** Every visible thread gets one word from the NATO phonetic
+  alphabet (`alpha`, `bravo`, `charlie`…), assigned by ccdb and listed in a
+  single self-updating message in the transcript channel. "Put this in the
+  bravo thread, check DKIM" is exact — a tag is a handle, so it wins outright
+  over any name matching and removes the ambiguity two similar folder names
+  cause. Tags are stable for as long as the thread stays visible and are
+  kept when it scrolls out of view and handed back if it returns; only when all
+  26 are spoken for does the oldest absent thread give one up. A tag is a word
+  you learned, so it must not change meaning underneath you.
+- **If you pause mid-sentence, the thread is held.** Speech is captured per
+  pause, so naming a thread and then saying what to do arrives as two
+  utterances. Naming one on its own holds it for 30 seconds and announces that
+  it is holding; the next thing you say becomes the instruction. The hold
+  expires, is replaced by a new command, and is never filled by someone else in
+  the room.
+- **"Put this in the &lt;name&gt; thread &lt;instruction&gt;"** — also *send/drop/post
+  this to*, *tell the &lt;name&gt; thread to …*, *ask the &lt;name&gt; session …*, and
+  *in the &lt;name&gt; thread, …*. `thread`, `session` and `chat` are interchangeable.
+- The name is matched against every live session's Discord thread name and its
+  working directory, on letters and digits only, so the emoji prefix, the
+  hyphens in a folder name and whatever spacing the recogniser chose all stop
+  mattering. A name that matches nothing, and a name that two different threads
+  answer to equally well, are both reported in the transcript channel rather
+  than resolved by guessing. The same folder open twice resolves to whichever
+  thread was used most recently. A name that contains one of the nouns is
+  handled too: "the ebi agent **chat** relay thread" and "the aldus thread
+  check the **thread** pool" split at different occurrences, and the split is
+  chosen by which reading names a session that exists.
+- Every send is confirmed in the transcript channel with the thread it went to
+  and the instruction as transcribed, so a misheard prompt is visible
+  immediately. Failures are reported there too.
+
+What a spoken instruction may do is bounded. Local work — plan, read, edit, run,
+test, commit — proceeds on the speaker's word alone. Anything the outside world
+would see (push, publish, deploy, delete a remote branch, spend money) waits for
+a typed confirmation in the thread, however the transcript read. A misheard local
+edit costs a turn; a misheard push has left the machine. That asymmetry is the
+condition under which talking to an agent can be casual.
+
+Only the configured owner is obeyed — everyone in the room is transcribed, but
+being present is not authorisation. Anything that is not a command leaves no
+trace at all; a controller that answered ordinary conversation would make the
+room unusable.
+
+The utterance is delivered through `POST /api/threads/{id}/spoken`, which is
+deliberately not the agent-to-agent relay endpoint: that one stamps every
+message "NOT from your human" and allows one message per thread pair per
+minute, both correct between sessions and both wrong for a person mid-sentence.
+The receiving session is told the words arrived through speech recognition, so
+it reads a mangled path or flag for intent and says what it reinterpreted
+instead of stopping to ask.
+
+Enabling this is a second decision, not a consequence of the first: hearing the
+room is passive, acting on it starts agent turns. A half-filled control config
+fails at startup rather than the first time the owner speaks.
+
 ## Persistence and limits
 
 - SQLite stores sessions, speaker segments, pending audio jobs, pause state, and
   publication message IDs. Captured utterances are saved before recognition;
   successful jobs delete their temporary WAV. Failed jobs retain audio for review
   until their session's local retention cleanup.
-- Continuous speech is split into bounded 20-second chunks, without tearing down
+- Continuous speech is split into bounded chunks (`VOICE_MAX_UTTERANCE_SECONDS`,
+  30s by default), without tearing down
   the speaker stream. Disconnect flushes speech already in the current buffer.
   A hard process crash can lose at most the current in-memory chunk per speaker.
 - A five-second health loop retries connections and queued work. After a restart,

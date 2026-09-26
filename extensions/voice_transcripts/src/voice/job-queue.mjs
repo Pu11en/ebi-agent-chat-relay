@@ -16,6 +16,10 @@ export function createJobQueue({
   model,
   maxAttempts,
   logger = console,
+  // Called once per finished utterance, after it is safely stored. This is
+  // the only place the text of a single utterance exists before it is
+  // merged into the transcript, so it is where a spoken command is noticed.
+  onTranscript = null,
 }) {
   mkdirSync(queueDir, { recursive: true });
   let draining = null;
@@ -48,6 +52,21 @@ export function createJobQueue({
         store.completeJob(job.id, { text, provider, model });
         remove(job.audio_path);
         logger.info(`[queue] transcribed ${job.id}`);
+        if (onTranscript) {
+          // The transcript is the product; anything downstream of it is a
+          // bonus. A listener that throws must not fail, retry or lose a job.
+          try {
+            await onTranscript({
+              sessionId: job.session_id,
+              userId: job.user_id,
+              displayName: job.display_name,
+              capturedAt: job.captured_at,
+              text,
+            });
+          } catch (error) {
+            logger.error(`[queue] transcript listener failed: ${error.message}`);
+          }
+        }
       } catch (error) {
         const delay = Math.min(5 * 60_000, 5_000 * 2 ** job.attempts);
         const failed = store.failJob(job.id, error.message || error, {

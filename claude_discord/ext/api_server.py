@@ -38,6 +38,7 @@ from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
 from ..agent_router import AgentRoute, parse_agent_routes
+from ..backend_settings import ALL_BACKENDS
 from ..catalog_service import entry_to_dict, project_to_dict, resolution_to_dict
 from ..discord_ui.file_sender import send_file_blobs
 from ..handoff_status import load_handoff_status, render_handoff_status
@@ -57,7 +58,9 @@ from ..session_lifecycle import (
     close_outcome_text,
 )
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
+from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+from ..voice_labels import assign_labels, tagged_title, title_tag
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
 from .teams_sync import ThreadRef
@@ -66,6 +69,7 @@ if TYPE_CHECKING:
     import discord
     from discord.ext.commands import Bot
 
+    from ..backend_settings import BackendSettings
     from ..catalog_service import ProjectCatalogService
     from ..database.claims_repo import ClaimRepository
     from ..database.handoff_repo import HandoffRepository
@@ -99,6 +103,8 @@ _MAX_DISCORD_THREAD_NAME_LENGTH = 100
 # /api/sessions and /api/threads/{id}/messages — cross-session observability.
 # Bounded so one session peeking at another can never pull an unbounded amount
 # of history into its own context window.
+#: Settings key prefix for a thread's spoken tag (voice_labels.py).
+_VOICE_LABEL_PREFIX = "voice_label:"
 _DEFAULT_SESSION_LIMIT = 20
 _MAX_SESSION_LIMIT = 100
 _DEFAULT_THREAD_MESSAGE_LIMIT = 30
@@ -414,6 +420,10 @@ class ApiServer:
         # correlation id); wired by BridgeComponents.apply_to_api_server.
         # Without it the fields are validated and echoed but not persisted.
         self.settings_repo: SettingsRepository | None = None
+        # Backend/model selection, shared with the /backend and /model slash
+        # commands; wired by BridgeComponents.apply_to_api_server. Without it
+        # /api/threads/{id}/runtime answers 503 rather than guessing at defaults.
+        self.backend_settings: BackendSettings | None = None
         # The shared project catalog behind /api/projects; wired by
         # BridgeComponents.apply_to_api_server. Without it the catalog
         # endpoints answer 503 rather than scanning anything on their own.
@@ -507,6 +517,14 @@ class ApiServer:
         self.app.router.add_get("/api/projects/{key}", self.get_project)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
+        # The same delivery, but for words a person said out loud rather than
+        # a peer session's relay — see claude_discord/spoken.py for why the two
+        # cannot share a prompt or a guard.
+        self.app.router.add_post("/api/threads/{thread_id}/spoken", self.deliver_spoken_message)
+        # Which agent answers in this thread, for a surface that has no slash
+        # commands of its own to offer.
+        self.app.router.add_get("/api/threads/{thread_id}/runtime", self.get_thread_runtime)
+        self.app.router.add_post("/api/threads/{thread_id}/runtime", self.set_thread_runtime)
         self.app.router.add_post("/api/threads/{thread_id}/close", self.close_session)
         # Generic spawn metadata: which parent a thread belongs to and the
         # caller's correlation id, so a lost spawn answer can be reconciled.
@@ -1320,6 +1338,204 @@ class ApiServer:
 
         return await self._relay_to_thread(thread_id=thread_id, data=data)
 
+    async def deliver_spoken_message(self, request: web.Request) -> web.Response:
+        """POST /api/threads/{thread_id}/spoken — the user said this out loud.
+
+        A voice companion transcribes its owner and posts the utterance here.
+        The receiving session must read it as its human's own instruction, so
+        this is deliberately *not* ``/api/threads/{id}/message``: that endpoint
+        stamps every message "NOT from your human" and rate-limits a sender to
+        one message per pair per minute, both correct for agents talking to
+        each other and both wrong for a person mid-sentence.
+
+        Body (JSON):
+            text: What they said, already transcribed.
+            speaker_id: Who said it. Required whenever the bot has an owner
+                configured, and must be that owner — a shared voice room means
+                anyone present is transcribed, and only one of them may steer
+                a session.
+            source: Transcription surface. ``voice`` (default) today.
+            mode: ``queue`` (default) waits for the running turn; ``interrupt``
+                SIGINTs it, for "stop, that is the wrong file".
+
+        Returns 202 when delivered, 403 when the speaker is not the owner,
+        404 for unknown threads.
+        """
+        try:
+            thread_id = int(request.match_info["thread_id"])
+        except (ValueError, KeyError):
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        text = str(data.get("text") or "").strip()
+        if not text:
+            return web.json_response({"error": "text is required"}, status=400)
+        if len(text) > MAX_SPOKEN_TEXT_CHARS:
+            return web.json_response(
+                {"error": f"text must be at most {MAX_SPOKEN_TEXT_CHARS} characters"},
+                status=400,
+            )
+
+        source = str(data.get("source") or VOICE).lower()
+        if source not in VALID_SOURCES:
+            return web.json_response(
+                {"error": f"source must be one of {', '.join(VALID_SOURCES)}"}, status=400
+            )
+
+        mode = str(data.get("mode") or MODE_QUEUE).lower()
+        if mode not in VALID_MODES:
+            return web.json_response(
+                {"error": f"mode must be one of {', '.join(VALID_MODES)}"}, status=400
+            )
+
+        # Everyone in a voice room is transcribed; only the owner may act.
+        owner_id = getattr(self.bot, "owner_id", None)
+        if isinstance(owner_id, int):
+            try:
+                speaker_id = int(data["speaker_id"])
+            except (KeyError, TypeError, ValueError):
+                return web.json_response(
+                    {"error": "speaker_id is required (integer) when an owner is configured"},
+                    status=403,
+                )
+            if speaker_id != owner_id:
+                return web.json_response(
+                    {"error": "Only the configured owner may drive a session by voice"},
+                    status=403,
+                )
+
+        from ..cogs.claude_chat import ClaudeChatCog
+
+        cog: ClaudeChatCog | None = self.bot.cogs.get("ClaudeChatCog")  # type: ignore[assignment]
+        if cog is None:
+            return web.json_response({"error": "ClaudeChatCog is not loaded"}, status=503)
+
+        import discord as _discord
+
+        thread = self.bot.get_channel(thread_id)
+        if thread is None:
+            try:
+                thread = await self.bot.fetch_channel(thread_id)
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=404)
+        if not isinstance(thread, _discord.Thread):
+            return web.json_response({"error": "Target must be a thread"}, status=400)
+
+        prompt = build_spoken_prompt(text=text, source=source)
+        asyncio.create_task(
+            cog.deliver_relayed_message(thread, prompt, interrupt=mode == MODE_INTERRUPT)
+        )
+        # The words themselves are never logged: a live microphone is the one
+        # input where an operator has not chosen what the log will contain.
+        logger.info(
+            "Spoken message delivered to thread %s (source=%s, mode=%s, chars=%s)",
+            str(thread_id).replace("\r", "").replace("\n", ""),
+            str(source).replace("\r", "").replace("\n", ""),
+            str(mode).replace("\r", "").replace("\n", ""),
+            len(text),
+        )
+        return web.json_response(
+            {"status": "delivered", "thread_id": thread_id, "mode": mode, "source": source},
+            status=202,
+        )
+
+    async def get_thread_runtime(self, request: web.Request) -> web.Response:
+        """GET /api/threads/{thread_id}/runtime — which agent answers here."""
+        if self.backend_settings is None:
+            return web.json_response({"error": "backend_settings is not configured"}, status=503)
+        try:
+            thread_id = int(request.match_info["thread_id"])
+        except (ValueError, KeyError):
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
+
+        backend = await self.backend_settings.current_backend(thread_id)
+        return web.json_response(
+            {
+                "thread_id": thread_id,
+                "backend": backend,
+                "model": await self.backend_settings.current_model(backend, thread_id),
+                "backends": list(ALL_BACKENDS),
+            }
+        )
+
+    async def set_thread_runtime(self, request: web.Request) -> web.Response:
+        """POST /api/threads/{thread_id}/runtime — switch this thread's agent.
+
+        The write side of ``/backend`` and ``/model`` for a surface that has no
+        slash commands. It writes through ``BackendSettings``, the same store
+        those commands use, so voice and Discord cannot disagree about which
+        agent a thread is on.
+
+        Body (JSON), both optional but at least one required:
+            backend: One of ``claude``, ``codex``, ``local``, ``dsh``, ``agui``.
+            model: Free text — the model names are not a closed set, and a
+                validating allowlist here would go stale on every model launch
+                (see Key Design Decision 11).
+
+        A change applies to the thread's *next* turn; a turn already running
+        keeps the agent it started with.
+        """
+        if self.backend_settings is None:
+            return web.json_response({"error": "backend_settings is not configured"}, status=503)
+        try:
+            thread_id = int(request.match_info["thread_id"])
+        except (ValueError, KeyError):
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        backend = data.get("backend")
+        model = data.get("model")
+        if backend is None and model is None:
+            return web.json_response({"error": "backend or model is required"}, status=400)
+
+        if backend is not None:
+            backend = str(backend).strip().lower()
+            if backend not in ALL_BACKENDS:
+                return web.json_response(
+                    {"error": f"backend must be one of {', '.join(ALL_BACKENDS)}"}, status=400
+                )
+            await self.backend_settings.set_backend(backend, thread_id=thread_id)
+
+        # A model belongs to a backend, so a model-only change applies to
+        # whichever backend the thread is on now — that is what "use sonnet
+        # here" means when nobody mentioned a backend.
+        effective = backend or await self.backend_settings.current_backend(thread_id)
+        if model is not None:
+            model = str(model).strip()
+            if not model or len(model) > 100:
+                return web.json_response(
+                    {"error": "model must be a non-blank string of at most 100 characters"},
+                    status=400,
+                )
+            await self.backend_settings.set_model(effective, model, thread_id=thread_id)
+
+        logger.info(
+            "Thread %s runtime set: backend=%s model=%s",
+            str(thread_id).replace("\r", "").replace("\n", ""),
+            str(effective).replace("\r", "").replace("\n", ""),
+            str(model).replace("\r", "").replace("\n", ""),
+        )
+        return web.json_response(
+            {
+                "status": "set",
+                "thread_id": thread_id,
+                "backend": effective,
+                "model": await self.backend_settings.current_model(effective, thread_id),
+                "applies": "next turn",
+            }
+        )
+
     async def _relay_to_thread(
         self,
         *,
@@ -1900,6 +2116,10 @@ class ApiServer:
             lounge_messages=lounge_messages,
             thread_names=self._thread_names(thread_ids),
         )
+        # Spoken tags are assigned over the ordered view, so the threads most
+        # likely to be spoken to get the earliest letters. Done after the merge
+        # because that order is the answer, not an input.
+        await self._apply_voice_labels(views)
 
         from ..cogs._run_helper import capacity_coordinator, session_limit
 
@@ -1922,6 +2142,89 @@ class ApiServer:
             views = [v for v in views if v["thread_id"] != exclude_thread]
 
         return web.json_response({"sessions": views, "capacity": capacity})
+
+    async def _apply_voice_labels(self, views: list[dict[str, Any]]) -> None:
+        """Attach a short spoken tag to each view, minting the missing ones.
+
+        A voice surface cannot use a Discord title as a handle (see
+        :mod:`claude_discord.voice_labels`), so each thread also gets one
+        phonetic word. Assignment is lazy — there is no hook on thread
+        creation, which means a thread made before this existed is tagged the
+        first time anything asks. Without a settings repo the field is simply
+        absent and callers fall back to matching on the title.
+        """
+        if self.settings_repo is None:
+            return
+        try:
+            stored = await self.settings_repo.get_all()
+        except Exception:
+            logger.warning("Could not read spoken tags", exc_info=True)
+            return
+
+        existing: dict[int, str] = {}
+        for key, value in stored.items():
+            if not key.startswith(_VOICE_LABEL_PREFIX):
+                continue
+            try:
+                existing[int(key[len(_VOICE_LABEL_PREFIX) :])] = value
+            except ValueError:
+                continue
+
+        ordered = [v["thread_id"] for v in views]
+        labels, minted, released = assign_labels(ordered, existing)
+        for thread_id, label in minted.items():
+            with contextlib.suppress(Exception):
+                await self.settings_repo.set(f"{_VOICE_LABEL_PREFIX}{thread_id}", label)
+        # A tag is only taken back when all 26 are spoken for; a thread that has
+        # merely scrolled out of view keeps the word the speaker learned for it.
+        for thread_id in released:
+            with contextlib.suppress(Exception):
+                await self.settings_repo.delete(f"{_VOICE_LABEL_PREFIX}{thread_id}")
+        for view in views:
+            view["voice_label"] = labels.get(view["thread_id"])
+        await self._show_tags_in_titles(views)
+
+    #: Discord's tight rename limit is per thread, not global, so the cap here
+    #: only bounds how much of one request is spent renaming. Low enough that a
+    #: first pass over a fresh set does not stall /api/sessions, high enough
+    #: that the set is fully tagged within a couple of polls rather than ten
+    #: minutes — the tags are useless until they are visible.
+    _MAX_RETITLES_PER_CALL = 12
+
+    async def _show_tags_in_titles(self, views: list[dict[str, Any]]) -> None:
+        """Put each thread's tag at the front of its Discord title.
+
+        A roster in another channel answers "which tag is that thread?"; the
+        question actually being asked while looking at the sidebar is "what do I
+        say to *this* one?". Only a title answers that, so the tag goes there.
+
+        Renames happen only when the title does not already show the right tag,
+        which makes this a once-per-thread cost rather than a once-per-request
+        one, and the per-call cap keeps a fresh set from spending the whole
+        rename budget in one go. An archived or locked thread simply keeps its
+        old title — worth a debug line, never worth failing the request.
+        """
+        import discord as _discord
+
+        renamed = 0
+        for view in views:
+            if renamed >= self._MAX_RETITLES_PER_CALL:
+                break
+            label = view.get("voice_label")
+            name = view.get("thread_name")
+            if not label or not name or title_tag(name) == label:
+                continue
+            thread = self.bot.get_channel(view["thread_id"])
+            if not isinstance(thread, _discord.Thread) or thread.archived or thread.locked:
+                continue
+            wanted = tagged_title(name, label)
+            try:
+                await thread.edit(name=wanted)
+            except Exception as exc:  # rate limit, permissions, archived race
+                logger.debug("Could not tag thread %s: %s", view["thread_id"], exc)
+                continue
+            view["thread_name"] = wanted
+            renamed += 1
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.
@@ -2197,11 +2500,18 @@ class ApiServer:
 
         logger.info("Spawned new Claude session in thread %s (%s)", thread.id, thread.name)
         await self._record_thread_metadata(thread.id, parent_thread_id, correlation_id)
+        # Tag it now rather than on the next poll. A thread opened by voice is
+        # the one its owner wants to talk to *immediately*, and a spoken
+        # instruction cannot reach an untagged thread — so a minute of being
+        # unaddressable lands exactly where it is least affordable.
+        spawn_view: list[dict[str, Any]] = [{"thread_id": thread.id, "thread_name": thread.name}]
+        await self._apply_voice_labels(spawn_view)
         return web.json_response(
             {
                 "status": "spawned",
                 "thread_id": str(thread.id),
-                "thread_name": thread.name,
+                "thread_name": spawn_view[0].get("thread_name") or thread.name,
+                "voice_label": spawn_view[0].get("voice_label"),
                 "parent_thread_id": None if parent_thread_id is None else str(parent_thread_id),
                 "correlation_id": correlation_id,
             },

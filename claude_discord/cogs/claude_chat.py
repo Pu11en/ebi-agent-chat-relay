@@ -56,6 +56,7 @@ from ..handoff_sender import build_project_lookup_handoff_event, send_project_lo
 from ..handoff_triggers import parse_drewai_lookup_trigger
 from ..session_request import SessionRequest, mentions_a_session, read_session_request
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+from ..voice_labels import tagged_title, title_tag
 from ._run_helper import run_claude_with_config
 from .context_nudge import ContextNudger
 from .prompt_builder import build_prompt_and_images, wants_file_attachment
@@ -1533,7 +1534,11 @@ class ClaudeChatCog(commands.Cog):
         )
         if title:
             try:
-                await thread.edit(name=title)
+                # Keep any spoken tag already shown in the title: the voice
+                # surface addresses this thread by it (voice_labels.py), and a
+                # suggested title that dropped it would silently make the
+                # thread unspeakable until the next /api/sessions call.
+                await thread.edit(name=tagged_title(title, title_tag(thread.name)))
                 logger.debug("thread %d renamed to %r", thread.id, title)
             except Exception:
                 logger.warning("Failed to rename thread %d to %r", thread.id, title, exc_info=True)

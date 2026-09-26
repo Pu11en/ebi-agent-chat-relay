@@ -20,6 +20,9 @@ import { createStore } from "./voice/store.mjs";
 import { createJobQueue } from "./voice/job-queue.mjs";
 import { createTranscriptService } from "./voice/service.mjs";
 import { createTranscriber } from "./voice/transcriber.mjs";
+import { createRelayClient } from "./control/api.mjs";
+import { createVoiceController } from "./control/controller.mjs";
+import { renderRoster } from "./control/roster.mjs";
 
 process.umask(0o077);
 function readEnvFile(key) {
@@ -38,6 +41,10 @@ const config = readConfig({
 mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
 const store = createStore(config.dataDir);
 const transcribe = createTranscriber(config.stt);
+// Assigned once the Discord client exists, since announcements go to the same
+// transcript channel. Until then the hook is inert rather than absent, so the
+// queue never has to know whether control is configured.
+let controller = null;
 const queue = createJobQueue({
   store,
   queueDir: join(config.dataDir, "audio-queue"),
@@ -45,6 +52,9 @@ const queue = createJobQueue({
   provider: config.stt.provider,
   model: config.stt.model,
   maxAttempts: config.stt.maxAttempts,
+  onTranscript: async (utterance) => {
+    await controller?.handleUtterance(utterance);
+  },
 });
 const service = createTranscriptService({
   store,
@@ -98,9 +108,57 @@ const runtime = createRuntime({
   },
   getOutput: () => client.channels.fetch(config.transcriptChannelId),
 });
+let relayClient = null;
+if (config.control.enabled) {
+  const relay = createRelayClient({
+    baseUrl: config.control.apiUrl,
+    secret: config.control.secret,
+  });
+  relayClient = relay;
+  controller = createVoiceController({
+    ownerId: config.ownerId,
+    enabled: true,
+    client: relay,
+    announce: async (message) => {
+      const output = await client.channels.fetch(config.transcriptChannelId);
+      if (!output?.isTextBased() || output.guildId !== config.guildId)
+        throw new Error("Transcript channel mismatch");
+      await output.send({ content: message, allowedMentions: { parse: [] } });
+    },
+    logger: console,
+  });
+  console.log("[voice] spoken commands enabled → " + config.control.apiUrl);
+}
 let closing = false,
   ticking = false,
-  lastPrune = 0;
+  lastPrune = 0,
+  lastRoster = 0;
+// The tags live in ccdb; this keeps one message in the transcript channel
+// showing them, rewritten in place only when the list actually changes.
+const ROSTER_INTERVAL_MS = 60_000;
+async function refreshRoster() {
+  if (!relayClient) return;
+  const text = renderRoster(await relayClient.listSessions());
+  if (!text || store.getSetting("roster_text") === text) return;
+  const output = await client.channels.fetch(config.transcriptChannelId);
+  if (!output?.isTextBased() || output.guildId !== config.guildId)
+    throw new Error("Transcript channel mismatch");
+  const previous = store.getSetting("roster_message_id");
+  let message = null;
+  if (previous) {
+    try {
+      message = await output.messages.edit(previous, {
+        content: text,
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      if (error.code !== 10008) throw error; // Unknown Message — repost below.
+    }
+  }
+  message ??= await output.send({ content: text, allowedMentions: { parse: [] } });
+  store.setSetting("roster_message_id", message.id);
+  store.setSetting("roster_text", text);
+}
 async function tick() {
   if (closing || ticking || !client.isReady()) return;
   ticking = true;
@@ -119,6 +177,12 @@ async function tick() {
       lastPrune = Date.now();
     }
     await runtime.publish();
+    if (Date.now() - lastRoster > ROSTER_INTERVAL_MS) {
+      lastRoster = Date.now();
+      await refreshRoster().catch((error) =>
+        console.error("[voice] roster:", error.message),
+      );
+    }
   } catch (error) {
     console.error("[voice] health:", error.message);
   } finally {

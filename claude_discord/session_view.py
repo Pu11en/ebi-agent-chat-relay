@@ -47,6 +47,7 @@ def build_session_views(
     running_thread_ids: set[int],
     lounge_messages: list[LoungeMessage],
     thread_names: dict[int, str] | None = None,
+    voice_labels: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Merge the three sources of session truth into one ordered view.
 
@@ -58,6 +59,9 @@ def build_session_views(
         running_thread_ids: Threads with a Claude turn in flight.
         lounge_messages: Recent AI Lounge messages, oldest first.
         thread_names: Optional thread_id → Discord thread title.
+        voice_labels: Optional thread_id → short spoken tag (see
+            :mod:`claude_discord.voice_labels`). A title is for reading; a tag
+            is for saying out loud.
 
     Returns:
         One dict per thread, running sessions first, then recent history.
@@ -66,6 +70,7 @@ def build_session_views(
         is exactly the session most likely to collide with the caller.
     """
     names = thread_names or {}
+    tags = voice_labels or {}
     latest_lounge = latest_lounge_by_thread(lounge_messages)
     by_thread: dict[int, ActiveSession] = {s.thread_id: s for s in active}
 
@@ -108,6 +113,7 @@ def build_session_views(
         view.setdefault("current_task", None)
         view.setdefault("working_dir", None)
         view["thread_name"] = names.get(thread_id)
+        view["voice_label"] = tags.get(thread_id)
         view["state"] = STATE_RUNNING if thread_id in running_thread_ids else STATE_HISTORY
         if thread_id in running_thread_ids and thread_id in by_thread:
             view["state"] = by_thread[thread_id].execution_state
