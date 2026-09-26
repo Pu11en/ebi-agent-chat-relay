@@ -148,3 +148,33 @@ def tagged_title(title: str, label: str | None) -> str:
         return base[:MAX_THREAD_NAME]
     prefix = f"[{label}] "
     return (prefix + base[: MAX_THREAD_NAME - len(prefix)]).strip()
+
+
+#: Settings key prefix a thread's tag is stored under.
+#:
+#: The tag outlives the thread that earned it — a continuation thread inherits
+#: it (``cogs/context_nudge.py``) so the word the speaker learned still reaches
+#: the live conversation. That means more than one module reads and writes this
+#: key, so it is spelled once, here, next to the tags themselves.
+VOICE_LABEL_PREFIX = "voice_label:"
+
+
+def label_key(thread_id: int) -> str:
+    """The settings key holding ``thread_id``'s tag."""
+    return f"{VOICE_LABEL_PREFIX}{thread_id}"
+
+
+def thread_id_from_key(key: str) -> int | None:
+    """The thread a tag key belongs to, or None when ``key`` is not one.
+
+    The settings table holds unrelated keys, and a hand-edited row is not worth
+    raising over, so anything that is not ``voice_label:<digits>`` is simply not
+    a tag.
+    """
+    text = str(key or "")
+    if not text.startswith(VOICE_LABEL_PREFIX):
+        return None
+    try:
+        return int(text[len(VOICE_LABEL_PREFIX) :])
+    except ValueError:
+        return None

@@ -260,3 +260,23 @@ async def test_a_spawned_thread_does_not_steal_a_live_tag(api: ApiServer) -> Non
     await api._apply_voice_labels(view)
 
     assert view[0]["voice_label"] == "bravo"
+
+
+class TestLabelKey:
+    """The settings key a tag is stored under is shared, so it lives with the tags.
+
+    It used to be private to api_server.py, which meant anything else that had
+    to move a tag — the context handoff, for one — had to re-spell the string.
+    """
+
+    def test_key_is_stable_and_round_trips(self) -> None:
+        from claude_discord.voice_labels import VOICE_LABEL_PREFIX, label_key, thread_id_from_key
+
+        assert label_key(42) == f"{VOICE_LABEL_PREFIX}42"
+        assert thread_id_from_key(label_key(42)) == 42
+
+    def test_a_foreign_key_is_not_a_tag(self) -> None:
+        from claude_discord.voice_labels import thread_id_from_key
+
+        assert thread_id_from_key("claude_model") is None
+        assert thread_id_from_key("voice_label:not-a-number") is None

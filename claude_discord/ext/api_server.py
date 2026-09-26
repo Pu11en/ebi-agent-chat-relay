@@ -60,7 +60,10 @@ from ..session_lifecycle import (
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
-from ..voice_labels import assign_labels, tagged_title, title_tag
+from ..voice_labels import (
+    VOICE_LABEL_PREFIX as _VOICE_LABEL_PREFIX,
+)
+from ..voice_labels import assign_labels, tagged_title, thread_id_from_key, title_tag
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
 from .teams_sync import ThreadRef
@@ -103,8 +106,6 @@ _MAX_DISCORD_THREAD_NAME_LENGTH = 100
 # /api/sessions and /api/threads/{id}/messages — cross-session observability.
 # Bounded so one session peeking at another can never pull an unbounded amount
 # of history into its own context window.
-#: Settings key prefix for a thread's spoken tag (voice_labels.py).
-_VOICE_LABEL_PREFIX = "voice_label:"
 _DEFAULT_SESSION_LIMIT = 20
 _MAX_SESSION_LIMIT = 100
 _DEFAULT_THREAD_MESSAGE_LIMIT = 30
@@ -2163,12 +2164,9 @@ class ApiServer:
 
         existing: dict[int, str] = {}
         for key, value in stored.items():
-            if not key.startswith(_VOICE_LABEL_PREFIX):
-                continue
-            try:
-                existing[int(key[len(_VOICE_LABEL_PREFIX) :])] = value
-            except ValueError:
-                continue
+            thread_id = thread_id_from_key(key)
+            if thread_id is not None:
+                existing[thread_id] = value
 
         ordered = [v["thread_id"] for v in views]
         labels, minted, released = assign_labels(ordered, existing)
