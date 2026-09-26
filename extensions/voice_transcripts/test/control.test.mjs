@@ -1293,3 +1293,151 @@ test("the openings that were silently dropped now work", () => {
     ?.target, "alpha");
   assert.equal(parseByTag("hey so anyway alpha run the tests", ["alpha"])?.prompt, "run the tests");
 });
+
+// ---------------------------------------------------------------------------
+// The tag opens a conversation, it does not address one line
+// ---------------------------------------------------------------------------
+
+function talker(overrides = {}) {
+  const announced = [];
+  const sent = [];
+  let clock = 5_000_000;
+  const controller = createVoiceController({
+    ownerId: "42",
+    enabled: true,
+    client: {
+      listSessions: async () => TAGGED,
+      sendSpoken: async (p) => sent.push(p),
+      getRuntime: async () => ({}),
+      setRuntime: async () => ({}),
+    },
+    announce: async (m) => announced.push(m),
+    logger: { info() {}, warn() {}, error() {} },
+    now: () => clock,
+    ...overrides,
+  });
+  return { controller, announced, sent, tick: (ms) => (clock += ms) };
+}
+
+test("the exact failure: the follow-up sentence now lands too", async () => {
+  const { controller, sent, tick } = talker();
+
+  // Measured from the transcript, 30 seconds apart.
+  await controller.handleUtterance({
+    userId: "42",
+    text: "Alpha. Okay, we need to continue to plan out a massive build.",
+  });
+  tick(30_000);
+  await controller.handleUtterance({
+    userId: "42",
+    text: "Like there's a schedule thing that continues to gather data, that's what we're building",
+  });
+
+  assert.equal(sent.length, 2);
+  assert.ok(sent.every((s) => s.threadId === 1));
+  assert.ok(sent[1].text.startsWith("Like there's a schedule"));
+});
+
+test("every sentence resets the clock, so a long ramble stays connected", async () => {
+  const { controller, sent, tick } = talker();
+
+  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
+  for (let i = 0; i < 5; i += 1) {
+    tick(80_000); // under the window each time, well past it in total
+    await controller.handleUtterance({ userId: "42", text: `and another thing number ${i}` });
+  }
+
+  assert.equal(sent.length, 6);
+  assert.ok(sent.every((s) => s.threadId === 1));
+});
+
+test("going quiet closes the conversation", async () => {
+  const { controller, sent, tick } = talker();
+
+  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
+  tick(91_000);
+  const result = await controller.handleUtterance({
+    userId: "42",
+    text: "anyway that podcast was wild",
+  });
+
+  assert.equal(result.status, "ignored");
+  assert.equal(sent.length, 1);
+});
+
+test("saying stop listening closes it immediately", async () => {
+  const { controller, sent, announced } = talker();
+
+  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
+  const result = await controller.handleUtterance({ userId: "42", text: "okay stop listening" });
+
+  assert.equal(result.status, "released");
+  assert.ok(announced.at(-1).includes("Stopped listening"));
+
+  await controller.handleUtterance({ userId: "42", text: "this should go nowhere" });
+  assert.equal(sent.length, 1);
+});
+
+test("naming another thread switches the conversation", async () => {
+  const { controller, sent } = talker();
+
+  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
+  await controller.handleUtterance({ userId: "42", text: "bravo run make verify" });
+  await controller.handleUtterance({ userId: "42", text: "and then push the branch" });
+
+  assert.deepEqual(
+    sent.map((s) => s.threadId),
+    [1, 2, 2],
+  );
+});
+
+test("room tone is not forwarded, but keeps the conversation open", async () => {
+  const { controller, sent, tick } = talker();
+
+  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
+  // "Thank you." is what the recogniser emits for near-silence.
+  for (const noise of ["Thank you.", "Okay.", "yeah", "Huh?"]) {
+    tick(60_000);
+    await controller.handleUtterance({ userId: "42", text: noise });
+  }
+  tick(60_000);
+  await controller.handleUtterance({ userId: "42", text: "so the loop should check itself" });
+
+  assert.equal(sent.length, 2, "only the two real sentences");
+  assert.equal(sent[1].text, "so the loop should check itself");
+});
+
+test("someone else talking is never forwarded into an open conversation", async () => {
+  const { controller, sent } = talker();
+
+  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
+  await controller.handleUtterance({ userId: "999", text: "delete the production database" });
+
+  assert.equal(sent.length, 1);
+});
+
+test("an open conversation does not swallow a new session request", async () => {
+  const spawned = [];
+  const { controller, sent } = talker({
+    client: {
+      listSessions: async () => TAGGED,
+      listProjects: async () => PROJECTS,
+      sendSpoken: async (p) => sent.push(p),
+      spawn: async (p) => {
+        spawned.push(p);
+        return { thread_id: "9" };
+      },
+      getRuntime: async () => ({}),
+      setRuntime: async () => ({}),
+    },
+  });
+
+  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
+  await controller.handleUtterance({
+    userId: "42",
+    text: "make a new session in archify and do the design work",
+  });
+
+  assert.equal(spawned.length, 1);
+  assert.equal(sent.length, 1);
+});

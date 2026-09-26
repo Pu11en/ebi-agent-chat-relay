@@ -31,6 +31,35 @@ const IGNORED = { status: "ignored" };
 /** How long a named-but-unfinished command waits for its instruction. */
 export const FOLLOW_UP_MS = 30_000;
 
+/**
+ * How long a thread keeps receiving what is said after a delivered instruction.
+ *
+ * Requiring the tag in every utterance looked reasonable and is unusable, for a
+ * reason that only shows up with a real microphone: speech is cut at every
+ * pause, so thinking out loud produces five utterances and the tag is in one of
+ * them. Measured — "Alpha. Okay, we need to plan out a massive build…" was
+ * delivered, and the sentence 30 seconds later that finished the thought was
+ * dropped, because it did not repeat the name. Nobody says a person's name in
+ * every sentence, and being made to is what makes this feel broken.
+ *
+ * So the tag opens a conversation rather than addressing one line. Each further
+ * utterance resets the clock, a new tag switches thread, and "stop listening"
+ * ends it — the same shape the wake-word implementations converge on.
+ */
+export const ATTACH_MS = 90_000;
+
+/** Ends an open conversation without naming another thread. */
+const RELEASE =
+  /^(?:(?:ok(?:ay)?|alright|and|so|um+|uh+)[\s,.]*)*(?:stop\s+listening|stop\s+it|that'?s\s+(?:all|it)|never\s*mind|nevermind|stand\s+down|we'?re\s+done|i'?m\s+done)\b/i;
+
+/**
+ * Utterances that carry nothing and should not be forwarded into an open
+ * conversation. The recogniser emits "Thank you." and "Okay." for near-silence,
+ * and forwarding those would spend a turn on a room tone artefact.
+ */
+const EMPTY_TALK =
+  /^(?:thank\s*you|thanks|ok(?:ay)?|yeah|yep|yes|no|nope|hmm+|mm+|uh+|um+|huh|what|right|sure|so|well|like)[\s.,!?]*$/i;
+
 export function createVoiceController({
   ownerId,
   enabled,
@@ -40,6 +69,7 @@ export function createVoiceController({
   source = "voice",
   now = () => Date.now(),
   followUpMs = FOLLOW_UP_MS,
+  attachMs = ATTACH_MS,
   sessionsTtlMs = 10_000,
   // Where a session goes when the folder could not be worked out. Opening it
   // somewhere beats refusing: the thread gets a tag, says what it misheard, and
@@ -49,6 +79,9 @@ export function createVoiceController({
 }) {
   /** @type {{session: object, target: string, at: number} | null} */
   let held = null;
+  /** The thread an open conversation is going to, and when it last heard anything. */
+  /** @type {{session: object, at: number} | null} */
+  let attached = null;
   /** @type {{sessions: Array<object>, at: number} | null} */
   let cached = null;
 
@@ -89,6 +122,12 @@ export function createVoiceController({
     return null;
   }
 
+  function openConversation() {
+    if (attached && now() - attached.at <= attachMs) return attached;
+    attached = null;
+    return null;
+  }
+
   async function send(session, prompt) {
     try {
       await client.sendSpoken({
@@ -103,6 +142,8 @@ export function createVoiceController({
     }
     await say(`🎙️ → **${describe(session)}**: ${prompt}`);
     logger.info?.(`[control] sent to thread ${session.thread_id}`);
+    // Keep listening: the rest of the thought is coming, without the name.
+    attached = { session, at: now() };
     return { status: "sent", session, prompt };
   }
 
@@ -237,13 +278,29 @@ export function createVoiceController({
       const command = addressed ?? parseCommand(text);
 
       if (!command) {
-        // Not addressed to a thread — but if one is being held, this is the
-        // rest of the sentence rather than conversation.
-        const waiting = taken();
         const rest = String(text ?? "").trim();
-        if (!waiting || rest.length < MIN_PROMPT_CHARS) return IGNORED;
-        held = null;
-        return await send(waiting.session, rest);
+
+        // A thread was named with no instruction: this is that instruction.
+        const waiting = taken();
+        if (waiting && rest.length >= MIN_PROMPT_CHARS) {
+          held = null;
+          return await send(waiting.session, rest);
+        }
+
+        const open = openConversation();
+        if (!open) return IGNORED;
+        if (RELEASE.test(rest)) {
+          attached = null;
+          await say(`🎙️ Stopped listening to **${describe(open.session)}**.`);
+          return { status: "released" };
+        }
+        // Room tone and acknowledgement noise are not worth a turn, but they do
+        // mean the speaker is still here, so the conversation stays open.
+        if (rest.length < MIN_PROMPT_CHARS || EMPTY_TALK.test(rest)) {
+          attached.at = now();
+          return IGNORED;
+        }
+        return await send(open.session, rest);
       }
 
       held = null;

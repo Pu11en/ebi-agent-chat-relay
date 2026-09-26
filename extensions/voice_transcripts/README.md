@@ -100,6 +100,13 @@ the owner can also steer a session without leaving the room:
   kept when it scrolls out of view and handed back if it returns; only when all
   26 are spoken for does the oldest absent thread give one up. A tag is a word
   you learned, so it must not change meaning underneath you.
+- **Say the tag once, then just keep talking.** A delivered instruction leaves
+  that thread listening for 90 seconds, and every further sentence resets the
+  clock — so thinking out loud reaches one thread instead of needing the name in
+  every breath. Naming another tag switches thread, "stop listening" ends it, and
+  going quiet closes it on its own. Acknowledgement noise ("okay", "thank you" —
+  what the recogniser emits for near-silence) is not forwarded but does keep the
+  conversation open, and nobody else in the room can be forwarded at all.
 - **If you pause mid-sentence, the thread is held.** Speech is captured per
   pause, so naming a thread and then saying what to do arrives as two
   utterances. Naming one on its own holds it for 30 seconds and announces that
