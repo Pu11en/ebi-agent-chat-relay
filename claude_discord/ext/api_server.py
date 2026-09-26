@@ -2083,10 +2083,12 @@ class ApiServer:
             view["voice_label"] = labels.get(view["thread_id"])
         await self._show_tags_in_titles(views)
 
-    #: Thread renames are rate-limited hard by Discord (a couple per thread per
-    #: ten minutes), so a first run over a full set is spread across calls
-    #: rather than fired at once.
-    _MAX_RETITLES_PER_CALL = 4
+    #: Discord's tight rename limit is per thread, not global, so the cap here
+    #: only bounds how much of one request is spent renaming. Low enough that a
+    #: first pass over a fresh set does not stall /api/sessions, high enough
+    #: that the set is fully tagged within a couple of polls rather than ten
+    #: minutes — the tags are useless until they are visible.
+    _MAX_RETITLES_PER_CALL = 12
 
     async def _show_tags_in_titles(self, views: list[dict[str, Any]]) -> None:
         """Put each thread's tag at the front of its Discord title.

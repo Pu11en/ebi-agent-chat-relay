@@ -188,9 +188,10 @@ async def test_a_rename_failure_never_fails_the_request(api: ApiServer) -> None:
 
 
 async def test_a_full_set_is_retitled_across_calls_not_all_at_once(api: ApiServer) -> None:
-    threads = {i: _thread(i, f"📂 repo-{i}") for i in range(1, 11)}
+    total = api._MAX_RETITLES_PER_CALL + 6
+    threads = {i: _thread(i, f"📂 repo-{i}") for i in range(1, total + 1)}
     api.bot.get_channel.side_effect = lambda tid: threads[tid]
-    views = [{"thread_id": i, "thread_name": f"📂 repo-{i}"} for i in range(1, 11)]
+    views = [{"thread_id": i, "thread_name": f"📂 repo-{i}"} for i in range(1, total + 1)]
 
     await api._apply_voice_labels(views)
 
