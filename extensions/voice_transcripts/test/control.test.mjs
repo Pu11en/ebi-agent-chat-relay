@@ -918,3 +918,172 @@ test("throat-clearing before a tag still leaves it an address", () => {
     assert.equal(parseByTag(said, ["alpha"])?.prompt, "go", said);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Opening a session by voice
+// ---------------------------------------------------------------------------
+
+import { parseNewSession } from "../src/control/command.mjs";
+import { matchFolder, skeleton, soundsLike } from "../src/control/folders.mjs";
+
+const PROJECTS = [
+  { name: "the aldus", path: "/home/drewp/main-projects/the aldus" },
+  { name: "aldus-email", path: "/home/drewp/main-projects/aldus-email" },
+  { name: "upwork", path: "/home/drewp/main-projects/upwork" },
+  { name: "archify", path: "/home/drewp/main-projects/archify" },
+  { name: "gigamedia", path: "/home/drewp/main-projects/gigamedia" },
+];
+
+test("the folder name survives being misheard", () => {
+  // Measured: the recogniser wrote "oldest" for "aldus".
+  assert.equal(matchFolder("the oldest folder", PROJECTS).project.name, "the aldus");
+  assert.equal(matchFolder("up work", PROJECTS).project.name, "upwork");
+  assert.equal(matchFolder("arkify", PROJECTS).project.name, "archify");
+});
+
+test("an article does not decide the match", () => {
+  // "the" folds to a 'd' and would otherwise dominate a short skeleton.
+  assert.equal(skeleton("the aldus"), skeleton("aldus"));
+});
+
+test("a name nothing sounds like matches nothing", () => {
+  assert.equal(matchFolder("quantum tunnelling", PROJECTS).status, "none");
+  assert.equal(soundsLike("quantum tunnelling", "gigamedia"), 0);
+});
+
+test("a short skeleton does not prefix half the catalog", () => {
+  // `knd` (gigamedia) is a literal prefix of `kndndnlnk` (quantum tunnelling).
+  assert.ok(soundsLike("gigamedia", "quantum tunnelling") < 0.7);
+});
+
+test("two folders that sound equally close are a question", () => {
+  const result = matchFolder("aldus", [
+    { name: "aldus-one", path: "/x/aldus-one" },
+    { name: "aldus-won", path: "/x/aldus-won" },
+  ]);
+  assert.equal(result.status, "unsure");
+  assert.equal(result.options.length, 2);
+});
+
+test("the spoken sentence that failed live now parses", () => {
+  const r = parseNewSession(
+    "Make a new thread in the oldest folder and we're going to do design work for the audit link",
+  );
+  assert.equal(r.kind, "spawn");
+  assert.deepEqual(r.candidates[0], {
+    folder: "oldest",
+    prompt: "we're going to do design work for the audit link",
+  });
+});
+
+test("several phrasings all open a session", () => {
+  for (const said of [
+    "start a new session in aldus and do the design work",
+    "open a session in archify",
+    "make me a new session in the upwork folder, rewrite the headline",
+    "okay create a new chat inside the aldus folder",
+    "spin up a thread for archify",
+  ]) {
+    assert.equal(parseNewSession(said)?.kind, "spawn", said);
+  }
+});
+
+test("talking to an existing thread is not opening one", () => {
+  for (const said of [
+    "put this in the alpha thread go",
+    "alpha run the tests",
+    "I made a new session earlier",
+  ]) {
+    assert.equal(parseNewSession(said), null, said);
+  }
+});
+
+function opener(overrides = {}) {
+  const announced = [];
+  const spawned = [];
+  const controller = createVoiceController({
+    ownerId: "42",
+    enabled: true,
+    fallbackDir: "/root/projects",
+    client: {
+      listSessions: async () => TAGGED,
+      listProjects: async () => PROJECTS,
+      spawn: async (p) => {
+        spawned.push(p);
+        return { thread_id: "1553418072084324383" };
+      },
+      sendSpoken: async () => {},
+    },
+    announce: async (m) => announced.push(m),
+    logger: { info() {}, warn() {}, error() {} },
+    ...overrides,
+  });
+  return { controller, announced, spawned };
+}
+
+test("a misheard folder still opens the right session, with the instruction", async () => {
+  const { controller, spawned, announced } = opener();
+
+  const result = await controller.handleUtterance({
+    userId: "42",
+    text: "Make a new thread in the oldest folder and we're going to do design work",
+  });
+
+  assert.equal(result.status, "opened");
+  assert.equal(spawned[0].workingDir, "/home/drewp/main-projects/the aldus");
+  assert.ok(spawned[0].prompt.includes("design work"));
+  assert.ok(announced[0].includes("the aldus"));
+});
+
+test("no folder match opens one anyway and says what it heard", async () => {
+  const { controller, spawned, announced } = opener();
+
+  const result = await controller.handleUtterance({
+    userId: "42",
+    text: "make a new session in the flibbertigibbet folder and plan the launch",
+  });
+
+  assert.equal(result.status, "opened");
+  assert.equal(spawned[0].workingDir, "/root/projects");
+  assert.ok(spawned[0].prompt.includes("flibbertigibbet"), "the new session is told what he said");
+  assert.ok(spawned[0].prompt.includes("plan the launch"), "and what he wanted done");
+  assert.ok(announced[0].includes("No folder matched"));
+});
+
+test("opening with no instruction asks rather than inventing work", async () => {
+  const { controller, spawned } = opener();
+
+  await controller.handleUtterance({ userId: "42", text: "open a session in archify" });
+
+  assert.equal(spawned[0].workingDir, "/home/drewp/main-projects/archify");
+  assert.ok(spawned[0].prompt.includes("has not said what to work on"));
+});
+
+test("someone else in the room cannot open a session", async () => {
+  const { controller, spawned } = opener();
+  await controller.handleUtterance({ userId: "999", text: "open a session in archify" });
+  assert.deepEqual(spawned, []);
+});
+
+test("addressing a thread by tag beats opening a new one", async () => {
+  const { controller, spawned, sent } = { ...opener(), sent: [] };
+  const captured = [];
+  const c = createVoiceController({
+    ownerId: "42",
+    enabled: true,
+    client: {
+      listSessions: async () => TAGGED,
+      listProjects: async () => PROJECTS,
+      spawn: async () => ({ thread_id: "1" }),
+      sendSpoken: async (p) => captured.push(p),
+    },
+    announce: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  void spawned;
+  void sent;
+
+  await c.handleUtterance({ userId: "42", text: "alpha make a new session in archify" });
+
+  assert.equal(captured.length, 1, "the instruction went to alpha, not to the spawner");
+});

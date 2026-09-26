@@ -6,7 +6,7 @@ from claude_discord.voice_labels import SPOKEN_LABELS, assign_labels
 
 
 def test_tags_are_handed_out_in_order() -> None:
-    labels, new = assign_labels([10, 20, 30], {})
+    labels, new, _ = assign_labels([10, 20, 30], {})
 
     assert labels == {10: "alpha", 20: "bravo", 30: "charlie"}
     assert new == labels
@@ -14,7 +14,7 @@ def test_tags_are_handed_out_in_order() -> None:
 
 def test_an_existing_tag_is_never_reshuffled() -> None:
     """The thread called bravo this morning is still bravo tonight."""
-    labels, new = assign_labels([99, 10, 20], {10: "alpha", 20: "bravo"})
+    labels, new, _ = assign_labels([99, 10, 20], {10: "alpha", 20: "bravo"})
 
     assert labels[10] == "alpha"
     assert labels[20] == "bravo"
@@ -23,29 +23,59 @@ def test_an_existing_tag_is_never_reshuffled() -> None:
 
 
 def test_only_the_new_assignments_are_reported() -> None:
-    _, new = assign_labels([10], {10: "alpha"})
+    _, new, _ = assign_labels([10], {10: "alpha"})
     assert new == {}
 
 
-def test_a_tag_is_recycled_once_its_thread_leaves_the_visible_set() -> None:
-    """26 tags cannot cover hundreds of archived threads."""
-    labels, _ = assign_labels([50], {10: "alpha", 20: "bravo"})
+def test_a_tag_is_kept_after_its_thread_scrolls_out_of_view() -> None:
+    """A tag is a word Drew learned; it must not change meaning under him."""
+    labels, new, released = assign_labels([50], {10: "alpha", 20: "bravo"})
 
-    assert labels == {50: "alpha"}
+    assert labels == {50: "charlie"}, "alpha and bravo are still promised"
+    assert released == set()
+    assert new == {50: "charlie"}
+
+
+def test_a_thread_coming_back_into_view_gets_its_own_tag_again() -> None:
+    labels, new, _ = assign_labels([10], {10: "alpha", 20: "bravo"})
+
+    assert labels == {10: "alpha"}
+    assert new == {}
 
 
 def test_a_stored_tag_for_an_invisible_thread_is_not_returned() -> None:
-    labels, _ = assign_labels([10], {10: "alpha", 20: "bravo"})
+    labels, _, _ = assign_labels([10], {10: "alpha", 20: "bravo"})
     assert labels == {10: "alpha"}
+
+
+def test_the_oldest_absent_thread_gives_up_its_tag_when_the_pool_runs_dry() -> None:
+    """Snowflake ids are chronological, so the smallest is the stalest tag."""
+    stored = {100 + i: label for i, label in enumerate(SPOKEN_LABELS)}
+    labels, new, released = assign_labels([9999], stored)
+
+    assert labels == {9999: "alpha"}, "the oldest absent thread held alpha"
+    assert released == {100}
+    assert new == {9999: "alpha"}
+
+
+def test_a_visible_thread_never_has_its_tag_taken() -> None:
+    stored = {100 + i: label for i, label in enumerate(SPOKEN_LABELS)}
+    visible = sorted(stored) + [9999]
+    labels, _, released = assign_labels(visible, stored)
+
+    assert released == set()
+    assert 9999 not in labels, "untagged rather than stealing a live tag"
+    assert all(labels[tid] == stored[tid] for tid in stored)
 
 
 def test_more_threads_than_tags_leaves_the_remainder_untagged() -> None:
     """Reusing a tag would deliver a command to the wrong thread."""
     ids = list(range(1, len(SPOKEN_LABELS) + 4))
-    labels, _ = assign_labels(ids, {})
+    labels, _, released = assign_labels(ids, {})
 
     assert len(labels) == len(SPOKEN_LABELS)
     assert len(set(labels.values())) == len(SPOKEN_LABELS)
+    assert released == set()
 
 
 def test_every_tag_is_one_lowercase_word() -> None:

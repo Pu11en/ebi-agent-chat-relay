@@ -69,6 +69,13 @@ Transcription only listens. With `VOICE_CONTROL_ENABLED=true`, `CCDB_API_URL`
 and (if the control plane has one) `CCDB_API_SECRET` in the voice config file,
 the owner can also steer a session without leaving the room:
 
+- **"Make a new session in the aldus folder and <what to do>."** No tag — there
+  is no thread yet, and nobody says that phrase in conversation. The folder is
+  matched on how it *sounds*, because the recogniser writes "oldest" for "aldus"
+  and no amount of clearer speech fixes a word outside its vocabulary. If nothing
+  matches, a session is opened in the projects root anyway and told what was
+  heard, so it can be corrected by talking to its tag instead of repeating the
+  whole request.
 - **Just say the tag, then talk.** "Alpha, run the tests" · "okay and bravo,
   check DKIM" · "hey charlie can you push that". The tag names the thread and
   everything after it is the instruction — no sentence template to remember. A
@@ -81,7 +88,9 @@ the owner can also steer a session without leaving the room:
   bravo thread, check DKIM" is exact — a tag is a handle, so it wins outright
   over any name matching and removes the ambiguity two similar folder names
   cause. Tags are stable for as long as the thread stays visible and are
-  recycled once it scrolls out, so the 26-word pool never runs dry.
+  kept when it scrolls out of view and handed back if it returns; only when all
+  26 are spoken for does the oldest absent thread give one up. A tag is a word
+  you learned, so it must not change meaning underneath you.
 - **If you pause mid-sentence, the thread is held.** Speech is captured per
   pause, so naming a thread and then saying what to do arrives as two
   utterances. Naming one on its own holds it for 30 seconds and announces that
@@ -104,6 +113,13 @@ the owner can also steer a session without leaving the room:
 - Every send is confirmed in the transcript channel with the thread it went to
   and the instruction as transcribed, so a misheard prompt is visible
   immediately. Failures are reported there too.
+
+What a spoken instruction may do is bounded. Local work — plan, read, edit, run,
+test, commit — proceeds on the speaker's word alone. Anything the outside world
+would see (push, publish, deploy, delete a remote branch, spend money) waits for
+a typed confirmation in the thread, however the transcript read. A misheard local
+edit costs a turn; a misheard push has left the machine. That asymmetry is the
+condition under which talking to an agent can be casual.
 
 Only the configured owner is obeyed — everyone in the room is transcribed, but
 being present is not authorisation. Anything that is not a command leaves no

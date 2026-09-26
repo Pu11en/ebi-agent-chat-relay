@@ -180,3 +180,66 @@ export function parseByTag(said, tags) {
   }
   return null;
 }
+
+
+// ---------------------------------------------------------------------------
+// Opening a session, rather than talking to one
+// ---------------------------------------------------------------------------
+
+/**
+ * "Make a new session in the aldus folder and do the design work."
+ *
+ * No tag is needed for this one, and that is not a shortcut. A tag answers
+ * "which thread?", and there is no thread yet — while the phrase "new session"
+ * is not something anyone says in conversation, so it can carry the whole
+ * signal by itself.
+ *
+ * Where the folder name ends is the interesting part, and as with the thread
+ * grammar it cannot be known here: "in the aldus folder and we'll do design
+ * work" ends at `folder`, "in aldus and do design work" ends at `and`, and "in
+ * aldus" does not end at all. So every reading is offered and the folder
+ * catalog picks the one that names something real.
+ */
+const NEW_SESSION =
+  /^(?:ok(?:ay)?|alright|hey|so|and|um+|uh+)?[\s,.:;-]*(?:make|start|open|create|spin\s+up|fire\s+up|kick\s+off)\s+(?:me\s+)?(?:a|an|another)?\s*(?:new\s+)?(?:session|thread|chat)\s+(?:inside\s+of|inside|in|for|on|at|under)\s+(?:the\s+)?(.+)$/i;
+
+/** Words that end a spoken folder name. */
+const FOLDER_END = /\b(folder|directory|project|repo|repository)\b/i;
+/** Words that start the instruction once the folder has been named. */
+const PROMPT_START = /\b(?:and|then|to|so|where|,)\b/i;
+
+function folderSplits(rest) {
+  const splits = [];
+  const seen = new Set();
+  const add = (folder, prompt) => {
+    const f = folder.trim().replace(/[,.;:]+$/, "");
+    if (!f || seen.has(f)) return;
+    seen.add(f);
+    const cleaned = prompt
+      .trim()
+      .replace(/^[,.;:\s-]+/, "")
+      .replace(/^(?:and|then|to|so)\s+/i, "")
+      .replace(/^[,.;:\s-]+/, "");
+    splits.push({ folder: f, prompt: cleaned });
+  };
+  const named = rest.match(FOLDER_END);
+  if (named) add(rest.slice(0, named.index), rest.slice(named.index + named[0].length));
+  const joined = rest.match(PROMPT_START);
+  if (joined) add(rest.slice(0, joined.index), rest.slice(joined.index));
+  add(rest, "");
+  return splits;
+}
+
+/**
+ * @param {string} said One finished utterance.
+ * @returns {{kind: "spawn", folder: string, prompt: string,
+ *            candidates: Array<{folder: string, prompt: string}>}|null}
+ */
+export function parseNewSession(said) {
+  const text = String(said ?? "").trim().replace(/\s+/g, " ");
+  const match = text.match(NEW_SESSION);
+  if (!match) return null;
+  const candidates = folderSplits(match[1]);
+  if (!candidates.length) return null;
+  return { kind: "spawn", ...candidates[0], candidates };
+}

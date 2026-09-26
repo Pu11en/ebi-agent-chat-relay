@@ -12,6 +12,7 @@
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const SESSION_LIMIT = 50;
+const PROJECT_LIMIT = 200;
 
 /**
  * Parse a control-plane response without destroying its Discord IDs.
@@ -67,6 +68,27 @@ export function createRelayClient({
         headers: headers(),
       });
       return parseIdSafe(await response.text())?.sessions ?? [];
+    },
+    async listProjects() {
+      const response = await request(`/api/projects?limit=${PROJECT_LIMIT}`, {
+        method: "GET",
+        headers: headers(),
+      });
+      return parseIdSafe(await response.text())?.projects ?? [];
+    },
+    async spawn({ workingDir, prompt, threadName, userId }) {
+      const response = await request("/api/spawn", {
+        method: "POST",
+        headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          working_dir: workingDir,
+          prompt,
+          thread_name: threadName,
+          user_id: Number(userId),
+          auto_start: true,
+        }),
+      });
+      return parseIdSafe(await response.text());
     },
     async sendSpoken({ threadId, text, speakerId, source = "voice", mode = "queue" }) {
       const response = await request(`/api/threads/${encodeURIComponent(threadId)}/spoken`, {

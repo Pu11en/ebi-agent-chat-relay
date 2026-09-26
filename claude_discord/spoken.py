@@ -18,6 +18,15 @@ odd-looking one is read for intent and named rather than queried.
 
 The gate is the caller's own: the control-plane secret, plus the owner check
 in the endpoint.  There is deliberately no rate limit here.
+
+The prompt also bounds what a spoken instruction may *do*, and that is the one
+piece of policy in this module.  Voice is a lossy channel driving an agent that
+can act, so the asymmetry matters: a misheard local edit costs a turn and a
+``git checkout``, while a misheard push, deploy or delete has left the machine
+and cannot be recalled.  Local work therefore proceeds on the speaker's word
+alone; anything the outside world would see waits for a confirmation they typed.
+That is not a restriction on the agent so much as the condition under which
+talking to it can be casual.
 """
 
 from __future__ import annotations
@@ -42,6 +51,12 @@ def build_spoken_prompt(*, text: str, source: str = VOICE) -> str:
         "intent, say in one line which word you reinterpreted and as what, and "
         "carry on — do not stop and ask about what is probably a transcription "
         "artefact.\n"
+        "Local work is yours to do: plan, read, edit, run, test, commit. Anything "
+        "the outside world sees — push, publish, deploy, release, delete a remote "
+        "branch, post to a third party, spend money — waits until they say so in "
+        "this thread, even if the spoken instruction sounded like it asked for it. "
+        "A transcript is a lossy channel and those actions are the ones a mishearing "
+        "cannot take back; do the work, then say what is ready to go out.\n"
         "---\n"
         f"{text}"
     )

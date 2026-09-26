@@ -63,8 +63,15 @@ SPOKEN_LABELS: tuple[str, ...] = (
 def assign_labels(
     thread_ids: list[int],
     existing: dict[int, str],
-) -> tuple[dict[int, str], dict[int, str]]:
+) -> tuple[dict[int, str], dict[int, str], set[int]]:
     """Give every thread in ``thread_ids`` a tag, keeping the ones it has.
+
+    A tag is a word the speaker has learned, so it is held for as long as it can
+    be: a thread keeps its tag after it scrolls out of the visible set, and gets
+    the same one back if it comes round again.  Only when all 26 are spoken for
+    does one get taken away, and then from the *oldest* thread that is not
+    currently visible — Discord IDs are snowflakes, so the smallest id is the
+    thread whose tag the speaker is least likely to still have in mind.
 
     Args:
         thread_ids: The visible threads, in the order tags should be handed out
@@ -72,32 +79,37 @@ def assign_labels(
         existing: Stored thread_id → tag, including threads no longer visible.
 
     Returns:
-        ``(labels, new)`` — the full mapping for the visible threads, and just
-        the assignments that were not already stored, so the caller writes only
-        what changed.
+        ``(labels, new, released)`` — the mapping for the visible threads, the
+        assignments that were not already stored, and the threads whose tag was
+        taken away, so the caller writes and deletes only what changed.
     """
     visible = set(thread_ids)
-    # A tag still held by a visible thread is taken; one held by a thread that
-    # has scrolled out of the set is free to reissue.
-    kept = {tid: label for tid, label in existing.items() if tid in visible}
-    taken = set(kept.values())
-    free = [label for label in SPOKEN_LABELS if label not in taken]
+    labels = {tid: label for tid, label in existing.items() if tid in visible}
+    taken = dict(existing)  # every tag still promised to some thread
+    free = [label for label in SPOKEN_LABELS if label not in set(taken.values())]
+    released: set[int] = set()
 
-    labels = dict(kept)
-    new: dict[int, str] = {}
+    # Oldest first: the thread least likely to be spoken to gives up its tag.
+    reclaimable = sorted(tid for tid in taken if tid not in visible)
+
     for thread_id in thread_ids:
         if thread_id in labels:
             continue
         if not free:
-            # More visible threads than tags. The remainder stay untagged and
-            # are still reachable by name; silently reusing a tag would send a
-            # command to the wrong thread, which is the one unacceptable
-            # outcome here.
-            break
+            if not reclaimable:
+                # Every tag belongs to a thread that is visible right now. The
+                # remainder stay untagged and are still reachable by name;
+                # reusing a live tag would send a command to the wrong thread,
+                # which is the one unacceptable outcome here.
+                break
+            donor = reclaimable.pop(0)
+            free.append(taken.pop(donor))
+            released.add(donor)
         label = free.pop(0)
         labels[thread_id] = label
-        new[thread_id] = label
-    return labels, new
+        taken[thread_id] = label
+    new = {tid: label for tid, label in labels.items() if existing.get(tid) != label}
+    return labels, new, released
 
 
 #: A tag shown at the front of a Discord thread title, e.g. "[bravo] 📂 repo".

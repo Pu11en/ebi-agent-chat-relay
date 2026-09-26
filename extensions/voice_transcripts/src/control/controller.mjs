@@ -21,7 +21,8 @@
  * silence, because silence is the normal case.
  */
 
-import { MIN_PROMPT_CHARS, parseByTag, parseCommand } from "./command.mjs";
+import { MIN_PROMPT_CHARS, parseByTag, parseCommand, parseNewSession } from "./command.mjs";
+import { matchFolder } from "./folders.mjs";
 import { resolveTarget, untagged } from "./targets.mjs";
 
 const IGNORED = { status: "ignored" };
@@ -39,6 +40,11 @@ export function createVoiceController({
   now = () => Date.now(),
   followUpMs = FOLLOW_UP_MS,
   sessionsTtlMs = 10_000,
+  // Where a session goes when the folder could not be worked out. Opening it
+  // somewhere beats refusing: the thread gets a tag, says what it misheard, and
+  // can be corrected by talking to it — which is cheaper than saying the whole
+  // sentence again.
+  fallbackDir = "/home/drewp/main-projects",
 }) {
   /** @type {{session: object, target: string, at: number} | null} */
   let held = null;
@@ -99,6 +105,71 @@ export function createVoiceController({
     return { status: "sent", session, prompt };
   }
 
+  /** Open a session in the folder that was named, or say why it could not. */
+  async function open(opening) {
+    let projects;
+    try {
+      projects = await client.listProjects();
+    } catch (error) {
+      await say(`🎙️ Could not read the folder list — ${error.message}`);
+      return { status: "failed", error: error.message };
+    }
+
+    let chosen = null;
+    let heard = opening.folder;
+    for (const candidate of opening.candidates) {
+      const match = matchFolder(candidate.folder, projects);
+      if (match.status === "ok") {
+        chosen = { project: match.project, prompt: candidate.prompt };
+        heard = candidate.folder;
+        break;
+      }
+    }
+
+    const instruction =
+      chosen?.prompt ||
+      opening.candidates.find((c) => c.prompt)?.prompt ||
+      "";
+
+    // No folder matched. Open it anyway, in the projects root, and let the new
+    // session say what it heard — correcting it by voice costs one sentence,
+    // whereas refusing costs the whole request again.
+    const workingDir = chosen?.project.path ?? fallbackDir;
+    const name = chosen?.project.name ?? `voice: ${heard}`;
+    const preamble = chosen
+      ? ""
+      : `Drew opened this session by voice and asked for the "${heard}" folder, ` +
+        `which does not match any project — speech recognition mangles folder names, ` +
+        `so read it for intent. You are currently in ${fallbackDir}. Say in one short ` +
+        `line which folder you think he meant and work there, or ask him which one. ` +
+        `He can answer by voice using this thread's tag.\n\n`;
+
+    try {
+      const result = await client.spawn({
+        workingDir,
+        threadName: name,
+        userId: ownerId,
+        prompt:
+          preamble +
+          (instruction ||
+            "Drew opened this session by voice and has not said what to work on yet. " +
+              "Ask him in one short line."),
+      });
+      await say(
+        chosen
+          ? `🎙️ Opened a session in **${chosen.project.name}**` +
+              (instruction ? `: ${instruction}` : " — say what it should do next.")
+          : `🎙️ No folder matched **${heard}** — opened a session in \`${fallbackDir}\` ` +
+              `instead. Tell it which folder you meant using its tag.`,
+      );
+      logger.info?.(`[control] spawned thread ${result?.thread_id} in ${workingDir}`);
+      return { status: "opened", workingDir, project: chosen?.project ?? null, result };
+    } catch (error) {
+      await say(`🎙️ Could not open a session — ${error.message}`);
+      return { status: "failed", error: error.message };
+    }
+  }
+
   return {
     async handleUtterance({ userId, text }) {
       if (!enabled) return { status: "disabled" };
@@ -118,11 +189,22 @@ export function createVoiceController({
 
       // Saying the tag is the primary form; the sentence template is the
       // fallback for a thread that has no tag yet.
-      const command =
-        parseByTag(
-          text,
-          live.map((s) => s.voice_label),
-        ) ?? parseCommand(text);
+      const addressed = parseByTag(
+        text,
+        live.map((s) => s.voice_label),
+      );
+      // "New session in X" needs no tag — there is no thread to address yet,
+      // and nobody says that phrase in conversation. An explicit tag still wins,
+      // since naming a thread is a deliberate act.
+      if (!addressed) {
+        const opening = parseNewSession(text);
+        if (opening) {
+          held = null;
+          return await open(opening);
+        }
+      }
+
+      const command = addressed ?? parseCommand(text);
 
       if (!command) {
         // Not addressed to a thread — but if one is being held, this is the

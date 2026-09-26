@@ -2070,13 +2070,13 @@ class ApiServer:
                 continue
 
         ordered = [v["thread_id"] for v in views]
-        labels, minted = assign_labels(ordered, existing)
+        labels, minted, released = assign_labels(ordered, existing)
         for thread_id, label in minted.items():
             with contextlib.suppress(Exception):
                 await self.settings_repo.set(f"{_VOICE_LABEL_PREFIX}{thread_id}", label)
-        # Release a tag whose thread has scrolled out, so the 26-word pool does
-        # not exhaust on a machine with hundreds of archived threads.
-        for thread_id in set(existing) - set(labels):
+        # A tag is only taken back when all 26 are spoken for; a thread that has
+        # merely scrolled out of view keeps the word the speaker learned for it.
+        for thread_id in released:
             with contextlib.suppress(Exception):
                 await self.settings_repo.delete(f"{_VOICE_LABEL_PREFIX}{thread_id}")
         for view in views:
