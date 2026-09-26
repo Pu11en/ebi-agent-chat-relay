@@ -2198,10 +2198,12 @@ class ApiServer:
             view["voice_label_aliases"] = list(aliases_for(label))
         await self._show_tags_in_titles(views)
 
-    #: Discord's tight rename limit is per thread, not global, so the cap here
-    #: only bounds how much of one request is spent renaming. Low enough that a
-    #: first pass over a fresh set does not stall /api/sessions, high enough
-    #: that the set is fully tagged within a couple of polls rather than ten
+    #: How many threads one request may look up and retitle. Discord's rename
+    #: limit is per thread rather than global, so this does not protect the rename
+    #: budget — it bounds the *work* one request does, which matters because
+    #: resolving an uncached thread costs a Discord call and /api/sessions is
+    #: polled every few seconds. Low enough not to stall the request, high enough
+    #: that a fresh set is fully tagged within a couple of polls rather than ten
     #: minutes — the tags are useless until they are visible.
     _MAX_RETITLES_PER_CALL = 12
 
@@ -2222,17 +2224,29 @@ class ApiServer:
         ever added a tag before, so a thread that lost its word kept displaying
         it: two threads read "[bravo]" while one of them answered to it, and the
         sidebar — the one place a tag is read from — was lying.
+
+        The cap counts *lookups*, not renames. Resolving a thread that is not in
+        the cache costs a Discord call, and an archived or locked one is then
+        skipped — so counting only successful renames let a set of closed
+        sessions spend an unbounded number of calls on every request, and this
+        endpoint is polled every few seconds by the voice surface.
         """
         import discord as _discord
 
-        renamed = 0
+        spent = 0
         for view in views:
-            if renamed >= self._MAX_RETITLES_PER_CALL:
+            if spent >= self._MAX_RETITLES_PER_CALL:
                 break
             label = view.get("voice_label")
             name = view.get("thread_name")
             if not name or title_tag(name) == label:
                 continue
+            # A closed session is archived, so its title cannot be changed at
+            # all; the tag is taken off while it is still editable, as it closes
+            # (lifecycle_adapters.py). Looking it up would only ever be waste.
+            if view.get("closed"):
+                continue
+            spent += 1
             thread = await self._editable_thread(view["thread_id"])
             if not isinstance(thread, _discord.Thread) or thread.archived or thread.locked:
                 continue
@@ -2243,7 +2257,6 @@ class ApiServer:
                 logger.debug("Could not tag thread %s: %s", view["thread_id"], exc)
                 continue
             view["thread_name"] = wanted
-            renamed += 1
 
     async def _editable_thread(self, thread_id: int) -> Any:
         """The thread object, from cache or from Discord.
@@ -2261,7 +2274,11 @@ class ApiServer:
             return thread
         try:
             return await self.bot.fetch_channel(thread_id)
-        except Exception:
+        except Exception as exc:
+            # Deleted, or not visible to the bot. Never worth failing the
+            # request, but a silently discarded failure is how the stale tag
+            # went unnoticed in the first place.
+            logger.debug("Could not resolve thread %s: %s", thread_id, exc)
             return None
 
     async def search_sessions(self, request: web.Request) -> web.Response:

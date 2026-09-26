@@ -55,6 +55,20 @@ export const FOLLOW_UP_MS = 30_000;
 export const ATTACH_MS = 90_000;
 
 /** Ends an open conversation without naming another thread. */
+/**
+ * How many sessions one "close everything" may end.
+ *
+ * Each close archives a Discord thread, and Discord meters that hard. Against
+ * the 300 finished sessions this actually ran into, an unbounded loop is a
+ * three-hundred-call burst from one spoken sentence — and a rate-limited close
+ * fails, so the sweep would half-work and report success. Bounded, it says how
+ * many are left and the sentence can simply be repeated.
+ */
+export const MAX_TIDY_UP_CLOSES = 25;
+
+/** Spacing between closes, so a full sweep is paced rather than a burst. */
+const TIDY_UP_GAP_MS = 250;
+
 const RELEASE =
   /^(?:(?:ok(?:ay)?|alright|and|so|um+|uh+)[\s,.]*)*(?:stop\s+listening|stop\s+it|that'?s\s+(?:all|it)|never\s*mind|nevermind|stand\s+down|we'?re\s+done|i'?m\s+done)\b/i;
 
@@ -103,6 +117,8 @@ export function createVoiceController({
     cached = { sessions: fresh, at: now() };
     return fresh;
   }
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   async function say(message) {
     // A room that cannot be spoken to is still a room a command was sent from.
@@ -173,11 +189,15 @@ export function createVoiceController({
     );
     if (!spare.length) {
       await say("🎙️ Nothing to close — every session is in use.");
-      return { status: "tidied", closed: 0, failed: 0 };
+      return { status: "tidied", closed: 0, failed: 0, remaining: 0 };
     }
     let closed = 0;
     let failed = 0;
-    for (const session of spare) {
+    // Sequential and paced on purpose: these are dependent on a shared Discord
+    // budget, so Promise.all would turn the sweep into the burst it is meant to
+    // avoid.
+    const batch = spare.slice(0, MAX_TIDY_UP_CLOSES);
+    for (const session of batch) {
       try {
         await client.close(session.thread_id, { actor: ownerId });
         closed += 1;
@@ -185,13 +205,16 @@ export function createVoiceController({
         failed += 1;
         logger.warn?.(`[control] could not close ${session.thread_id}: ${error.message}`);
       }
+      if (TIDY_UP_GAP_MS) await sleep(TIDY_UP_GAP_MS);
     }
+    const remaining = spare.length - batch.length;
     await say(
       `🎙️ Closed ${closed} session${closed === 1 ? "" : "s"} you were not using` +
         (failed ? ` (${failed} could not be reached)` : "") +
+        (remaining ? ` — ${remaining} still to go, say it again.` : "") +
         ".",
     );
-    return { status: "tidied", closed, failed };
+    return { status: "tidied", closed, failed, remaining };
   }
 
   /** Change (or report) which agent answers in a thread. */

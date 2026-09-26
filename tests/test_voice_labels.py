@@ -527,18 +527,29 @@ class TestAStaleTagLeavesTheTitle:
     the tag is read from — was lying.
     """
 
-    async def test_a_thread_with_no_tag_has_the_old_one_removed(self, api: ApiServer) -> None:
-        thread = _thread(1, "[bravo] 📂 repo")
-        api.bot.get_channel.return_value = thread
-        views = [{"thread_id": 1, "thread_name": "[bravo] 📂 repo", "closed": True}]
+    async def test_a_live_thread_that_lost_its_tag_has_it_removed(self, api: ApiServer) -> None:
+        """Happens when the pool is exhausted: the thread is live but untagged.
+
+        A *closed* thread is handled elsewhere — it is archived, so its title can
+        no longer change, and the tag is taken off as it closes
+        (lifecycle_adapters.py).
+        """
+        stale = _thread(99, "[bravo] 📂 repo")
+        api.bot.get_channel.side_effect = lambda tid: stale if tid == 99 else None
+        # All 26 words are promised to live threads, so 99 gets none.
+        for i in range(1, 27):
+            await api.settings_repo.set(f"voice_label:{i}", SPOKEN_LABELS[i - 1])
+        views = [{"thread_id": 99, "thread_name": "[bravo] 📂 repo"}]
+        views += [{"thread_id": i, "thread_name": f"t{i}"} for i in range(1, 27)]
 
         await api._apply_voice_labels(views)
 
-        thread.edit.assert_awaited_once_with(name="📂 repo")
+        assert views[0]["voice_label"] is None, "no word was available"
+        stale.edit.assert_awaited_once_with(name="📂 repo")
         assert views[0]["thread_name"] == "📂 repo"
 
     async def test_an_untagged_title_is_left_alone(self, api: ApiServer) -> None:
-        """Discord's rename budget is tight; a no-op rename is not free."""
+        """A no-op rename is not free, and this endpoint is polled constantly."""
         thread = _thread(1, "📂 repo")
         api.bot.get_channel.return_value = thread
         views = [{"thread_id": 1, "thread_name": "📂 repo", "closed": True}]
@@ -557,3 +568,55 @@ class TestAStaleTagLeavesTheTitle:
         await api._apply_voice_labels(views)
 
         thread.edit.assert_awaited_once_with(name=f"[{FIRST}] 📂 repo")
+
+
+class TestTitleWorkIsBounded:
+    """Looking a thread up costs a Discord call, so the budget must count those.
+
+    The per-call cap only counted *successful* renames. Falling back to
+    ``fetch_channel`` for an uncached thread then made every skipped view — an
+    archived one, a locked one — cost an HTTP call that counted against nothing.
+    With a hundred closed sessions and `/api/sessions` polled every five seconds
+    by the voice companion, that is a hundred Discord calls every five seconds:
+    the same rate-limit failure this code is supposed to avoid.
+    """
+
+    async def test_lookups_count_against_the_budget_not_just_renames(self, api: ApiServer) -> None:
+        # Every thread is archived, so nothing can be renamed and the old cap
+        # never advanced.
+        archived = _thread(1, "📂 repo", archived=True)
+        api.bot.get_channel.return_value = None
+        api.bot.fetch_channel = AsyncMock(return_value=archived)
+        views = [{"thread_id": i, "thread_name": f"📂 repo-{i}"} for i in range(1, 60)]
+
+        await api._apply_voice_labels(views)
+
+        assert api.bot.fetch_channel.await_count <= api._MAX_RETITLES_PER_CALL
+
+    async def test_a_closed_session_is_never_fetched(self, api: ApiServer) -> None:
+        """It is archived, so it cannot be renamed — the call is pure waste.
+
+        Its tag is taken out of the title when the session closes, while the
+        thread is still editable (lifecycle_adapters.py).
+        """
+        api.bot.get_channel.return_value = None
+        api.bot.fetch_channel = AsyncMock()
+        views = [
+            {"thread_id": i, "thread_name": f"[luffy] repo-{i}", "closed": True}
+            for i in range(1, 40)
+        ]
+
+        await api._apply_voice_labels(views)
+
+        api.bot.fetch_channel.assert_not_awaited()
+
+    async def test_a_cached_thread_costs_no_call(self, api: ApiServer) -> None:
+        thread = _thread(1, "📂 repo")
+        api.bot.get_channel.return_value = thread
+        api.bot.fetch_channel = AsyncMock()
+        views = [{"thread_id": 1, "thread_name": "📂 repo"}]
+
+        await api._apply_voice_labels(views)
+
+        api.bot.fetch_channel.assert_not_awaited()
+        thread.edit.assert_awaited_once()

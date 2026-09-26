@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { parseCommand } from "../src/control/command.mjs";
 import { matchTarget } from "../src/control/targets.mjs";
 import { createRelayClient } from "../src/control/api.mjs";
-import { createVoiceController } from "../src/control/controller.mjs";
+import { MAX_TIDY_UP_CLOSES, createVoiceController } from "../src/control/controller.mjs";
 
 // ---------------------------------------------------------------------------
 // parseCommand — spoken text has no punctuation and inconsistent casing
@@ -1635,4 +1635,37 @@ test("a close that fails does not stop the rest", async () => {
   assert.deepEqual(closed, ["3"]);
   assert.equal(result.closed, 1);
   assert.equal(result.failed, 1);
+});
+
+test("the tidy-up is bounded, so one sentence cannot flood Discord", async () => {
+  // 300 finished sessions is the real number this ran against today.
+  const sessions = Array.from({ length: 300 }, (_, i) => ({
+    thread_id: String(i + 1),
+    thread_name: `t${i}`,
+    voice_label: null,
+    state: "history",
+  }));
+  let closed = 0;
+  const controller = createVoiceController({
+    client: {
+      listSessions: async () => sessions,
+      close: async () => {
+        closed += 1;
+        return { state: "closed", archived: true };
+      },
+      sendSpoken: async () => ({}),
+    },
+    ownerId: "7",
+    enabled: true,
+    announce: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const result = await controller.handleUtterance({
+    userId: "7",
+    text: "close everything I'm not using",
+  });
+
+  assert.ok(closed <= MAX_TIDY_UP_CLOSES, `closed ${closed} in one go`);
+  assert.equal(result.remaining, 300 - closed, "and it says how many are left");
 });
