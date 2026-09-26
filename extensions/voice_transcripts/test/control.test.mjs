@@ -549,3 +549,47 @@ test("the longest name wins when nothing follows it", () => {
     target: "aldus site",
   });
 });
+
+// ---------------------------------------------------------------------------
+// Discord IDs are 19 digits — JSON.parse cannot hold them
+// ---------------------------------------------------------------------------
+
+test("a 19-digit thread id survives the API client exactly", async () => {
+  const body = '{"sessions":[{"thread_id":1553390219548561508,"thread_name":"x"}]}';
+  const fetchImpl = stubFetch(
+    () => new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
+  );
+  const client = createRelayClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const [session] = await client.listSessions();
+  // 1553390219548561508 is beyond Number.MAX_SAFE_INTEGER; parsed as a number it
+  // silently becomes ...400 and Discord answers "Unknown Channel".
+  assert.equal(session.thread_id, "1553390219548561508");
+});
+
+test("that id is used verbatim in the request URL", async () => {
+  const fetchImpl = stubFetch(() => new Response("{}", { status: 202 }));
+  const client = createRelayClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.sendSpoken({
+    threadId: "1553390219548561508",
+    text: "hi",
+    speakerId: "42",
+  });
+
+  assert.ok(fetchImpl.calls[0].url.endsWith("/api/threads/1553390219548561508/spoken"));
+});
+
+test("ordinary numbers in the payload are left alone", async () => {
+  const body = '{"sessions":[{"thread_id":7,"duration":1.5,"capacity":{"limit":10}}]}';
+  const fetchImpl = stubFetch(
+    () => new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
+  );
+  const [session] = await createRelayClient({
+    baseUrl: "http://127.0.0.1:8080",
+    fetchImpl,
+  }).listSessions();
+
+  assert.equal(session.thread_id, "7");
+  assert.equal(session.duration, 1.5);
+});

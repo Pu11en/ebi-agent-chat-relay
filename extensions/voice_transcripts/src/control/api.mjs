@@ -13,6 +13,21 @@
 const DEFAULT_TIMEOUT_MS = 10_000;
 const SESSION_LIMIT = 50;
 
+/**
+ * Parse a control-plane response without destroying its Discord IDs.
+ *
+ * A snowflake is 19 digits — larger than `Number.MAX_SAFE_INTEGER` — so
+ * `JSON.parse` rounds it: 1553390219548561508 silently becomes ...561400, and
+ * the only symptom is Discord answering "Unknown Channel" for a thread that is
+ * plainly right there. The ids are quoted before parsing so they stay strings,
+ * which is all this client ever needs them to be: something to put in a URL.
+ *
+ * Only id fields are quoted; a duration or a count is left as a number.
+ */
+function parseIdSafe(text) {
+  return JSON.parse(text.replace(/"(thread_id|session_id|speaker_id)":\s*(\d+)/g, '"$1":"$2"'));
+}
+
 export function createRelayClient({
   baseUrl,
   secret = null,
@@ -51,7 +66,7 @@ export function createRelayClient({
         method: "GET",
         headers: headers(),
       });
-      return (await response.json())?.sessions ?? [];
+      return parseIdSafe(await response.text())?.sessions ?? [];
     },
     async sendSpoken({ threadId, text, speakerId, source = "voice", mode = "queue" }) {
       const response = await request(`/api/threads/${encodeURIComponent(threadId)}/spoken`, {
@@ -59,7 +74,7 @@ export function createRelayClient({
         headers: headers({ "Content-Type": "application/json" }),
         body: JSON.stringify({ text, speaker_id: String(speakerId), source, mode }),
       });
-      return await response.json();
+      return parseIdSafe(await response.text());
     },
   };
 }
