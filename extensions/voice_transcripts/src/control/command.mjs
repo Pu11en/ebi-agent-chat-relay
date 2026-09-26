@@ -22,7 +22,8 @@
  * the resolver picks — see targets.mjs.
  */
 
-const FILLER = /^(?:ok(?:ay)?|alright|right|hey|um+|uh+|so|and|well|yeah)\b[\s,.:;-]*/i;
+const FILLER =
+  /^(?:ok(?:ay)?|alright|right|hey|um+|uh+|so|and|well|yeah)\b[\s,.:;-]*/i;
 const NOUN = /\b(thread|session|chat)\b/gi;
 const GAP = /^[\s,.:;–—-]+/;
 
@@ -35,7 +36,10 @@ const FORMS = [
   // tell / ask the X thread (to|that) <prompt>
   { lead: /^(?:tell|ask)\s+(?:the\s+)?/i, connector: /^(?:to|that)\s+/i },
   // (over) in / inside (of) the X thread, <prompt>
-  { lead: /^(?:over\s+)?(?:inside\s+of|inside|in)\s+(?:the\s+)?/i, connector: null },
+  {
+    lead: /^(?:over\s+)?(?:inside\s+of|inside|in)\s+(?:the\s+)?/i,
+    connector: null,
+  },
 ];
 
 /** A spoken thread name is a few words, not a clause. */
@@ -70,7 +74,8 @@ export function parseCommand(said) {
   let text = said.trim().replace(/\s+/g, " ");
   if (!text) return null;
   // Strip however many filler openers the speaker stacked up.
-  for (let i = 0; i < 3 && FILLER.test(text); i += 1) text = text.replace(FILLER, "");
+  for (let i = 0; i < 3 && FILLER.test(text); i += 1)
+    text = text.replace(FILLER, "");
 
   for (const form of FORMS) {
     const lead = text.match(form.lead);
@@ -92,7 +97,6 @@ export function parseCommand(said) {
 /** Shortest instruction worth acting on; below this it is a stray word. */
 export const MIN_PROMPT_CHARS = 2;
 
-
 // ---------------------------------------------------------------------------
 // The tag as a wake word
 // ---------------------------------------------------------------------------
@@ -106,37 +110,77 @@ export const MIN_PROMPT_CHARS = 2;
  * rather than hoped about.
  *
  * Position alone is not the signal: `delta` is the second word in that
- * sentence. What separates them is that an address is preceded only by throat-
- * clearing, while a tag used as a noun is preceded by the grammar that makes it
- * one — an article, a verb, a pronoun. So everything before the tag must be
- * filler, and "the" is decisive.
+ * sentence. What separates them is the word immediately before: an article, a
+ * preposition or a naming verb makes the tag a *noun* ("the delta", "call it
+ * bravo", "I think alpha"), while anything else leaves it a vocative.
+ *
+ * This began as an allowlist of throat-clearing, and that was wrong in practice:
+ * "But alpha, even if it fails…" and "You're alpha, okay, alpha, you need to…"
+ * were both plainly addressed to alpha and both silently dropped, because no
+ * list of filler words survives contact with how someone actually opens a
+ * sentence. Blocking the few words that make a noun is the same judgement
+ * inverted, and it fails in the safe direction: the cost of a false positive is
+ * one visible confirmation in the transcript channel, while the cost of a false
+ * negative is the speaker repeating themselves and not knowing why.
  */
-const LEAD_FILLER = new Set([
-  "ok",
-  "okay",
-  "alright",
-  "right",
-  "hey",
-  "hi",
-  "um",
-  "uh",
-  "er",
-  "so",
-  "and",
-  "well",
-  "yeah",
-  "yep",
-  "now",
-  "also",
-  "then",
-  "oh",
+const NOUN_MAKERS = new Set([
+  // Determiners — "the delta", "that bravo"
+  "the",
+  "a",
+  "an",
+  "this",
+  "that",
+  "these",
+  "those",
+  "it",
+  "its",
+  "my",
+  "your",
+  "our",
+  "their",
+  "his",
+  "her",
+  // Prepositions — "to alpha", "about bravo"
+  "to",
+  "of",
+  "in",
+  "on",
+  "at",
+  "for",
+  "with",
+  "from",
+  "about",
+  "into",
+  "by",
+  // Naming and reporting verbs — "call it bravo", "I think alpha", "he said alpha"
+  "call",
+  "called",
+  "calling",
+  "name",
+  "named",
+  "say",
+  "said",
+  "says",
+  "tell",
+  "told",
+  "mention",
+  "mentioned",
+  "think",
+  "thought",
+  "thinks",
+  "guess",
+  "believe",
+  "mean",
+  "means",
+  "meant",
 ]);
 
 /** Cheap bound on the scan; the filler rule above is what actually decides. */
 const MAX_LEAD_WORDS = 6;
 
 /** Connectors that carry no instruction once the thread is already named. */
-const OPENERS = /^(?:[,.:;!?\s-]+|please\s+|to\s+|that\s+|you\s+|can\s+you\s+|could\s+you\s+)+/i;
+const OPENERS =
+  /^(?:[,.:;!?\s-]+|please\s+|to\s+|that\s+|you\s+|can\s+you\s+|could\s+you\s+)+/i;
 
 /**
  * Address a thread by saying its tag, then just talking.
@@ -154,7 +198,9 @@ const OPENERS = /^(?:[,.:;!?\s-]+|please\s+|to\s+|that\s+|you\s+|can\s+you\s+|co
  *            candidates: Array<{target: string, prompt: string}>}|null}
  */
 export function parseByTag(said, tags) {
-  const known = new Set((tags ?? []).filter(Boolean).map((t) => String(t).toLowerCase()));
+  const known = new Set(
+    (tags ?? []).filter(Boolean).map((t) => String(t).toLowerCase()),
+  );
   if (!known.size) return null;
   const text = String(said ?? "").trim();
   if (!text) return null;
@@ -164,11 +210,8 @@ export function parseByTag(said, tags) {
   for (let i = 0; i < limit; i += 1) {
     const bare = words[i].toLowerCase().replace(/[^a-z0-9]/g, "");
     if (!known.has(bare)) continue;
-    const lead = words
-      .slice(0, i)
-      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/g, ""))
-      .filter(Boolean);
-    if (!lead.every((w) => LEAD_FILLER.has(w))) return null;
+    const before = (words[i - 1] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (before && NOUN_MAKERS.has(before)) return null;
     // Everything after the tag is the instruction. "thread" straight after the
     // tag is how people say it out loud ("alpha thread, run the tests") and
     // carries nothing, so it goes too.
@@ -180,7 +223,6 @@ export function parseByTag(said, tags) {
   }
   return null;
 }
-
 
 // ---------------------------------------------------------------------------
 // Opening a session, rather than talking to one
@@ -234,7 +276,8 @@ function folderSplits(rest) {
     splits.push({ folder: f, prompt: cleaned });
   };
   const named = rest.match(FOLDER_END);
-  if (named) add(rest.slice(0, named.index), rest.slice(named.index + named[0].length));
+  if (named)
+    add(rest.slice(0, named.index), rest.slice(named.index + named[0].length));
   const joined = rest.match(PROMPT_START);
   if (joined) add(rest.slice(0, joined.index), rest.slice(joined.index));
   add(rest, "");
@@ -247,7 +290,9 @@ function folderSplits(rest) {
  *            candidates: Array<{folder: string, prompt: string}>}|null}
  */
 export function parseNewSession(said) {
-  const text = String(said ?? "").trim().replace(/\s+/g, " ");
+  const text = String(said ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
   const match = text.match(NEW_SESSION);
   if (!match) return null;
   const candidates = folderSplits(match[1]);

@@ -1284,3 +1284,12 @@ test("an unusable pause is refused at startup, not silently clamped", () => {
     /VOICE_MAX_UTTERANCE_SECONDS/,
   );
 });
+
+test("the openings that were silently dropped now work", () => {
+  // Both measured from the real transcript; both were plainly addressed to alpha.
+  assert.equal(parseByTag("But alpha, even if it does fail there's nothing I can do", ["alpha"])
+    ?.target, "alpha");
+  assert.equal(parseByTag("You're alpha, okay, alpha, you need to research", ["alpha"])
+    ?.target, "alpha");
+  assert.equal(parseByTag("hey so anyway alpha run the tests", ["alpha"])?.prompt, "run the tests");
+});
