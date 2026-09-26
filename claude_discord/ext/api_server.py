@@ -2174,8 +2174,16 @@ class ApiServer:
             if thread_id is not None:
                 existing[thread_id] = value
 
-        ordered = [v["thread_id"] for v in views]
+        # A closed session is not somewhere work is happening, so it is not
+        # given a word and does not keep the one it had. Both mattered: the pool
+        # is 26 long and finished sessions were holding most of it, and the tag
+        # still resolved — saying it delivered an instruction into a session that
+        # was over. A view that does not say is treated as open, since every
+        # other caller builds views without the field.
+        ordered = [v["thread_id"] for v in views if not v.get("closed")]
         labels, minted, released = assign_labels(ordered, existing)
+        finished = {v["thread_id"] for v in views if v.get("closed")} & set(existing)
+        released |= finished
         for thread_id, label in minted.items():
             with contextlib.suppress(Exception):
                 await self.settings_repo.set(f"{_VOICE_LABEL_PREFIX}{thread_id}", label)

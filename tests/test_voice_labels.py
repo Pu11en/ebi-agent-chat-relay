@@ -425,3 +425,94 @@ class TestAliasesReachTheVoiceLayer:
         for label in SPOKEN_LABELS:
             for alias in aliases_for(label):
                 assert heard_as(alias) == label
+
+
+class TestAClosedSessionHoldsNoTag:
+    """A tag on a finished session is worse than no tag.
+
+    Two things went wrong with it. The pool is 26 long and closed sessions were
+    holding most of it, so live threads went untagged. And the tag still
+    resolved: saying it delivered an instruction into a session that was over,
+    which answered "this session is already closed" — the speaker's own word
+    reaching a corpse.
+    """
+
+    async def test_a_closed_session_is_not_given_a_tag(self, api: ApiServer) -> None:
+        api.bot.get_channel.return_value = None
+        views = [
+            {"thread_id": 1, "thread_name": "done", "closed": True},
+            {"thread_id": 2, "thread_name": "live", "closed": False},
+        ]
+
+        await api._apply_voice_labels(views)
+
+        assert views[0]["voice_label"] is None
+        assert views[1]["voice_label"] == FIRST, "the live thread gets the first tag"
+
+    async def test_closing_a_session_hands_its_tag_back(self, api: ApiServer) -> None:
+        api.bot.get_channel.return_value = None
+        await api._apply_voice_labels([{"thread_id": 1, "thread_name": "live"}])
+        assert (await api.settings_repo.get_all())["voice_label:1"] == FIRST
+
+        # The same thread comes round again, now closed.
+        views = [
+            {"thread_id": 1, "thread_name": "done", "closed": True},
+            {"thread_id": 2, "thread_name": "next", "closed": False},
+        ]
+        await api._apply_voice_labels(views)
+
+        stored = await api.settings_repo.get_all()
+        assert "voice_label:1" not in stored, "the word is free again"
+
+    async def test_the_freed_word_is_not_handed_straight_to_another_thread(
+        self, api: ApiServer
+    ) -> None:
+        """A tag must not change meaning under the speaker.
+
+        Freeing it is right — the pool is 26 long. Handing it to a different live
+        thread in the same breath is not: the next thing said with that word
+        would reach somewhere new, which is worse than reaching a closed
+        session and being told so. So a freed word goes to the back of the queue
+        and is only reused once every unused one is gone.
+        """
+        api.bot.get_channel.return_value = None
+        await api._apply_voice_labels([{"thread_id": 1, "thread_name": "live"}])
+
+        views = [
+            {"thread_id": 1, "thread_name": "done", "closed": True},
+            {"thread_id": 2, "thread_name": "next", "closed": False},
+        ]
+        await api._apply_voice_labels(views)
+
+        assert views[1]["voice_label"] != FIRST
+        assert views[1]["voice_label"] in SPOKEN_LABELS
+
+    async def test_a_view_that_never_says_is_treated_as_open(self, api: ApiServer) -> None:
+        """Every other caller of this builds views without the field."""
+        api.bot.get_channel.return_value = None
+        views = [{"thread_id": 1, "thread_name": "live"}]
+
+        await api._apply_voice_labels(views)
+
+        assert views[0]["voice_label"] == FIRST
+
+    async def test_the_freed_word_is_reused_once_the_pool_runs_out(self, api: ApiServer) -> None:
+        """The other side of the trade-off: without reuse the pool dies in a week.
+
+        A closed session's word does go back into circulation. That is safe in a
+        way reusing a *live* thread's word never is — the closed thread is gone
+        from the sidebar and its title no longer shows the tag, so there is
+        nothing left prompting the speaker to say it.
+        """
+        api.bot.get_channel.return_value = None
+        everything = [{"thread_id": i, "thread_name": f"t{i}"} for i in range(1, 27)]
+        await api._apply_voice_labels(everything)
+        assert all(v["voice_label"] for v in everything), "all 26 handed out"
+
+        # One closes; a new thread appears and must still get a word.
+        everything[0]["closed"] = True
+        everything.append({"thread_id": 99, "thread_name": "new"})
+        await api._apply_voice_labels(everything)
+
+        assert everything[0]["voice_label"] is None
+        assert everything[-1]["voice_label"] == FIRST, "the freed word, reused"

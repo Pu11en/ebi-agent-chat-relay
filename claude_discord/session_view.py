@@ -89,6 +89,10 @@ def build_session_views(
             "summary": rec.summary,
             "created_at": rec.created_at,
             "last_used_at": rec.last_used_at,
+            # Whether the conversation is over. Everything that treats a session
+            # as somewhere work can happen needs this — a closed one is given no
+            # spoken tag and is not listed as live.
+            "closed": rec.is_closed,
         }
 
     # Registry entries win on working_dir/description: they describe the turn
@@ -105,6 +109,7 @@ def build_session_views(
                 "summary": None,
                 "created_at": None,
                 "last_used_at": None,
+                "closed": False,
             },
         )
         view["current_task"] = session.description
