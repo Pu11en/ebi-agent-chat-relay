@@ -773,3 +773,27 @@ test("the roster is capped so it cannot outgrow one message", () => {
   }));
   assert.equal(renderRoster(many).split("\n").length - 1, 12);
 });
+
+test("a tagged title is not shown with its tag twice", () => {
+  const titled = TAGGED.map((s) => ({ ...s, thread_name: `[${s.voice_label}] ${s.thread_name}` }));
+  const text = renderRoster(titled);
+
+  assert.ok(text.includes("`alpha` — 📂 ebi-agent-chat-relay"));
+  assert.ok(!text.includes("[alpha]"));
+});
+
+test("the confirmation line does not repeat the tag either", async () => {
+  const titled = TAGGED.map((s) => ({ ...s, thread_name: `[${s.voice_label}] ${s.thread_name}` }));
+  const said = [];
+  const controller = createVoiceController({
+    ownerId: "42",
+    enabled: true,
+    client: { listSessions: async () => titled, sendSpoken: async () => {} },
+    announce: async (m) => said.push(m),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread go" });
+
+  assert.equal(said[0], "🎙️ → **`alpha` 📂 ebi-agent-chat-relay**: go");
+});

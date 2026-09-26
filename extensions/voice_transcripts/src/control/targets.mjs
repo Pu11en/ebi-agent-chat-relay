@@ -17,6 +17,14 @@
 
 const STOPWORDS = new Set(["the", "a", "an", "my", "our", "that", "this"]);
 
+/** The "[bravo] " ccdb writes at the front of a tagged thread title. */
+const TITLE_TAG = /^\s*\[[a-z]{3,10}\]\s*/;
+
+/** The title without its tag prefix — the tag is shown separately. */
+export function untagged(title) {
+  return String(title ?? "").replace(TITLE_TAG, "").trim();
+}
+
 /** Letters, digits and single spaces — the form everything is compared in. */
 function normalize(value) {
   return String(value ?? "")

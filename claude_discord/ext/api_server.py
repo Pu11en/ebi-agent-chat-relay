@@ -59,7 +59,7 @@ from ..session_lifecycle import (
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
-from ..voice_labels import assign_labels
+from ..voice_labels import assign_labels, tagged_title, title_tag
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
 from .teams_sync import ThreadRef
@@ -2081,6 +2081,47 @@ class ApiServer:
                 await self.settings_repo.delete(f"{_VOICE_LABEL_PREFIX}{thread_id}")
         for view in views:
             view["voice_label"] = labels.get(view["thread_id"])
+        await self._show_tags_in_titles(views)
+
+    #: Thread renames are rate-limited hard by Discord (a couple per thread per
+    #: ten minutes), so a first run over a full set is spread across calls
+    #: rather than fired at once.
+    _MAX_RETITLES_PER_CALL = 4
+
+    async def _show_tags_in_titles(self, views: list[dict[str, Any]]) -> None:
+        """Put each thread's tag at the front of its Discord title.
+
+        A roster in another channel answers "which tag is that thread?"; the
+        question actually being asked while looking at the sidebar is "what do I
+        say to *this* one?". Only a title answers that, so the tag goes there.
+
+        Renames happen only when the title does not already show the right tag,
+        which makes this a once-per-thread cost rather than a once-per-request
+        one, and the per-call cap keeps a fresh set from spending the whole
+        rename budget in one go. An archived or locked thread simply keeps its
+        old title — worth a debug line, never worth failing the request.
+        """
+        import discord as _discord
+
+        renamed = 0
+        for view in views:
+            if renamed >= self._MAX_RETITLES_PER_CALL:
+                break
+            label = view.get("voice_label")
+            name = view.get("thread_name")
+            if not label or not name or title_tag(name) == label:
+                continue
+            thread = self.bot.get_channel(view["thread_id"])
+            if not isinstance(thread, _discord.Thread) or thread.archived or thread.locked:
+                continue
+            wanted = tagged_title(name, label)
+            try:
+                await thread.edit(name=wanted)
+            except Exception as exc:  # rate limit, permissions, archived race
+                logger.debug("Could not tag thread %s: %s", view["thread_id"], exc)
+                continue
+            view["thread_name"] = wanted
+            renamed += 1
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.

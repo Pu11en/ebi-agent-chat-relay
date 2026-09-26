@@ -12,6 +12,8 @@
  * from spending its rate limit on an unchanged list.
  */
 
+import { untagged } from "./targets.mjs";
+
 const MAX_ROWS = 12;
 
 /** @returns {string|null} The roster text, or null when no thread has a tag. */
@@ -27,7 +29,7 @@ export function renderRoster(sessions) {
   if (!tagged.length) return null;
 
   const rows = tagged.map((s) => {
-    const name = s.thread_name || s.working_dir || `thread ${s.thread_id}`;
+    const name = untagged(s.thread_name) || s.working_dir || `thread ${s.thread_id}`;
     const live = s.state === "running" ? " · 🟢 working" : "";
     return `\`${s.voice_label}\` — ${name}${live}`;
   });

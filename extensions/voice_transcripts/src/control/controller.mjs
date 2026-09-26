@@ -22,7 +22,7 @@
  */
 
 import { MIN_PROMPT_CHARS, parseCommand } from "./command.mjs";
-import { resolveTarget } from "./targets.mjs";
+import { resolveTarget, untagged } from "./targets.mjs";
 
 const IGNORED = { status: "ignored" };
 
@@ -53,7 +53,11 @@ export function createVoiceController({
 
   function describe(session) {
     const tag = session.voice_label ? `\`${session.voice_label}\` ` : "";
-    return tag + (session.thread_name || session.working_dir || `thread ${session.thread_id}`);
+    // The title already carries "[bravo] " once ccdb has tagged it; showing the
+    // tag twice in one line reads like two different things.
+    const name =
+      untagged(session.thread_name) || session.working_dir || `thread ${session.thread_id}`;
+    return tag + name;
   }
 
   function taken() {
@@ -113,7 +117,7 @@ export function createVoiceController({
             (sessions
               .filter((s) => s.voice_label)
               .slice(0, 8)
-              .map((s) => `\`${s.voice_label}\` ${s.thread_name ?? s.working_dir ?? ""}`)
+              .map((s) => `\`${s.voice_label}\` ${untagged(s.thread_name) || s.working_dir || ""}`)
               .join(" · ") || "no tags assigned yet"),
         );
         return { status: "no-target", target: heard };

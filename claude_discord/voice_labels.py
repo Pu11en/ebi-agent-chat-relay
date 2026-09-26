@@ -26,6 +26,8 @@ to the next one that needs it. Without that, tags would run out in a week.
 
 from __future__ import annotations
 
+import re
+
 #: The NATO phonetic alphabet, chosen for being mutually unmistakable when
 #: spoken over a poor channel — which is what a room microphone is.
 SPOKEN_LABELS: tuple[str, ...] = (
@@ -96,3 +98,41 @@ def assign_labels(
         labels[thread_id] = label
         new[thread_id] = label
     return labels, new
+
+
+#: A tag shown at the front of a Discord thread title, e.g. "[bravo] 📂 repo".
+#: Matched loosely on read so a hand-edited title still round-trips.
+_TITLE_TAG_RE = re.compile(r"^\s*\[([a-z]{3,10})\]\s*")
+
+#: Discord's thread-name ceiling.
+MAX_THREAD_NAME = 100
+
+
+def strip_title_tag(title: str) -> str:
+    """Return ``title`` without a leading ``[tag] `` prefix."""
+    return _TITLE_TAG_RE.sub("", str(title or "")).strip()
+
+
+def title_tag(title: str) -> str | None:
+    """Return the tag already shown in ``title``, if any."""
+    # Coerced rather than typed strictly: the argument is a Discord thread
+    # name, and a title is never worth raising over.
+    match = _TITLE_TAG_RE.match(str(title or ""))
+    return match.group(1) if match else None
+
+
+def tagged_title(title: str, label: str | None) -> str:
+    """Put ``label`` at the front of ``title``, replacing any tag already there.
+
+    The tag has to be readable straight off the Discord sidebar — a roster in
+    another channel answers "which tag is that thread?" but not the question
+    actually being asked, which is "what do I say to *this* one?". The prefix is
+    idempotent so re-applying it never stacks, and the *name* is truncated
+    rather than the tag, because a title missing its last word is still usable
+    and a tag missing a letter is not.
+    """
+    base = strip_title_tag(title)
+    if not label:
+        return base[:MAX_THREAD_NAME]
+    prefix = f"[{label}] "
+    return (prefix + base[: MAX_THREAD_NAME - len(prefix)]).strip()
