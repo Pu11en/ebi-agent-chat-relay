@@ -1087,3 +1087,26 @@ test("addressing a thread by tag beats opening a new one", async () => {
 
   assert.equal(captured.length, 1, "the instruction went to alpha, not to the spawner");
 });
+
+test("however the request is framed, it still opens a session", () => {
+  for (const said of [
+    "Make a new session in the aldus folder and do design work",
+    "I make a new session in the oldest folder and then do design work",
+    "I'll make a new session in aldus",
+    "can you open a session in archify",
+    "let's start a thread in upwork",
+    "okay so I want to make a new session in aldus and plan the launch",
+    "we need to create a new chat in archify",
+  ]) {
+    assert.equal(parseNewSession(said)?.kind, "spawn", said);
+  }
+});
+
+test("talking about sessions in the past tense is not a request", () => {
+  for (const said of [
+    "I made a new session in aldus earlier",
+    "the new session in aldus is going fine",
+  ]) {
+    assert.equal(parseNewSession(said), null, said);
+  }
+});

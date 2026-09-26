@@ -200,8 +200,19 @@ export function parseByTag(said, tags) {
  * aldus" does not end at all. So every reading is offered and the folder
  * catalog picks the one that names something real.
  */
-const NEW_SESSION =
-  /^(?:ok(?:ay)?|alright|hey|so|and|um+|uh+)?[\s,.:;-]*(?:make|start|open|create|spin\s+up|fire\s+up|kick\s+off)\s+(?:me\s+)?(?:a|an|another)?\s*(?:new\s+)?(?:session|thread|chat)\s+(?:inside\s+of|inside|in|for|on|at|under)\s+(?:the\s+)?(.+)$/i;
+const NEW_SESSION = new RegExp(
+  // Throat-clearing, then however the request was framed. The framing varies far
+  // more than the request does — "make a new session", "I'll make a new session",
+  // "can you open a session", "let's start a thread" — and a transcript adds its
+  // own noise on top ("I make a new session", with the "'ll" lost).
+  String.raw`^(?:(?:ok(?:ay)?|alright|right|hey|so|and|well|um+|uh+|oh)[\s,.:;-]*)*` +
+    String.raw`(?:(?:i|we|you)(?:'?ll|'?d)?\s+)?(?:can|could|would|will)?\s*(?:you\s+)?` +
+    String.raw`(?:please\s+)?(?:(?:want|need|like|going)\s+(?:to|ta)\s+)?(?:let'?s\s+)?` +
+    String.raw`(?:make|start|open|create|spin\s+up|fire\s+up|kick\s+off|boot\s+up)\s+` +
+    String.raw`(?:me\s+)?(?:a|an|another)?\s*(?:new\s+)?(?:session|thread|chat)\s+` +
+    String.raw`(?:inside\s+of|inside|in|for|on|at|under)\s+(?:the\s+)?(.+)$`,
+  "i",
+);
 
 /** Words that end a spoken folder name. */
 const FOLDER_END = /\b(folder|directory|project|repo|repository)\b/i;
