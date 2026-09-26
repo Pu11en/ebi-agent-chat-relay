@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from .edit_budget import budget_for
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -131,7 +133,14 @@ class StreamingMessageManager:
             if self._current_message is None:
                 self._current_message = await self._thread.send(display_text)
             else:
-                await self._current_message.edit(content=display_text)
+                # Editing spends the *thread's* budget, not this message's:
+                # Discord meters edits per channel, and the tool counters in the
+                # same thread are spending from the same allowance
+                # (discord_ui/edit_budget.py).
+                message = self._current_message
+                await budget_for(self._thread.id).submit(
+                    lambda: message.edit(content=display_text), key=("stream", message.id)
+                )
             self._last_edit_time = time.monotonic()
         except Exception:
             # Catch all exceptions including aiohttp.ClientError (e.g. ServerDisconnectedError

@@ -42,6 +42,7 @@ from ..database.repository import SessionRecord, SessionRepository
 from ..database.resume_repo import PendingResumeRepository
 from ..database.settings_repo import SettingsRepository
 from ..discord_ui.chunker import chunk_message
+from ..discord_ui.edit_budget import forget_budget
 from ..discord_ui.embeds import stopped_embed
 from ..discord_ui.file_sender import send_file_blobs
 from ..discord_ui.status import StatusManager
@@ -1235,6 +1236,10 @@ class ClaudeChatCog(commands.Cog):
         if runner:
             await runner.kill()
         await self.repo.delete(channel_id)
+        # Drop the thread's edit budget: the registry would otherwise keep one
+        # entry per thread forever, each holding a timer, and a queued edit would
+        # repaint a display this session has already finished with.
+        await forget_budget(channel_id)
         with contextlib.suppress(discord.HTTPException):
             await channel.send("🗑️ Session closed. The build keeps going in its own thread.")
         if isinstance(channel, discord.Thread):

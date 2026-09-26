@@ -60,6 +60,7 @@ from claude_code_core.rendering import render_for, wrap_tables_in_fences
 from claude_code_core.types import ToolCategory
 
 from .discord_ui.chunker import DISCORD_CAPABILITIES
+from .discord_ui.edit_budget import COUNTER_AFTER_SECONDS, budget_for
 from .discord_ui.embeds import (
     CATEGORY_ICON,
     COLOR_ERROR,
@@ -151,13 +152,20 @@ class DiscordActivity:
         )
 
     async def _run_timer(self) -> None:
-        """Keep the elapsed counter owned by the Discord adapter."""
+        """Keep the elapsed counter owned by the Discord adapter.
+
+        Nothing is shown for the first :data:`COUNTER_AFTER_SECONDS`. A counter is
+        only information when something is slow — for a call that finishes in
+        under a second the number says nothing, and those are the common case, so
+        ticking them was most of this thread's edit budget for none of the value.
+        A tool that finishes before the delay is cancelled having spent nothing.
+        """
         try:
-            await self.update("⏳ 0s elapsed...")
+            await asyncio.sleep(COUNTER_AFTER_SECONDS)
             while True:
-                await asyncio.sleep(TOOL_TIMER_INTERVAL)
                 elapsed = int(time.monotonic() - self._started_at)
                 await self.update(f"⏳ {elapsed}s elapsed...")
+                await asyncio.sleep(TOOL_TIMER_INTERVAL)
         except asyncio.CancelledError:
             pass
 
@@ -168,8 +176,15 @@ class DiscordActivity:
     async def update(self, detail: str) -> None:
         if self._finished or self._message is None:
             return
+        message = self._message
         with contextlib.suppress(Exception):
-            await self._message.edit(embed=_activity_embed(self._spec, detail))
+            # Through the thread's budget: Discord meters edits per channel, so
+            # every counter in this thread is spending the same allowance as the
+            # answer text (discord_ui/edit_budget.py).
+            await budget_for(message.channel.id).submit(
+                lambda: message.edit(embed=_activity_embed(self._spec, detail)),
+                key=("activity", message.id),
+            )
 
     async def complete(self, result: str | None, *, ok: bool = True) -> None:
         # Idempotent by contract: a session that errors after a tool finished
