@@ -38,8 +38,6 @@ const FORMS = [
   { lead: /^(?:over\s+)?in\s+(?:the\s+)?/i, connector: null },
 ];
 
-/** Shortest instruction worth sending; below this it is a stray word. */
-const MIN_PROMPT_CHARS = 2;
 /** A spoken thread name is a few words, not a clause. */
 const MAX_TARGET_WORDS = 6;
 const MAX_TARGET_CHARS = 60;
@@ -79,14 +77,17 @@ export function parseCommand(said) {
     if (!lead) continue;
     const splits = splitsFor(text.slice(lead[0].length), form.connector);
     if (!splits.length) continue;
-    const usable = splits.filter((s) => s.prompt.length >= MIN_PROMPT_CHARS);
-    if (!usable.length) {
-      // A target was named and nothing followed it. The longest reading is the
-      // whole name: "put this in the aldus site thread" means aldus site.
-      const named = splits[splits.length - 1];
-      return { kind: "incomplete", target: named.target };
-    }
-    return { kind: "relay", ...usable[0], candidates: usable };
+    // Splits with an empty instruction are offered too. Discarding them here
+    // is what broke the first real command: "the ebi agent chat relay thread"
+    // (said with no instruction after it) had its only non-empty reading be
+    // target "ebi agent" + instruction "relay thread", so the tail of the name
+    // was delivered as the work. Whether an instruction is missing can only be
+    // judged once the right split is known, and only the session list knows
+    // that.
+    return { kind: "relay", ...splits[0], candidates: splits };
   }
   return null;
 }
+
+/** Shortest instruction worth acting on; below this it is a stray word. */
+export const MIN_PROMPT_CHARS = 2;

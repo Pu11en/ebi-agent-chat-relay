@@ -59,6 +59,7 @@ from ..session_lifecycle import (
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+from ..voice_labels import assign_labels
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
 from .teams_sync import ThreadRef
@@ -100,6 +101,8 @@ _MAX_DISCORD_THREAD_NAME_LENGTH = 100
 # /api/sessions and /api/threads/{id}/messages — cross-session observability.
 # Bounded so one session peeking at another can never pull an unbounded amount
 # of history into its own context window.
+#: Settings key prefix for a thread's spoken tag (voice_labels.py).
+_VOICE_LABEL_PREFIX = "voice_label:"
 _DEFAULT_SESSION_LIMIT = 20
 _MAX_SESSION_LIMIT = 100
 _DEFAULT_THREAD_MESSAGE_LIMIT = 30
@@ -2012,6 +2015,10 @@ class ApiServer:
             lounge_messages=lounge_messages,
             thread_names=self._thread_names(thread_ids),
         )
+        # Spoken tags are assigned over the ordered view, so the threads most
+        # likely to be spoken to get the earliest letters. Done after the merge
+        # because that order is the answer, not an input.
+        await self._apply_voice_labels(views)
 
         from ..cogs._run_helper import capacity_coordinator, session_limit
 
@@ -2034,6 +2041,46 @@ class ApiServer:
             views = [v for v in views if v["thread_id"] != exclude_thread]
 
         return web.json_response({"sessions": views, "capacity": capacity})
+
+    async def _apply_voice_labels(self, views: list[dict[str, Any]]) -> None:
+        """Attach a short spoken tag to each view, minting the missing ones.
+
+        A voice surface cannot use a Discord title as a handle (see
+        :mod:`claude_discord.voice_labels`), so each thread also gets one
+        phonetic word. Assignment is lazy — there is no hook on thread
+        creation, which means a thread made before this existed is tagged the
+        first time anything asks. Without a settings repo the field is simply
+        absent and callers fall back to matching on the title.
+        """
+        if self.settings_repo is None:
+            return
+        try:
+            stored = await self.settings_repo.get_all()
+        except Exception:
+            logger.warning("Could not read spoken tags", exc_info=True)
+            return
+
+        existing: dict[int, str] = {}
+        for key, value in stored.items():
+            if not key.startswith(_VOICE_LABEL_PREFIX):
+                continue
+            try:
+                existing[int(key[len(_VOICE_LABEL_PREFIX) :])] = value
+            except ValueError:
+                continue
+
+        ordered = [v["thread_id"] for v in views]
+        labels, minted = assign_labels(ordered, existing)
+        for thread_id, label in minted.items():
+            with contextlib.suppress(Exception):
+                await self.settings_repo.set(f"{_VOICE_LABEL_PREFIX}{thread_id}", label)
+        # Release a tag whose thread has scrolled out, so the 26-word pool does
+        # not exhaust on a machine with hundreds of archived threads.
+        for thread_id in set(existing) - set(labels):
+            with contextlib.suppress(Exception):
+                await self.settings_repo.delete(f"{_VOICE_LABEL_PREFIX}{thread_id}")
+        for view in views:
+            view["voice_label"] = labels.get(view["thread_id"])
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.

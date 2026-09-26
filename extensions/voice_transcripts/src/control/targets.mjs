@@ -42,6 +42,19 @@ function candidates(session) {
   return [session.thread_name, basename(session.working_dir)].filter(Boolean);
 }
 
+/**
+ * A spoken tag is a handle, not a name: one phonetic word, assigned by ccdb and
+ * unique across the visible threads. So it is matched exactly and wins
+ * outright — no scoring, no tie, no "did you mean". Saying "thread bravo" must
+ * never be resolved by how much `bravo` happens to look like a folder name.
+ */
+function byLabel(spoken, sessions) {
+  const want = normalize(spoken);
+  if (!want) return null;
+  const hit = (sessions ?? []).find((s) => normalize(s.voice_label) === want);
+  return hit ? { status: "ok", session: hit, score: 1, label: hit.voice_label } : null;
+}
+
 function score(spokenTokens, candidate) {
   const candidateTokens = tokens(candidate);
   if (!spokenTokens.length || !candidateTokens.length) return 0;
@@ -66,6 +79,8 @@ const TIE_MARGIN = 0.05;
  *          |{status: "none"}}
  */
 export function matchTarget(spoken, sessions) {
+  const tagged = byLabel(spoken, sessions);
+  if (tagged) return tagged;
   const spokenTokens = tokens(spoken);
   const ranked = (sessions ?? [])
     .map((session) => {
@@ -120,6 +135,12 @@ export function matchTarget(spoken, sessions) {
 export function resolveTarget(candidates, sessions) {
   let best = null;
   let ambiguous = null;
+  // A tag match ends the search: it is exact, so no other split can be better
+  // and a longer split cannot be "more specific".
+  for (const candidate of candidates ?? []) {
+    const tagged = byLabel(candidate.target, sessions);
+    if (tagged) return { ...tagged, candidate };
+  }
   for (const candidate of candidates ?? []) {
     const match = matchTarget(candidate.target, sessions);
     if (match.status === "ambiguous") {

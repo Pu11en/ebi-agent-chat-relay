@@ -69,6 +69,19 @@ Transcription only listens. With `VOICE_CONTROL_ENABLED=true`, `CCDB_API_URL`
 and (if the control plane has one) `CCDB_API_SECRET` in the voice config file,
 the owner can also steer a session without leaving the room:
 
+- **Say the tag.** Every visible thread gets one word from the NATO phonetic
+  alphabet (`alpha`, `bravo`, `charlie`…), assigned by ccdb and listed in a
+  single self-updating message in the transcript channel. "Put this in the
+  bravo thread, check DKIM" is exact — a tag is a handle, so it wins outright
+  over any name matching and removes the ambiguity two similar folder names
+  cause. Tags are stable for as long as the thread stays visible and are
+  recycled once it scrolls out, so the 26-word pool never runs dry.
+- **If you pause mid-sentence, the thread is held.** Speech is captured per
+  pause, so naming a thread and then saying what to do arrives as two
+  utterances. Naming one on its own holds it for 30 seconds and announces that
+  it is holding; the next thing you say becomes the instruction. The hold
+  expires, is replaced by a new command, and is never filled by someone else in
+  the room.
 - **"Put this in the &lt;name&gt; thread &lt;instruction&gt;"** — also *send/drop/post
   this to*, *tell the &lt;name&gt; thread to …*, *ask the &lt;name&gt; session …*, and
   *in the &lt;name&gt; thread, …*. `thread`, `session` and `chat` are interchangeable.

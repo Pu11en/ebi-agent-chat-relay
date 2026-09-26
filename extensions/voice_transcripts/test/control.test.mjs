@@ -62,10 +62,11 @@ test("ordinary conversation is not a command", () => {
   }
 });
 
-test("naming a thread without an instruction is reported, not guessed at", () => {
+test("naming a thread without an instruction yields an empty instruction", () => {
   const result = parseCommand("put this in the aldus thread");
-  assert.equal(result.kind, "incomplete");
+  assert.equal(result.kind, "relay");
   assert.equal(result.target, "aldus");
+  assert.equal(result.prompt, "");
 });
 
 // ---------------------------------------------------------------------------
@@ -308,7 +309,7 @@ test("an ambiguous name lists the candidates instead of picking one", async () =
   assert.ok(announced[0].includes("aldus site"));
 });
 
-test("a named thread with no instruction asks for the instruction", async () => {
+test("a named thread with no instruction is held, not sent", async () => {
   const { controller, sent, announced } = makeController();
 
   const result = await controller.handleUtterance({
@@ -319,6 +320,7 @@ test("a named thread with no instruction asks for the instruction", async () => 
   assert.equal(result.status, "incomplete");
   assert.deepEqual(sent, []);
   assert.equal(announced.length, 1);
+  assert.ok(announced[0].includes("Holding"));
 });
 
 test("an API failure is reported in the room rather than lost in a log", async () => {
@@ -543,11 +545,15 @@ test("a noun inside the instruction does not steal the split", async () => {
   assert.equal(captured[0].text, "check the thread pool size");
 });
 
-test("the longest name wins when nothing follows it", () => {
-  assert.deepEqual(parseCommand("put this in the aldus site thread"), {
-    kind: "incomplete",
-    target: "aldus site",
-  });
+test("a name that contains the noun still offers its full reading", () => {
+  const result = parseCommand("put this in the ebi agent chat relay thread");
+  assert.deepEqual(
+    result.candidates,
+    [
+      { target: "ebi agent", prompt: "relay thread" },
+      { target: "ebi agent chat relay", prompt: "" },
+    ],
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -592,4 +598,178 @@ test("ordinary numbers in the payload are left alone", async () => {
 
   assert.equal(session.thread_id, "7");
   assert.equal(session.duration, 1.5);
+});
+
+// ---------------------------------------------------------------------------
+// Spoken tags, and the pause in the middle of a sentence
+// ---------------------------------------------------------------------------
+
+const TAGGED = [
+  { thread_id: 1, thread_name: "📂 ebi-agent-chat-relay", working_dir: "/x/ebi-agent-chat-relay",
+    voice_label: "alpha", state: "running", last_used_at: "2026-09-26 08:00:00" },
+  { thread_id: 2, thread_name: "📂 aldus-email", working_dir: "/x/aldus-email",
+    voice_label: "bravo", state: "history", last_used_at: "2026-09-26 07:00:00" },
+  { thread_id: 3, thread_name: "📂 aldus-site", working_dir: "/x/aldus-site",
+    voice_label: "charlie", state: "history", last_used_at: "2026-09-26 06:00:00" },
+];
+
+function tagged(overrides = {}) {
+  const announced = [];
+  const sent = [];
+  let clock = 1_000_000;
+  const controller = createVoiceController({
+    ownerId: "42",
+    enabled: true,
+    client: {
+      listSessions: async () => TAGGED,
+      sendSpoken: async (p) => sent.push(p),
+    },
+    announce: async (m) => announced.push(m),
+    logger: { info() {}, warn() {}, error() {} },
+    now: () => clock,
+    ...overrides,
+  });
+  return { controller, announced, sent, tick: (ms) => (clock += ms) };
+}
+
+test("a tag is an exact handle: 'thread alpha' goes to alpha", async () => {
+  const { controller, sent } = tagged();
+
+  const result = await controller.handleUtterance({
+    userId: "42",
+    text: "put this in the alpha thread run make verify",
+  });
+
+  assert.equal(result.status, "sent");
+  assert.equal(sent[0].threadId, 1);
+  assert.equal(sent[0].text, "run make verify");
+});
+
+test("a tag beats a name that looks more like what was said", async () => {
+  // "bravo" resembles nothing in aldus-email's title, and must still win.
+  const { controller, sent } = tagged();
+  await controller.handleUtterance({ userId: "42", text: "tell the bravo thread to check DKIM" });
+  assert.equal(sent[0].threadId, 2);
+  assert.equal(sent[0].text, "check DKIM");
+});
+
+test("a tag removes the ambiguity two similar folders would cause", async () => {
+  const { controller, sent, announced } = tagged();
+
+  // By name, "aldus" matches both aldus-email and aldus-site.
+  await controller.handleUtterance({ userId: "42", text: "put this in the aldus thread go" });
+  assert.deepEqual(sent, []);
+  assert.ok(announced[0].includes("more than one"));
+
+  // By tag, there is nothing to ask about.
+  await controller.handleUtterance({ userId: "42", text: "put this in the charlie thread go" });
+  assert.equal(sent[0].threadId, 3);
+});
+
+test("the confirmation shows the tag so the speaker learns it", async () => {
+  const { controller, announced } = tagged();
+  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread go" });
+  assert.ok(announced[0].includes("alpha"));
+});
+
+test("the exact sentence that failed live now holds instead of sending a fragment", async () => {
+  const { controller, sent, announced } = tagged();
+
+  // Captured per pause: the name arrives with no instruction behind it.
+  const first = await controller.handleUtterance({
+    userId: "42",
+    text: "Put this in the ebi agent chat relay thread.",
+  });
+
+  assert.equal(first.status, "incomplete");
+  assert.deepEqual(sent, [], "must not deliver 'relay thread.' as the work");
+  assert.ok(announced[0].includes("Holding"));
+
+  // The rest of the sentence lands on the held thread.
+  const second = await controller.handleUtterance({
+    userId: "42",
+    text: "tell me what time it is",
+  });
+
+  assert.equal(second.status, "sent");
+  assert.equal(sent[0].threadId, 1);
+  assert.equal(sent[0].text, "tell me what time it is");
+});
+
+test("the hold expires, so later conversation is not swept into a thread", async () => {
+  const { controller, sent, tick } = tagged();
+
+  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread" });
+  tick(31_000);
+  const result = await controller.handleUtterance({ userId: "42", text: "anyway where were we" });
+
+  assert.equal(result.status, "ignored");
+  assert.deepEqual(sent, []);
+});
+
+test("a fresh command replaces a held thread rather than filling it", async () => {
+  const { controller, sent } = tagged();
+
+  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread" });
+  await controller.handleUtterance({ userId: "42", text: "put this in the bravo thread ship it" });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].threadId, 2);
+  assert.equal(sent[0].text, "ship it");
+});
+
+test("a hold is not filled by someone else in the room", async () => {
+  const { controller, sent } = tagged();
+
+  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread" });
+  const result = await controller.handleUtterance({ userId: "999", text: "delete everything" });
+
+  assert.equal(result.status, "ignored");
+  assert.deepEqual(sent, []);
+});
+
+test("with no tags assigned the room is told so, not shown an empty list", async () => {
+  const { controller, announced } = tagged({
+    client: {
+      listSessions: async () => TAGGED.map(({ voice_label, ...rest }) => rest),
+      sendSpoken: async () => {},
+    },
+  });
+
+  await controller.handleUtterance({ userId: "42", text: "put this in the mongolia thread go" });
+  assert.ok(announced[0].includes("no tags assigned yet"));
+});
+
+// ---------------------------------------------------------------------------
+// The roster — tags are useless if they are not visible
+// ---------------------------------------------------------------------------
+
+import { renderRoster } from "../src/control/roster.mjs";
+
+test("the roster lists every tag with its thread, working ones first", () => {
+  const text = renderRoster(TAGGED);
+  assert.ok(text.includes("`alpha` — 📂 ebi-agent-chat-relay"));
+  assert.ok(text.includes("`bravo` — 📂 aldus-email"));
+  assert.ok(text.indexOf("alpha") < text.indexOf("bravo"));
+  assert.ok(text.includes("🟢 working"));
+});
+
+test("the roster shows how to use a tag, with a real one", () => {
+  assert.ok(renderRoster(TAGGED).includes("put this in the alpha thread"));
+});
+
+test("an untagged set produces no roster rather than an empty one", () => {
+  assert.equal(renderRoster([]), null);
+  assert.equal(renderRoster(TAGGED.map(({ voice_label, ...r }) => r)), null);
+});
+
+test("the roster is capped so it cannot outgrow one message", () => {
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    thread_id: i,
+    thread_name: `t${i}`,
+    voice_label: `tag${i}`,
+    state: "history",
+    last_used_at: `2026-09-${String(i + 1).padStart(2, "0")} 00:00:00`,
+  }));
+  assert.equal(renderRoster(many).split("\n").length - 1, 12);
 });
