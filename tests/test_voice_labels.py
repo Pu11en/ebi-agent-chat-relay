@@ -234,3 +234,29 @@ async def test_tags_persist_so_a_title_is_not_rewritten_after_a_restart(api: Api
 
     stored = await api.settings_repo.get_all()
     assert stored["voice_label:7"] == "alpha"
+
+
+async def test_a_spawn_view_gets_its_tag_without_the_whole_session_list(
+    api: ApiServer,
+) -> None:
+    """A thread opened by voice must be addressable at once, not next poll."""
+    thread = _thread(4242, "the aldus")
+    api.bot.get_channel.return_value = thread
+    view = [{"thread_id": 4242, "thread_name": "the aldus"}]
+
+    await api._apply_voice_labels(view)
+
+    assert view[0]["voice_label"] == "alpha"
+    assert view[0]["thread_name"] == "[alpha] the aldus"
+    thread.edit.assert_awaited_once_with(name="[alpha] the aldus")
+
+
+async def test_a_spawned_thread_does_not_steal_a_live_tag(api: ApiServer) -> None:
+    await api.settings_repo.set("voice_label:1", "alpha")
+    thread = _thread(4242, "the aldus")
+    api.bot.get_channel.return_value = thread
+    view = [{"thread_id": 4242, "thread_name": "the aldus"}]
+
+    await api._apply_voice_labels(view)
+
+    assert view[0]["voice_label"] == "bravo"

@@ -2399,11 +2399,18 @@ class ApiServer:
 
         logger.info("Spawned new Claude session in thread %s (%s)", thread.id, thread.name)
         await self._record_thread_metadata(thread.id, parent_thread_id, correlation_id)
+        # Tag it now rather than on the next poll. A thread opened by voice is
+        # the one its owner wants to talk to *immediately*, and a spoken
+        # instruction cannot reach an untagged thread — so a minute of being
+        # unaddressable lands exactly where it is least affordable.
+        spawn_view: list[dict[str, Any]] = [{"thread_id": thread.id, "thread_name": thread.name}]
+        await self._apply_voice_labels(spawn_view)
         return web.json_response(
             {
                 "status": "spawned",
                 "thread_id": str(thread.id),
-                "thread_name": thread.name,
+                "thread_name": spawn_view[0].get("thread_name") or thread.name,
+                "voice_label": spawn_view[0].get("voice_label"),
                 "parent_thread_id": None if parent_thread_id is None else str(parent_thread_id),
                 "correlation_id": correlation_id,
             },
