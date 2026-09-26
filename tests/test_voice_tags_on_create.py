@@ -166,3 +166,46 @@ class TestTheListenerCoversEveryPath:
         thread.parent_id = 77
 
         await cog.on_thread_create(thread)  # must not raise
+
+
+class TestTheAliasesActuallyReachTheEndpoint:
+    """Asserting the helper works is not asserting the answer carries it.
+
+    A refactor moved the tagging out of the API server and silently dropped the
+    line that attached each tag's mishearings to the view. Every unit test still
+    passed — `aliases_for` was fine, `session_view` was fine — and the live effect
+    was that saying "Zorro" did not reach `zoro`, because the voice layer was told
+    the tag had no alternative spellings. So this test reads the field the voice
+    layer actually consumes, on the object the endpoint actually returns.
+    """
+
+    async def test_a_tagged_view_carries_the_words_it_is_misheard_as(self) -> None:
+        settings = FakeSettings({"voice_label:10": "zoro"})
+        bot = MagicMock()
+        bot.get_channel.return_value = None
+        bot.fetch_channel = AsyncMock(return_value=None)
+        views = [{"thread_id": 10, "thread_name": "[zoro] repo"}]
+
+        await VoiceTagger(bot, settings).apply(views)
+
+        assert views[0]["voice_label"] == "zoro"
+        assert "zorro" in views[0]["voice_label_aliases"], (
+            "the voice layer cannot match a mishearing it was never told about"
+        )
+
+    async def test_an_untagged_view_carries_an_empty_list_not_a_missing_key(self) -> None:
+        """The voice layer does `s.voice_label_aliases ?? []`; be explicit anyway."""
+        settings = FakeSettings(
+            {f"voice_label:{i + 1}": name for i, name in enumerate(SPOKEN_LABELS)}
+        )
+        bot = MagicMock()
+        bot.get_channel.return_value = None
+        # All 26 holders are visible here, so none of their words can be
+        # reclaimed and 999 genuinely has nothing available.
+        views = [{"thread_id": i + 1, "thread_name": f"t{i}"} for i in range(26)]
+        views.append({"thread_id": 999, "thread_name": "repo"})
+
+        await VoiceTagger(bot, settings).apply(views)
+
+        assert views[-1]["voice_label"] is None
+        assert views[-1]["voice_label_aliases"] == []

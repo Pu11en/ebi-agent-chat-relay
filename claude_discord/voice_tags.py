@@ -25,6 +25,7 @@ import discord
 
 from .voice_labels import (
     SPOKEN_LABELS,
+    aliases_for,
     assign_labels,
     label_key,
     strip_title_tag,
@@ -122,7 +123,13 @@ class VoiceTagger:
             with contextlib.suppress(Exception):
                 await self.settings_repo.delete(label_key(thread_id))
         for view in views:
-            view["voice_label"] = labels.get(view["thread_id"])
+            label = labels.get(view["thread_id"])
+            view["voice_label"] = label
+            # The words the recogniser writes instead of this tag. The voice layer
+            # treats them as wake words, so a tag sent without them is a tag that
+            # only matches when the recogniser happens to spell it right — saying
+            # "Zorro" stopped reaching `zoro` the moment this line went missing.
+            view["voice_label_aliases"] = list(aliases_for(label))
         await self.show_in_titles(views)
 
     async def show_in_titles(self, views: list[dict[str, Any]]) -> None:
