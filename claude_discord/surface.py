@@ -177,14 +177,20 @@ class DiscordActivity:
         if self._finished or self._message is None:
             return
         message = self._message
+
+        async def repaint() -> None:
+            # Re-checked at send time, not at submit time: a queued tick can be
+            # given its slot *after* the tool finished, and would then repaint
+            # "⏳ 30s elapsed" over the completed result.
+            if self._finished:
+                return
+            await message.edit(embed=_activity_embed(self._spec, detail))
+
         with contextlib.suppress(Exception):
             # Through the thread's budget: Discord meters edits per channel, so
             # every counter in this thread is spending the same allowance as the
             # answer text (discord_ui/edit_budget.py).
-            await budget_for(message.channel.id).submit(
-                lambda: message.edit(embed=_activity_embed(self._spec, detail)),
-                key=("activity", message.id),
-            )
+            await budget_for(message.channel.id).submit(repaint, key=("activity", message.id))
 
     async def complete(self, result: str | None, *, ok: bool = True) -> None:
         # Idempotent by contract: a session that errors after a tool finished

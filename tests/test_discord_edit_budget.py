@@ -148,3 +148,83 @@ class TestTheCounterInPractice:
         await asyncio.sleep(0)
         timer = activity._timer
         assert timer is None or timer.cancelled() or timer.done()
+
+
+class TestNothingIsLostToPacing:
+    """Coalescing may delay an update; it must never drop the last one.
+
+    Both of these are regressions the budget introduced, and both only appear
+    when the budget is actually busy — an update that is merely *queued* is not
+    an update that happened, so every path that ends a display has to land its
+    final state rather than trust the queue.
+    """
+
+    @staticmethod
+    def _busy_budget(thread_id: int):
+        """A budget that will never fire on its own inside a test.
+
+        The bug is invisible with an idle budget: the first submit runs straight
+        away, so nothing is ever left queued and both tests pass while the
+        defect is still there.
+        """
+        from claude_code_core.pacer import UpdatePacer
+        from claude_discord.discord_ui import edit_budget
+
+        async def never(_seconds: float) -> None:
+            await asyncio.sleep(3600)
+
+        pacer = UpdatePacer(3600, now=lambda: 0.0, sleep=never)
+        edit_budget._budgets[thread_id] = pacer
+        return pacer
+
+    async def test_the_end_of_a_long_answer_is_not_dropped(self) -> None:
+        """`close_session` discards pending edits, so the final text must land."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from claude_discord.discord_ui.streaming_manager import StreamingMessageManager
+
+        pacer = self._busy_budget(1)
+        thread = MagicMock()
+        thread.id = 1
+        message = MagicMock()
+        message.id = 5
+        message.edit = AsyncMock()
+        thread.send = AsyncMock(return_value=message)
+
+        manager = StreamingMessageManager(thread)
+        await manager.append("the beginning ")  # creates the message, no edit
+        # Spend the budget so anything further can only be queued.
+        await pacer.submit(lambda: asyncio.sleep(0), key="someone-else")
+        await manager.append("and the end.")
+        await manager.finalize()
+
+        # By the time finalize returns, the whole answer is on screen — not
+        # sitting in a queue that close_session is about to throw away.
+        assert message.edit.await_count >= 1, "the final text was never sent"
+        assert "and the end." in str(message.edit.await_args_list[-1])
+
+    async def test_a_queued_counter_cannot_repaint_over_done(self) -> None:
+        """A tick keyed per message may still get its slot after completion."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from claude_code_core.frontend import ActivitySpec
+        from claude_discord.surface import DiscordActivity
+
+        pacer = self._busy_budget(1)
+        message = MagicMock()
+        message.id = 7
+        message.channel.id = 1
+        message.edit = AsyncMock()
+        activity = DiscordActivity(message, ActivitySpec(kind="tool", title="Bash", detail="ls"))
+        await pacer.submit(lambda: asyncio.sleep(0), key="someone-else")
+
+        # A tick is queued while the tool is still running …
+        await activity.update("⏳ 30s elapsed...")
+        # … then the tool finishes, and the queued tick finally gets its slot.
+        await activity.complete("done")
+        await pacer.flush()
+
+        # An Embed does not render its text through str(), so read the object.
+        last = message.edit.await_args_list[-1].kwargs["embed"]
+        rendered = f"{last.title} {last.description} {[f.value for f in last.fields]}"
+        assert "elapsed" not in rendered, "a stale tick repainted a finished tool"

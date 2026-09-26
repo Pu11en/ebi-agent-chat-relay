@@ -85,6 +85,10 @@ class StreamingMessageManager:
         self._finalized = True
         if self._pending_edit and not self._pending_edit.done():
             self._pending_edit.cancel()
+        # Paced edits are *queued*, and the thread's budget is discarded when the
+        # session closes — so a final flush that only queued would silently lose
+        # the end of the answer. Everything below therefore flushes the budget
+        # before returning, whichever path it takes.
 
         if transform and self._buffer:
             self._buffer = transform(self._buffer)
@@ -105,6 +109,7 @@ class StreamingMessageManager:
                     overflow = overflow[STREAM_MAX_CHARS:]
                     await self._thread.send(chunk)
 
+        await budget_for(self._thread.id).flush()
         return self._buffer
 
     async def _delayed_flush(self) -> None:
