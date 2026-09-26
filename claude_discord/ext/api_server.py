@@ -2217,6 +2217,11 @@ class ApiServer:
         one, and the per-call cap keeps a fresh set from spending the whole
         rename budget in one go. An archived or locked thread simply keeps its
         old title — worth a debug line, never worth failing the request.
+
+        A thread with *no* tag is renamed too, to take the old one off. This only
+        ever added a tag before, so a thread that lost its word kept displaying
+        it: two threads read "[bravo]" while one of them answered to it, and the
+        sidebar — the one place a tag is read from — was lying.
         """
         import discord as _discord
 
@@ -2226,9 +2231,9 @@ class ApiServer:
                 break
             label = view.get("voice_label")
             name = view.get("thread_name")
-            if not label or not name or title_tag(name) == label:
+            if not name or title_tag(name) == label:
                 continue
-            thread = self.bot.get_channel(view["thread_id"])
+            thread = await self._editable_thread(view["thread_id"])
             if not isinstance(thread, _discord.Thread) or thread.archived or thread.locked:
                 continue
             wanted = tagged_title(name, label)
@@ -2239,6 +2244,25 @@ class ApiServer:
                 continue
             view["thread_name"] = wanted
             renamed += 1
+
+    async def _editable_thread(self, thread_id: int) -> Any:
+        """The thread object, from cache or from Discord.
+
+        ``get_channel`` only sees the cache, and a thread the bot has not touched
+        since it started is not in it — such a thread silently kept whatever tag
+        its title already showed, forever, because the rename was skipped rather
+        than attempted. One fetch per stale title is worth paying; a title that
+        already matches never gets here.
+        """
+        import discord as _discord
+
+        thread = self.bot.get_channel(thread_id)
+        if isinstance(thread, _discord.Thread):
+            return thread
+        try:
+            return await self.bot.fetch_channel(thread_id)
+        except Exception:
+            return None
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.

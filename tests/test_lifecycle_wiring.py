@@ -262,3 +262,65 @@ class TestRestartAndReopen:
         assert outcome.is_reopened
         assert outcome.requires_fresh_session is True
         assert outcome.resume_session_id is None
+
+
+class TestTheTagLeavesWithTheSession:
+    """A closed thread must not keep showing a spoken tag.
+
+    It did, and the result was two threads in the sidebar both titled
+    "[bravo]" — one of them finished. The tag data is corrected when a session
+    closes, but the *title* is a separate copy, and Discord will not rename an
+    archived thread. So the title is cleaned while the thread is still editable:
+    in the same breath as archiving it, before the archive lands.
+    """
+
+    async def test_the_tag_is_stripped_from_the_title_before_archiving(self):
+        order: list[str] = []
+        bot = MagicMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "[bravo] 📂 ebi-agent-chat-relay"
+
+        async def edit(**kwargs):
+            order.append("rename" if "name" in kwargs else "archive")
+
+        thread.edit = AsyncMock(side_effect=edit)
+        thread.send = AsyncMock()
+        bot.fetch_channel = AsyncMock(return_value=thread)
+
+        assert await DiscordThreadSurface(bot).archive(THREAD) is True
+
+        assert order == ["rename", "archive"], "renaming an archived thread is refused"
+        renamed = [c for c in thread.edit.await_args_list if "name" in c.kwargs]
+        assert renamed[0].kwargs["name"] == "📂 ebi-agent-chat-relay"
+
+    async def test_a_title_with_no_tag_is_not_renamed(self):
+        """One needless rename per close would spend a tight Discord budget."""
+        bot = MagicMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "📂 ebi-agent-chat-relay"
+        thread.edit = AsyncMock()
+        thread.send = AsyncMock()
+        bot.fetch_channel = AsyncMock(return_value=thread)
+
+        await DiscordThreadSurface(bot).archive(THREAD)
+
+        assert [c for c in thread.edit.await_args_list if "name" in c.kwargs] == []
+
+    async def test_a_failed_rename_still_archives(self):
+        """Closing matters more than the title being tidy."""
+        bot = MagicMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "[bravo] repo"
+        calls: list[dict] = []
+
+        async def edit(**kwargs):
+            calls.append(kwargs)
+            if "name" in kwargs:
+                raise discord.HTTPException(MagicMock(status=429), "rate limited")
+
+        thread.edit = AsyncMock(side_effect=edit)
+        thread.send = AsyncMock()
+        bot.fetch_channel = AsyncMock(return_value=thread)
+
+        assert await DiscordThreadSurface(bot).archive(THREAD) is True
+        assert {"archived": True, "locked": True} in calls

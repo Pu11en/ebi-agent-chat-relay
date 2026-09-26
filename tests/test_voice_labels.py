@@ -516,3 +516,44 @@ class TestAClosedSessionHoldsNoTag:
 
         assert everything[0]["voice_label"] is None
         assert everything[-1]["voice_label"] == FIRST, "the freed word, reused"
+
+
+class TestAStaleTagLeavesTheTitle:
+    """A title showing a tag the thread no longer owns is worse than no tag.
+
+    ``_show_tags_in_titles`` only ever *added* a tag: a view with no tag was
+    skipped, so a thread that lost its word kept displaying it. Two threads then
+    read "[bravo]" while only one answered to it, and the sidebar — the one place
+    the tag is read from — was lying.
+    """
+
+    async def test_a_thread_with_no_tag_has_the_old_one_removed(self, api: ApiServer) -> None:
+        thread = _thread(1, "[bravo] 📂 repo")
+        api.bot.get_channel.return_value = thread
+        views = [{"thread_id": 1, "thread_name": "[bravo] 📂 repo", "closed": True}]
+
+        await api._apply_voice_labels(views)
+
+        thread.edit.assert_awaited_once_with(name="📂 repo")
+        assert views[0]["thread_name"] == "📂 repo"
+
+    async def test_an_untagged_title_is_left_alone(self, api: ApiServer) -> None:
+        """Discord's rename budget is tight; a no-op rename is not free."""
+        thread = _thread(1, "📂 repo")
+        api.bot.get_channel.return_value = thread
+        views = [{"thread_id": 1, "thread_name": "📂 repo", "closed": True}]
+
+        await api._apply_voice_labels(views)
+
+        thread.edit.assert_not_awaited()
+
+    async def test_a_thread_the_bot_has_not_cached_is_still_renamed(self, api: ApiServer) -> None:
+        """get_channel only sees the cache, and an uncached thread kept a stale tag."""
+        thread = _thread(1, "📂 repo")
+        api.bot.get_channel.return_value = None
+        api.bot.fetch_channel = AsyncMock(return_value=thread)
+        views = [{"thread_id": 1, "thread_name": "📂 repo"}]
+
+        await api._apply_voice_labels(views)
+
+        thread.edit.assert_awaited_once_with(name=f"[{FIRST}] 📂 repo")

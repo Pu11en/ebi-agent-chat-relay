@@ -17,6 +17,7 @@ from typing import Any
 import discord
 
 from .session_lifecycle import SessionLifecycleService
+from .voice_labels import strip_title_tag, title_tag
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,27 @@ class DiscordThreadSurface:
         if note:
             with contextlib.suppress(discord.HTTPException):
                 await thread.send(note, allowed_mentions=discord.AllowedMentions.none())
+        await self._drop_spoken_tag(thread)
         return await self._set_archived(thread, True)
+
+    @staticmethod
+    async def _drop_spoken_tag(thread: discord.Thread) -> None:
+        """Take the spoken tag out of the title, while the title can still change.
+
+        A closed session gives up its tag, but the title is a second copy of it
+        and Discord refuses to rename a thread once it is archived. Leaving it
+        produced two threads in the sidebar both reading "[bravo]", one of them
+        finished — the tag looked like it belonged to a conversation that was
+        over. So the rename happens here, before the archive lands, and only when
+        there is actually a tag to remove: one needless rename per close would
+        spend a budget Discord keeps very tight. A rename that fails changes
+        nothing about the close, which is the part that matters.
+        """
+        name = getattr(thread, "name", "") or ""
+        if title_tag(name) is None:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await thread.edit(name=strip_title_tag(name))
 
     async def unarchive(self, thread_id: int) -> bool:
         thread = await self._thread(thread_id)
