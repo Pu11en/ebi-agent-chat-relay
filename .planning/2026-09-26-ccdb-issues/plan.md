@@ -16,6 +16,14 @@ Evidence for each is in `findings.md` next to this file.
       the tag to the new thread and closes the old session, and every tag becomes
       a One Piece name. Verify by opening Sessions and reading one thread title.
 
+- [ ] **Confirm the duplicate tag is gone after the restart.** Two threads showed
+      "[bravo]" because a title is a second copy of the tag and nothing removed it:
+      the updater only ever *added* a tag, and Discord refuses to rename an
+      archived thread, so a closed thread's tag could not be cleaned at all. Fixed
+      in `2c11ca8` — the tag comes off the title before the archive lands, a
+      thread that lost its word has it stripped, and an uncached thread is fetched
+      instead of skipped. Verify: no two threads show the same word.
+
 - [ ] **Stop the Discord rate-limit storm.** 6,012 `429`s in the log, up to 120 in
       a single minute, all `PATCH .../messages/...` in one thread. Cause: each
       message paces its own edits (stream 1.5s, each tool timer 5s) but Discord

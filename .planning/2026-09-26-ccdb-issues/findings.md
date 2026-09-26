@@ -48,6 +48,21 @@
   (`9f63acf`)
 - "Close everything I'm not using" — already live, voice-side only (`c574e7f`)
 
+## Two threads showing the same tag
+
+Caused by moving the `bravo` row by hand as a stopgap, but the reason it could
+not be undone is a real bug: the title is a second copy of the tag, and
+
+- `_show_tags_in_titles` only ever *added* a tag (`if not label: continue`), so a
+  thread that lost its word kept displaying it
+- it read the thread with `get_channel`, which only sees the cache — an uncached
+  thread had its rename skipped, not attempted
+- Discord refuses to rename an **archived** thread, so once a closed thread was
+  archived its stale tag could not be fixed without reopening it
+
+All three fixed in `2c11ca8`; the tag now comes off the title *before* the archive
+lands.
+
 ## Root cause of today's "voice is broken"
 
 The deployed speech worker was an **older copy** that still passed the NATO tag
