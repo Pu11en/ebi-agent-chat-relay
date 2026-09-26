@@ -159,6 +159,7 @@ from claude_discord.database.models import init_db  # noqa: E402
 from claude_discord.database.notification_repo import NotificationRepository  # noqa: E402
 from claude_discord.database.settings_repo import SettingsRepository  # noqa: E402
 from claude_discord.ext.api_server import ApiServer  # noqa: E402
+from claude_discord.voice_tags import MAX_RETITLES_PER_CALL  # noqa: E402
 
 
 def _thread(thread_id: int, name: str, *, archived: bool = False, locked: bool = False):
@@ -234,14 +235,14 @@ async def test_a_rename_failure_never_fails_the_request(api: ApiServer) -> None:
 
 
 async def test_a_full_set_is_retitled_across_calls_not_all_at_once(api: ApiServer) -> None:
-    total = api._MAX_RETITLES_PER_CALL + 6
+    total = MAX_RETITLES_PER_CALL + 6
     threads = {i: _thread(i, f"📂 repo-{i}") for i in range(1, total + 1)}
     api.bot.get_channel.side_effect = lambda tid: threads[tid]
     views = [{"thread_id": i, "thread_name": f"📂 repo-{i}"} for i in range(1, total + 1)]
 
     await api._apply_voice_labels(views)
 
-    assert sum(t.edit.await_count for t in threads.values()) == api._MAX_RETITLES_PER_CALL
+    assert sum(t.edit.await_count for t in threads.values()) == MAX_RETITLES_PER_CALL
 
 
 async def test_tags_persist_so_a_title_is_not_rewritten_after_a_restart(api: ApiServer) -> None:
@@ -591,7 +592,7 @@ class TestTitleWorkIsBounded:
 
         await api._apply_voice_labels(views)
 
-        assert api.bot.fetch_channel.await_count <= api._MAX_RETITLES_PER_CALL
+        assert api.bot.fetch_channel.await_count <= MAX_RETITLES_PER_CALL
 
     async def test_a_closed_session_is_never_fetched(self, api: ApiServer) -> None:
         """It is archived, so it cannot be renamed — the call is pure waste.
