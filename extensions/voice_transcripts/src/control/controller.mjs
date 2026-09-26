@@ -23,6 +23,7 @@
 
 import { MIN_PROMPT_CHARS, parseByTag, parseCommand, parseNewSession } from "./command.mjs";
 import { matchFolder } from "./folders.mjs";
+import { parseRuntime } from "./runtime.mjs";
 import { resolveTarget, untagged } from "./targets.mjs";
 
 const IGNORED = { status: "ignored" };
@@ -103,6 +104,35 @@ export function createVoiceController({
     await say(`🎙️ → **${describe(session)}**: ${prompt}`);
     logger.info?.(`[control] sent to thread ${session.thread_id}`);
     return { status: "sent", session, prompt };
+  }
+
+  /** Change (or report) which agent answers in a thread. */
+  async function tune(session, runtime) {
+    try {
+      if (runtime.kind === "runtime-query") {
+        const now = await client.getRuntime(session.thread_id);
+        await say(
+          `🎙️ **${describe(session)}** is on **${now.backend}** / **${now.model ?? "default"}**.`,
+        );
+        return { status: "runtime", ...now };
+      }
+      // Only the fields that were actually heard; `kind` is this layer's
+      // bookkeeping and has no business in the request.
+      const change = {
+        ...(runtime.model ? { model: runtime.model } : {}),
+        ...(runtime.backend ? { backend: runtime.backend } : {}),
+      };
+      const result = await client.setRuntime(session.thread_id, change);
+      await say(
+        `🎙️ **${describe(session)}** → **${result.backend}** / **${result.model ?? "default"}** ` +
+          `(from its next turn).`,
+      );
+      logger.info?.(`[control] thread ${session.thread_id} set to ${result.backend}`);
+      return { status: "runtime", ...result };
+    } catch (error) {
+      await say(`🎙️ Could not change the agent for **${describe(session)}** — ${error.message}`);
+      return { status: "failed", error: error.message };
+    }
   }
 
   /** Open a session in the folder that was named, or say why it could not. */
@@ -239,6 +269,13 @@ export function createVoiceController({
       }
 
       const prompt = match.candidate.prompt;
+
+      // "Bravo, switch to opus" changes who answers rather than asking them
+      // anything. Handled here, without waking the session: a thread whose
+      // plan has run out cannot be asked to change its own model.
+      const runtime = parseRuntime(prompt);
+      if (runtime) return await tune(match.session, runtime);
+
       if (prompt.length < MIN_PROMPT_CHARS) {
         // The thread was named and the sentence stopped. Hold it for whatever
         // is said next instead of throwing the naming away.

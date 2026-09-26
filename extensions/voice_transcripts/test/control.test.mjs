@@ -1110,3 +1110,149 @@ test("talking about sessions in the past tense is not a request", () => {
     assert.equal(parseNewSession(said), null, said);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Choosing the agent by talking
+// ---------------------------------------------------------------------------
+
+import { parseRuntime } from "../src/control/runtime.mjs";
+
+test("model aliases are recognised, including how they get misheard", () => {
+  assert.deepEqual(parseRuntime("switch to opus"), { kind: "runtime", model: "opus" });
+  assert.deepEqual(parseRuntime("use sonic"), { kind: "runtime", model: "sonnet" });
+  assert.deepEqual(parseRuntime("switch to high coup"), { kind: "runtime", model: "haiku" });
+});
+
+test("backends are recognised, including the local one by its runtime name", () => {
+  assert.deepEqual(parseRuntime("change the backend to codex"), {
+    kind: "runtime",
+    backend: "codex",
+  });
+  assert.deepEqual(parseRuntime("move this to ollama"), { kind: "runtime", backend: "local" });
+  assert.deepEqual(parseRuntime("use deep seek"), { kind: "runtime", backend: "dsh" });
+  assert.deepEqual(parseRuntime("switch to cloud"), { kind: "runtime", backend: "claude" });
+});
+
+test("both at once", () => {
+  assert.deepEqual(parseRuntime("switch to codex on sonnet"), {
+    kind: "runtime",
+    model: "sonnet",
+    backend: "codex",
+  });
+});
+
+test("naming only a backend leaves its remembered model alone", () => {
+  assert.equal(parseRuntime("switch to codex").model, undefined);
+});
+
+test("asking is not switching", () => {
+  assert.deepEqual(parseRuntime("what model are you on"), { kind: "runtime-query" });
+  assert.deepEqual(parseRuntime("which backend is this"), { kind: "runtime-query" });
+});
+
+test("ordinary work is not a runtime change", () => {
+  for (const said of [
+    "run make verify",
+    "commit and push",
+    "switch the branch to main",
+    "use the other file",
+  ]) {
+    assert.equal(parseRuntime(said), null, said);
+  }
+});
+
+function tuner(overrides = {}) {
+  const announced = [];
+  const set = [];
+  const controller = createVoiceController({
+    ownerId: "42",
+    enabled: true,
+    client: {
+      listSessions: async () => TAGGED,
+      sendSpoken: async () => {
+        throw new Error("a runtime change must not wake the session");
+      },
+      getRuntime: async () => ({ backend: "claude", model: "sonnet" }),
+      setRuntime: async (threadId, change) => {
+        set.push({ threadId, ...change });
+        return { backend: change.backend ?? "claude", model: change.model ?? "sonnet" };
+      },
+    },
+    announce: async (m) => announced.push(m),
+    logger: { info() {}, warn() {}, error() {} },
+    ...overrides,
+  });
+  return { controller, announced, set };
+}
+
+test("'alpha, switch to opus' changes that thread's model", async () => {
+  const { controller, set, announced } = tuner();
+
+  const result = await controller.handleUtterance({
+    userId: "42",
+    text: "alpha, switch to opus",
+  });
+
+  assert.equal(result.status, "runtime");
+  assert.deepEqual(set, [{ threadId: 1, model: "opus" }]);
+  assert.ok(announced[0].includes("opus"));
+  assert.ok(announced[0].includes("next turn"));
+});
+
+test("a runtime change does not wake the session", async () => {
+  // sendSpoken throws in this fixture; reaching it would fail the test.
+  const { controller } = tuner();
+  const result = await controller.handleUtterance({
+    userId: "42",
+    text: "bravo use codex",
+  });
+  assert.equal(result.status, "runtime");
+});
+
+test("asking reports without changing anything", async () => {
+  const { controller, set, announced } = tuner();
+
+  const result = await controller.handleUtterance({
+    userId: "42",
+    text: "alpha what model are you on",
+  });
+
+  assert.equal(result.status, "runtime");
+  assert.deepEqual(set, []);
+  assert.ok(announced[0].includes("sonnet"));
+});
+
+test("a failed switch is reported in the room", async () => {
+  const { controller, announced } = tuner({
+    client: {
+      listSessions: async () => TAGGED,
+      sendSpoken: async () => {},
+      getRuntime: async () => ({}),
+      setRuntime: async () => {
+        throw new Error("HTTP 503");
+      },
+    },
+  });
+
+  const result = await controller.handleUtterance({ userId: "42", text: "alpha switch to opus" });
+
+  assert.equal(result.status, "failed");
+  assert.ok(announced[0].includes("503"));
+});
+
+test("real work still reaches the session", async () => {
+  const captured = [];
+  const { controller } = tuner({
+    client: {
+      listSessions: async () => TAGGED,
+      sendSpoken: async (p) => captured.push(p),
+      getRuntime: async () => ({}),
+      setRuntime: async () => ({}),
+    },
+  });
+
+  await controller.handleUtterance({ userId: "42", text: "alpha run make verify" });
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].text, "run make verify");
+});

@@ -38,6 +38,7 @@ from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
 from ..agent_router import AgentRoute, parse_agent_routes
+from ..backend_settings import ALL_BACKENDS
 from ..catalog_service import entry_to_dict, project_to_dict, resolution_to_dict
 from ..discord_ui.file_sender import send_file_blobs
 from ..handoff_status import load_handoff_status, render_handoff_status
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
     import discord
     from discord.ext.commands import Bot
 
+    from ..backend_settings import BackendSettings
     from ..catalog_service import ProjectCatalogService
     from ..database.claims_repo import ClaimRepository
     from ..database.handoff_repo import HandoffRepository
@@ -418,6 +420,10 @@ class ApiServer:
         # correlation id); wired by BridgeComponents.apply_to_api_server.
         # Without it the fields are validated and echoed but not persisted.
         self.settings_repo: SettingsRepository | None = None
+        # Backend/model selection, shared with the /backend and /model slash
+        # commands; wired by BridgeComponents.apply_to_api_server. Without it
+        # /api/threads/{id}/runtime answers 503 rather than guessing at defaults.
+        self.backend_settings: BackendSettings | None = None
         # The shared project catalog behind /api/projects; wired by
         # BridgeComponents.apply_to_api_server. Without it the catalog
         # endpoints answer 503 rather than scanning anything on their own.
@@ -515,6 +521,10 @@ class ApiServer:
         # a peer session's relay — see claude_discord/spoken.py for why the two
         # cannot share a prompt or a guard.
         self.app.router.add_post("/api/threads/{thread_id}/spoken", self.deliver_spoken_message)
+        # Which agent answers in this thread, for a surface that has no slash
+        # commands of its own to offer.
+        self.app.router.add_get("/api/threads/{thread_id}/runtime", self.get_thread_runtime)
+        self.app.router.add_post("/api/threads/{thread_id}/runtime", self.set_thread_runtime)
         self.app.router.add_post("/api/threads/{thread_id}/close", self.close_session)
         # Generic spawn metadata: which parent a thread belongs to and the
         # caller's correlation id, so a lost spawn answer can be reconciled.
@@ -1433,6 +1443,97 @@ class ApiServer:
         return web.json_response(
             {"status": "delivered", "thread_id": thread_id, "mode": mode, "source": source},
             status=202,
+        )
+
+    async def get_thread_runtime(self, request: web.Request) -> web.Response:
+        """GET /api/threads/{thread_id}/runtime — which agent answers here."""
+        if self.backend_settings is None:
+            return web.json_response({"error": "backend_settings is not configured"}, status=503)
+        try:
+            thread_id = int(request.match_info["thread_id"])
+        except (ValueError, KeyError):
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
+
+        backend = await self.backend_settings.current_backend(thread_id)
+        return web.json_response(
+            {
+                "thread_id": thread_id,
+                "backend": backend,
+                "model": await self.backend_settings.current_model(backend, thread_id),
+                "backends": list(ALL_BACKENDS),
+            }
+        )
+
+    async def set_thread_runtime(self, request: web.Request) -> web.Response:
+        """POST /api/threads/{thread_id}/runtime — switch this thread's agent.
+
+        The write side of ``/backend`` and ``/model`` for a surface that has no
+        slash commands. It writes through ``BackendSettings``, the same store
+        those commands use, so voice and Discord cannot disagree about which
+        agent a thread is on.
+
+        Body (JSON), both optional but at least one required:
+            backend: One of ``claude``, ``codex``, ``local``, ``dsh``, ``agui``.
+            model: Free text — the model names are not a closed set, and a
+                validating allowlist here would go stale on every model launch
+                (see Key Design Decision 11).
+
+        A change applies to the thread's *next* turn; a turn already running
+        keeps the agent it started with.
+        """
+        if self.backend_settings is None:
+            return web.json_response({"error": "backend_settings is not configured"}, status=503)
+        try:
+            thread_id = int(request.match_info["thread_id"])
+        except (ValueError, KeyError):
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        backend = data.get("backend")
+        model = data.get("model")
+        if backend is None and model is None:
+            return web.json_response({"error": "backend or model is required"}, status=400)
+
+        if backend is not None:
+            backend = str(backend).strip().lower()
+            if backend not in ALL_BACKENDS:
+                return web.json_response(
+                    {"error": f"backend must be one of {', '.join(ALL_BACKENDS)}"}, status=400
+                )
+            await self.backend_settings.set_backend(backend, thread_id=thread_id)
+
+        # A model belongs to a backend, so a model-only change applies to
+        # whichever backend the thread is on now — that is what "use sonnet
+        # here" means when nobody mentioned a backend.
+        effective = backend or await self.backend_settings.current_backend(thread_id)
+        if model is not None:
+            model = str(model).strip()
+            if not model or len(model) > 100:
+                return web.json_response(
+                    {"error": "model must be a non-blank string of at most 100 characters"},
+                    status=400,
+                )
+            await self.backend_settings.set_model(effective, model, thread_id=thread_id)
+
+        logger.info(
+            "Thread %s runtime set: backend=%s model=%s",
+            str(thread_id).replace("\r", "").replace("\n", ""),
+            str(effective).replace("\r", "").replace("\n", ""),
+            str(model).replace("\r", "").replace("\n", ""),
+        )
+        return web.json_response(
+            {
+                "status": "set",
+                "thread_id": thread_id,
+                "backend": effective,
+                "model": await self.backend_settings.current_model(effective, thread_id),
+                "applies": "next turn",
+            }
         )
 
     async def _relay_to_thread(

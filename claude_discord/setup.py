@@ -122,6 +122,11 @@ class BridgeComponents:
             api_server.project_catalog = self.project_catalog
         if self.lifecycle is not None:
             api_server.lifecycle = self.lifecycle
+        if self.backend_settings is not None:
+            # Lets /api/threads/{id}/runtime change a thread's backend and model —
+            # the same store /backend and /model write to, so a surface without
+            # slash commands (voice) is not a second source of truth.
+            api_server.backend_settings = self.backend_settings
         api_server.session_repo = self.session_repo
 
 

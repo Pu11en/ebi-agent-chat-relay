@@ -90,6 +90,24 @@ export function createRelayClient({
       });
       return parseIdSafe(await response.text());
     },
+    async getRuntime(threadId) {
+      const response = await request(`/api/threads/${encodeURIComponent(threadId)}/runtime`, {
+        method: "GET",
+        headers: headers(),
+      });
+      return parseIdSafe(await response.text());
+    },
+    async setRuntime(threadId, { model, backend }) {
+      const response = await request(`/api/threads/${encodeURIComponent(threadId)}/runtime`, {
+        method: "POST",
+        headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          ...(model ? { model } : {}),
+          ...(backend ? { backend } : {}),
+        }),
+      });
+      return parseIdSafe(await response.text());
+    },
     async sendSpoken({ threadId, text, speakerId, source = "voice", mode = "queue" }) {
       const response = await request(`/api/threads/${encodeURIComponent(threadId)}/spoken`, {
         method: "POST",

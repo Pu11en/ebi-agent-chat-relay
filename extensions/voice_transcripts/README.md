@@ -82,6 +82,15 @@ the owner can also steer a session without leaving the room:
   tag only counts as an address when nothing but throat-clearing precedes it
   ("okay", "and", "hey", "uh"…), so "the delta between the two runs was small"
   is left alone even though `delta` is a tag.
+- **"Bravo, switch to opus" · "use codex" · "move this to ollama" · "what model
+  are you on?"** Choosing the agent is not asking the thread to do anything, so
+  it happens without waking the session — which matters precisely when it
+  matters: a thread whose plan has run out cannot be asked to change its own
+  model. Model *aliases* (`opus`, `sonnet`, `haiku`, `fable`) and backend names
+  are recognised, with the spellings a transcript actually produces ("oh pus",
+  "code x", "deep seek"); a version string is never guessed into a setting. The
+  change applies from the thread's next turn and is written through the same
+  store `/backend` and `/model` use, so voice and Discord cannot disagree.
 - **Say the tag.** Every visible thread gets one word from the NATO phonetic
   alphabet (`alpha`, `bravo`, `charlie`…), assigned by ccdb and listed in a
   single self-updating message in the transcript channel. "Put this in the
