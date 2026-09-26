@@ -146,16 +146,24 @@ class TestTheListenerCoversEveryPath:
 
         assert settings.store["voice_label:10"] == SPOKEN_LABELS[0]
 
-    async def test_a_thread_somewhere_else_is_left_alone(self) -> None:
-        """A tag is a handle for threads the bot works in, not every thread on the server."""
+    async def test_with_no_boundary_configured_every_thread_is_tagged(self) -> None:
+        """Deliberate: the channel list was the wrong guard.
+
+        It excluded threads the bot genuinely works in — see
+        TestTheGuardCannotSilentlySkip. With no category boundary set, "everything
+        here" is the same default the rest of the bot uses, and the 26-word pool is
+        the only limit. Set CCDB_ALLOWED_CATEGORY_IDS to narrow it.
+        """
         settings = FakeSettings()
         cog = self._cog(settings)
-        thread = _thread(10, "someone else's thread")
+        thread = _thread(10, "a thread in some other channel")
         thread.parent_id = 999
+        thread.parent = MagicMock(category_id=None)
+        cog.bot.get_channel.return_value = thread
 
         await cog.on_thread_create(thread)
 
-        assert settings.store == {}
+        assert settings.store.get("voice_label:10") == SPOKEN_LABELS[0]
 
     async def test_a_failure_never_breaks_thread_creation(self) -> None:
         """Losing a tag is a nuisance; losing the thread is not acceptable."""
@@ -209,3 +217,67 @@ class TestTheAliasesActuallyReachTheEndpoint:
 
         assert views[-1]["voice_label"] is None
         assert views[-1]["voice_label_aliases"] == []
+
+
+class TestTheGuardCannotSilentlySkip:
+    """The channel list is not guaranteed to contain every channel the bot uses.
+
+    `setup_bridge` adds `CCDB_LAUNCHER_SESSION_CHANNEL_ID` to the chat cog's
+    channel set but **not** `CCDB_LAUNCHER_CHANNEL_ID`. On this machine both point
+    at the same channel, so tagging control-center threads worked — by
+    coincidence, not by design. Point the control center at its own channel and
+    every thread it opens is silently untagged, with nothing anywhere saying so.
+
+    So the guard is a category boundary — the bot's own notion of "channels I work
+    in", the same one `on_message` uses — with the channel list as an *additional*
+    way in rather than the only one.
+    """
+
+    @staticmethod
+    def _cog(settings, channel_ids):
+        from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+        cog = ClaudeChatCog.__new__(ClaudeChatCog)
+        cog.bot = MagicMock()
+        cog._settings_repo = settings
+        cog._channel_ids = channel_ids
+        return cog
+
+    async def test_a_thread_outside_the_channel_list_is_still_tagged(self) -> None:
+        """The control center pointed at its own channel is the real case."""
+        settings = FakeSettings()
+        cog = self._cog(settings, {77})
+        thread = _thread(10, "📂 the aldus")
+        thread.parent_id = 12345  # a launcher channel nobody added to the list
+        thread.parent = MagicMock(category_id=None)
+        cog.bot.get_channel.return_value = thread
+
+        await cog.on_thread_create(thread)
+
+        assert settings.store.get("voice_label:10") == SPOKEN_LABELS[0]
+
+    async def test_a_thread_outside_the_category_boundary_is_not_tagged(self, monkeypatch) -> None:
+        """A configured boundary still fails closed — that is what it is for."""
+        monkeypatch.setenv("CCDB_ALLOWED_CATEGORY_IDS", "555")
+        settings = FakeSettings()
+        cog = self._cog(settings, set())
+        thread = _thread(10, "someone else's thread")
+        thread.parent_id = 999
+        thread.parent = MagicMock(category_id=42)
+
+        await cog.on_thread_create(thread)
+
+        assert settings.store == {}
+
+    async def test_a_thread_inside_the_category_boundary_is_tagged(self, monkeypatch) -> None:
+        monkeypatch.setenv("CCDB_ALLOWED_CATEGORY_IDS", "555")
+        settings = FakeSettings()
+        cog = self._cog(settings, set())
+        thread = _thread(10, "📂 repo")
+        thread.parent_id = 999
+        thread.parent = MagicMock(category_id=555)
+        cog.bot.get_channel.return_value = thread
+
+        await cog.on_thread_create(thread)
+
+        assert settings.store.get("voice_label:10") == SPOKEN_LABELS[0]

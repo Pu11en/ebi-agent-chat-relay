@@ -484,11 +484,21 @@ class ClaudeChatCog(commands.Cog):
         endpoint — and the thing that polls it is the voice companion, so with
         voice switched off a thread was never tagged at all.
 
+        The guard is the category boundary, not the channel list. `setup_bridge`
+        adds `CCDB_LAUNCHER_SESSION_CHANNEL_ID` to that list but **not**
+        `CCDB_LAUNCHER_CHANNEL_ID`; on this machine both name the same channel, so
+        tagging control-center threads worked by coincidence. Point the control
+        center at its own channel and every thread it opens would be silently
+        untagged, with nothing saying so. An unset boundary means "tag everything
+        here", which is the same default the rest of the bot uses.
+
         A failure here is swallowed on purpose: a missing tag is a nuisance, and
         an exception in this listener is not worth risking anything else that
         reacts to a new thread.
         """
-        if self._channel_ids and thread.parent_id not in self._channel_ids:
+        from ..category_scope import category_allowed
+
+        if not category_allowed(thread):
             return
         try:
             await VoiceTagger(self.bot, self._settings_repo).tag_thread(thread)
