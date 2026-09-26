@@ -185,6 +185,10 @@ export function createVoiceController({
     const spare = (live ?? []).filter(
       (s) =>
         s.state !== "running" &&
+        // Already closed is not "needs closing": /api/sessions reports closed
+        // sessions too, so without this the sweep re-closes them and reports a
+        // number that means nothing.
+        !s.closed &&
         String(s.thread_id) !== String(open?.session?.thread_id ?? ""),
     );
     if (!spare.length) {

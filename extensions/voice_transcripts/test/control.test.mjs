@@ -1669,3 +1669,33 @@ test("the tidy-up is bounded, so one sentence cannot flood Discord", async () =>
   assert.ok(closed <= MAX_TIDY_UP_CLOSES, `closed ${closed} in one go`);
   assert.equal(result.remaining, 300 - closed, "and it says how many are left");
 });
+
+test("the tidy-up ignores sessions that are already closed", () => {
+  // /api/sessions reports closed sessions too (cross-session observability), so
+  // "state is not running" is not the same as "needs closing" — without this the
+  // sweep re-closes them and reports a number that means nothing.
+  const sessions = [
+    { thread_id: "1", thread_name: "done already", state: "history", closed: true },
+    { thread_id: "2", thread_name: "still open", state: "history", closed: false },
+  ];
+  const closed = [];
+  return createVoiceController({
+    client: {
+      listSessions: async () => sessions,
+      close: async (id) => {
+        closed.push(id);
+        return { state: "closed", archived: true };
+      },
+      sendSpoken: async () => ({}),
+    },
+    ownerId: "7",
+    enabled: true,
+    announce: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  })
+    .handleUtterance({ userId: "7", text: "close everything I'm not using" })
+    .then((result) => {
+      assert.deepEqual(closed, ["2"]);
+      assert.equal(result.closed, 1);
+    });
+});
