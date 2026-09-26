@@ -153,7 +153,8 @@ fails at startup rather than the first time the owner speaks.
   publication message IDs. Captured utterances are saved before recognition;
   successful jobs delete their temporary WAV. Failed jobs retain audio for review
   until their session's local retention cleanup.
-- Continuous speech is split into bounded 20-second chunks, without tearing down
+- Continuous speech is split into bounded chunks (`VOICE_MAX_UTTERANCE_SECONDS`,
+  30s by default), without tearing down
   the speaker stream. Disconnect flushes speech already in the current buffer.
   A hard process crash can lose at most the current in-memory chunk per speaker.
 - A five-second health loop retries connections and queued work. After a restart,

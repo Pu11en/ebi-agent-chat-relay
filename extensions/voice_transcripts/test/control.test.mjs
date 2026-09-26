@@ -1256,3 +1256,31 @@ test("real work still reaches the session", async () => {
   assert.equal(captured.length, 1);
   assert.equal(captured[0].text, "run make verify");
 });
+
+// ---------------------------------------------------------------------------
+// How long a pause means "finished"
+// ---------------------------------------------------------------------------
+
+test("a thinking pause no longer ends the sentence", () => {
+  const config = readConfig({ ...BASE_ENV });
+  assert.equal(config.silenceMs, 4000);
+  assert.equal(config.maxUtteranceSeconds, 30);
+});
+
+test("the pause and the ceiling are tunable without a deploy", () => {
+  const config = readConfig({
+    ...BASE_ENV,
+    VOICE_SILENCE_MS: "2500",
+    VOICE_MAX_UTTERANCE_SECONDS: "45",
+  });
+  assert.equal(config.silenceMs, 2500);
+  assert.equal(config.maxUtteranceSeconds, 45);
+});
+
+test("an unusable pause is refused at startup, not silently clamped", () => {
+  assert.throws(() => readConfig({ ...BASE_ENV, VOICE_SILENCE_MS: "0" }), /VOICE_SILENCE_MS/);
+  assert.throws(
+    () => readConfig({ ...BASE_ENV, VOICE_MAX_UTTERANCE_SECONDS: "600" }),
+    /VOICE_MAX_UTTERANCE_SECONDS/,
+  );
+});
