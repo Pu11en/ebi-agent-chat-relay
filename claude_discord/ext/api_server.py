@@ -57,6 +57,7 @@ from ..session_lifecycle import (
     close_outcome_text,
 )
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
+from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
@@ -507,6 +508,10 @@ class ApiServer:
         self.app.router.add_get("/api/projects/{key}", self.get_project)
         self.app.router.add_get("/api/threads/{thread_id}/messages", self.get_thread_messages)
         self.app.router.add_post("/api/threads/{thread_id}/message", self.relay_thread_message)
+        # The same delivery, but for words a person said out loud rather than
+        # a peer session's relay — see claude_discord/spoken.py for why the two
+        # cannot share a prompt or a guard.
+        self.app.router.add_post("/api/threads/{thread_id}/spoken", self.deliver_spoken_message)
         self.app.router.add_post("/api/threads/{thread_id}/close", self.close_session)
         # Generic spawn metadata: which parent a thread belongs to and the
         # caller's correlation id, so a lost spawn answer can be reconciled.
@@ -1319,6 +1324,113 @@ class ApiServer:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
         return await self._relay_to_thread(thread_id=thread_id, data=data)
+
+    async def deliver_spoken_message(self, request: web.Request) -> web.Response:
+        """POST /api/threads/{thread_id}/spoken — the user said this out loud.
+
+        A voice companion transcribes its owner and posts the utterance here.
+        The receiving session must read it as its human's own instruction, so
+        this is deliberately *not* ``/api/threads/{id}/message``: that endpoint
+        stamps every message "NOT from your human" and rate-limits a sender to
+        one message per pair per minute, both correct for agents talking to
+        each other and both wrong for a person mid-sentence.
+
+        Body (JSON):
+            text: What they said, already transcribed.
+            speaker_id: Who said it. Required whenever the bot has an owner
+                configured, and must be that owner — a shared voice room means
+                anyone present is transcribed, and only one of them may steer
+                a session.
+            source: Transcription surface. ``voice`` (default) today.
+            mode: ``queue`` (default) waits for the running turn; ``interrupt``
+                SIGINTs it, for "stop, that is the wrong file".
+
+        Returns 202 when delivered, 403 when the speaker is not the owner,
+        404 for unknown threads.
+        """
+        try:
+            thread_id = int(request.match_info["thread_id"])
+        except (ValueError, KeyError):
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+
+        text = str(data.get("text") or "").strip()
+        if not text:
+            return web.json_response({"error": "text is required"}, status=400)
+        if len(text) > MAX_SPOKEN_TEXT_CHARS:
+            return web.json_response(
+                {"error": f"text must be at most {MAX_SPOKEN_TEXT_CHARS} characters"},
+                status=400,
+            )
+
+        source = str(data.get("source") or VOICE).lower()
+        if source not in VALID_SOURCES:
+            return web.json_response(
+                {"error": f"source must be one of {', '.join(VALID_SOURCES)}"}, status=400
+            )
+
+        mode = str(data.get("mode") or MODE_QUEUE).lower()
+        if mode not in VALID_MODES:
+            return web.json_response(
+                {"error": f"mode must be one of {', '.join(VALID_MODES)}"}, status=400
+            )
+
+        # Everyone in a voice room is transcribed; only the owner may act.
+        owner_id = getattr(self.bot, "owner_id", None)
+        if isinstance(owner_id, int):
+            try:
+                speaker_id = int(data["speaker_id"])
+            except (KeyError, TypeError, ValueError):
+                return web.json_response(
+                    {"error": "speaker_id is required (integer) when an owner is configured"},
+                    status=403,
+                )
+            if speaker_id != owner_id:
+                return web.json_response(
+                    {"error": "Only the configured owner may drive a session by voice"},
+                    status=403,
+                )
+
+        from ..cogs.claude_chat import ClaudeChatCog
+
+        cog: ClaudeChatCog | None = self.bot.cogs.get("ClaudeChatCog")  # type: ignore[assignment]
+        if cog is None:
+            return web.json_response({"error": "ClaudeChatCog is not loaded"}, status=503)
+
+        import discord as _discord
+
+        thread = self.bot.get_channel(thread_id)
+        if thread is None:
+            try:
+                thread = await self.bot.fetch_channel(thread_id)
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=404)
+        if not isinstance(thread, _discord.Thread):
+            return web.json_response({"error": "Target must be a thread"}, status=400)
+
+        prompt = build_spoken_prompt(text=text, source=source)
+        asyncio.create_task(
+            cog.deliver_relayed_message(thread, prompt, interrupt=mode == MODE_INTERRUPT)
+        )
+        # The words themselves are never logged: a live microphone is the one
+        # input where an operator has not chosen what the log will contain.
+        logger.info(
+            "Spoken message delivered to thread %s (source=%s, mode=%s, chars=%s)",
+            str(thread_id).replace("\r", "").replace("\n", ""),
+            str(source).replace("\r", "").replace("\n", ""),
+            str(mode).replace("\r", "").replace("\n", ""),
+            len(text),
+        )
+        return web.json_response(
+            {"status": "delivered", "thread_id": thread_id, "mode": mode, "source": source},
+            status=202,
+        )
 
     async def _relay_to_thread(
         self,

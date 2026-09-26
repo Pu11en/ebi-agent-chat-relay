@@ -63,6 +63,46 @@ and refuses to create duplicate named rooms. Set `VOICE_GUILD_ID`,
 `VOICE_BRIDGE_ENV_FILE` before invoking it. Inspect the receipt if provisioning
 stops partway through. Discord voice-channel messages cannot be pinned.
 
+## Spoken commands (optional, off by default)
+
+Transcription only listens. With `VOICE_CONTROL_ENABLED=true`, `CCDB_API_URL`
+and (if the control plane has one) `CCDB_API_SECRET` in the voice config file,
+the owner can also steer a session without leaving the room:
+
+- **"Put this in the &lt;name&gt; thread &lt;instruction&gt;"** — also *send/drop/post
+  this to*, *tell the &lt;name&gt; thread to …*, *ask the &lt;name&gt; session …*, and
+  *in the &lt;name&gt; thread, …*. `thread`, `session` and `chat` are interchangeable.
+- The name is matched against every live session's Discord thread name and its
+  working directory, on letters and digits only, so the emoji prefix, the
+  hyphens in a folder name and whatever spacing the recogniser chose all stop
+  mattering. A name that matches nothing, and a name that two different threads
+  answer to equally well, are both reported in the transcript channel rather
+  than resolved by guessing. The same folder open twice resolves to whichever
+  thread was used most recently. A name that contains one of the nouns is
+  handled too: "the ebi agent **chat** relay thread" and "the aldus thread
+  check the **thread** pool" split at different occurrences, and the split is
+  chosen by which reading names a session that exists.
+- Every send is confirmed in the transcript channel with the thread it went to
+  and the instruction as transcribed, so a misheard prompt is visible
+  immediately. Failures are reported there too.
+
+Only the configured owner is obeyed — everyone in the room is transcribed, but
+being present is not authorisation. Anything that is not a command leaves no
+trace at all; a controller that answered ordinary conversation would make the
+room unusable.
+
+The utterance is delivered through `POST /api/threads/{id}/spoken`, which is
+deliberately not the agent-to-agent relay endpoint: that one stamps every
+message "NOT from your human" and allows one message per thread pair per
+minute, both correct between sessions and both wrong for a person mid-sentence.
+The receiving session is told the words arrived through speech recognition, so
+it reads a mangled path or flag for intent and says what it reinterpreted
+instead of stopping to ask.
+
+Enabling this is a second decision, not a consequence of the first: hearing the
+room is passive, acting on it starts agent turns. A half-filled control config
+fails at startup rather than the first time the owner speaks.
+
 ## Persistence and limits
 
 - SQLite stores sessions, speaker segments, pending audio jobs, pause state, and

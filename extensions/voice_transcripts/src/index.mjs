@@ -20,6 +20,8 @@ import { createStore } from "./voice/store.mjs";
 import { createJobQueue } from "./voice/job-queue.mjs";
 import { createTranscriptService } from "./voice/service.mjs";
 import { createTranscriber } from "./voice/transcriber.mjs";
+import { createRelayClient } from "./control/api.mjs";
+import { createVoiceController } from "./control/controller.mjs";
 
 process.umask(0o077);
 function readEnvFile(key) {
@@ -38,6 +40,10 @@ const config = readConfig({
 mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
 const store = createStore(config.dataDir);
 const transcribe = createTranscriber(config.stt);
+// Assigned once the Discord client exists, since announcements go to the same
+// transcript channel. Until then the hook is inert rather than absent, so the
+// queue never has to know whether control is configured.
+let controller = null;
 const queue = createJobQueue({
   store,
   queueDir: join(config.dataDir, "audio-queue"),
@@ -45,6 +51,9 @@ const queue = createJobQueue({
   provider: config.stt.provider,
   model: config.stt.model,
   maxAttempts: config.stt.maxAttempts,
+  onTranscript: async (utterance) => {
+    await controller?.handleUtterance(utterance);
+  },
 });
 const service = createTranscriptService({
   store,
@@ -98,6 +107,25 @@ const runtime = createRuntime({
   },
   getOutput: () => client.channels.fetch(config.transcriptChannelId),
 });
+if (config.control.enabled) {
+  const relay = createRelayClient({
+    baseUrl: config.control.apiUrl,
+    secret: config.control.secret,
+  });
+  controller = createVoiceController({
+    ownerId: config.ownerId,
+    enabled: true,
+    client: relay,
+    announce: async (message) => {
+      const output = await client.channels.fetch(config.transcriptChannelId);
+      if (!output?.isTextBased() || output.guildId !== config.guildId)
+        throw new Error("Transcript channel mismatch");
+      await output.send({ content: message, allowedMentions: { parse: [] } });
+    },
+    logger: console,
+  });
+  console.log("[voice] spoken commands enabled → " + config.control.apiUrl);
+}
 let closing = false,
   ticking = false,
   lastPrune = 0;

@@ -52,5 +52,22 @@ export function readConfig(env) {
   };
   if (config.channelId === config.transcriptChannelId)
     throw new Error("Voice and transcript channels must be different");
+  // Hearing the room and acting on it are separate permissions. Transcription
+  // is passive; control starts agent turns, so it stays off until someone says
+  // otherwise, and a half-filled control config fails here rather than the
+  // first time the owner speaks a command into a room that cannot obey it.
+  config.control = { enabled: env.VOICE_CONTROL_ENABLED === "true", apiUrl: null, secret: null };
+  if (config.control.enabled) {
+    let url;
+    try {
+      url = new URL(env.CCDB_API_URL ?? "");
+    } catch {
+      throw new Error("VOICE_CONTROL_ENABLED requires an absolute CCDB_API_URL");
+    }
+    if (!/^https?:$/.test(url.protocol))
+      throw new Error("CCDB_API_URL must be an http(s) address");
+    config.control.apiUrl = url.origin + url.pathname.replace(/\/+$/, "");
+    config.control.secret = env.CCDB_API_SECRET || null;
+  }
   return config;
 }
