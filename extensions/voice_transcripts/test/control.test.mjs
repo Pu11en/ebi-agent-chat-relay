@@ -1441,3 +1441,63 @@ test("an open conversation does not swallow a new session request", async () => 
   assert.equal(spawned.length, 1);
   assert.equal(sent.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// The recogniser writes a different word than the one that was said
+// ---------------------------------------------------------------------------
+
+const MISHEARD = [
+  {
+    thread_id: 1,
+    thread_name: "📂 ebi-agent-chat-relay",
+    working_dir: "/home/drewp/main-projects/ebi-agent-chat-relay",
+    voice_label: "luffy",
+    voice_label_aliases: ["loofy", "lucy", "luffie"],
+    state: "running",
+    last_used_at: "2026-09-26 08:00:00",
+  },
+  {
+    thread_id: 2,
+    thread_name: "📂 the aldus",
+    working_dir: "/home/drewp/main-projects/the aldus",
+    voice_label: "zoro",
+    voice_label_aliases: ["sorrow", "zorro"],
+    state: "history",
+    last_used_at: "2026-09-26 07:00:00",
+  },
+];
+
+test("a tag written down as another word still addresses its thread", () => {
+  const hit = matchTarget("lucy", MISHEARD);
+  assert.equal(hit.status, "ok");
+  assert.equal(hit.session.thread_id, 1);
+});
+
+test("the tag itself still wins outright", () => {
+  const hit = matchTarget("zoro", MISHEARD);
+  assert.equal(hit.status, "ok");
+  assert.equal(hit.session.thread_id, 2);
+});
+
+test("an alias is not offered as a fuzzy name match", () => {
+  // "lucy" resolves because thread 1 declared it, not because it scores well
+  // against any title — a session without the alias must not be reachable by it.
+  const bare = MISHEARD.map(({ voice_label_aliases, ...rest }) => rest);
+  assert.equal(matchTarget("lucy", bare).status, "none");
+});
+
+test("a misheard tag is a wake word, so the rest is the instruction", () => {
+  const spoken = parseByTag("loofy run make verify", [
+    { label: "luffy", aliases: ["loofy", "lucy"] },
+  ]);
+  assert.equal(spoken.target, "luffy", "resolved back to the real tag");
+  assert.equal(spoken.prompt, "run make verify");
+});
+
+test("the tag still works when nothing was misheard", () => {
+  const spoken = parseByTag("luffy run make verify", [
+    { label: "luffy", aliases: ["loofy"] },
+  ]);
+  assert.equal(spoken.target, "luffy");
+  assert.equal(spoken.prompt, "run make verify");
+});

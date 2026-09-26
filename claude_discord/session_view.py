@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .voice_labels import aliases_for
+
 if TYPE_CHECKING:
     from claude_code_core.lounge_repo import LoungeMessage
     from claude_code_core.session_repo import SessionRecord
@@ -114,6 +116,10 @@ def build_session_views(
         view.setdefault("working_dir", None)
         view["thread_name"] = names.get(thread_id)
         view["voice_label"] = tags.get(thread_id)
+        # The words the recogniser writes instead of this tag. Sent with the
+        # session so the voice layer treats them as wake words too, rather
+        # than keeping a second copy of the table (voice_labels.py).
+        view["voice_label_aliases"] = list(aliases_for(tags.get(thread_id)))
         view["state"] = STATE_RUNNING if thread_id in running_thread_ids else STATE_HISTORY
         if thread_id in running_thread_ids and thread_id in by_thread:
             view["state"] = by_thread[thread_id].execution_state

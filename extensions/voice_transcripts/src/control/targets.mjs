@@ -51,15 +51,27 @@ function candidates(session) {
 }
 
 /**
- * A spoken tag is a handle, not a name: one phonetic word, assigned by ccdb and
- * unique across the visible threads. So it is matched exactly and wins
- * outright — no scoring, no tie, no "did you mean". Saying "thread bravo" must
- * never be resolved by how much `bravo` happens to look like a folder name.
+ * A spoken tag is a handle, not a name: one word, assigned by ccdb and unique
+ * across the visible threads. So it is matched exactly and wins outright — no
+ * scoring, no tie, no "did you mean". Saying a tag must never be resolved by how
+ * much it happens to look like a folder name.
+ *
+ * "Exactly" includes the words the recogniser writes *instead* of the tag. A
+ * character name is outside its vocabulary, so it substitutes one that is —
+ * "Luffy" comes back as "Lucy" — and the substitution is stable enough to list.
+ * ccdb owns that list and ships it with the session as `voice_label_aliases`, so
+ * it is still an exact comparison and there is no second copy to drift. What it
+ * must not become is a fuzzy match: the consonant skeleton of a four-letter name
+ * is two characters long, which would route "nami" and "kaido" to each other.
  */
 function byLabel(spoken, sessions) {
   const want = normalize(spoken);
   if (!want) return null;
-  const hit = (sessions ?? []).find((s) => normalize(s.voice_label) === want);
+  const hit = (sessions ?? []).find(
+    (s) =>
+      normalize(s.voice_label) === want ||
+      (s.voice_label_aliases ?? []).some((alias) => normalize(alias) === want),
+  );
   return hit ? { status: "ok", session: hit, score: 1, label: hit.voice_label } : null;
 }
 

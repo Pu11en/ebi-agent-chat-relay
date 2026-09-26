@@ -18,13 +18,27 @@ def emit(payload: dict[str, object]) -> None:
 #: the whole thing.
 SHORT_CLIP_SECONDS = 2.5
 
-#: The NATO phonetic alphabet, used as spoken thread tags. Offered to the decoder
-#: as context so a single one of them is recognised rather than guessed at.
-TAG_VOCABULARY = (
-    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima "
-    "mike november oscar papa quebec romeo sierra tango uniform victor whiskey "
-    "xray yankee zulu"
-)
+#: Offering the tag vocabulary as an `initial_prompt` was tried and removed. It
+#: biased the decoder so hard that near-silence came back *as* tag words — "yankee
+#: zulu" from a half-second of room tone — and an invented tag can address a
+#: thread. Helping it recognise a word is not worth teaching it to invent one.
+
+#: Confidence floors for keeping a segment.
+#:
+#: These exist because a short clip with the voice filter off is exactly where
+#: Whisper invents text, and it invents a small, recognisable canon: "Thanks for
+#: watching!", "Thank you.", a syllable repeated six times. Both numbers come from
+#: the decoder's own uncertainty rather than a blocklist of phrases, which would
+#: only ever cover the hallucinations already seen.
+MAX_NO_SPEECH_PROB = 0.6
+MIN_AVG_LOGPROB = -1.0
+
+
+def _is_confident(segment: object) -> bool:
+    """Whether the decoder actually believes what it just produced."""
+    no_speech = getattr(segment, "no_speech_prob", 0.0) or 0.0
+    avg_logprob = getattr(segment, "avg_logprob", 0.0) or 0.0
+    return no_speech <= MAX_NO_SPEECH_PROB and avg_logprob >= MIN_AVG_LOGPROB
 
 
 def _wav_seconds(path: str) -> float:
@@ -85,13 +99,11 @@ def main() -> None:
                 vad_filter=duration >= SHORT_CLIP_SECONDS,
                 beam_size=5,
                 condition_on_previous_text=False,
-                # Bias decoding towards the words used to address a thread. They
-                # are ordinary English but rare in conversation, and one of them
-                # alone on a half-second clip is exactly the hardest case.
-                initial_prompt=TAG_VOCABULARY,
             )
             text = " ".join(
-                segment.text.strip() for segment in segments if segment.text.strip()
+                segment.text.strip()
+                for segment in segments
+                if segment.text.strip() and _is_confident(segment)
             ).strip()
             emit({"id": request_id, "text": text})
         except Exception as error:

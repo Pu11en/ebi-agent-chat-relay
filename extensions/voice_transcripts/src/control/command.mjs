@@ -193,14 +193,25 @@ const OPENERS =
  * the work.
  *
  * @param {string} said One finished utterance.
- * @param {Array<string>} tags The tags currently in use.
+ * @param {Array<string|{label: string, aliases?: Array<string>}>} tags The tags
+ *        currently in use, each optionally with the words it is misheard as.
  * @returns {{kind: "relay", target: string, prompt: string,
  *            candidates: Array<{target: string, prompt: string}>}|null}
  */
 export function parseByTag(said, tags) {
-  const known = new Set(
-    (tags ?? []).filter(Boolean).map((t) => String(t).toLowerCase()),
-  );
+  // An entry is either the tag itself or `{label, aliases}` — ccdb sends the
+  // words the recogniser writes instead of a tag (see targets.mjs), and those
+  // have to wake the thread exactly as the tag does, while the *canonical* tag
+  // is what comes back, so everything downstream sees one name per thread.
+  const known = new Map();
+  for (const entry of tags ?? []) {
+    if (!entry) continue;
+    const label = String(entry.label ?? entry).toLowerCase();
+    if (!label) continue;
+    known.set(label, label);
+    for (const alias of entry.aliases ?? [])
+      if (alias) known.set(String(alias).toLowerCase(), label);
+  }
   if (!known.size) return null;
   const text = String(said ?? "").trim();
   if (!text) return null;
@@ -210,6 +221,7 @@ export function parseByTag(said, tags) {
   for (let i = 0; i < limit; i += 1) {
     const bare = words[i].toLowerCase().replace(/[^a-z0-9]/g, "");
     if (!known.has(bare)) continue;
+    const tag = known.get(bare);
     const before = (words[i - 1] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
     if (before && NOUN_MAKERS.has(before)) return null;
     // Everything after the tag is the instruction. "thread" straight after the
@@ -218,7 +230,7 @@ export function parseByTag(said, tags) {
     let rest = words.slice(i + 1).join(" ");
     rest = rest.replace(/^(?:thread|session|chat)\b/i, "");
     rest = rest.replace(OPENERS, "").trim();
-    const candidate = { target: bare, prompt: rest };
+    const candidate = { target: tag, prompt: rest };
     return { kind: "relay", ...candidate, candidates: [candidate] };
   }
   return null;

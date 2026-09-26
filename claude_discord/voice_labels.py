@@ -28,36 +28,119 @@ from __future__ import annotations
 
 import re
 
-#: The NATO phonetic alphabet, chosen for being mutually unmistakable when
-#: spoken over a poor channel — which is what a room microphone is.
+#: The tag pool: One Piece characters, Drew's own choice of words.
+#:
+#: The pool is swappable and its contents are taste, but one property is not
+#: negotiable: two tags must not be one mishearing apart, because a tag decides
+#: which repository a spoken instruction lands in. So no two of these share
+#: their first two letters, and none of them is a word that turns up in ordinary
+#: speech — "law", "ace", "brook" and "smoker" are all One Piece characters and
+#: all disqualified for exactly that reason.
+#:
+#: The crew comes first because tags are handed out in order and those are the
+#: names Drew sees most.
 SPOKEN_LABELS: tuple[str, ...] = (
-    "alpha",
-    "bravo",
-    "charlie",
-    "delta",
-    "echo",
-    "foxtrot",
-    "golf",
-    "hotel",
-    "india",
-    "juliet",
-    "kilo",
-    "lima",
-    "mike",
-    "november",
-    "oscar",
-    "papa",
-    "quebec",
-    "romeo",
-    "sierra",
-    "tango",
-    "uniform",
-    "victor",
-    "whiskey",
-    "xray",
-    "yankee",
-    "zulu",
+    "luffy",
+    "zoro",
+    "nami",
+    "sanji",
+    "chopper",
+    "franky",
+    "jinbe",
+    "usopp",
+    "shanks",
+    "mihawk",
+    "doflamingo",
+    "oden",
+    "kaido",
+    "marco",
+    "yamato",
+    "rayleigh",
+    "hancock",
+    "bonney",
+    "perona",
+    "kinemon",
+    "momonosuke",
+    "vivi",
+    "buggy",
+    "garp",
+    "ivankov",
+    "tashigi",
 )
+
+#: What the recogniser writes instead, mapped back to the tag it meant.
+#:
+#: "Aldus" came through as "oldest" and always will — the word is not in the
+#: model's vocabulary, so it substitutes one that is (see ``folders.mjs``). A
+#: character name is outside that vocabulary in exactly the same way, and the
+#: fix cannot be a fuzzy match: the consonant skeleton of a four-letter name is
+#: two characters long, so fuzzy matching on tags would route "nami" and
+#: "kaido" to each other. These are matched exactly, and the list grows from
+#: what the transcript log actually shows rather than from guesses about
+#: phonetics.
+LABEL_ALIASES: dict[str, str] = {
+    "lucy": "luffy",
+    "loofy": "luffy",
+    "luffie": "luffy",
+    "laffy": "luffy",
+    "zorro": "zoro",
+    "soro": "zoro",
+    "naomi": "nami",
+    "nammy": "nami",
+    "sanjay": "sanji",
+    "sangi": "sanji",
+    "jimbe": "jinbe",
+    "jimbei": "jinbe",
+    "ginbe": "jinbe",
+    "usop": "usopp",
+    "mihalk": "mihawk",
+    "myhawk": "mihawk",
+    "odin": "oden",
+    "olden": "oden",
+    "flamingo": "doflamingo",
+    "doflamingos": "doflamingo",
+    "kaidou": "kaido",
+    "cairo": "kaido",
+    "raleigh": "rayleigh",
+    "rayly": "rayleigh",
+    "momonoske": "momonosuke",
+    "kinnemon": "kinemon",
+    "parona": "perona",
+    "veevee": "vivi",
+    "vivian": "vivi",
+    "garth": "garp",
+    "ivancov": "ivankov",
+    "tashigee": "tashigi",
+}
+
+
+#: Membership test for the pool, used on every utterance.
+_POOL = frozenset(SPOKEN_LABELS)
+
+
+def heard_as(spoken: str) -> str | None:
+    """The tag ``spoken`` means, or None when it is not one.
+
+    Punctuation and case are the recogniser's business, not the speaker's, so
+    they are stripped before comparing. Everything else is exact.
+    """
+    word = "".join(ch for ch in str(spoken or "").lower() if ch.isalpha())
+    if not word:
+        return None
+    if word in _POOL:
+        return word
+    return LABEL_ALIASES.get(word)
+
+
+def aliases_for(label: str | None) -> tuple[str, ...]:
+    """The mishearings that resolve to ``label``, sorted for a stable payload.
+
+    Sent alongside the tag in the session view so the voice layer can treat
+    them as wake words without keeping its own copy of the table.
+    """
+    if not label:
+        return ()
+    return tuple(sorted(a for a, tag in LABEL_ALIASES.items() if tag == label))
 
 
 def assign_labels(
@@ -84,6 +167,10 @@ def assign_labels(
         taken away, so the caller writes and deletes only what changed.
     """
     visible = set(thread_ids)
+    # A tag that is no longer in the pool is not held. Without this, changing
+    # the pool would leave every already-tagged thread on the old naming scheme
+    # for as long as it lives, and the two schemes would coexist indefinitely.
+    existing = {tid: label for tid, label in existing.items() if label in _POOL}
     labels = {tid: label for tid, label in existing.items() if tid in visible}
     taken = dict(existing)  # every tag still promised to some thread
     free = [label for label in SPOKEN_LABELS if label not in set(taken.values())]

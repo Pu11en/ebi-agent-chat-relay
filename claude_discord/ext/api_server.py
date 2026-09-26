@@ -63,7 +63,13 @@ from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ..voice_labels import (
     VOICE_LABEL_PREFIX as _VOICE_LABEL_PREFIX,
 )
-from ..voice_labels import assign_labels, tagged_title, thread_id_from_key, title_tag
+from ..voice_labels import (
+    aliases_for,
+    assign_labels,
+    tagged_title,
+    thread_id_from_key,
+    title_tag,
+)
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
 from .teams_sync import ThreadRef
@@ -2179,7 +2185,9 @@ class ApiServer:
             with contextlib.suppress(Exception):
                 await self.settings_repo.delete(f"{_VOICE_LABEL_PREFIX}{thread_id}")
         for view in views:
-            view["voice_label"] = labels.get(view["thread_id"])
+            label = labels.get(view["thread_id"])
+            view["voice_label"] = label
+            view["voice_label_aliases"] = list(aliases_for(label))
         await self._show_tags_in_titles(views)
 
     #: Discord's tight rename limit is per thread, not global, so the cap here

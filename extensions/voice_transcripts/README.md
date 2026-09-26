@@ -91,15 +91,39 @@ the owner can also steer a session without leaving the room:
   "code x", "deep seek"); a version string is never guessed into a setting. The
   change applies from the thread's next turn and is written through the same
   store `/backend` and `/model` use, so voice and Discord cannot disagree.
-- **Say the tag.** Every visible thread gets one word from the NATO phonetic
-  alphabet (`alpha`, `bravo`, `charlie`…), assigned by ccdb and listed in a
-  single self-updating message in the transcript channel. "Put this in the
-  bravo thread, check DKIM" is exact — a tag is a handle, so it wins outright
-  over any name matching and removes the ambiguity two similar folder names
-  cause. Tags are stable for as long as the thread stays visible and are
-  kept when it scrolls out of view and handed back if it returns; only when all
-  26 are spoken for does the oldest absent thread give one up. A tag is a word
-  you learned, so it must not change meaning underneath you.
+- **Say the tag.** Every visible thread gets one word — a One Piece character
+  (`luffy`, `zoro`, `nami`…) — assigned by ccdb, shown at the front of the
+  Discord title and listed in a single self-updating message in the transcript
+  channel. "Put this in the zoro thread, check DKIM" is exact: a tag is a
+  handle, so it wins outright over any name matching and removes the ambiguity
+  two similar folder names cause. Tags are stable for as long as the thread
+  stays visible and are kept when it scrolls out of view and handed back if it
+  returns; only when all 26 are spoken for does the oldest absent thread give
+  one up. A tag is a word you learned, so it must not change meaning underneath
+  you — and when a conversation continues in a fresh thread (the context
+  handoff), the tag follows it there rather than staying on the finished one.
+
+  Two constraints decide which words may be in the pool, and they are enforced
+  by tests rather than by care: no two tags share their first two letters, and
+  no tag is a word that turns up in ordinary speech. `law`, `ace`, `brook` and
+  `smoker` are all One Piece characters and all disqualified for the second
+  reason — a tag that occurs in conversation addresses a thread by accident.
+
+  The recogniser writes what it knows, so a character name comes back as an
+  English one ("Luffy" → "Lucy"). Each tag therefore carries the substitutions
+  actually seen for it, ccdb ships them with the session as
+  `voice_label_aliases`, and they are compared **exactly**. Not fuzzily: the
+  consonant skeleton of a four-letter name is two characters long, so a fuzzy
+  tag match would route `nami` and `kaido` to each other. The list grows from
+  what the transcript log shows, not from guesses — read it with the query at
+  the bottom of this file and add the word that actually came out.
+
+  The tag list is **never offered to the decoder as a hint.** It was, and the
+  bias was severe enough that half a second of room tone came back as `yankee
+  zulu` — an invented tag addresses a real thread. Helping it recognise a word
+  is not worth teaching it to invent one; low-confidence segments are dropped
+  instead (`no_speech_prob` / `avg_logprob` floors in
+  `src/voice/faster_whisper_worker.py`).
 - **Say the tag once, then just keep talking.** A delivered instruction leaves
   that thread listening for 90 seconds, and every further sentence resets the
   clock — so thinking out loud reaches one thread instead of needing the name in

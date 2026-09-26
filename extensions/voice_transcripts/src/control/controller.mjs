@@ -262,7 +262,7 @@ export function createVoiceController({
       // fallback for a thread that has no tag yet.
       const addressed = parseByTag(
         text,
-        live.map((s) => s.voice_label),
+        live.map((s) => ({ label: s.voice_label, aliases: s.voice_label_aliases })),
       );
       // "New session in X" needs no tag — there is no thread to address yet,
       // and nobody says that phrase in conversation. An explicit tag still wins,

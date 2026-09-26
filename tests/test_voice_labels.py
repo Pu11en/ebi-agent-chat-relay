@@ -2,50 +2,63 @@
 
 from __future__ import annotations
 
-from claude_discord.voice_labels import SPOKEN_LABELS, assign_labels
+from claude_discord.voice_labels import (
+    LABEL_ALIASES,
+    SPOKEN_LABELS,
+    assign_labels,
+    heard_as,
+)
+
+#: The first tag the pool hands out. These tests are about the mechanism,
+#: not about which words Drew picked, so they name it rather than spell it.
+FIRST = SPOKEN_LABELS[0]
 
 
 def test_tags_are_handed_out_in_order() -> None:
     labels, new, _ = assign_labels([10, 20, 30], {})
 
-    assert labels == {10: "alpha", 20: "bravo", 30: "charlie"}
+    assert labels == dict(zip([10, 20, 30], SPOKEN_LABELS[:3], strict=True))
     assert new == labels
 
 
 def test_an_existing_tag_is_never_reshuffled() -> None:
     """The thread called bravo this morning is still bravo tonight."""
-    labels, new, _ = assign_labels([99, 10, 20], {10: "alpha", 20: "bravo"})
+    first, second, third = SPOKEN_LABELS[:3]
+    labels, new, _ = assign_labels([99, 10, 20], {10: first, 20: second})
 
-    assert labels[10] == "alpha"
-    assert labels[20] == "bravo"
-    assert labels[99] == "charlie"
-    assert new == {99: "charlie"}
+    assert labels[10] == first
+    assert labels[20] == second
+    assert labels[99] == third
+    assert new == {99: third}
 
 
 def test_only_the_new_assignments_are_reported() -> None:
-    _, new, _ = assign_labels([10], {10: "alpha"})
+    _, new, _ = assign_labels([10], {10: SPOKEN_LABELS[0]})
     assert new == {}
 
 
 def test_a_tag_is_kept_after_its_thread_scrolls_out_of_view() -> None:
     """A tag is a word Drew learned; it must not change meaning under him."""
-    labels, new, released = assign_labels([50], {10: "alpha", 20: "bravo"})
+    first, second, third = SPOKEN_LABELS[:3]
+    labels, new, released = assign_labels([50], {10: first, 20: second})
 
-    assert labels == {50: "charlie"}, "alpha and bravo are still promised"
+    assert labels == {50: third}, "the first two are still promised"
     assert released == set()
-    assert new == {50: "charlie"}
+    assert new == {50: third}
 
 
 def test_a_thread_coming_back_into_view_gets_its_own_tag_again() -> None:
-    labels, new, _ = assign_labels([10], {10: "alpha", 20: "bravo"})
+    first, second = SPOKEN_LABELS[:2]
+    labels, new, _ = assign_labels([10], {10: first, 20: second})
 
-    assert labels == {10: "alpha"}
+    assert labels == {10: first}
     assert new == {}
 
 
 def test_a_stored_tag_for_an_invisible_thread_is_not_returned() -> None:
-    labels, _, _ = assign_labels([10], {10: "alpha", 20: "bravo"})
-    assert labels == {10: "alpha"}
+    first, second = SPOKEN_LABELS[:2]
+    labels, _, _ = assign_labels([10], {10: first, 20: second})
+    assert labels == {10: first}
 
 
 def test_the_oldest_absent_thread_gives_up_its_tag_when_the_pool_runs_dry() -> None:
@@ -53,9 +66,9 @@ def test_the_oldest_absent_thread_gives_up_its_tag_when_the_pool_runs_dry() -> N
     stored = {100 + i: label for i, label in enumerate(SPOKEN_LABELS)}
     labels, new, released = assign_labels([9999], stored)
 
-    assert labels == {9999: "alpha"}, "the oldest absent thread held alpha"
+    assert labels == {9999: SPOKEN_LABELS[0]}, "the oldest absent thread held it"
     assert released == {100}
-    assert new == {9999: "alpha"}
+    assert new == {9999: SPOKEN_LABELS[0]}
 
 
 def test_a_visible_thread_never_has_its_tag_taken() -> None:
@@ -88,6 +101,9 @@ def test_every_tag_is_one_lowercase_word() -> None:
 # The tag in the Discord title — the only place it is read at a glance
 # ---------------------------------------------------------------------------
 
+#: The first tag the pool hands out — these tests are about the mechanism,
+#: not about which words Drew picked.
+
 from claude_discord.voice_labels import (  # noqa: E402
     MAX_THREAD_NAME,
     strip_title_tag,
@@ -97,16 +113,16 @@ from claude_discord.voice_labels import (  # noqa: E402
 
 
 def test_a_tag_is_put_at_the_front_of_the_title() -> None:
-    assert tagged_title("📂 ebi-agent-chat-relay", "bravo") == "[bravo] 📂 ebi-agent-chat-relay"
+    assert tagged_title("📂 ebi-agent-chat-relay", "zoro") == "[zoro] 📂 ebi-agent-chat-relay"
 
 
 def test_reapplying_a_tag_never_stacks_it() -> None:
-    once = tagged_title("📂 repo", "bravo")
-    assert tagged_title(once, "bravo") == once
+    once = tagged_title("📂 repo", "zoro")
+    assert tagged_title(once, "zoro") == once
 
 
 def test_a_changed_tag_replaces_the_old_one() -> None:
-    assert tagged_title("[alpha] 📂 repo", "bravo") == "[bravo] 📂 repo"
+    assert tagged_title("[luffy] 📂 repo", "zoro") == "[zoro] 📂 repo"
 
 
 def test_a_tag_can_be_read_back_and_removed() -> None:
@@ -177,16 +193,16 @@ async def test_the_tag_is_written_into_the_thread_title(api: ApiServer) -> None:
 
     await api._apply_voice_labels(views)
 
-    thread.edit.assert_awaited_once_with(name="[alpha] 📂 ebi-agent-chat-relay")
-    assert views[0]["voice_label"] == "alpha"
-    assert views[0]["thread_name"] == "[alpha] 📂 ebi-agent-chat-relay"
+    thread.edit.assert_awaited_once_with(name=f"[{FIRST}] 📂 ebi-agent-chat-relay")
+    assert views[0]["voice_label"] == FIRST
+    assert views[0]["thread_name"] == f"[{FIRST}] 📂 ebi-agent-chat-relay"
 
 
 async def test_a_title_that_already_shows_its_tag_is_left_alone(api: ApiServer) -> None:
     """Discord rate-limits renames hard, so this must be once per thread."""
-    thread = _thread(1, "[alpha] 📂 repo")
+    thread = _thread(1, f"[{FIRST}] 📂 repo")
     api.bot.get_channel.return_value = thread
-    views = [{"thread_id": 1, "thread_name": "[alpha] 📂 repo"}]
+    views = [{"thread_id": 1, "thread_name": f"[{FIRST}] 📂 repo"}]
 
     await api._apply_voice_labels(views)
     await api._apply_voice_labels(views)
@@ -202,7 +218,7 @@ async def test_an_archived_thread_keeps_its_title(api: ApiServer) -> None:
     await api._apply_voice_labels(views)
 
     thread.edit.assert_not_awaited()
-    assert views[0]["voice_label"] == "alpha"  # still addressable by tag
+    assert views[0]["voice_label"] == FIRST  # still addressable by tag
 
 
 async def test_a_rename_failure_never_fails_the_request(api: ApiServer) -> None:
@@ -213,7 +229,7 @@ async def test_a_rename_failure_never_fails_the_request(api: ApiServer) -> None:
 
     await api._apply_voice_labels(views)
 
-    assert views[0]["voice_label"] == "alpha"
+    assert views[0]["voice_label"] == FIRST
     assert views[0]["thread_name"] == "📂 repo"
 
 
@@ -233,7 +249,7 @@ async def test_tags_persist_so_a_title_is_not_rewritten_after_a_restart(api: Api
     await api._apply_voice_labels([{"thread_id": 7, "thread_name": "📂 repo"}])
 
     stored = await api.settings_repo.get_all()
-    assert stored["voice_label:7"] == "alpha"
+    assert stored["voice_label:7"] == FIRST
 
 
 async def test_a_spawn_view_gets_its_tag_without_the_whole_session_list(
@@ -246,20 +262,20 @@ async def test_a_spawn_view_gets_its_tag_without_the_whole_session_list(
 
     await api._apply_voice_labels(view)
 
-    assert view[0]["voice_label"] == "alpha"
-    assert view[0]["thread_name"] == "[alpha] the aldus"
-    thread.edit.assert_awaited_once_with(name="[alpha] the aldus")
+    assert view[0]["voice_label"] == FIRST
+    assert view[0]["thread_name"] == f"[{FIRST}] the aldus"
+    thread.edit.assert_awaited_once_with(name=f"[{FIRST}] the aldus")
 
 
 async def test_a_spawned_thread_does_not_steal_a_live_tag(api: ApiServer) -> None:
-    await api.settings_repo.set("voice_label:1", "alpha")
+    await api.settings_repo.set("voice_label:1", FIRST)
     thread = _thread(4242, "the aldus")
     api.bot.get_channel.return_value = thread
     view = [{"thread_id": 4242, "thread_name": "the aldus"}]
 
     await api._apply_voice_labels(view)
 
-    assert view[0]["voice_label"] == "bravo"
+    assert view[0]["voice_label"] == SPOKEN_LABELS[1]
 
 
 class TestLabelKey:
@@ -280,3 +296,132 @@ class TestLabelKey:
 
         assert thread_id_from_key("claude_model") is None
         assert thread_id_from_key("voice_label:not-a-number") is None
+
+
+# ---------------------------------------------------------------------------
+# The tag pool, and what the recogniser does to it
+# ---------------------------------------------------------------------------
+
+
+class TestThePool:
+    """The words are Drew's choice; being mutually unmistakable is the constraint."""
+
+    def test_the_pool_is_a_full_alphabet_of_distinct_words(self) -> None:
+        assert len(SPOKEN_LABELS) >= 26
+        assert len(set(SPOKEN_LABELS)) == len(SPOKEN_LABELS)
+
+    def test_no_two_tags_start_with_the_same_two_letters(self) -> None:
+        """Two tags an edit apart is how a command lands in the wrong repository."""
+        starts = [label[:2] for label in SPOKEN_LABELS]
+        assert len(set(starts)) == len(starts), sorted(s for s in starts if starts.count(s) > 1)
+
+    def test_a_tag_is_not_an_everyday_english_word(self) -> None:
+        """A tag that occurs in conversation addresses a thread by accident."""
+        common = {
+            "the",
+            "and",
+            "law",
+            "ace",
+            "brook",
+            "robin",
+            "smoker",
+            "dragon",
+            "carrot",
+            "bear",
+            "king",
+            "queen",
+            "pudding",
+            "stone",
+        }
+        assert not (set(SPOKEN_LABELS) & common)
+
+
+class TestMishearings:
+    """The recogniser writes what it knows, not what was said.
+
+    "Aldus" came through as "oldest" and always will (see folders.mjs). A name
+    outside the model's vocabulary gets substituted the same way, so each tag
+    carries the substitutions actually seen for it. They are matched exactly —
+    a fuzzy tag match is how a command reaches the wrong thread, since the
+    consonant skeleton of a four-letter name is two characters long.
+    """
+
+    def test_a_mishearing_resolves_to_its_tag(self) -> None:
+        assert heard_as("lucy") == "luffy"
+        assert heard_as("zorro") == "zoro"
+
+    def test_a_tag_resolves_to_itself(self) -> None:
+        for label in SPOKEN_LABELS:
+            assert heard_as(label) == label
+
+    def test_something_that_is_not_a_tag_resolves_to_nothing(self) -> None:
+        assert heard_as("aldus") is None
+        assert heard_as("") is None
+
+    def test_matching_ignores_case_and_punctuation(self) -> None:
+        assert heard_as("Luffy,") == "luffy"
+
+    def test_every_alias_points_at_a_real_tag(self) -> None:
+        assert set(LABEL_ALIASES.values()) <= set(SPOKEN_LABELS)
+
+    def test_no_alias_is_itself_a_tag(self) -> None:
+        """Otherwise one tag quietly swallows another."""
+        assert not (set(LABEL_ALIASES) & set(SPOKEN_LABELS))
+
+
+class TestRetiredTags:
+    """Changing the pool has to reach the threads that already have a tag.
+
+    A tag is held for as long as possible, which is right while the pool is
+    fixed and wrong the moment it changes: without this, every thread tagged
+    before the change keeps a word that is no longer in the list, and the two
+    naming schemes coexist for as long as those threads live.
+    """
+
+    def test_a_tag_outside_the_pool_is_replaced(self) -> None:
+        labels, new, released = assign_labels([10], {10: "bravo"})
+
+        assert labels[10] == SPOKEN_LABELS[0]
+        assert new == {10: SPOKEN_LABELS[0]}
+        assert 10 in released or new[10] != "bravo"
+
+    def test_a_retired_tag_does_not_hold_a_slot(self) -> None:
+        """All 26 old names stored, all 26 new ones must still be available."""
+        retired = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+            "hotel", "india", "juliet", "kilo", "lima", "mike", "november",
+            "oscar", "papa", "quebec", "romeo", "sierra", "tango", "uniform",
+            "victor", "whiskey", "xray", "yankee", "zulu",
+        ]  # fmt: skip
+        stored = {100 + i: name for i, name in enumerate(retired)}
+        visible = sorted(stored)
+        labels, _, _ = assign_labels(visible, stored)
+
+        assert set(labels.values()) == set(SPOKEN_LABELS[: len(visible)])
+
+
+class TestAliasesReachTheVoiceLayer:
+    """The matching happens in the voice companion, so it has to be told.
+
+    The pool and its mishearings are owned here — ccdb assigns the tags — so the
+    alias list travels with the session rather than being spelled a second time
+    in JavaScript, where it would drift the first time a name changed.
+    """
+
+    def test_a_tag_carries_the_words_it_gets_confused_with(self) -> None:
+        from claude_discord.voice_labels import aliases_for
+
+        assert "lucy" in aliases_for("luffy")
+        assert "luffy" not in aliases_for("luffy"), "the tag itself is sent separately"
+
+    def test_a_tag_with_no_known_mishearing_carries_none(self) -> None:
+        from claude_discord.voice_labels import aliases_for
+
+        assert aliases_for("nosuchtag") == ()
+
+    def test_every_alias_reaches_exactly_one_tag(self) -> None:
+        from claude_discord.voice_labels import aliases_for
+
+        for label in SPOKEN_LABELS:
+            for alias in aliases_for(label):
+                assert heard_as(alias) == label
