@@ -29,13 +29,13 @@ const GAP = /^[\s,.:;–—-]+/;
 const FORMS = [
   // put / send / drop this in the X thread <prompt>
   {
-    lead: /^(?:put|send|drop|push|post|add)\s+(?:this|that|it)?\s*(?:in\s*to|into|in|to|on)\s+(?:the\s+)?/i,
+    lead: /^(?:put|send|drop|push|post|add)\s+(?:this|that|it)?\s*(?:inside\s+of|inside|in\s*to|into|in|to|on)\s+(?:the\s+)?/i,
     connector: null,
   },
   // tell / ask the X thread (to|that) <prompt>
   { lead: /^(?:tell|ask)\s+(?:the\s+)?/i, connector: /^(?:to|that)\s+/i },
-  // (over) in the X thread, <prompt>
-  { lead: /^(?:over\s+)?in\s+(?:the\s+)?/i, connector: null },
+  // (over) in / inside (of) the X thread, <prompt>
+  { lead: /^(?:over\s+)?(?:inside\s+of|inside|in)\s+(?:the\s+)?/i, connector: null },
 ];
 
 /** A spoken thread name is a few words, not a clause. */
@@ -91,3 +91,92 @@ export function parseCommand(said) {
 
 /** Shortest instruction worth acting on; below this it is a stray word. */
 export const MIN_PROMPT_CHARS = 2;
+
+
+// ---------------------------------------------------------------------------
+// The tag as a wake word
+// ---------------------------------------------------------------------------
+
+/**
+ * What may precede a tag and still leave it an address.
+ *
+ * "Okay and alpha, say that we need a repo" addresses alpha. "The delta between
+ * the two runs was small" does not — and a tag drawn from the phonetic alphabet
+ * lands in ordinary speech sooner or later, so the difference has to be decided
+ * rather than hoped about.
+ *
+ * Position alone is not the signal: `delta` is the second word in that
+ * sentence. What separates them is that an address is preceded only by throat-
+ * clearing, while a tag used as a noun is preceded by the grammar that makes it
+ * one — an article, a verb, a pronoun. So everything before the tag must be
+ * filler, and "the" is decisive.
+ */
+const LEAD_FILLER = new Set([
+  "ok",
+  "okay",
+  "alright",
+  "right",
+  "hey",
+  "hi",
+  "um",
+  "uh",
+  "er",
+  "so",
+  "and",
+  "well",
+  "yeah",
+  "yep",
+  "now",
+  "also",
+  "then",
+  "oh",
+]);
+
+/** Cheap bound on the scan; the filler rule above is what actually decides. */
+const MAX_LEAD_WORDS = 6;
+
+/** Connectors that carry no instruction once the thread is already named. */
+const OPENERS = /^(?:[,.:;!?\s-]+|please\s+|to\s+|that\s+|you\s+|can\s+you\s+|could\s+you\s+)+/i;
+
+/**
+ * Address a thread by saying its tag, then just talking.
+ *
+ * The grammar in `parseCommand` is a sentence template, and a person mid-flow
+ * does not follow one — the first live attempts were "okay and alpha say
+ * that..." and "can you say hi inside of the upwork thread", neither of which
+ * is "put this in the X thread Y". Once every thread has a tag, though, no
+ * template is needed: the tag names the thread and the rest of the sentence is
+ * the work.
+ *
+ * @param {string} said One finished utterance.
+ * @param {Array<string>} tags The tags currently in use.
+ * @returns {{kind: "relay", target: string, prompt: string,
+ *            candidates: Array<{target: string, prompt: string}>}|null}
+ */
+export function parseByTag(said, tags) {
+  const known = new Set((tags ?? []).filter(Boolean).map((t) => String(t).toLowerCase()));
+  if (!known.size) return null;
+  const text = String(said ?? "").trim();
+  if (!text) return null;
+
+  const words = text.split(/\s+/);
+  const limit = Math.min(words.length, MAX_LEAD_WORDS);
+  for (let i = 0; i < limit; i += 1) {
+    const bare = words[i].toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!known.has(bare)) continue;
+    const lead = words
+      .slice(0, i)
+      .map((w) => w.toLowerCase().replace(/[^a-z0-9]/g, ""))
+      .filter(Boolean);
+    if (!lead.every((w) => LEAD_FILLER.has(w))) return null;
+    // Everything after the tag is the instruction. "thread" straight after the
+    // tag is how people say it out loud ("alpha thread, run the tests") and
+    // carries nothing, so it goes too.
+    let rest = words.slice(i + 1).join(" ");
+    rest = rest.replace(/^(?:thread|session|chat)\b/i, "");
+    rest = rest.replace(OPENERS, "").trim();
+    const candidate = { target: bare, prompt: rest };
+    return { kind: "relay", ...candidate, candidates: [candidate] };
+  }
+  return null;
+}

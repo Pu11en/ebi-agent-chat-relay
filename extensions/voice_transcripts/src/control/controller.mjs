@@ -21,7 +21,7 @@
  * silence, because silence is the normal case.
  */
 
-import { MIN_PROMPT_CHARS, parseCommand } from "./command.mjs";
+import { MIN_PROMPT_CHARS, parseByTag, parseCommand } from "./command.mjs";
 import { resolveTarget, untagged } from "./targets.mjs";
 
 const IGNORED = { status: "ignored" };
@@ -38,9 +38,25 @@ export function createVoiceController({
   source = "voice",
   now = () => Date.now(),
   followUpMs = FOLLOW_UP_MS,
+  sessionsTtlMs = 10_000,
 }) {
   /** @type {{session: object, target: string, at: number} | null} */
   let held = null;
+  /** @type {{sessions: Array<object>, at: number} | null} */
+  let cached = null;
+
+  /**
+   * The tags have to be known before the sentence can be understood, so this is
+   * read for every utterance rather than only for a recognised command. It is a
+   * loopback call, and a short cache keeps a talkative minute from making one
+   * per breath.
+   */
+  async function sessions() {
+    if (cached && now() - cached.at < sessionsTtlMs) return cached.sessions;
+    const fresh = await client.listSessions();
+    cached = { sessions: fresh, at: now() };
+    return fresh;
+  }
 
   async function say(message) {
     // A room that cannot be spoken to is still a room a command was sent from.
@@ -88,11 +104,29 @@ export function createVoiceController({
       if (!enabled) return { status: "disabled" };
       if (String(userId) !== String(ownerId)) return IGNORED;
 
-      const command = parseCommand(text);
+      let live;
+      try {
+        live = await sessions();
+      } catch (error) {
+        // Without the session list there is no tag list, so nothing can be
+        // understood. Stay silent unless a thread was already being held —
+        // there the speaker is expecting an answer.
+        if (!taken()) return IGNORED;
+        await say(`🎙️ Could not reach the bot's API — ${error.message}`);
+        return { status: "failed", error: error.message };
+      }
+
+      // Saying the tag is the primary form; the sentence template is the
+      // fallback for a thread that has no tag yet.
+      const command =
+        parseByTag(
+          text,
+          live.map((s) => s.voice_label),
+        ) ?? parseCommand(text);
 
       if (!command) {
-        // Not a command — but if a thread is being held, this is the rest of
-        // the sentence rather than conversation.
+        // Not addressed to a thread — but if one is being held, this is the
+        // rest of the sentence rather than conversation.
         const waiting = taken();
         const rest = String(text ?? "").trim();
         if (!waiting || rest.length < MIN_PROMPT_CHARS) return IGNORED;
@@ -101,20 +135,12 @@ export function createVoiceController({
       }
 
       held = null;
-      let sessions;
-      try {
-        sessions = await client.listSessions();
-      } catch (error) {
-        await say(`🎙️ Could not reach the bot's API to find that thread — ${error.message}`);
-        return { status: "failed", error: error.message };
-      }
-
-      const match = resolveTarget(command.candidates, sessions);
+      const match = resolveTarget(command.candidates, live);
       const heard = match.candidate?.target ?? command.target;
       if (match.status === "none") {
         await say(
           `🎙️ Nothing matched **${heard}**. Say the thread's tag — ` +
-            (sessions
+            (live
               .filter((s) => s.voice_label)
               .slice(0, 8)
               .map((s) => `\`${s.voice_label}\` ${untagged(s.thread_name) || s.working_dir || ""}`)

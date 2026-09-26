@@ -797,3 +797,124 @@ test("the confirmation line does not repeat the tag either", async () => {
 
   assert.equal(said[0], "🎙️ → **`alpha` 📂 ebi-agent-chat-relay**: go");
 });
+
+// ---------------------------------------------------------------------------
+// The sentences actually spoken into the room, verbatim from the transcript
+// ---------------------------------------------------------------------------
+
+import { parseByTag } from "../src/control/command.mjs";
+
+test("saying the tag and then just talking addresses that thread", () => {
+  const r = parseByTag("Okay and alpha say that we need to make this a repo", ["alpha", "bravo"]);
+  assert.equal(r.target, "alpha");
+  assert.equal(r.prompt, "say that we need to make this a repo");
+});
+
+test("a bare tag with a comma works", () => {
+  assert.equal(parseByTag("Alpha, run the tests.", ["alpha"]).prompt, "run the tests.");
+});
+
+test("'alpha thread' drops the word thread", () => {
+  assert.equal(parseByTag("alpha thread, run make verify", ["alpha"]).prompt, "run make verify");
+});
+
+test("polite lead-ins are not part of the instruction", () => {
+  assert.equal(parseByTag("hey bravo can you check DKIM", ["bravo"]).prompt, "check DKIM");
+  assert.equal(parseByTag("alpha please push the branch", ["alpha"]).prompt, "push the branch");
+});
+
+test("a tag deep inside a sentence is conversation, not an address", () => {
+  assert.equal(
+    parseByTag("the delta between the two runs was small so I left it", ["delta"]),
+    null,
+  );
+});
+
+test("only tags in use are listened for", () => {
+  assert.equal(parseByTag("zulu do the thing", ["alpha"]), null);
+  assert.equal(parseByTag("alpha do the thing", []), null);
+});
+
+test("a bare tag with nothing after it yields an empty instruction, to be held", () => {
+  assert.equal(parseByTag("Alpha.", ["alpha"]).prompt, "");
+});
+
+test("the whole loop: tag, pause, then the instruction", async () => {
+  const { controller, sent, announced } = tagged();
+
+  const first = await controller.handleUtterance({ userId: "42", text: "Okay, alpha." });
+  assert.equal(first.status, "incomplete");
+  assert.ok(announced[0].includes("Holding"));
+  assert.deepEqual(sent, []);
+
+  const second = await controller.handleUtterance({
+    userId: "42",
+    text: "say that we need to make this a repo",
+  });
+  assert.equal(second.status, "sent");
+  assert.equal(sent[0].threadId, 1);
+  assert.equal(sent[0].text, "say that we need to make this a repo");
+});
+
+test("the tag form wins over the sentence template", async () => {
+  const { controller, sent } = tagged();
+
+  await controller.handleUtterance({
+    userId: "42",
+    text: "bravo put this in the alpha thread",
+  });
+
+  assert.equal(sent[0].threadId, 2, "bravo was addressed; the rest is the instruction");
+});
+
+test("the session list is read once for a burst of utterances", async () => {
+  let reads = 0;
+  const { controller } = tagged({
+    client: {
+      listSessions: async () => {
+        reads += 1;
+        return TAGGED;
+      },
+      sendSpoken: async () => {},
+    },
+  });
+
+  await controller.handleUtterance({ userId: "42", text: "alpha go" });
+  await controller.handleUtterance({ userId: "42", text: "just chatting here" });
+  await controller.handleUtterance({ userId: "42", text: "bravo go" });
+
+  assert.equal(reads, 1);
+});
+
+test("an unreachable API stays silent rather than complaining about small talk", async () => {
+  const { controller, announced } = tagged({
+    client: {
+      listSessions: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+      sendSpoken: async () => {},
+    },
+  });
+
+  const result = await controller.handleUtterance({ userId: "42", text: "anyway where were we" });
+
+  assert.equal(result.status, "ignored");
+  assert.deepEqual(announced, []);
+});
+
+test("a tag used as a noun is not an address, whatever its position", () => {
+  for (const said of [
+    "the delta between the two runs was small",
+    "I think alpha is the better option",
+    "we should check the echo settings",
+    "call it bravo if you like",
+  ]) {
+    assert.equal(parseByTag(said, ["alpha", "bravo", "delta", "echo"]), null, said);
+  }
+});
+
+test("throat-clearing before a tag still leaves it an address", () => {
+  for (const said of ["okay so alpha go", "uh, alpha go", "oh yeah alpha go", "and alpha go"]) {
+    assert.equal(parseByTag(said, ["alpha"])?.prompt, "go", said);
+  }
+});

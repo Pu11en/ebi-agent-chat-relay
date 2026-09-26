@@ -69,6 +69,12 @@ Transcription only listens. With `VOICE_CONTROL_ENABLED=true`, `CCDB_API_URL`
 and (if the control plane has one) `CCDB_API_SECRET` in the voice config file,
 the owner can also steer a session without leaving the room:
 
+- **Just say the tag, then talk.** "Alpha, run the tests" · "okay and bravo,
+  check DKIM" · "hey charlie can you push that". The tag names the thread and
+  everything after it is the instruction — no sentence template to remember. A
+  tag only counts as an address when nothing but throat-clearing precedes it
+  ("okay", "and", "hey", "uh"…), so "the delta between the two runs was small"
+  is left alone even though `delta` is a tag.
 - **Say the tag.** Every visible thread gets one word from the NATO phonetic
   alphabet (`alpha`, `bravo`, `charlie`…), assigned by ccdb and listed in a
   single self-updating message in the transcript channel. "Put this in the
