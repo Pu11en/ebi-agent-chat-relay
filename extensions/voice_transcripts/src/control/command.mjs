@@ -311,3 +311,39 @@ export function parseNewSession(said) {
   if (!candidates.length) return null;
   return { kind: "spawn", ...candidates[0], candidates };
 }
+
+// ---------------------------------------------------------------------------
+// Clearing the sidebar
+// ---------------------------------------------------------------------------
+
+/**
+ * "Close everything I'm not using."
+ *
+ * Every spoken instruction opens a thread and nothing ever closed one, so the
+ * sidebar filled with finished conversations and clearing it was manual work —
+ * the exact kind of chore voice control exists to remove.
+ *
+ * The pattern is deliberately anchored to the *start* of the sentence and
+ * requires both halves ("close … everything … not using"). This is the one
+ * spoken command that acts on threads it was not addressed from, so a false
+ * positive is expensive: talking *about* the idea ("I should close everything
+ * I'm not using at some point") must not carry it out. A leading word that
+ * turns the phrase into a report or a wish is what separates them, which is why
+ * only throat-clearing may precede it.
+ *
+ * Nothing that is running is ever touched — that is enforced by the caller, not
+ * by this pattern, because a sentence cannot know what is busy.
+ */
+const TIDY_UP =
+  /^(?:ok(?:ay)?|alright|right|hey|um+|uh+|so|and|well|yeah|please|can you|could you|go ahead and)?[\s,.:;-]*close\s+(?:out\s+)?(?:everything|every(?:\s+single)?\s+(?:one|session|thread|chat)|all\s+(?:the\s+)?(?:sessions|threads|chats)|the\s+(?:sessions|threads|chats))\s+(?:that\s+)?(?:i'?m|i\s+am|we'?re|we\s+are)\s+not\s+(?:using|working\s+on|in)\b/i;
+
+/**
+ * @param {string} said One finished utterance.
+ * @returns {{kind: "tidy-up"}|null}
+ */
+export function parseTidyUp(said) {
+  const text = String(said ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+  return TIDY_UP.test(text) ? { kind: "tidy-up" } : null;
+}

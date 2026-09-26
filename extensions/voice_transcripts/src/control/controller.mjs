@@ -21,7 +21,13 @@
  * silence, because silence is the normal case.
  */
 
-import { MIN_PROMPT_CHARS, parseByTag, parseCommand, parseNewSession } from "./command.mjs";
+import {
+  MIN_PROMPT_CHARS,
+  parseByTag,
+  parseCommand,
+  parseNewSession,
+  parseTidyUp,
+} from "./command.mjs";
 import { matchFolder } from "./folders.mjs";
 import { parseRuntime } from "./runtime.mjs";
 import { resolveTarget, untagged } from "./targets.mjs";
@@ -147,6 +153,47 @@ export function createVoiceController({
     return { status: "sent", session, prompt };
   }
 
+  /**
+   * Close every session that is not in use, and say what went.
+   *
+   * "In use" is the two things a sentence cannot know and this can: a thread
+   * with a turn in flight, and the thread currently being talked to. Everything
+   * else is a finished conversation sitting in the sidebar.
+   *
+   * One failure does not stop the sweep. A thread Discord has already lost is
+   * the common case here — that is a thread which needs no closing, not a
+   * reason to leave the other twenty open.
+   */
+  async function tidyUp(live) {
+    const open = openConversation();
+    const spare = (live ?? []).filter(
+      (s) =>
+        s.state !== "running" &&
+        String(s.thread_id) !== String(open?.session?.thread_id ?? ""),
+    );
+    if (!spare.length) {
+      await say("🎙️ Nothing to close — every session is in use.");
+      return { status: "tidied", closed: 0, failed: 0 };
+    }
+    let closed = 0;
+    let failed = 0;
+    for (const session of spare) {
+      try {
+        await client.close(session.thread_id, { actor: ownerId });
+        closed += 1;
+      } catch (error) {
+        failed += 1;
+        logger.warn?.(`[control] could not close ${session.thread_id}: ${error.message}`);
+      }
+    }
+    await say(
+      `🎙️ Closed ${closed} session${closed === 1 ? "" : "s"} you were not using` +
+        (failed ? ` (${failed} could not be reached)` : "") +
+        ".",
+    );
+    return { status: "tidied", closed, failed };
+  }
+
   /** Change (or report) which agent answers in a thread. */
   async function tune(session, runtime) {
     try {
@@ -257,6 +304,10 @@ export function createVoiceController({
         await say(`🎙️ Could not reach the bot's API — ${error.message}`);
         return { status: "failed", error: error.message };
       }
+
+      // "Close everything I'm not using" acts on every thread rather than one,
+      // so it is checked before any target is resolved — there is no target.
+      if (parseTidyUp(text)) return await tidyUp(live);
 
       // Saying the tag is the primary form; the sentence template is the
       // fallback for a thread that has no tag yet.

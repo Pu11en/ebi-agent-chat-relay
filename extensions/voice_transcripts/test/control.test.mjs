@@ -802,7 +802,7 @@ test("the confirmation line does not repeat the tag either", async () => {
 // The sentences actually spoken into the room, verbatim from the transcript
 // ---------------------------------------------------------------------------
 
-import { parseByTag } from "../src/control/command.mjs";
+import { parseByTag, parseTidyUp } from "../src/control/command.mjs";
 
 test("saying the tag and then just talking addresses that thread", () => {
   const r = parseByTag("Okay and alpha say that we need to make this a repo", ["alpha", "bravo"]);
@@ -1500,4 +1500,139 @@ test("the tag still works when nothing was misheard", () => {
   ]);
   assert.equal(spoken.target, "luffy");
   assert.equal(spoken.prompt, "run make verify");
+});
+
+// ---------------------------------------------------------------------------
+// "Close everything I'm not using" — the sentence that clears the sidebar
+// ---------------------------------------------------------------------------
+
+test("the tidy-up sentence is recognised however it is phrased", () => {
+  for (const said of [
+    "close everything I'm not using",
+    "Close everything I am not using.",
+    "close all the sessions I'm not using",
+    "close every session I'm not using",
+    "close the threads I'm not using",
+    "close everything i'm not working on",
+    "close out everything I'm not using",
+  ])
+    assert.ok(parseTidyUp(said), said);
+});
+
+test("closing one thing is not closing everything", () => {
+  assert.equal(parseTidyUp("close this session"), null);
+  assert.equal(parseTidyUp("luffy, close this session"), null);
+  assert.equal(parseTidyUp("close the aldus thread"), null);
+});
+
+test("talking about closing is not an instruction to close", () => {
+  assert.equal(parseTidyUp("I should close everything I'm not using at some point"), null);
+  assert.equal(parseTidyUp("why does it not close everything I'm not using"), null);
+});
+
+test("the tidy-up closes the idle sessions and leaves the busy ones alone", async () => {
+  const closed = [];
+  const controller = createVoiceController({
+    client: {
+      listSessions: async () => [
+        { thread_id: "1", thread_name: "busy", voice_label: "luffy", state: "running" },
+        { thread_id: "2", thread_name: "done", voice_label: "zoro", state: "history" },
+        { thread_id: "3", thread_name: "also done", voice_label: "nami", state: "history" },
+      ],
+      close: async (id) => {
+        closed.push(id);
+        return { state: "closed", archived: true };
+      },
+      sendSpoken: async () => ({}),
+    },
+    ownerId: "7",
+    enabled: true,
+    announce: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const result = await controller.handleUtterance({ userId: "7", text: "close everything I'm not using" });
+
+  assert.equal(result.status, "tidied");
+  assert.deepEqual(closed.sort(), ["2", "3"], "the running thread is untouched");
+  assert.equal(result.closed, 2);
+});
+
+test("the tidy-up never closes the thread it was said from", async () => {
+  const closed = [];
+  const controller = createVoiceController({
+    client: {
+      listSessions: async () => [
+        { thread_id: "2", thread_name: "listening", voice_label: "zoro", state: "history" },
+        { thread_id: "3", thread_name: "idle", voice_label: "nami", state: "history" },
+      ],
+      close: async (id) => {
+        closed.push(id);
+        return { state: "closed", archived: true };
+      },
+      sendSpoken: async () => ({}),
+    },
+    ownerId: "7",
+    enabled: true,
+    announce: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  // Address zoro first, so the conversation is open on it.
+  await controller.handleUtterance({ userId: "7", text: "zoro run make verify" });
+  await controller.handleUtterance({ userId: "7", text: "close everything I'm not using" });
+
+  assert.deepEqual(closed, ["3"], "the thread being talked to is in use");
+});
+
+test("only the owner can clear the sidebar", async () => {
+  const closed = [];
+  const controller = createVoiceController({
+    client: {
+      listSessions: async () => [
+        { thread_id: "2", thread_name: "done", voice_label: "zoro", state: "history" },
+      ],
+      close: async (id) => closed.push(id),
+      sendSpoken: async () => ({}),
+    },
+    ownerId: "7",
+    enabled: true,
+    announce: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  await controller.handleUtterance({ userId: "99", text: "close everything I'm not using" });
+
+  assert.deepEqual(closed, []);
+});
+
+test("a close that fails does not stop the rest", async () => {
+  const closed = [];
+  const controller = createVoiceController({
+    client: {
+      listSessions: async () => [
+        { thread_id: "2", thread_name: "a", voice_label: "zoro", state: "history" },
+        { thread_id: "3", thread_name: "b", voice_label: "nami", state: "history" },
+      ],
+      close: async (id) => {
+        if (id === "2") throw new Error("Unknown Channel");
+        closed.push(id);
+        return { state: "closed", archived: true };
+      },
+      sendSpoken: async () => ({}),
+    },
+    ownerId: "7",
+    enabled: true,
+    announce: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const result = await controller.handleUtterance({
+    userId: "7",
+    text: "close everything I'm not using",
+  });
+
+  assert.deepEqual(closed, ["3"]);
+  assert.equal(result.closed, 1);
+  assert.equal(result.failed, 1);
 });

@@ -124,6 +124,15 @@ the owner can also steer a session without leaving the room:
   is not worth teaching it to invent one; low-confidence segments are dropped
   instead (`no_speech_prob` / `avg_logprob` floors in
   `src/voice/faster_whisper_worker.py`).
+- **"Close everything I'm not using."** One sentence archives every finished
+  session, because every spoken instruction opened a thread and nothing ever
+  closed one. Two things are never touched, and they are the two a sentence
+  cannot know: a thread with a turn in flight, and the thread currently being
+  talked to. One unreachable thread does not stop the sweep — a thread Discord
+  has already lost needs no closing. This is the only spoken command that acts
+  on threads it was not addressed from, so the phrase is anchored to the start of
+  the sentence and needs both halves: talking *about* the idea ("I should close
+  everything I'm not using at some point") must not carry it out.
 - **Say the tag once, then just keep talking.** A delivered instruction leaves
   that thread listening for 90 seconds, and every further sentence resets the
   clock — so thinking out loud reaches one thread instead of needing the name in
