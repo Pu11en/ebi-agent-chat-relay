@@ -21,4 +21,4 @@ None.
 
 ## Impact
 
-Optional voice companion only, based on user-tested 50ff65f. No changes to framework chat commands, slash command registry, dependencies, service units, stored transcripts, or other bots. Do not include the unactivated Jester/Goku naming patches. Local verification before any authorized activation; no GitHub publication.
+Optional voice companion only, based on user-tested 50ff65f. No changes to framework chat commands, slash command registry, dependencies, service units, stored transcripts, or other bots. Do not include the unactivated Jester/Goku naming patches. Initially local-only; Drew subsequently explicitly approved activation and requested pushing/saving the voice work. See activation.md for the completed boundary.

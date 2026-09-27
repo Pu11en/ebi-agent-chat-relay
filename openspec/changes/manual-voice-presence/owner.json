@@ -4,8 +4,11 @@
   "native_session_id": "01a0e2a0-e4a5-78a0-99d7-5e5794259ff8",
   "approval": "Drew explicitly requested disabling auto-join and using a command in voice-transcripts to join, with a quick way to remove DrewAI; then move to the Discord-bot audit.",
   "implementation_approved": true,
-  "activation_approved": false,
-  "publish_approved": false,
+  "activation_approved": true,
+  "publish_approved": true,
+  "activation_approval": "Drew selected A: activate this, then audit Discord bots here, and requested grilling before deciding future project work.",
+  "publish_approval": "Drew then explicitly said: first push save and be done with the voice thing. No new user-run Discord test was claimed.",
+  "status": "activated-and-published-on-feature-branch",
   "decisions": [
     {"decision": "Only this bounded voice-presence change", "reason": "Drew is replacing legacy voice and wants focus on Discord bots"},
     {"decision": "Do not inspect Jester Voice", "reason": "Explicit user exclusion"},

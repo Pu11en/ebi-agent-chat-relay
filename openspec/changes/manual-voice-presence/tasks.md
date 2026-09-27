@@ -12,4 +12,4 @@ After authorized activation, in Discord (no website):
 2. Send `!voice join` in voice-transcripts: it joins and confirms.
 3. Send `!voice leave`: it leaves and stays out while you remain in voice.
 
-Next work is the Discord-bot audit, not more voice features. Ask normal session versus /gowork before writing the larger audit plan. No activation, restart, publication, or paid-agent test is implied by this local checklist.
+Next work is the Discord-bot audit, not more voice features. Drew chose a normal session here, requested grilling before deciding the project direction, then explicitly asked to push/save and finish voice first. Activation and feature-branch publication are completed; no merge, further voice work, or paid-agent test is implied. See activation.md.
