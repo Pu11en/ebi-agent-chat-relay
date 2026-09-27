@@ -74,7 +74,7 @@ class SessionActions(Protocol):
 
 
 class SessionBrowser:
-    """Newest-first, searchable, visibility-filtered session entries."""
+    """Newest-first, searchable, visibility-filtered, open session entries."""
 
     def __init__(
         self,
@@ -90,11 +90,24 @@ class SessionBrowser:
         self.scan = scan
 
     async def find(self, query: str | None) -> list[SessionEntry]:
-        """The newest accessible sessions, narrowed by ``query`` when given."""
+        """The newest accessible open sessions, narrowed by ``query`` when given.
+
+        A query searches everything, closed included — closing a thread must not
+        make it unfindable, which would be a worse failure than showing it.
+        """
         needle = (query or "").strip()
         records: Sequence[SessionRecord] = await self.repo.list_all(limit=self.scan)
         found: list[SessionEntry] = []
         for record in records:
+            # A closed session is not somewhere work is happening. Listing it
+            # anyway was why closing looked like it did nothing: the session sat
+            # in Sessions beside the live ones a minute after being closed. It is
+            # still reachable — by name through Search, and Open reopens it — so
+            # nothing is lost by leaving it out of the default list. A session
+            # whose close is still waiting on a running turn has not closed yet
+            # and stays.
+            if record.is_closed and not needle:
+                continue
             thread = await self.resolver(record.thread_id)
             if thread is None:
                 continue

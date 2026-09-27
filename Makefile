@@ -34,6 +34,13 @@ check:
 types:
 	uv run pyright claude_discord/
 
+# Ask the *running* system whether it works. Unit tests check the code sitting
+# still and were all green while voice was unusable; this talks to the live bot,
+# reads the real database and drives the real voice decision code. Run it after
+# every deploy, and before believing anything is "done".
+live-check:
+	uv run python scripts/live-check.py
+
 # Run the full test suite in parallel (~1 minute instead of ~4).
 test:
 	uv run pytest tests/ -q -n auto

@@ -31,6 +31,7 @@ from claude_code_core.context_nudge import (
 from claude_code_core.frontend import Choice, ChoicePrompt
 
 from ..surface import DiscordSurface
+from ..voice_labels import label_key, strip_title_tag, tagged_title
 
 if TYPE_CHECKING:
     from .claude_chat import ClaudeChatCog
@@ -127,6 +128,44 @@ class ContextNudger:
             thread_name=next_thread_name(thread.name),
             working_dir=workdir,
         )
+        await self._carry_spoken_tag(thread, new)
         with contextlib.suppress(discord.HTTPException):
             await thread.send(f"➡️ Continued in {new.mention}. Handoff saved at `{path}`.")
+        # The conversation moved, so this session is finished. Leaving it open
+        # made the person close it by hand, and until they did it still counted
+        # as a live session and still answered to the spoken tag.
+        await self._chat.close_session(thread)
         return new
+
+    async def _carry_spoken_tag(self, old: discord.Thread, new: discord.Thread) -> None:
+        """Hand ``old``'s spoken tag to ``new``, title and all.
+
+        A tag is a word the speaker has learned for a conversation, and the
+        conversation is what continues — so it has to follow the handoff. Left
+        alone, the tag stayed on the thread that just ended: saying it reached a
+        session that was over, while the live one answered to a word nobody had
+        been told.
+
+        The rename is done here rather than left to the next ``/api/sessions``
+        poll because the first thing said after a handoff is usually said
+        straight away, and a tag that is not in the sidebar yet cannot be read
+        off it.
+        """
+        repo = getattr(self._chat, "_settings_repo", None)
+        if repo is None:
+            return
+        try:
+            label = await repo.get(label_key(old.id))
+            if not label:
+                return
+            await repo.set(label_key(new.id), label)
+            await repo.delete(label_key(old.id))
+        except Exception:
+            logger.warning("could not move the spoken tag to thread %s", new.id, exc_info=True)
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await new.edit(name=tagged_title(new.name, label))
+        # And take it off the finished thread, so the sidebar never shows the
+        # same word twice with only one of them listening.
+        with contextlib.suppress(discord.HTTPException):
+            await old.edit(name=strip_title_tag(old.name))

@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from .edit_budget import budget_for
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -83,6 +85,10 @@ class StreamingMessageManager:
         self._finalized = True
         if self._pending_edit and not self._pending_edit.done():
             self._pending_edit.cancel()
+        # Paced edits are *queued*, and the thread's budget is discarded when the
+        # session closes — so a final flush that only queued would silently lose
+        # the end of the answer. Everything below therefore flushes the budget
+        # before returning, whichever path it takes.
 
         if transform and self._buffer:
             self._buffer = transform(self._buffer)
@@ -103,6 +109,7 @@ class StreamingMessageManager:
                     overflow = overflow[STREAM_MAX_CHARS:]
                     await self._thread.send(chunk)
 
+        await budget_for(self._thread.id).flush()
         return self._buffer
 
     async def _delayed_flush(self) -> None:
@@ -131,7 +138,14 @@ class StreamingMessageManager:
             if self._current_message is None:
                 self._current_message = await self._thread.send(display_text)
             else:
-                await self._current_message.edit(content=display_text)
+                # Editing spends the *thread's* budget, not this message's:
+                # Discord meters edits per channel, and the tool counters in the
+                # same thread are spending from the same allowance
+                # (discord_ui/edit_budget.py).
+                message = self._current_message
+                await budget_for(self._thread.id).submit(
+                    lambda: message.edit(content=display_text), key=("stream", message.id)
+                )
             self._last_edit_time = time.monotonic()
         except Exception:
             # Catch all exceptions including aiohttp.ClientError (e.g. ServerDisconnectedError

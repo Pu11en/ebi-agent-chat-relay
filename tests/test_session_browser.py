@@ -72,11 +72,17 @@ def browser():
 
 
 class TestFind:
-    async def test_lists_accessible_sessions_newest_first_including_closed(self, browser):
+    async def test_lists_accessible_open_sessions_newest_first(self, browser):
+        """Closed sessions were listed here, marked as closed, and that was wrong.
+
+        Marking them was not enough: a session closed a minute ago still sat in
+        the list, so closing looked like it had done nothing and the list grew
+        without bound. They are still findable by Search (below) and Open still
+        reopens them — the default list is only "where work is happening".
+        """
         entries = await browser.find(None)
-        assert [e.thread_id for e in entries] == [4, 3, 1]
-        assert entries[1].closed is True
-        assert entries[0].closed is False
+        assert [e.thread_id for e in entries] == [4, 1]
+        assert all(e.closed is False for e in entries)
 
     async def test_inaccessible_sessions_are_excluded(self, browser):
         entries = await browser.find(None)
@@ -179,3 +185,45 @@ class TestView:
         view, _ = make_view()
         assert await view.interaction_check(interaction(42))
         assert not await view.interaction_check(interaction(7))
+
+
+class TestClosedSessionsLeaveTheList:
+    """Closing a session has to take it out of Sessions.
+
+    It did not: the browser listed every stored record, so a session closed a
+    minute ago sat in the list beside the live ones and closing looked like it
+    had done nothing — the complaint was that things come back after you close
+    them. A closed session stays reachable by search, and Open still reopens it;
+    it just stops being offered as somewhere work is happening.
+    """
+
+    async def test_a_closed_session_is_not_listed(self) -> None:
+        repo = FakeRepo(
+            [
+                record(2, summary="beta", state=LifecycleState.CLOSED),
+                record(1, summary="alpha"),
+            ]
+        )
+        resolve = resolver_for({1: thread(1, "alpha"), 2: thread(2, "beta")})
+
+        entries = await SessionBrowser(repo, resolve).find(None)
+
+        assert [e.thread_id for e in entries] == [1]
+
+    async def test_search_still_finds_a_closed_session(self) -> None:
+        """Otherwise closing a thread makes it unfindable, which is worse."""
+        repo = FakeRepo([record(2, summary="beta", state=LifecycleState.CLOSED)])
+        resolve = resolver_for({2: thread(2, "beta")})
+
+        entries = await SessionBrowser(repo, resolve).find("beta")
+
+        assert [e.thread_id for e in entries] == [2]
+
+    async def test_a_closing_session_is_still_listed(self) -> None:
+        """A close waiting on a running turn has not happened yet."""
+        repo = FakeRepo([record(3, summary="mid-turn", state=LifecycleState.CLOSING)])
+        resolve = resolver_for({3: thread(3, "mid-turn")})
+
+        entries = await SessionBrowser(repo, resolve).find(None)
+
+        assert [e.thread_id for e in entries] == [3]

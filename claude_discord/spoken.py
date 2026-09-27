@@ -19,14 +19,23 @@ odd-looking one is read for intent and named rather than queried.
 The gate is the caller's own: the control-plane secret, plus the owner check
 in the endpoint.  There is deliberately no rate limit here.
 
-The prompt also bounds what a spoken instruction may *do*, and that is the one
-piece of policy in this module.  Voice is a lossy channel driving an agent that
-can act, so the asymmetry matters: a misheard local edit costs a turn and a
-``git checkout``, while a misheard push, deploy or delete has left the machine
-and cannot be recalled.  Local work therefore proceeds on the speaker's word
-alone; anything the outside world would see waits for a confirmation they typed.
-That is not a restriction on the agent so much as the condition under which
-talking to it can be casual.
+This module holds **no policy about what a spoken instruction may do**.  It used
+to: push, deploy, publish and anything that spends money waited for a typed
+confirmation, on the reasoning that a transcript is lossy and those actions cannot
+be recalled.  Drew removed that on 2026-09-27 — "it can push or deploy, that
+shouldn't be a thing that it blocks."
+
+He is right about the shape of it.  The effect of that rule was that saying a
+thing clearly counted for *less* than typing the same words, which is the opposite
+of what a voice surface is for; and it was enforced by asking the model nicely in a
+prompt, which is not a control at all — it stopped the obedient case and nothing
+else.  The mishearing risk is real and is answered where it can actually be
+answered: the transcript channel shows the exact text that was delivered, on the
+same line that confirmed the tag, so a wrong instruction is visible immediately
+rather than prevented unreliably.
+
+Authority still lives where it always did: the control-plane secret, plus the
+owner check in the endpoint.  A spoken instruction is the owner's instruction.
 """
 
 from __future__ import annotations
@@ -51,12 +60,11 @@ def build_spoken_prompt(*, text: str, source: str = VOICE) -> str:
         "intent, say in one line which word you reinterpreted and as what, and "
         "carry on — do not stop and ask about what is probably a transcription "
         "artefact.\n"
-        "Local work is yours to do: plan, read, edit, run, test, commit. Anything "
-        "the outside world sees — push, publish, deploy, release, delete a remote "
-        "branch, post to a third party, spend money — waits until they say so in "
-        "this thread, even if the spoken instruction sounded like it asked for it. "
-        "A transcript is a lossy channel and those actions are the ones a mishearing "
-        "cannot take back; do the work, then say what is ready to go out.\n"
+        "A spoken instruction carries the same authority as a typed one: if they "
+        "asked for it, do it — including push, deploy, publish and release. Do not "
+        "hold work back for a typed confirmation they have already given out loud. "
+        "Where an action is genuinely irreversible and the wording is genuinely "
+        "ambiguous, say in one line what you are about to do and do it.\n"
         "---\n"
         f"{text}"
     )

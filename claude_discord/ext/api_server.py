@@ -60,7 +60,7 @@ from ..session_lifecycle import (
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
-from ..voice_labels import assign_labels, tagged_title, title_tag
+from ..voice_tags import VoiceTagger
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
 from .teams_sync import ThreadRef
@@ -103,8 +103,6 @@ _MAX_DISCORD_THREAD_NAME_LENGTH = 100
 # /api/sessions and /api/threads/{id}/messages — cross-session observability.
 # Bounded so one session peeking at another can never pull an unbounded amount
 # of history into its own context window.
-#: Settings key prefix for a thread's spoken tag (voice_labels.py).
-_VOICE_LABEL_PREFIX = "voice_label:"
 _DEFAULT_SESSION_LIMIT = 20
 _MAX_SESSION_LIMIT = 100
 _DEFAULT_THREAD_MESSAGE_LIMIT = 30
@@ -2144,87 +2142,14 @@ class ApiServer:
         return web.json_response({"sessions": views, "capacity": capacity})
 
     async def _apply_voice_labels(self, views: list[dict[str, Any]]) -> None:
-        """Attach a short spoken tag to each view, minting the missing ones.
+        """Attach a spoken tag to each view, minting the missing ones.
 
-        A voice surface cannot use a Discord title as a handle (see
-        :mod:`claude_discord.voice_labels`), so each thread also gets one
-        phonetic word. Assignment is lazy — there is no hook on thread
-        creation, which means a thread made before this existed is tagged the
-        first time anything asks. Without a settings repo the field is simply
-        absent and callers fall back to matching on the title.
+        Delegates to :class:`claude_discord.voice_tags.VoiceTagger`. The logic
+        moved out of here because this was one of only two places a thread could
+        ever be tagged, which made the tag depend on something polling this
+        endpoint — see that module's docstring.
         """
-        if self.settings_repo is None:
-            return
-        try:
-            stored = await self.settings_repo.get_all()
-        except Exception:
-            logger.warning("Could not read spoken tags", exc_info=True)
-            return
-
-        existing: dict[int, str] = {}
-        for key, value in stored.items():
-            if not key.startswith(_VOICE_LABEL_PREFIX):
-                continue
-            try:
-                existing[int(key[len(_VOICE_LABEL_PREFIX) :])] = value
-            except ValueError:
-                continue
-
-        ordered = [v["thread_id"] for v in views]
-        labels, minted, released = assign_labels(ordered, existing)
-        for thread_id, label in minted.items():
-            with contextlib.suppress(Exception):
-                await self.settings_repo.set(f"{_VOICE_LABEL_PREFIX}{thread_id}", label)
-        # A tag is only taken back when all 26 are spoken for; a thread that has
-        # merely scrolled out of view keeps the word the speaker learned for it.
-        for thread_id in released:
-            with contextlib.suppress(Exception):
-                await self.settings_repo.delete(f"{_VOICE_LABEL_PREFIX}{thread_id}")
-        for view in views:
-            view["voice_label"] = labels.get(view["thread_id"])
-        await self._show_tags_in_titles(views)
-
-    #: Discord's tight rename limit is per thread, not global, so the cap here
-    #: only bounds how much of one request is spent renaming. Low enough that a
-    #: first pass over a fresh set does not stall /api/sessions, high enough
-    #: that the set is fully tagged within a couple of polls rather than ten
-    #: minutes — the tags are useless until they are visible.
-    _MAX_RETITLES_PER_CALL = 12
-
-    async def _show_tags_in_titles(self, views: list[dict[str, Any]]) -> None:
-        """Put each thread's tag at the front of its Discord title.
-
-        A roster in another channel answers "which tag is that thread?"; the
-        question actually being asked while looking at the sidebar is "what do I
-        say to *this* one?". Only a title answers that, so the tag goes there.
-
-        Renames happen only when the title does not already show the right tag,
-        which makes this a once-per-thread cost rather than a once-per-request
-        one, and the per-call cap keeps a fresh set from spending the whole
-        rename budget in one go. An archived or locked thread simply keeps its
-        old title — worth a debug line, never worth failing the request.
-        """
-        import discord as _discord
-
-        renamed = 0
-        for view in views:
-            if renamed >= self._MAX_RETITLES_PER_CALL:
-                break
-            label = view.get("voice_label")
-            name = view.get("thread_name")
-            if not label or not name or title_tag(name) == label:
-                continue
-            thread = self.bot.get_channel(view["thread_id"])
-            if not isinstance(thread, _discord.Thread) or thread.archived or thread.locked:
-                continue
-            wanted = tagged_title(name, label)
-            try:
-                await thread.edit(name=wanted)
-            except Exception as exc:  # rate limit, permissions, archived race
-                logger.debug("Could not tag thread %s: %s", view["thread_id"], exc)
-                continue
-            view["thread_name"] = wanted
-            renamed += 1
+        await VoiceTagger(self.bot, self.settings_repo).apply(views)
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.

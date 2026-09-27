@@ -42,6 +42,7 @@ from ..database.repository import SessionRecord, SessionRepository
 from ..database.resume_repo import PendingResumeRepository
 from ..database.settings_repo import SettingsRepository
 from ..discord_ui.chunker import chunk_message
+from ..discord_ui.edit_budget import forget_budget
 from ..discord_ui.embeds import stopped_embed
 from ..discord_ui.file_sender import send_file_blobs
 from ..discord_ui.status import StatusManager
@@ -57,6 +58,7 @@ from ..handoff_triggers import parse_drewai_lookup_trigger
 from ..session_request import SessionRequest, mentions_a_session, read_session_request
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ..voice_labels import tagged_title, title_tag
+from ..voice_tags import VoiceTagger
 from ._run_helper import run_claude_with_config
 from .context_nudge import ContextNudger
 from .prompt_builder import build_prompt_and_images, wants_file_attachment
@@ -470,6 +472,38 @@ class ClaudeChatCog(commands.Cog):
         if stored is None:
             return None
         return [t.strip() for t in stored.split(",") if t.strip()]
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread) -> None:
+        """Give a brand-new thread its spoken tag straight away.
+
+        One hook for fourteen ``create_thread`` call sites. Tagging used to happen
+        only inside ``GET /api/sessions`` and ``POST /api/spawn``, so a thread
+        opened by voice was tagged at once while the control center, a typed
+        message, ``/skill`` and ``/fork`` all waited for something to poll that
+        endpoint — and the thing that polls it is the voice companion, so with
+        voice switched off a thread was never tagged at all.
+
+        The guard is the category boundary, not the channel list. `setup_bridge`
+        adds `CCDB_LAUNCHER_SESSION_CHANNEL_ID` to that list but **not**
+        `CCDB_LAUNCHER_CHANNEL_ID`; on this machine both name the same channel, so
+        tagging control-center threads worked by coincidence. Point the control
+        center at its own channel and every thread it opens would be silently
+        untagged, with nothing saying so. An unset boundary means "tag everything
+        here", which is the same default the rest of the bot uses.
+
+        A failure here is swallowed on purpose: a missing tag is a nuisance, and
+        an exception in this listener is not worth risking anything else that
+        reacts to a new thread.
+        """
+        from ..category_scope import category_allowed
+
+        if not category_allowed(thread):
+            return
+        try:
+            await VoiceTagger(self.bot, self._settings_repo).tag_thread(thread)
+        except Exception:
+            logger.warning("Could not tag new thread %s", thread.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -1235,6 +1269,10 @@ class ClaudeChatCog(commands.Cog):
         if runner:
             await runner.kill()
         await self.repo.delete(channel_id)
+        # Drop the thread's edit budget: the registry would otherwise keep one
+        # entry per thread forever, each holding a timer, and a queued edit would
+        # repaint a display this session has already finished with.
+        await forget_budget(channel_id)
         with contextlib.suppress(discord.HTTPException):
             await channel.send("🗑️ Session closed. The build keeps going in its own thread.")
         if isinstance(channel, discord.Thread):

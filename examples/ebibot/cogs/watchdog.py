@@ -91,11 +91,23 @@ class WatchdogCog(commands.Cog):
         self._last_reset_date: str = ""
 
     async def cog_load(self) -> None:
+        # A dependency that is absent will still be absent in thirty minutes. This
+        # loop logged the same "no such file" error 467 times in one day because it
+        # kept calling a script that is not installed — and a failure repeating on a
+        # timer is the most ignorable kind of failure there is.
+        if not todoist_available():
+            logger.warning(
+                "WatchdogCog idle: %s is not installed, so overdue-task checks are off. "
+                "Set TODOIST_SH or install the todoist skill to enable them.",
+                TODOIST_SH,
+            )
+            return
         self.check_overdue.start()
         logger.info("WatchdogCog loaded, overdue check loop started")
 
     async def cog_unload(self) -> None:
-        self.check_overdue.cancel()
+        if self.check_overdue.is_running():
+            self.check_overdue.cancel()
 
     def _reset_daily(self) -> None:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -190,6 +202,23 @@ class WatchdogCog(commands.Cog):
 # ---------------------------------------------------------------------------
 
 
+def todoist_available() -> bool:
+    """Whether the script this cog drives is actually there to be driven."""
+    return os.path.isfile(TODOIST_SH)
+
+
 async def setup(bot: commands.Bot, runner: object, components: object) -> None:
-    """Entry point for the custom Cog loader."""
+    """Entry point for the custom Cog loader.
+
+    Registers nothing when Todoist is not installed. A cog that can only fail is
+    worse than no cog: it is a name in the list, a loop on a timer, and an error
+    every thirty minutes that nobody reads.
+    """
+    if not todoist_available():
+        logger.warning(
+            "Skipping WatchdogCog: %s is not installed. "
+            "Set TODOIST_SH or install the todoist skill to enable overdue-task checks.",
+            TODOIST_SH,
+        )
+        return
     await bot.add_cog(WatchdogCog(bot))

@@ -1,8 +1,8 @@
 /**
  * The ccdb control plane, as seen from the voice companion.
  *
- * Two calls: read which sessions exist, and hand one of them something its
- * owner said. The secret travels in a header and never in a URL, because a URL
+ * Read which sessions exist, hand one of them something its owner said, open
+ * one, retune one, and end one. The secret travels in a header and never in a URL, because a URL
  * is what ends up in an error message, a proxy log and a stack trace.
  *
  * Every call is bounded by a timeout. This runs inside a five-second health
@@ -105,6 +105,21 @@ export function createRelayClient({
           ...(model ? { model } : {}),
           ...(backend ? { backend } : {}),
         }),
+      });
+      return parseIdSafe(await response.text());
+    },
+    /**
+     * End a session, archiving its thread.
+     *
+     * The endpoint refuses a close that names nobody, because an agent deciding
+     * it is finished must stay unrepresentable — so the person who asked is
+     * passed through as the actor.
+     */
+    async close(threadId, { actor }) {
+      const response = await request(`/api/threads/${encodeURIComponent(threadId)}/close`, {
+        method: "POST",
+        headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ actor: String(actor) }),
       });
       return parseIdSafe(await response.text());
     },

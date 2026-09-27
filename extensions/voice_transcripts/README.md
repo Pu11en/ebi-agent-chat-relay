@@ -91,44 +91,126 @@ the owner can also steer a session without leaving the room:
   "code x", "deep seek"); a version string is never guessed into a setting. The
   change applies from the thread's next turn and is written through the same
   store `/backend` and `/model` use, so voice and Discord cannot disagree.
-- **Say the tag.** Every visible thread gets one word from the NATO phonetic
-  alphabet (`alpha`, `bravo`, `charlie`…), assigned by ccdb and listed in a
-  single self-updating message in the transcript channel. "Put this in the
-  bravo thread, check DKIM" is exact — a tag is a handle, so it wins outright
-  over any name matching and removes the ambiguity two similar folder names
-  cause. Tags are stable for as long as the thread stays visible and are
-  kept when it scrolls out of view and handed back if it returns; only when all
-  26 are spoken for does the oldest absent thread give one up. A tag is a word
-  you learned, so it must not change meaning underneath you.
+- **Say the tag.** Every visible thread gets one word — a One Piece character
+  (`luffy`, `zoro`, `nami`…) — assigned by ccdb, shown at the front of the
+  Discord title and listed in a single self-updating message in the transcript
+  channel. "Zoro, check DKIM" is exact: a tag is a handle, compared letter for
+  letter, so two similar folder names can never be confused for one another. Tags are stable for as long as the thread
+  stays visible and are kept when it scrolls out of view and handed back if it
+  returns; only when all ten are spoken for does the oldest absent thread give
+  one up. Ten, not twenty-six: twenty-six matched an alphabet rather than the
+  number of conversations open at once, and the words in play should be familiar
+  ones. Past ten live threads the rest go untagged, which only became affordable
+  once closed sessions stopped holding tags. A tag is a word you learned, so it must not change meaning underneath
+  you — and when a conversation continues in a fresh thread (the context
+  handoff), the tag follows it there rather than staying on the finished one.
+
+  Two constraints decide which words may be in the pool, and they are enforced
+  by tests rather than by care: no two tags share their first two letters, and
+  no tag is a word that turns up in ordinary speech. `law`, `ace`, `brook` and
+  `smoker` are all One Piece characters and all disqualified for the second
+  reason — a tag that occurs in conversation addresses a thread by accident.
+
+  The recogniser writes what it knows, so a character name comes back as an
+  English one ("Luffy" → "Lucy"). Each tag therefore carries the substitutions
+  actually seen for it, ccdb ships them with the session as
+  `voice_label_aliases`, and they are compared **exactly**. Not fuzzily: the
+  consonant skeleton of a four-letter name is two characters long, so a fuzzy
+  tag match would route `nami` and `kaido` to each other. The list grows from
+  what the transcript log shows, not from guesses — read it with the query at
+  the bottom of this file and add the word that actually came out.
+
+  The tag list is **never offered to the decoder as a hint.** It was, and the
+  bias was severe enough that half a second of room tone came back as `yankee
+  zulu` — an invented tag addresses a real thread. Helping it recognise a word
+  is not worth teaching it to invent one; low-confidence segments are dropped
+  instead (`no_speech_prob` / `avg_logprob` floors in
+  `src/voice/faster_whisper_worker.py`).
+- **"Close everything I'm not using."** One sentence archives every finished
+  session, because every spoken instruction opened a thread and nothing ever
+  closed one. Two things are never touched, and they are the two a sentence
+  cannot know: a thread with a turn in flight, and the thread currently being
+  talked to. One unreachable thread does not stop the sweep — a thread Discord
+  has already lost needs no closing. This is the only spoken command that acts
+  on threads it was not addressed from, so the phrase is anchored to the start of
+  the sentence and needs both halves: talking *about* the idea ("I should close
+  everything I'm not using at some point") must not carry it out.
+- **One tag, one run, one message.** Say a tag and it starts collecting. Keep
+  talking: every pause under **ten seconds** resets the clock and nothing is sent.
+  Ten seconds of silence and the whole thing arrives as **one** message on that
+  thread. Then the aim is released — the next run needs its own tag, and **with no
+  tag nothing is sent at all.**
+
+  That last part is the design, not a limitation. The recogniser drops words: on
+  2026-09-27 "Luffy" never reached the transcript, and under the old
+  keep-listening window every sentence after it flowed silently into the previous
+  thread — `nami` swallowed the lot and `luffy` got nothing. With an unreliable
+  recogniser, "nothing happened" is information he can act on and "it went
+  somewhere you did not choose" is not, so silence is the failure mode.
+
+  Two details carry it. A **later tag inside a run is just a word**: the first tag
+  owns the run, so naming another thread mid-sentence can never redirect what is
+  being said. And the silence is measured from **when he stopped speaking**
+  (`captured_at + duration_ms`), never from when the text arrived — transcription
+  lags up to 30s here, and timing off arrival would count that lag as a pause and
+  cut him off mid-thought.
+
+  Recogniser noise ("Thank you.", "Okay.") is dropped rather than added, and does
+  not reset the clock — counting it as speech would hold a run open forever.
+
+  There is deliberately **no way to cancel a run**. "Stop listening" existed for
+  the ninety-second window, where being stuck on the wrong thread was expensive; a
+  run lasts ten seconds, so letting it send and correcting in the next one is
+  fewer things to remember than a phrase which has to be *recognised correctly*
+  to work at all.
+
+  A run is **one line** in the transcript channel. It posts "Listening for X" the
+  moment the tag lands, so the tag is confirmed without waiting ten seconds, and
+  rewrites that same line into what was actually sent. A surface that cannot edit
+  gets two lines instead — the confirmation matters more than the tidiness.
+
+- **Say the tag once, then just keep talking.** A delivered instruction leaves
+  that thread listening for 90 seconds, and every further sentence resets the
+  clock — so thinking out loud reaches one thread instead of needing the name in
+  every breath. Naming another tag switches thread, "stop listening" ends it, and
+  going quiet closes it on its own. Acknowledgement noise ("okay", "thank you" —
+  what the recogniser emits for near-silence) is not forwarded but does keep the
+  conversation open, and nobody else in the room can be forwarded at all.
 - **If you pause mid-sentence, the thread is held.** Speech is captured per
   pause, so naming a thread and then saying what to do arrives as two
-  utterances. Naming one on its own holds it for 30 seconds and announces that
-  it is holding; the next thing you say becomes the instruction. The hold
-  expires, is replaced by a new command, and is never filled by someone else in
-  the room.
-- **"Put this in the &lt;name&gt; thread &lt;instruction&gt;"** — also *send/drop/post
-  this to*, *tell the &lt;name&gt; thread to …*, *ask the &lt;name&gt; session …*, and
-  *in the &lt;name&gt; thread, …*. `thread`, `session` and `chat` are interchangeable.
-- The name is matched against every live session's Discord thread name and its
-  working directory, on letters and digits only, so the emoji prefix, the
-  hyphens in a folder name and whatever spacing the recogniser chose all stop
-  mattering. A name that matches nothing, and a name that two different threads
-  answer to equally well, are both reported in the transcript channel rather
-  than resolved by guessing. The same folder open twice resolves to whichever
-  thread was used most recently. A name that contains one of the nouns is
-  handled too: "the ebi agent **chat** relay thread" and "the aldus thread
-  check the **thread** pool" split at different occurrences, and the split is
-  chosen by which reading names a session that exists.
+  utterances. Naming one on its own simply starts a run with nothing in it yet;
+  the next thing you say joins the same message.
+- **There is no second form.** "Put this in the ebi agent chat relay thread, run
+  make verify" used to work, and with it came a parser that offered every place
+  the name might end and a resolver that scored the readings against the sessions
+  that exist — matching folder names by sound, breaking ties on recency, and
+  reporting "that was ambiguous, say its tag instead". All of it is gone
+  (2026-09-27), about 500 lines with the tests.
+
+  It was removed for simplicity, and it cost nothing: every thread is tagged the
+  moment it is created, and a tag is compared **exactly**. The scoring could only
+  ever add ways to be misunderstood. "Where does the name end and the instruction
+  begin" is not a question anyone has to answer now, and "nothing matched" became
+  unreachable — a word only parses as a tag if it already belongs to a live
+  session, so the lookup that follows cannot fail.
 - Every send is confirmed in the transcript channel with the thread it went to
   and the instruction as transcribed, so a misheard prompt is visible
   immediately. Failures are reported there too.
 
-What a spoken instruction may do is bounded. Local work — plan, read, edit, run,
-test, commit — proceeds on the speaker's word alone. Anything the outside world
-would see (push, publish, deploy, delete a remote branch, spend money) waits for
-a typed confirmation in the thread, however the transcript read. A misheard local
-edit costs a turn; a misheard push has left the machine. That asymmetry is the
-condition under which talking to an agent can be casual.
+**A spoken instruction carries the same authority as a typed one** — including
+push, deploy, publish and release. It did not until 2026-09-27: those waited for a
+typed confirmation, on the reasoning that a transcript is lossy and such actions
+cannot be recalled. Drew removed it, and he was right twice over. The rule made
+saying a thing clearly count for *less* than typing the same words, which is the
+opposite of what a voice surface is for; and it was enforced by asking the model
+nicely in a prompt, which is not a control — it stopped the obedient case and
+nothing else.
+
+The mishearing risk is real and is answered where it can actually be answered:
+the transcript channel shows the exact text that was delivered, on the same line
+that confirmed the tag, so a wrong instruction is visible immediately rather than
+prevented unreliably. Authority lives where it always did — the control-plane
+secret plus the owner check on the endpoint.
 
 Only the configured owner is obeyed — everyone in the room is transcribed, but
 being present is not authorisation. Anything that is not a command leaves no

@@ -124,3 +124,115 @@ class TestCheck:
             for t in list(nudger._tasks):
                 await t
         assert check.called is (not skip)
+
+
+class TestHandoffIsClean:
+    """A handoff that leaves work behind is not a handoff.
+
+    Two things were left to the person by hand, and both are the kind of chore
+    the flow exists to remove: the spoken tag stayed on the dead thread (so the
+    word learned for this conversation addressed a session that was over), and
+    the old thread stayed open (so it had to be closed manually, and until then
+    it still showed as a session).
+    """
+
+    @staticmethod
+    def _writes_handoff(chat: MagicMock) -> None:
+        async def write_handoff(seed, thread, prompt):  # noqa: ANN001
+            path = Path(prompt.split("Write a handoff file at ")[1].split(" (create")[0])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("## Goal\n")
+
+        chat.run_resumed_turn = AsyncMock(side_effect=write_handoff)
+
+    async def test_the_spoken_tag_moves_to_the_new_thread(self, tmp_path: Path) -> None:
+        chat = _chat(tmp_path)
+        self._writes_handoff(chat)
+        store = {"voice_label:42": "bravo", "voice_label:99": "alpha"}
+        chat._settings_repo = MagicMock()
+        chat._settings_repo.get = AsyncMock(side_effect=lambda k: store.get(k))
+        chat._settings_repo.set = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        chat._settings_repo.delete = AsyncMock(side_effect=lambda k: store.pop(k, None))
+        new = chat.spawn_session.return_value
+        new.id = 43
+        new.name = "realpage · part 2"
+        new.edit = AsyncMock()
+
+        nudger = ContextNudger(chat)
+        with _answer("yes"):
+            await nudger._check(_thread())
+
+        # The word the speaker learned now reaches the live conversation …
+        assert store["voice_label:43"] == "bravo"
+        # … and no longer reaches the finished one.
+        assert "voice_label:42" not in store
+        # Another thread's tag is untouched.
+        assert store["voice_label:99"] == "alpha"
+        # And it is visible in the sidebar without waiting for the next poll.
+        assert new.edit.await_args.kwargs["name"] == "[bravo] realpage · part 2"
+
+    async def test_the_finished_thread_stops_showing_the_tag(self, tmp_path: Path) -> None:
+        """Two rows reading "[bravo]" with one of them dead is worse than none."""
+        chat = _chat(tmp_path)
+        self._writes_handoff(chat)
+        chat._settings_repo = MagicMock()
+        chat._settings_repo.get = AsyncMock(return_value="bravo")
+        chat._settings_repo.set = AsyncMock()
+        chat._settings_repo.delete = AsyncMock()
+        new = chat.spawn_session.return_value
+        new.id = 43
+        new.name = "realpage · part 2"
+        new.edit = AsyncMock()
+        thread = _thread("[bravo] realpage")
+        thread.edit = AsyncMock()
+
+        nudger = ContextNudger(chat)
+        with _answer("yes"):
+            await nudger._check(thread)
+
+        assert thread.edit.await_args.kwargs["name"] == "realpage"
+
+    async def test_an_untagged_thread_hands_off_without_one(self, tmp_path: Path) -> None:
+        chat = _chat(tmp_path)
+        self._writes_handoff(chat)
+        chat._settings_repo = MagicMock()
+        chat._settings_repo.get = AsyncMock(return_value=None)
+        chat._settings_repo.set = AsyncMock()
+        chat._settings_repo.delete = AsyncMock()
+        new = chat.spawn_session.return_value
+        new.id = 43
+        new.name = "realpage · part 2"
+        new.edit = AsyncMock()
+
+        nudger = ContextNudger(chat)
+        with _answer("yes"):
+            await nudger._check(_thread())
+
+        chat._settings_repo.set.assert_not_awaited()
+        new.edit.assert_not_awaited()
+
+    async def test_the_old_session_is_closed_for_you(self, tmp_path: Path) -> None:
+        chat = _chat(tmp_path)
+        self._writes_handoff(chat)
+        chat._settings_repo = None
+        chat.close_session = AsyncMock()
+        thread = _thread()
+
+        nudger = ContextNudger(chat)
+        with _answer("yes"):
+            await nudger._check(thread)
+
+        chat.close_session.assert_awaited_once_with(thread)
+
+    async def test_a_failed_handoff_leaves_the_session_alone(self, tmp_path: Path) -> None:
+        """Nothing was carried over, so closing the only live session would lose it."""
+        chat = _chat(tmp_path)
+        chat.run_resumed_turn = AsyncMock()  # the file is never written
+        chat._settings_repo = None
+        chat.close_session = AsyncMock()
+
+        nudger = ContextNudger(chat)
+        with _answer("yes"):
+            await nudger._check(_thread())
+
+        chat.close_session.assert_not_awaited()

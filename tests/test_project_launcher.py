@@ -865,7 +865,8 @@ def _live_thread(thread_id: int, name: str, *, archived: bool = False) -> MagicM
     return live
 
 
-async def test_sessions_lists_accessible_records_newest_first(cog, tmp_path):
+async def test_sessions_lists_accessible_open_records_newest_first(cog, tmp_path):
+    """The closed one is deliberately absent — see TestFind in test_session_browser."""
     cog.repo.list_all.return_value = [
         _record(3, str(tmp_path), summary="newest"),
         _record(2, str(tmp_path), closed=True),
@@ -883,7 +884,7 @@ async def test_sessions_lists_accessible_records_newest_first(cog, tmp_path):
     await cog.show_sessions(event)
     view = event.followup.send.call_args.kwargs["view"]
     options = _selects(view)[0].options
-    assert [o.value for o in options] == ["3", "2"]
+    assert [o.value for o in options] == ["3"]
     assert set(_buttons(view)) == {"Open", "New in same folder", "Close", "Search"}
 
 

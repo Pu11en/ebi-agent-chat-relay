@@ -34,9 +34,9 @@ export function renderRoster(sessions) {
     return `\`${s.voice_label}\` — ${name}${live}`;
   });
   return (
-    "🏷️ **Say the tag.** e.g. *“put this in the " +
+    "🏷️ **Say the name, talk, then go quiet for 10s.** e.g. *“" +
     tagged[0].voice_label +
-    ' thread, <what to do>”*\n' +
+    ', <what to do>”*\n' +
     rows.join("\n")
   );
 }

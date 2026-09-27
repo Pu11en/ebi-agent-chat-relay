@@ -69,7 +69,7 @@ async def test_a_model_alone_switches_the_model(api_client: TestClient) -> None:
 async def test_a_model_alone_applies_to_the_backend_the_thread_is_on(
     api_client: TestClient,
 ) -> None:
-    """"Use gpt-5.1 here" means on whatever agent this thread already uses."""
+    """ "Use gpt-5.1 here" means on whatever agent this thread already uses."""
     await api_client.post(f"/api/threads/{THREAD}/runtime", json={"backend": "codex"})
     await api_client.post(f"/api/threads/{THREAD}/runtime", json={"model": "gpt-5.1-codex"})
 
