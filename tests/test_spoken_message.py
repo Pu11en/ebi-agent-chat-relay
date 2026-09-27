@@ -49,6 +49,26 @@ def test_spoken_prompt_names_the_surface_it_came_from() -> None:
     assert "live voice transcript" in build_spoken_prompt(text="hi", source="voice")
 
 
+def test_a_spoken_instruction_carries_the_same_authority_as_a_typed_one() -> None:
+    """Drew's call, 2026-09-27: "it can push or deploy, that shouldn't be a thing
+    that it blocks".
+
+    The prompt used to hold back push, deploy, publish and anything that spends
+    money until he typed a confirmation. The reasoning was that a transcript is
+    lossy and those actions cannot be recalled — but the effect was that saying a
+    thing clearly counted for less than typing the same thing, which is the
+    opposite of what a voice surface is for. The mishearing risk is answered by
+    the transcript channel showing exactly what was sent, not by refusing what he
+    said.
+    """
+    prompt = build_spoken_prompt(text="push the branch and open the PR")
+
+    assert "waits until they say so" not in prompt
+    assert "even if the spoken instruction sounded like it asked for it" not in prompt
+    # And it says so positively, so a session does not infer the old caution.
+    assert "same authority" in prompt
+
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------

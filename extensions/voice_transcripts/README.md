@@ -197,12 +197,20 @@ the owner can also steer a session without leaving the room:
   and the instruction as transcribed, so a misheard prompt is visible
   immediately. Failures are reported there too.
 
-What a spoken instruction may do is bounded. Local work — plan, read, edit, run,
-test, commit — proceeds on the speaker's word alone. Anything the outside world
-would see (push, publish, deploy, delete a remote branch, spend money) waits for
-a typed confirmation in the thread, however the transcript read. A misheard local
-edit costs a turn; a misheard push has left the machine. That asymmetry is the
-condition under which talking to an agent can be casual.
+**A spoken instruction carries the same authority as a typed one** — including
+push, deploy, publish and release. It did not until 2026-09-27: those waited for a
+typed confirmation, on the reasoning that a transcript is lossy and such actions
+cannot be recalled. Drew removed it, and he was right twice over. The rule made
+saying a thing clearly count for *less* than typing the same words, which is the
+opposite of what a voice surface is for; and it was enforced by asking the model
+nicely in a prompt, which is not a control — it stopped the obedient case and
+nothing else.
+
+The mishearing risk is real and is answered where it can actually be answered:
+the transcript channel shows the exact text that was delivered, on the same line
+that confirmed the tag, so a wrong instruction is visible immediately rather than
+prevented unreliably. Authority lives where it always did — the control-plane
+secret plus the owner check on the endpoint.
 
 Only the configured owner is obeyed — everyone in the room is transcribed, but
 being present is not authorisation. Anything that is not a command leaves no
