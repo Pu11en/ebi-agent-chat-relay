@@ -77,9 +77,6 @@ export const MAX_TIDY_UP_CLOSES = 25;
 /** Spacing between closes, so a full sweep is paced rather than a burst. */
 const TIDY_UP_GAP_MS = 250;
 
-const RELEASE =
-  /^(?:(?:ok(?:ay)?|alright|and|so|um+|uh+)[\s,.]*)*(?:stop\s+listening|stop\s+it|that'?s\s+(?:all|it)|never\s*mind|nevermind|stand\s+down|we'?re\s+done|i'?m\s+done)\b/i;
-
 /**
  * Utterances that carry nothing and should not be forwarded into an open
  * conversation. The recogniser emits "Thank you." and "Okay." for near-silence,
@@ -93,6 +90,10 @@ export function createVoiceController({
   enabled,
   client,
   announce,
+  // Rewrites a line already posted. A surface that cannot edit simply omits it
+  // and gets a second line instead — the confirmation matters more than the
+  // tidiness.
+  revise = null,
   logger = console,
   source = "voice",
   now = () => Date.now(),
@@ -144,9 +145,29 @@ export function createVoiceController({
   async function say(message) {
     // A room that cannot be spoken to is still a room a command was sent from.
     try {
-      await announce(message);
+      return await announce(message);
     } catch (error) {
       logger.warn?.("[control] announcement failed:", error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Rewrite the line this run already posted, or post a new one.
+   *
+   * A run says "Listening for X" the moment it locks, so he knows the tag landed
+   * without waiting ten seconds, and the same line then becomes the confirmation
+   * of what was sent. Two lines per run is twice the channel for no extra
+   * information.
+   */
+  async function reviseOrSay(handle, message) {
+    if (handle == null || typeof revise !== "function") return await say(message);
+    try {
+      await revise(handle, message);
+      return handle;
+    } catch (error) {
+      logger.warn?.("[control] could not rewrite the line:", error.message);
+      return await say(message);
     }
   }
 
@@ -159,7 +180,7 @@ export function createVoiceController({
     return tag + name;
   }
 
-  async function send(session, prompt) {
+  async function send(session, prompt, line = null) {
     try {
       await client.sendSpoken({
         threadId: session.thread_id,
@@ -171,7 +192,7 @@ export function createVoiceController({
       await say(`🎙️ Could not deliver that to **${describe(session)}** — ${error.message}`);
       return { status: "failed", error: error.message };
     }
-    await say(`🎙️ → **${describe(session)}**: ${prompt}`);
+    await reviseOrSay(line, `🎙️ → **${describe(session)}**: ${prompt}`);
     logger.info?.(`[control] sent to thread ${session.thread_id}`);
     // Deliberately does *not* keep listening. Staying attached after a send is
     // what sent his untagged sentences into the previous thread when the
@@ -351,12 +372,12 @@ export function createVoiceController({
    */
   async function flushRun() {
     if (!run) return IGNORED;
-    const { session, parts } = run;
+    const { session, parts, line } = run;
     if (run.timer) clearTimer(run.timer);
     run = null;
     const prompt = parts.join(" ").replace(/\s+/g, " ").trim();
     if (prompt.length < MIN_PROMPT_CHARS) return IGNORED;
-    return await send(session, prompt);
+    return await send(session, prompt, line);
   }
 
   return {
@@ -374,13 +395,12 @@ export function createVoiceController({
 
       // ---- a run is open: everything is words for it --------------------
       if (run) {
-        if (RELEASE.test(said)) {
-          if (run.timer) clearTimer(run.timer);
-          const target = run.target;
-          run = null;
-          await say(`🎙️ Dropped what you were saying to **${target}**.`);
-          return { status: "released" };
-        }
+        // There is deliberately no way to cancel a run. "Stop listening" used to
+        // exist for the ninety-second window, where being stuck on the wrong
+        // thread was expensive. A run lasts ten seconds: letting it send and
+        // correcting in the next one is fewer things to remember than a phrase
+        // that has to be recognised correctly to work at all.
+        //
         // Recogniser noise must not hold the run open. "Thank you." is what this
         // model emits for near-silence, so counting it as speech would reset the
         // clock every few seconds and the message would never be sent.
@@ -452,9 +472,12 @@ export function createVoiceController({
         parts: prompt ? [prompt] : [],
         spokeUntil,
         timer: null,
+        line: null,
       };
       armSilence();
-      await say(
+      // Said immediately so he knows the tag landed without waiting ten seconds;
+      // the same line is rewritten into the confirmation when the run is sent.
+      run.line = await say(
         `🎙️ Listening for **${describe(match.session)}** — ` +
           `sends ${Math.round(silenceMs / 1000)}s after you stop.`,
       );

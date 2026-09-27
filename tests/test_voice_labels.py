@@ -234,11 +234,26 @@ async def test_a_rename_failure_never_fails_the_request(api: ApiServer) -> None:
     assert views[0]["thread_name"] == "📂 repo"
 
 
-async def test_a_full_set_is_retitled_across_calls_not_all_at_once(api: ApiServer) -> None:
+async def test_the_retitling_is_spread_across_calls_not_done_all_at_once(
+    api: ApiServer,
+) -> None:
+    """The cap now bounds stale-tag *removal*, which is the case that can be large.
+
+    It used to bound handing tags out, but the pool is ten and the cap is twelve,
+    so it can no longer bind there. Cleaning old tags off titles still can: every
+    thread that was tagged before a pool change has a word in its title it no
+    longer owns, and resolving each one costs a Discord call.
+    """
     total = MAX_RETITLES_PER_CALL + 6
-    threads = {i: _thread(i, f"📂 repo-{i}") for i in range(1, total + 1)}
+    threads = {i: _thread(i, f"[bravo] 📂 repo-{i}") for i in range(1, total + 1)}
     api.bot.get_channel.side_effect = lambda tid: threads[tid]
-    views = [{"thread_id": i, "thread_name": f"📂 repo-{i}"} for i in range(1, total + 1)]
+    # No tag is available for any of them, so each needs its stale one removed.
+    for i in range(1, len(SPOKEN_LABELS) + 1):
+        await api.settings_repo.set(f"voice_label:{10_000 + i}", SPOKEN_LABELS[i - 1])
+    views = [{"thread_id": i, "thread_name": f"[bravo] 📂 repo-{i}"} for i in range(1, total + 1)]
+    views += [
+        {"thread_id": 10_000 + i, "thread_name": f"t{i}"} for i in range(1, len(SPOKEN_LABELS) + 1)
+    ]
 
     await api._apply_voice_labels(views)
 
@@ -307,8 +322,7 @@ class TestLabelKey:
 class TestThePool:
     """The words are Drew's choice; being mutually unmistakable is the constraint."""
 
-    def test_the_pool_is_a_full_alphabet_of_distinct_words(self) -> None:
-        assert len(SPOKEN_LABELS) >= 26
+    def test_every_word_in_the_pool_is_distinct(self) -> None:
         assert len(set(SPOKEN_LABELS)) == len(SPOKEN_LABELS)
 
     def test_no_two_tags_start_with_the_same_two_letters(self) -> None:
@@ -506,9 +520,10 @@ class TestAClosedSessionHoldsNoTag:
         nothing left prompting the speaker to say it.
         """
         api.bot.get_channel.return_value = None
-        everything = [{"thread_id": i, "thread_name": f"t{i}"} for i in range(1, 27)]
+        n = len(SPOKEN_LABELS)
+        everything = [{"thread_id": i, "thread_name": f"t{i}"} for i in range(1, n + 1)]
         await api._apply_voice_labels(everything)
-        assert all(v["voice_label"] for v in everything), "all 26 handed out"
+        assert all(v["voice_label"] for v in everything), "the whole pool handed out"
 
         # One closes; a new thread appears and must still get a word.
         everything[0]["closed"] = True
@@ -537,11 +552,13 @@ class TestAStaleTagLeavesTheTitle:
         """
         stale = _thread(99, "[bravo] 📂 repo")
         api.bot.get_channel.side_effect = lambda tid: stale if tid == 99 else None
-        # All 26 words are promised to live threads, so 99 gets none.
-        for i in range(1, 27):
-            await api.settings_repo.set(f"voice_label:{i}", SPOKEN_LABELS[i - 1])
+        # Every word is promised to a live thread, so 99 gets none.
+        for i, name in enumerate(SPOKEN_LABELS, start=1):
+            await api.settings_repo.set(f"voice_label:{i}", name)
         views = [{"thread_id": 99, "thread_name": "[bravo] 📂 repo"}]
-        views += [{"thread_id": i, "thread_name": f"t{i}"} for i in range(1, 27)]
+        views += [
+            {"thread_id": i, "thread_name": f"t{i}"} for i in range(1, len(SPOKEN_LABELS) + 1)
+        ]
 
         await api._apply_voice_labels(views)
 
@@ -621,3 +638,50 @@ class TestTitleWorkIsBounded:
 
         api.bot.fetch_channel.assert_not_awaited()
         thread.edit.assert_awaited_once()
+
+
+class TestTheShortPool:
+    """Ten names, not twenty-six.
+
+    Twenty-six was chosen to match an alphabet, not to match how many
+    conversations are open at once. Drew asked for fewer so the words in play are
+    always familiar ones. Ten is the Straw Hat crew minus the members whose names
+    are everyday English — `robin` and `brook` are both disqualified for the same
+    reason `law` and `ace` were: a tag that occurs in ordinary speech addresses a
+    thread by accident.
+
+    The trade is real and worth stating: past ten live threads the rest go
+    untagged and cannot be reached by voice. That only became affordable once
+    closed sessions stopped holding tags — before that, 25 of 26 were held by dead
+    conversations.
+    """
+
+    def test_the_pool_is_ten(self) -> None:
+        assert len(SPOKEN_LABELS) == 10
+
+    def test_the_crew_comes_first(self) -> None:
+        assert SPOKEN_LABELS[:3] == ("luffy", "zoro", "nami")
+
+    def test_no_two_still_share_their_first_two_letters(self) -> None:
+        starts = [label[:2] for label in SPOKEN_LABELS]
+        assert len(set(starts)) == len(starts)
+
+    def test_every_name_still_carries_its_mishearings(self) -> None:
+        from claude_discord.voice_labels import aliases_for
+
+        assert any(aliases_for(label) for label in SPOKEN_LABELS)
+        for label in SPOKEN_LABELS:
+            for alias in aliases_for(label):
+                assert heard_as(alias) == label
+
+    def test_no_alias_points_at_a_name_that_is_gone(self) -> None:
+        """Shrinking the pool must not leave an alias aimed at nothing."""
+        assert set(LABEL_ALIASES.values()) <= set(SPOKEN_LABELS)
+
+    def test_an_eleventh_thread_goes_untagged_rather_than_stealing(self) -> None:
+        stored = {i + 1: name for i, name in enumerate(SPOKEN_LABELS)}
+        visible = sorted(stored) + [9999]
+        labels, _new, released = assign_labels(visible, stored)
+
+        assert released == set()
+        assert 9999 not in labels, "untagged beats taking a live thread's word"

@@ -123,7 +123,22 @@ if (config.control.enabled) {
       const output = await client.channels.fetch(config.transcriptChannelId);
       if (!output?.isTextBased() || output.guildId !== config.guildId)
         throw new Error("Transcript channel mismatch");
-      await output.send({ content: message, allowedMentions: { parse: [] } });
+      const sent = await output.send({
+        content: message,
+        allowedMentions: { parse: [] },
+      });
+      return sent.id;
+    },
+    // A run posts "Listening for X" as soon as the tag lands and rewrites that
+    // same line into the confirmation of what was sent, so one run is one line.
+    revise: async (id, message) => {
+      const output = await client.channels.fetch(config.transcriptChannelId);
+      if (!output?.isTextBased() || output.guildId !== config.guildId)
+        throw new Error("Transcript channel mismatch");
+      await output.messages.edit(id, {
+        content: message,
+        allowedMentions: { parse: [] },
+      });
     },
     logger: console,
   });

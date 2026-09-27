@@ -97,8 +97,11 @@ the owner can also steer a session without leaving the room:
   channel. "Zoro, check DKIM" is exact: a tag is a handle, compared letter for
   letter, so two similar folder names can never be confused for one another. Tags are stable for as long as the thread
   stays visible and are kept when it scrolls out of view and handed back if it
-  returns; only when all 26 are spoken for does the oldest absent thread give
-  one up. A tag is a word you learned, so it must not change meaning underneath
+  returns; only when all ten are spoken for does the oldest absent thread give
+  one up. Ten, not twenty-six: twenty-six matched an alphabet rather than the
+  number of conversations open at once, and the words in play should be familiar
+  ones. Past ten live threads the rest go untagged, which only became affordable
+  once closed sessions stopped holding tags. A tag is a word you learned, so it must not change meaning underneath
   you — and when a conversation continues in a fresh thread (the context
   handoff), the tag follows it there rather than staying on the finished one.
 
@@ -154,6 +157,17 @@ the owner can also steer a session without leaving the room:
 
   Recogniser noise ("Thank you.", "Okay.") is dropped rather than added, and does
   not reset the clock — counting it as speech would hold a run open forever.
+
+  There is deliberately **no way to cancel a run**. "Stop listening" existed for
+  the ninety-second window, where being stuck on the wrong thread was expensive; a
+  run lasts ten seconds, so letting it send and correcting in the next one is
+  fewer things to remember than a phrase which has to be *recognised correctly*
+  to work at all.
+
+  A run is **one line** in the transcript channel. It posts "Listening for X" the
+  moment the tag lands, so the tag is confirmed without waiting ten seconds, and
+  rewrites that same line into what was actually sent. A surface that cannot edit
+  gets two lines instead — the confirmation matters more than the tidiness.
 
 - **Say the tag once, then just keep talking.** A delivered instruction leaves
   that thread listening for 90 seconds, and every further sentence resets the

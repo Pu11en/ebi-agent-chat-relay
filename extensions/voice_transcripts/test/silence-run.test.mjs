@@ -184,14 +184,14 @@ test("recogniser noise does not hold the run open forever", async () => {
   assert.ok(!/thank you/i.test(r.sent[0].text), "and was not added to the message");
 });
 
-test("stop listening throws the run away without sending it", async () => {
+test("nothing cancels a run; it is always sent", async () => {
   const r = rig();
   await r.say("luffy look at the law notes");
   await r.wait(2);
   await r.say("stop listening");
-  await r.wait(20);
+  await r.wait(10);
 
-  assert.deepEqual(r.sent, []);
+  assert.equal(r.sent.length, 1, "one run, one message, no escape hatch to learn");
 });
 
 test("the silence is measured from when he stopped speaking, not when the text arrived", async () => {
@@ -221,4 +221,116 @@ test("a missing capture time falls back to now rather than sending at once", asy
   const r = rig();
   await r.sayWithoutTiming("luffy do the thing");
   assert.deepEqual(r.sent, [], "an unknown capture time must not mean 'ten seconds ago'");
+});
+
+// ---------------------------------------------------------------------------
+// One line per run, rewritten in place
+// ---------------------------------------------------------------------------
+
+/** A rig whose announcements can be edited, as Discord's can. */
+function speaker() {
+  const posted = [];
+  let clock = 1_000_000;
+  let pending = null;
+
+  const controller = createVoiceController({
+    ownerId: "42",
+    enabled: true,
+    client: {
+      listSessions: async () => SESSIONS,
+      sendSpoken: async () => ({ status: "delivered" }),
+    },
+    announce: async (text) => {
+      posted.push({ text });
+      return posted.length - 1; // the handle Discord would give us
+    },
+    revise: async (handle, text) => {
+      posted[handle].text = text;
+    },
+    logger: { info() {}, warn() {}, error() {} },
+    now: () => clock,
+    setTimer: (fn, ms) => ((pending = { fn, at: clock + ms }), pending),
+    clearTimer: (h) => {
+      if (pending === h) pending = null;
+    },
+  });
+
+  return {
+    posted,
+    async say(text, seconds = 3) {
+      const capturedAt = new Date(clock).toISOString();
+      clock += seconds * 1000;
+      await controller.handleUtterance({
+        userId: "42",
+        text,
+        capturedAt,
+        durationMs: seconds * 1000,
+      });
+    },
+    async wait(seconds) {
+      clock += seconds * 1000;
+      if (pending && clock >= pending.at) {
+        const due = pending;
+        pending = null;
+        await due.fn();
+      }
+    },
+  };
+}
+
+test("a run is one line in the channel, not two", async () => {
+  const s = speaker();
+  await s.say("luffy look at the law notes");
+  assert.equal(s.posted.length, 1);
+  assert.match(s.posted[0].text, /Listening/);
+
+  await s.wait(10);
+
+  assert.equal(s.posted.length, 1, "the same line, rewritten — not a second one");
+  assert.match(s.posted[0].text, /law notes/);
+  assert.ok(!/Listening/.test(s.posted[0].text));
+});
+
+test("each run gets its own line", async () => {
+  const s = speaker();
+  await s.say("luffy first thing");
+  await s.wait(10);
+  await s.say("nami second thing");
+  await s.wait(10);
+
+  assert.equal(s.posted.length, 2);
+  assert.match(s.posted[0].text, /first thing/);
+  assert.match(s.posted[1].text, /second thing/);
+});
+
+test("with no way to edit, it falls back to a second line", async () => {
+  // A surface that cannot edit is still a surface; the confirmation matters more
+  // than the tidiness.
+  const posted = [];
+  let clock = 1_000_000;
+  let pending = null;
+  const controller = createVoiceController({
+    ownerId: "42",
+    enabled: true,
+    client: {
+      listSessions: async () => SESSIONS,
+      sendSpoken: async () => ({ status: "delivered" }),
+    },
+    announce: async (text) => void posted.push(text),
+    logger: { info() {}, warn() {}, error() {} },
+    now: () => clock,
+    setTimer: (fn, ms) => ((pending = { fn, at: clock + ms }), pending),
+    clearTimer: () => (pending = null),
+  });
+
+  await controller.handleUtterance({
+    userId: "42",
+    text: "luffy do the thing",
+    capturedAt: new Date(clock).toISOString(),
+    durationMs: 2000,
+  });
+  clock += 20_000;
+  if (pending) await pending.fn();
+
+  assert.equal(posted.length, 2, "two lines is the graceful degradation");
 });

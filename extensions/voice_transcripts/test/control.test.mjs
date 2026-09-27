@@ -1202,18 +1202,18 @@ test("once a run has been sent, an untagged sentence goes nowhere", async () => 
   assert.equal(sent.length, 1, "no tag, no delivery");
 });
 
-test("saying stop listening throws the run away", async () => {
-  const { controller, sent, announced } = talker();
+test("there is no way to cancel a run — it just sends", async () => {
+  // "Stop listening" existed for the ninety-second window, where being stuck on
+  // the wrong thread was expensive. A run lasts ten seconds, so the phrase was
+  // one more thing to remember that had to be *recognised correctly* to work.
+  const { controller, sent } = talker();
 
   await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
-  const result = await controller.handleUtterance({ userId: "42", text: "okay stop listening" });
-
-  assert.equal(result.status, "released");
-  assert.ok(announced.at(-1).includes("Dropped"));
-
-  await controller.handleUtterance({ userId: "42", text: "this should go nowhere" });
+  await controller.handleUtterance({ userId: "42", text: "okay stop listening" });
   await controller.flush();
-  assert.deepEqual(sent, []);
+
+  assert.equal(sent.length, 1, "it is words for the run, like anything else");
+  assert.match(sent[0].text, /stop listening/);
 });
 
 test("naming another thread mid-run is ignored: the first tag owns it", async () => {

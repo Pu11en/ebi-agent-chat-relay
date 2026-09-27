@@ -28,17 +28,22 @@ from __future__ import annotations
 
 import re
 
-#: The tag pool: One Piece characters, Drew's own choice of words.
+#: The tag pool: ten One Piece characters, Drew's own choice of words.
 #:
-#: The pool is swappable and its contents are taste, but one property is not
-#: negotiable: two tags must not be one mishearing apart, because a tag decides
-#: which repository a spoken instruction lands in. So no two of these share
-#: their first two letters, and none of them is a word that turns up in ordinary
-#: speech — "law", "ace", "brook" and "smoker" are all One Piece characters and
-#: all disqualified for exactly that reason.
+#: Ten, not twenty-six. Twenty-six matched an alphabet, not the number of
+#: conversations open at once, and Drew asked for fewer so the words in play are
+#: always familiar. This is the Straw Hat crew minus the members whose names are
+#: everyday English: `robin` and `brook` are disqualified for exactly the reason
+#: `law`, `ace` and `smoker` were — a tag that turns up in ordinary speech
+#: addresses a thread by accident.
 #:
-#: The crew comes first because tags are handed out in order and those are the
-#: names Drew sees most.
+#: The trade is real. Past ten live threads the rest go untagged and cannot be
+#: reached by voice, which only became affordable once closed sessions stopped
+#: holding tags; before that, 25 of 26 were held by finished conversations.
+#:
+#: The other rule is enforced by a test rather than by care: no two share their
+#: first two letters, because a tag decides which repository a spoken instruction
+#: lands in.
 SPOKEN_LABELS: tuple[str, ...] = (
     "luffy",
     "zoro",
@@ -50,22 +55,6 @@ SPOKEN_LABELS: tuple[str, ...] = (
     "usopp",
     "shanks",
     "mihawk",
-    "doflamingo",
-    "oden",
-    "kaido",
-    "marco",
-    "yamato",
-    "rayleigh",
-    "hancock",
-    "bonney",
-    "perona",
-    "kinemon",
-    "momonosuke",
-    "vivi",
-    "buggy",
-    "garp",
-    "ivankov",
-    "tashigi",
 )
 
 #: What the recogniser writes instead, mapped back to the tag it meant.
@@ -95,22 +84,6 @@ LABEL_ALIASES: dict[str, str] = {
     "usop": "usopp",
     "mihalk": "mihawk",
     "myhawk": "mihawk",
-    "odin": "oden",
-    "olden": "oden",
-    "flamingo": "doflamingo",
-    "doflamingos": "doflamingo",
-    "kaidou": "kaido",
-    "cairo": "kaido",
-    "raleigh": "rayleigh",
-    "rayly": "rayleigh",
-    "momonoske": "momonosuke",
-    "kinnemon": "kinemon",
-    "parona": "perona",
-    "veevee": "vivi",
-    "vivian": "vivi",
-    "garth": "garp",
-    "ivancov": "ivankov",
-    "tashigee": "tashigi",
 }
 
 
