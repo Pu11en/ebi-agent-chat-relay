@@ -1,6 +1,6 @@
 """Auto Upgrade — ccdb AutoUpgradeCog configuration for a systemd **user** deployment.
 
-``/upgrade`` (and the ``ebibot-upgrade`` webhook) is the drain-aware safe restart:
+``/restart`` (and the ``ebibot-upgrade`` webhook) is the drain-aware safe restart:
 it snapshots the threads with a Claude session in flight, waits for them to
 finish, marks them to be resumed, and only then restarts the service. That is the
 whole point of it — a restart that provably does not throw away someone's work.
@@ -109,10 +109,13 @@ EBIBOT_UPGRADE_CONFIG = UpgradeConfig(
     sync_command=_SYNC_COMMAND,
     restart_command=_restart_command(),
     # The approval gate is answerable only by a ✅ reaction or a button click, so an
-    # operator who replies in text waits forever. Running /upgrade is the approval.
+    # operator who replies in text waits forever. Running /restart is the approval.
     upgrade_approval=False,
     restart_approval=False,
     slash_command_enabled=True,
+    # It upgrades nothing here (see the module docstring); say what it does.
+    slash_command_name="restart",
+    slash_command_description="Restart the bot once running sessions finish",
 )
 
 

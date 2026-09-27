@@ -112,6 +112,22 @@ class ClaudeDiscordBot(commands.Bot):
 
             asyncio.create_task(self._cleanup_orphaned_worktrees())
 
+        await self._sync_commands()
+
+    async def _sync_commands(self) -> None:
+        """Retire superseded commands, then sync the rest to every guild.
+
+        Retirement happens here rather than in ``setup_bridge`` because custom
+        Cogs load after the bridge is wired: this sync is the first moment every
+        command is on the tree, so it is the only moment the keep list can
+        govern all of them. Retiring is idempotent, so reconnects are harmless.
+        """
+        from .command_surface import retire_superseded_commands
+
+        retired = retire_superseded_commands(self.tree)
+        if retired:
+            logger.info("Retired superseded commands: %s", ", ".join(sorted(retired)))
+
         # Sync slash commands per-guild for instant availability.
         # Global-only sync (the old approach) can take up to 1 hour to propagate.
         try:

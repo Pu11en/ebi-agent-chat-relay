@@ -148,6 +148,10 @@ class UpgradeConfig:
     """If True, register a /upgrade slash command that manually triggers the upgrade
     pipeline. Defaults to False so existing bots are unaffected until explicitly opted in.
     When enabled, the command respects upgrade_approval and restart_approval flags."""
+    slash_command_name: str = "upgrade"
+    """Name of the slash command. A deployment that runs from its own checkout
+    upgrades nothing here — it drains and restarts — and can name it for that."""
+    slash_command_description: str = "Manually trigger a package upgrade"
 
 
 class AutoUpgradeCog(commands.Cog):
@@ -187,6 +191,10 @@ class AutoUpgradeCog(commands.Cog):
         self._drain_timeout = drain_timeout
         self._drain_poll_interval = drain_poll_interval
         self._lock = asyncio.Lock()
+        # The decorator fixes the name at class definition; this renames the
+        # per-instance copy discord.py made for this Cog, before add_cog registers it.
+        self.upgrade_command.name = config.slash_command_name
+        self.upgrade_command.description = config.slash_command_description
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
