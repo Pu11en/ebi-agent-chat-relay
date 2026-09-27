@@ -1,14 +1,19 @@
-# Automatic voice transcripts for an existing ccdb bot
+# Manual voice transcripts for an existing ccdb bot
 
 This optional instance extension uses the existing Discord bot account to transcribe
-one designated voice room whenever its configured owner is present. It reuses the
+one designated voice room when its configured owner explicitly requests it. It reuses the
 Hanoi Community transcription modules; `SOURCE.json` records their original hashes.
 No new Discord application, token, or invite is needed.
 
-Join the room to start. Everyone speaking there gets separate speaker attribution.
-Leave to stop. The recording notice has a **Pause transcription** button that anyone
-in the room can use; only the owner can resume. A pause also clears when the owner
-leaves and rejoins. Muting/unmuting does not start another session.
+Auto-join is off. Enter the room, then send **`!voice join`** in the configured
+voice-transcripts channel to start; send **`!voice leave`** there to disconnect
+immediately. Only the configured owner can use these exact text commands, and
+`!voice` shows help. Joining the room or restarting the worker never starts recording.
+Everyone speaking gets separate speaker attribution. Leaving the room stops
+recording; returning requires another join command. Anyone in the room can use the
+notice's **Pause transcription** button; old Resume buttons only explain the command.
+Muting/unmuting does not start another session. Leave preserves already captured
+speech and does not cancel agent work already sent from that speech.
 
 The bot joins muted and undeafened. Recognition runs locally with faster-whisper,
 using an already downloaded `base.en` model, with no transcription API calls. One
@@ -18,8 +23,9 @@ and as remaining audio finishes after stopping. Speaker timestamps are UTC.
 ## Integration
 
 ccdb's chat service remains its own process. A small Node voice companion connects
-using the **same identity**, subscribing only to guild and voice-state events. It
-neither consumes chat messages nor registers/overwrites slash commands. The
+using the **same identity**, subscribing to guild, voice-state and message events.
+It only handles owner `!voice` commands in the configured transcript channel and
+never registers/overwrites slash commands or routes those commands to an AI. The
 DAVE-capable `@discordjs/voice` stack is the one used by the Hanoi implementation.
 Run exactly one voice companion for a given bot and guild; the service uses `flock`
 to prevent duplicate local processes. No Python framework changes are required.
@@ -41,7 +47,8 @@ recording. Everyone mentions and mentions from transcript text are disabled.
    bot needs View Channel, Connect, and Send Messages in the voice room; and View
    Channel, Send Messages, Read Message History, and Attach Files in the output.
    The owner needs access to the output. Discord administrators can still access
-   private channels through their administrator permission.
+   private channels through their administrator permission. Enable the application's
+   Message Content intent (also used by ccdb chat) for the plain-text commands.
 4. Copy `.env.example` to a private file and fill the IDs and absolute data path.
    Set `VOICE_BRIDGE_ENV_FILE` to the existing bridge env file and
    `VOICE_CONFIG_FILE` to the new private voice config. Both must be absolute paths.
@@ -239,9 +246,9 @@ fails at startup rather than the first time the owner speaks.
   30s by default), without tearing down
   the speaker stream. Disconnect flushes speech already in the current buffer.
   A hard process crash can lose at most the current in-memory chunk per speaker.
-- A five-second health loop retries connections and queued work. After a restart,
-  an active session resumes only if the owner is still in the designated room.
-  Otherwise it is stopped and its saved transcript published.
+- A five-second health loop processes queued work but never joins or reconnects
+  voice. After a restart, any recovered recording is stopped and its saved
+  transcript published, even if the owner is present. A new join command is required.
 - Pending work finishing after a stop edits the existing transcript attachment.
   Failed and pending counts remain visible; a failed transcription is not reported
   as a complete transcript.

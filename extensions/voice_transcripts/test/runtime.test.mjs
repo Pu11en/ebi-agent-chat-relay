@@ -90,9 +90,12 @@ function fixture(t, failNotice = false) {
     },
   };
 }
-test("disclosure is sent before voice connects; absent owner stops a recovered session", async (t) => {
+test("presence stays silent; explicit join discloses before connecting; departure stops", async (t) => {
   const f = fixture(t);
   await f.runtime.controller.reconcile();
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.service.active(), null);
+  await f.runtime.controller.join();
   assert.deepEqual(f.calls, ["notice", "connect"]);
   assert.ok(f.service.active());
   f.owner(null);
@@ -102,13 +105,13 @@ test("disclosure is sent before voice connects; absent owner stops a recovered s
 });
 test("failed disclosure blocks recording and voice receive", async (t) => {
   const f = fixture(t, true);
-  await assert.rejects(f.runtime.controller.reconcile(), /permission/);
+  await assert.rejects(f.runtime.controller.join(), /permission/);
   assert.equal(f.service.active(), null);
   assert.deepEqual(f.calls, ["notice"]);
 });
-test("publication persists and is edited when delayed jobs finish after stop", async (t) => {
+test("manual leave preserves publication and delayed jobs can still finish", async (t) => {
   const f = fixture(t);
-  await f.runtime.controller.reconcile();
+  await f.runtime.controller.join();
   const session = f.service.active();
   f.store.enqueueJob({
     id: "j",
@@ -120,8 +123,9 @@ test("publication persists and is edited when delayed jobs finish after stop", a
     audioPath: "/unused",
     createdAt: new Date().toISOString(),
   });
-  f.owner(null);
+  await f.runtime.controller.leave();
   await f.runtime.controller.reconcile();
+  assert.equal(f.service.active(), null);
   await f.runtime.publish();
   assert.equal(
     f.calls.filter((x) => Array.isArray(x) && x[0] === "publish").length,
@@ -150,7 +154,7 @@ test("publication persists and is edited when delayed jobs finish after stop", a
 });
 test("paused setting survives a reopened store", async (t) => {
   const f = fixture(t);
-  await f.runtime.controller.reconcile();
+  await f.runtime.controller.join();
   await f.runtime.controller.pause();
   const reopened = createStore(f.dir);
   assert.equal(reopened.getSetting("paused"), "true");

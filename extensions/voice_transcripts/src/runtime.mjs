@@ -20,7 +20,7 @@ export function createRuntime({
     if (channel.guildId !== config.guildId || channel.id !== config.channelId)
       throw new Error("Voice channel mismatch");
     const message = await channel.send({
-      content: `🔴 **Automatic transcription ${resumed ? "resumed" : "started"}.** Everyone speaking here is transcribed while <@${config.ownerId}> is present. Speech recognition runs locally. Speaker names and timestamps are saved to a private transcript channel. Local copies are kept for ${config.retentionDays} days; Discord copies remain until deleted. Use **Pause transcription** below or leave the room to stop participating.`,
+      content: `🔴 **Transcription ${resumed ? "resumed" : "started"} by owner command.** Everyone speaking here is transcribed while <@${config.ownerId}> is present. Speech recognition runs locally. Speaker names and timestamps are saved to a private transcript channel. Local copies are kept for ${config.retentionDays} days; Discord copies remain until deleted. Use **Pause transcription** below or leave the room to stop participating. The owner can send \`!voice leave\` in <#${config.transcriptChannelId}> to disconnect the bot. Auto-join is off.`,
       components: controls(),
       allowedMentions: { parse: [] },
     });
@@ -33,11 +33,13 @@ export function createRuntime({
     channelId: config.channelId,
     ownerChannel,
     active: () => service.active(),
+    connected: () => transport.ready(),
+    disconnect: () => transport.disconnect(),
     isPaused: () => store.getSetting("paused") === "true",
     setPaused: (value) => store.setSetting("paused", String(value)),
-    start: async () => {
+    start: async (mayJoin) => {
       const { channel, message } = await notice();
-      if (ownerChannel() !== config.channelId) return;
+      if (!mayJoin()) return;
       const { session } = service.start({
         channelId: channel.id,
         channelName: channel.name,
@@ -56,10 +58,10 @@ export function createRuntime({
       transport.disconnect();
       service.stop();
     },
-    reconnect: async () => {
+    reconnect: async (mayJoin) => {
       if (transport.ready()) return;
       await notice(true);
-      if (ownerChannel() === config.channelId) await connect(service.active());
+      if (mayJoin()) await connect(service.active());
     },
   });
   let publishing = null;

@@ -1,0 +1,14 @@
+{
+  "change": "manual-voice-presence",
+  "thread_id": null,
+  "native_session_id": "01a0e2a0-e4a5-78a0-99d7-5e5794259ff8",
+  "approval": "Drew explicitly requested disabling auto-join and using a command in voice-transcripts to join, with a quick way to remove DrewAI; then move to the Discord-bot audit.",
+  "implementation_approved": true,
+  "activation_approved": false,
+  "publish_approved": false,
+  "decisions": [
+    {"decision": "Only this bounded voice-presence change", "reason": "Drew is replacing legacy voice and wants focus on Discord bots"},
+    {"decision": "Do not inspect Jester Voice", "reason": "Explicit user exclusion"},
+    {"decision": "Base on 50ff65f, not named-voice-actions", "reason": "Do not activate shelved Jester/Goku work"}
+  ]
+}

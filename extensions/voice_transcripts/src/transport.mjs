@@ -11,6 +11,7 @@ export function createVoiceTransport({
   logger = console,
 }) {
   let connection = null;
+  let connectingAbort = null;
   const captures = new Map();
   function capture(session, userId) {
     if (
@@ -39,7 +40,11 @@ export function createVoiceTransport({
       minBytes: Math.ceil((config.minUtteranceMs * BYTES_PER_SECOND) / 1000),
       onChunk: (pcm) => {
         logger.info(
-          "[voice] captured " + displayName + " " + pcmDurationMs(pcm.length) + "ms",
+          "[voice] captured " +
+            displayName +
+            " " +
+            pcmDurationMs(pcm.length) +
+            "ms",
         );
         service.enqueueUtterance(
           {
@@ -60,7 +65,9 @@ export function createVoiceTransport({
       captures.delete(userId);
       opus.unpipe(decoder);
       if (receivedBytes > 0 || error)
-        logger.info("[voice] stream ended " + displayName + " pcm=" + receivedBytes + "B");
+        logger.info(
+          "[voice] stream ended " + displayName + " pcm=" + receivedBytes + "B",
+        );
       try {
         buffer.flush();
       } catch (captureError) {
@@ -92,6 +99,8 @@ export function createVoiceTransport({
     opus.pipe(decoder);
   }
   const disconnect = () => {
+    connectingAbort?.abort();
+    connectingAbort = null;
     for (const { finish } of [...captures.values()]) finish();
     if (
       connection &&
@@ -124,21 +133,30 @@ export function createVoiceTransport({
       // on its debug channel — surface DAVE/decrypt events so lost speech is
       // visible in the journal instead of silently missing from transcripts.
       connection.on("debug", (message) => {
-        if (/decrypt|dave|transition|epoch|mls|session (re|in|down|up)/i.test(message))
+        if (
+          /decrypt|dave|transition|epoch|mls|session (re|in|down|up)/i.test(
+            message,
+          )
+        )
           logger.warn("[voice] debug:", message);
       });
       connection.on("error", (error) =>
         logger.warn("[voice] connection:", error.message),
       );
+      const wait = new AbortController();
+      connectingAbort = wait;
       try {
         await voice.entersState(
           connection,
           voice.VoiceConnectionStatus.Ready,
-          20000,
+          AbortSignal.any([wait.signal, AbortSignal.timeout(20000)]),
         );
+        wait.signal.throwIfAborted();
       } catch (error) {
         disconnect();
         throw error;
+      } finally {
+        if (connectingAbort === wait) connectingAbort = null;
       }
       connection.receiver.speaking.on("start", (userId) =>
         capture(session, userId),

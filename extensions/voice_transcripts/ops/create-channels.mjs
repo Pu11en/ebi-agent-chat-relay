@@ -86,9 +86,9 @@ state.transcriptChannelId = text.id;
 writeFileSync(output, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
 const notice = await api("/channels/" + voice.id + "/messages", "POST", {
   content:
-    "**This room automatically makes transcripts.**\nWhen <@" +
+    "**This room supports owner-requested transcripts; auto-join is off.**\nWhen <@" +
     bridge.DISCORD_OWNER_ID +
-    "> joins, Drew AI joins muted and transcribes everyone speaking. When Drew leaves, transcription stops. Speaker names and UTC timestamps are saved in a private transcript channel. Speech recognition runs locally. Local copies are retained for 30 days; Discord copies remain until deleted.\n\nA recording notice appears for each session. Anyone in this room can use its **Pause transcription** button. Use another room if you do not want to be transcribed.",
+    "> is in this room and sends `!voice join` in voice-transcripts, Drew AI joins muted and transcribes everyone speaking. The owner can send `!voice leave` there to remove the bot; leaving this room also stops transcription. Returning to the room does not start it again. Speaker names and UTC timestamps are saved in a private transcript channel. Speech recognition runs locally. Local copies are retained for 30 days; Discord copies remain until deleted.\n\nA recording notice appears for each session. Anyone in this room can use its **Pause transcription** button. Use another room if you do not want to be transcribed.",
   allowed_mentions: { parse: [] },
 });
 state.noticeMessageId = notice.id;

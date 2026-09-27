@@ -5,6 +5,56 @@ import { PassThrough } from "node:stream";
 import { createVoiceTransport } from "../src/transport.mjs";
 import { safeWorkerEnv } from "../src/voice/transcriber.mjs";
 
+test("disconnect aborts a pending voice connection instead of waiting 20 seconds", async () => {
+  const connection = new EventEmitter();
+  connection.state = { status: "connecting" };
+  connection.receiver = { speaking: new EventEmitter() };
+  connection.destroy = () => {
+    connection.state.status = "destroyed";
+  };
+  let signal;
+  const transport = createVoiceTransport({
+    config: { guildId: "g", channelId: "v" },
+    client: {
+      guilds: { cache: new Map([["g", { voiceAdapterCreator() {} }]]) },
+    },
+    service: {},
+    voice: {
+      joinVoiceChannel: () => connection,
+      VoiceConnectionStatus: { Ready: "ready", Destroyed: "destroyed" },
+      entersState: async (target, status, value) => {
+        signal = value;
+        if (!(signal instanceof AbortSignal)) return;
+        await new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        });
+      },
+    },
+    logger: { info() {}, warn() {} },
+  });
+  const joining = transport.connect({ id: "s" });
+  const result = joining.then(
+    () => null,
+    (error) => error,
+  );
+  try {
+    assert.ok(
+      signal instanceof AbortSignal,
+      "voice wait must accept cancellation",
+    );
+    transport.disconnect();
+    assert.equal(signal.aborted, true);
+    assert.equal(connection.state.status, "destroyed");
+    assert.match((await result).message, /aborted/);
+    assert.equal(transport.ready(), false);
+  } finally {
+    transport.disconnect();
+    await result;
+  }
+});
+
 test("worker receives no bot token or unrelated credentials", () => {
   const env = safeWorkerEnv({
     HOME: "/home/example",
@@ -82,7 +132,11 @@ test("receiver keeps separate speakers and flushes unfinished speech on disconne
   speaking.emit("start", "b");
   assert.equal(transport.pendingSpeech("s", "a").length, 1);
   assert.equal(transport.pendingSpeech("s", "a")[0].active, true);
-  assert.ok(Number.isFinite(Date.parse(transport.pendingSpeech("s", "a")[0].capturedAt)));
+  assert.ok(
+    Number.isFinite(
+      Date.parse(transport.pendingSpeech("s", "a")[0].capturedAt),
+    ),
+  );
   assert.deepEqual(transport.pendingSpeech("other-session", "a"), []);
   assert.deepEqual(transport.pendingSpeech("s", "nobody"), []);
   streams.get("a").write(Buffer.alloc(19200, 1));

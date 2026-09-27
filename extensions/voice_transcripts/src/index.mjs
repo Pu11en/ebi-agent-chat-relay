@@ -14,6 +14,7 @@ import * as voice from "@discordjs/voice";
 import prism from "prism-media";
 import { parseEnv, readConfig } from "./config.mjs";
 import { canControl } from "./presence.mjs";
+import { createVoiceTextCommands } from "./manual-commands.mjs";
 import { createVoiceTransport } from "./transport.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { createStore } from "./voice/store.mjs";
@@ -63,7 +64,12 @@ const service = createTranscriptService({
   guildId: config.guildId,
 });
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
   allowedMentions: { parse: [] },
 });
 const ownerChannel = () =>
@@ -87,10 +93,6 @@ const controls = () => [
       .setCustomId("ccdb-voice:pause")
       .setLabel("Pause transcription")
       .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("ccdb-voice:resume")
-      .setLabel("Resume transcription")
-      .setStyle(ButtonStyle.Secondary),
   ),
 ];
 const runtime = createRuntime({
@@ -107,6 +109,15 @@ const runtime = createRuntime({
     return channel;
   },
   getOutput: () => client.channels.fetch(config.transcriptChannelId),
+});
+const handleVoiceText = createVoiceTextCommands({
+  config,
+  controller: runtime.controller,
+});
+client.on(Events.MessageCreate, (message) => {
+  void handleVoiceText(message).catch((error) =>
+    console.error("[voice] text response:", error.message),
+  );
 });
 let relayClient = null;
 if (config.control.enabled) {
@@ -174,7 +185,10 @@ async function refreshRoster() {
       if (error.code !== 10008) throw error; // Unknown Message — repost below.
     }
   }
-  message ??= await output.send({ content: text, allowedMentions: { parse: [] } });
+  message ??= await output.send({
+    content: text,
+    allowedMentions: { parse: [] },
+  });
   store.setSetting("roster_message_id", message.id);
   store.setSetting("roster_text", text);
 }
@@ -210,6 +224,16 @@ async function tick() {
 }
 client.on(Events.VoiceStateUpdate, (before, after) => {
   if (after.guild.id !== config.guildId) return;
+  if (
+    before.channelId === config.channelId &&
+    after.channelId !== config.channelId &&
+    (after.id === config.ownerId || after.id === client.user?.id)
+  ) {
+    void runtime.controller
+      .leave()
+      .catch((error) => console.error("[voice] leave:", error.message));
+    return;
+  }
   if (after.id === config.ownerId && before.channelId !== after.channelId) {
     void runtime.controller
       .reconcile()
@@ -245,8 +269,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await runtime.controller[action]();
     await interaction.editReply(
       action === "pause"
-        ? "Transcription paused. It stays paused until the owner resumes or leaves and rejoins."
-        : "Automatic transcription enabled. It starts while the owner is in the recorded room.",
+        ? "Transcription paused and DrewAI disconnected. The owner must send !voice join in the voice-transcripts channel to join again."
+        : "Auto-join is off. Send !voice join in the voice-transcripts channel to join again.",
     );
     await runtime.publish();
   } catch (error) {

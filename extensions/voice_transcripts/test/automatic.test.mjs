@@ -39,14 +39,17 @@ function fixture(paused = false) {
     },
   };
 }
-test("owner joining starts once; others/mute changes do not create more sessions", async () => {
+test("owner presence waits for a command; checks do not create more sessions", async () => {
   const f = fixture();
   await f.controller.reconcile();
   assert.deepEqual(f.calls, []);
   f.owner("room");
   await f.controller.reconcile();
   await f.controller.reconcile();
-  assert.deepEqual(f.calls, ["start", "reconnect"]);
+  assert.deepEqual(f.calls, []);
+  await f.controller.join();
+  await f.controller.reconcile();
+  assert.deepEqual(f.calls, ["start"]);
   f.owner("elsewhere");
   await f.controller.reconcile();
   assert.equal(f.calls.at(-1), "stop");
@@ -57,7 +60,7 @@ test("startup closes a persisted recording when owner is absent", async () => {
   await f.controller.reconcile();
   assert.deepEqual(f.calls, ["stop"]);
 });
-test("pause survives health checks and restart until owner leaves", async () => {
+test("neither returning nor an old resume button replaces the join command", async () => {
   const f = fixture(true);
   f.owner("room");
   await f.controller.reconcile();
@@ -66,17 +69,21 @@ test("pause survives health checks and restart until owner leaves", async () => 
   await f.controller.reconcile();
   f.owner("room");
   await f.controller.reconcile();
+  assert.deepEqual(f.calls, []);
+  await f.controller.join();
   assert.deepEqual(f.calls, ["start"]);
   await f.controller.pause();
   await f.controller.reconcile();
   assert.deepEqual(f.calls, ["start", "stop"]);
   await f.controller.resume();
+  assert.equal(f.calls.at(-1), "stop");
+  await f.controller.join();
   assert.equal(f.calls.at(-1), "start");
 });
-test("racing events serialize without duplicate starts", async () => {
+test("racing join commands serialize without duplicate starts", async () => {
   const f = fixture();
   f.owner("room");
-  await Promise.all(Array.from({ length: 5 }, () => f.controller.reconcile()));
+  await Promise.all(Array.from({ length: 5 }, () => f.controller.join()));
   assert.equal(f.calls.filter((x) => x === "start").length, 1);
 });
 test("only owner can resume; people in the recorded room can pause", () => {
