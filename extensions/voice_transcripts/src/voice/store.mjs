@@ -77,6 +77,9 @@ export function createStore(dataDir) {
     readyJobs: db.prepare(
       "SELECT * FROM transcription_jobs WHERE status = 'pending' AND available_at <= ? ORDER BY created_at LIMIT ?",
     ),
+    pendingSpeech: db.prepare(
+      "SELECT captured_at AS capturedAt, duration_ms AS durationMs FROM transcription_jobs WHERE session_id = ? AND user_id = ? AND status = 'pending' ORDER BY captured_at",
+    ),
     job: db.prepare("SELECT * FROM transcription_jobs WHERE id = ?"),
   };
 
@@ -179,6 +182,11 @@ export function createStore(dataDir) {
     },
     listReadyJobs(now = new Date().toISOString(), limit = 10) {
       return statements.readyJobs.all(now, limit);
+    },
+    // Includes jobs being transcribed and jobs waiting for recognition retry;
+    // availability is not evidence that their speech has finished processing.
+    listPendingSpeech(sessionId, userId) {
+      return statements.pendingSpeech.all(sessionId, userId);
     },
     getJob(id) {
       return statements.job.get(id) || null;

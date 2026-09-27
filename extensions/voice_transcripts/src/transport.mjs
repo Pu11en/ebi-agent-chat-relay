@@ -70,7 +70,7 @@ export function createVoiceTransport({
       decoder.destroy();
       if (error) logger.warn("[voice] speaker stream failed:", error.message);
     }
-    captures.set(userId, finish);
+    captures.set(userId, { finish, sessionId: session.id, capturedAt });
     let receivedBytes = 0;
     decoder.on("data", (chunk) => {
       receivedBytes += chunk.length;
@@ -92,7 +92,7 @@ export function createVoiceTransport({
     opus.pipe(decoder);
   }
   const disconnect = () => {
-    for (const finish of [...captures.values()]) finish();
+    for (const { finish } of [...captures.values()]) finish();
     if (
       connection &&
       connection.state.status !== voice.VoiceConnectionStatus.Destroyed
@@ -101,6 +101,12 @@ export function createVoiceTransport({
     connection = null;
   };
   return {
+    pendingSpeech(sessionId, userId) {
+      const capture = captures.get(userId);
+      return capture?.sessionId === sessionId
+        ? [{ capturedAt: capture.capturedAt, durationMs: 0, active: true }]
+        : [];
+    },
     ready: () => connection?.state.status === voice.VoiceConnectionStatus.Ready,
     async connect(session) {
       disconnect();

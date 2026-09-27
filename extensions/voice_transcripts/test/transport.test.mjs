@@ -80,9 +80,15 @@ test("receiver keeps separate speakers and flushes unfinished speech on disconne
   await transport.connect({ id: "s" });
   speaking.emit("start", "a");
   speaking.emit("start", "b");
+  assert.equal(transport.pendingSpeech("s", "a").length, 1);
+  assert.equal(transport.pendingSpeech("s", "a")[0].active, true);
+  assert.ok(Number.isFinite(Date.parse(transport.pendingSpeech("s", "a")[0].capturedAt)));
+  assert.deepEqual(transport.pendingSpeech("other-session", "a"), []);
+  assert.deepEqual(transport.pendingSpeech("s", "nobody"), []);
   streams.get("a").write(Buffer.alloc(19200, 1));
   streams.get("b").write(Buffer.alloc(19200, 2));
   transport.disconnect();
+  assert.deepEqual(transport.pendingSpeech("s", "a"), []);
   assert.equal(results.length, 2);
   assert.equal(results[0].meta.displayName, "Alice");
   assert.equal(results[1].meta.displayName, "Bob");

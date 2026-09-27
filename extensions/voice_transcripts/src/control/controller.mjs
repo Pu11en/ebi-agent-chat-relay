@@ -98,6 +98,9 @@ export function createVoiceController({
   source = "voice",
   now = () => Date.now(),
   silenceMs = SILENCE_SEND_MS,
+  // Synchronous capture/job metadata, scoped to the owner's recording. A
+  // completed transcript alone cannot tell whether the next sentence is ready.
+  getPendingSpeech = () => [],
   // Injected so the pacing is asserted rather than slept through.
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (handle) => clearTimeout(handle),
@@ -121,7 +124,8 @@ export function createVoiceController({
    * every further utterance.
    *
    * @type {{session: object, target: string, parts: string[], spokeUntil: number,
-   *         timer: unknown} | null}
+   *         startedAt: number, voiceSessionId: string | null, timer: unknown,
+   *         line: unknown} | null}
    */
   let run = null;
   /** @type {{sessions: Array<object>, at: number} | null} */
@@ -352,13 +356,50 @@ export function createVoiceController({
     return started + (Number(durationMs) || 0);
   }
 
-  /** Arm (or re-arm) the silence timer for the current run. */
-  function armSilence() {
+  /** Pending chunks can bridge several short pauses, but never a real gap. */
+  function pendingSpeechUntil(current) {
+    let until = current.spokeUntil;
+    let waiting = false;
+    if (current.voiceSessionId == null) return { until, waiting };
+    const pending = getPendingSpeech({
+      sessionId: current.voiceSessionId,
+      userId: String(ownerId),
+    });
+    const ordered = [...pending].sort(
+      (a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt),
+    );
+    for (const item of ordered) {
+      const from = Date.parse(item.capturedAt);
+      const end = item.active ? Infinity : from + (Number(item.durationMs) || 0);
+      if (!Number.isFinite(from) || end < current.startedAt || from >= until + silenceMs)
+        continue;
+      waiting = true;
+      until = Math.max(until, end);
+    }
+    return { until, waiting };
+  }
+
+  /** Arm (or re-arm) the silence timer for this exact run. */
+  function armSilence(minimumDelay = 0) {
     if (!run) return;
     if (run.timer) clearTimer(run.timer);
-    const remaining = Math.max(0, run.spokeUntil + silenceMs - now());
-    run.timer = setTimer(() => {
-      void flushRun();
+    const current = run;
+    const remaining = Math.max(minimumDelay, current.spokeUntil + silenceMs - now());
+    current.timer = setTimer(async () => {
+      if (run !== current) return;
+      try {
+        if (pendingSpeechUntil(current).waiting) {
+          // Only poll after the deadline and while related speech is pending.
+          // Do not turn an overdue timer into a busy zero-delay loop.
+          armSilence(250);
+          return;
+        }
+      } catch (error) {
+        logger.warn?.(`[control] could not check pending speech: ${error.message}`);
+        armSilence(1000);
+        return;
+      }
+      await flushRun();
     }, remaining);
   }
 
@@ -386,12 +427,24 @@ export function createVoiceController({
       return await flushRun();
     },
 
-    async handleUtterance({ userId, text, capturedAt = null, durationMs = 0 }) {
+    async handleUtterance({
+      userId, text, sessionId = null, capturedAt = null, durationMs = 0,
+    }) {
       if (!enabled) return { status: "disabled" };
       if (String(userId) !== String(ownerId)) return IGNORED;
 
       const said = String(text ?? "").trim();
       const spokeUntil = spokeUntilFrom(capturedAt, durationMs);
+      const capturedStart = capturedAt ? Date.parse(capturedAt) : NaN;
+      // Two delayed callbacks can arrive before an overdue timer gets a turn.
+      // A genuine capture gap still ends the old request, even in that case.
+      if (
+        run &&
+        (run.voiceSessionId !== sessionId ||
+          capturedStart >= pendingSpeechUntil(run).until + silenceMs)
+      ) {
+        await flushRun();
+      }
 
       // ---- a run is open: everything is words for it --------------------
       if (run) {
@@ -466,22 +519,25 @@ export function createVoiceController({
       const runtime = parseRuntime(prompt);
       if (runtime) return await tune(match.session, runtime);
 
-      run = {
+      const current = {
         session: match.session,
         target: heard,
         parts: prompt ? [prompt] : [],
         spokeUntil,
+        startedAt: Number.isFinite(capturedStart) ? capturedStart : now(),
+        voiceSessionId: sessionId,
         timer: null,
         line: null,
       };
-      armSilence();
+      run = current;
       // Said immediately so he knows the tag landed without waiting ten seconds;
       // the same line is rewritten into the confirmation when the run is sent.
-      run.line = await say(
+      current.line = await say(
         `🎙️ Listening for **${describe(match.session)}** — ` +
           `sends ${Math.round(silenceMs / 1000)}s after you stop.`,
       );
-      return { status: "collecting", target: heard, parts: run.parts.length };
+      if (run === current) armSilence();
+      return { status: "collecting", target: heard, parts: current.parts.length };
     },
   };
 }

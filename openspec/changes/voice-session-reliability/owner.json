@@ -1,0 +1,32 @@
+{
+  "change": "voice-session-reliability",
+  "thread_id": null,
+  "provider": "codex",
+  "provider_session_id": "01a0e2a0-e4a5-78a0-99d7-5e5794259ff8",
+  "plan_owner": "current Codex planning conversation",
+  "repo": "/home/drewp/main-projects/ebi-agent-chat-relay",
+  "worktree": "/home/drewp/.local/state/ccdb/session-wt/plan-voice-session-reliability-20260927",
+  "base_commit": "d7439f1",
+  "mode": "normal-sequential-sessions",
+  "approval": "User subsequently selected A: fix the missing-words bug locally and test without restarting the live bot. Only tasks 1.1–1.3 of tasks.md are approved; no other features, extra agents, model calls, runtime changes or publishing.",
+  "discord_binding_note": "No DISCORD_THREAD_ID or CCDB_THREAD_ID was provided, and the local session API had no mapping for this native Codex session; do not infer another thread as owner.",
+  "decisions": [
+    {"id": "silence", "value": "ten seconds of actual silence, including delayed words from the same request before submission", "reason": "User reiterated the established ten-second rule and supplied a missing-sentence incident."},
+    {"id": "feedback", "value": "visible listening confirmation, no spoken acknowledgment", "reason": "User selected A for visible confirmation."},
+    {"id": "draft", "value": "growing transcript plus processing-audio indication", "reason": "User selected A so missing words can be seen."},
+    {"id": "location", "value": "inside the addressed session", "reason": "After discussing option C's difficulty, user selected the addressed-session location."},
+    {"id": "busy", "value": "visible queue, in order, without interrupting current work", "reason": "User selected A for waiting behind active work."},
+    {"id": "correction", "value": "Edit and Cancel buttons on unsubmitted drafts", "reason": "User selected A rather than spoken correction commands."},
+    {"id": "edit_save", "value": "Save retains the edited draft without sending; a separate owner Send action is required", "reason": "User answered A to this conversation's Save question while transferring the cleanup-planning handoff; this is not approval of the other thread's feature-cutting option A."},
+    {"id": "unclear_destination", "value": "saved unsent draft in the existing transcript channel with Choose Session", "reason": "User selected that location after the saved-draft and chooser behavior was explained."},
+    {"id": "delivery_retry", "value": "manual Retry button only; retain text and prevent duplicate jobs", "reason": "After asking what manual retry looks like, user selected C instead of automatic retries."},
+    {"id": "restart_scope", "value": "No new restart-recovery feature in this change; leave existing restart behavior alone", "reason": "User rejected the restart discussion as unnecessary complication and asked for whatever is simple; this does not authorize a restart, automatic replay, or implementation."},
+    {"id": "simplicity", "value": "Prioritize the reproduced missing-sentence bug; do not block it on optional controls or keep asking about low-value edge cases", "reason": "User said the planning was becoming more complicated and could create behavior he does not want; preserve previous choices without expanding automation."},
+    {"id": "execution", "value": "write the plan for normal sessions; no build", "reason": "User selected A after the workflow discussion."}
+  ],
+  "unresolved": [
+    "How to present speech arriving during editing; opening Edit already pauses automatic submission and Save now explicitly holds until Send",
+    "How to distinguish an unclear address from ordinary unaddressed speech without producing draft spam",
+    "Whether unresolved or failed earlier requests block later accepted requests to the same session"
+  ]
+}

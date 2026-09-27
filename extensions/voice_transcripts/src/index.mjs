@@ -119,6 +119,10 @@ if (config.control.enabled) {
     ownerId: config.ownerId,
     enabled: true,
     client: relay,
+    getPendingSpeech: ({ sessionId, userId }) => [
+      ...store.listPendingSpeech(sessionId, userId),
+      ...transport.pendingSpeech(sessionId, userId),
+    ],
     announce: async (message) => {
       const output = await client.channels.fetch(config.transcriptChannelId);
       if (!output?.isTextBased() || output.guildId !== config.guildId)

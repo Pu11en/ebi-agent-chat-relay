@@ -110,6 +110,29 @@ describe("voice store", () => {
     assert.match(store.getJob("job-1").last_error, /boom/);
   });
 
+  it("reports unfinished speech only for the requested speaker and recording, including backoff", () => {
+    const { store } = fixture;
+    const create = (guildId) => store.createSession({
+      guildId, channelId: "voice", channelName: "room", startedBy: "owner",
+    });
+    const first = create("guild-1");
+    const other = create("guild-2");
+    for (const [id, sessionId, userId] of [
+      ["one", first.id, "owner"], ["two", first.id, "visitor"], ["three", other.id, "owner"],
+    ]) store.enqueueJob({
+      id, sessionId, userId, displayName: userId, audioPath: "/tmp/not-read.wav",
+      capturedAt: "2026-09-27T16:36:21.590Z", durationMs: 2740,
+      createdAt: "2026-09-27T16:36:25.000Z",
+    });
+    store.failJob("one", "retry later", { maxAttempts: 3, nextAttemptAt: "2999-01-01T00:00:00Z" });
+    const pending = store.listPendingSpeech(first.id, "owner");
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].capturedAt, "2026-09-27T16:36:21.590Z");
+    assert.equal(pending[0].durationMs, 2740);
+    store.completeJob("one", { text: "the final sentence", provider: "fake", model: "fake" });
+    assert.deepEqual(store.listPendingSpeech(first.id, "owner"), []);
+  });
+
   it("stops a session and then deletes it with its segments", () => {
     const { store } = fixture;
     const session = store.createSession({
