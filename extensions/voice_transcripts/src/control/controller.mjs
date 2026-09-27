@@ -34,9 +34,6 @@ import { resolveTarget, untagged } from "./targets.mjs";
 const IGNORED = { status: "ignored" };
 
 /** How long a named-but-unfinished command waits for its instruction. */
-/** @deprecated The hold-then-instruct window; replaced by a run (see SILENCE_SEND_MS). */
-export const FOLLOW_UP_MS = 30_000;
-
 /**
  * How long a thread keeps receiving what is said after a delivered instruction.
  *
@@ -52,10 +49,6 @@ export const FOLLOW_UP_MS = 30_000;
  * utterance resets the clock, a new tag switches thread, and "stop listening"
  * ends it — the same shape the wake-word implementations converge on.
  */
-/** @deprecated The keep-listening window. It is what sent untagged speech to the
- * previous thread when the recogniser missed a tag; a run replaces it. */
-export const ATTACH_MS = 90_000;
-
 /**
  * How long a silence has to be before a run is sent.
  *
