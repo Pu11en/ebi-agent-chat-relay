@@ -831,6 +831,34 @@ class TestStopViewRunnerSync:
 
     @pytest.mark.asyncio
     @pytest.mark.real_system_context
+    async def test_live_runner_callback_receives_clone_before_running(
+        self, thread: MagicMock
+    ) -> None:
+        """Slash Stop and preemption must target the same clone as the button."""
+        original_runner = MagicMock()
+        original_runner.working_dir = None
+        cloned_runner = MagicMock()
+        live_runners = []
+
+        async def run(*args, **kwargs):
+            assert live_runners == [cloned_runner]
+            for event in self._simple_events():
+                yield event
+
+        cloned_runner.run = run
+        original_runner.clone.return_value = cloned_runner
+        config = RunConfig(
+            thread=thread,
+            runner=original_runner,
+            prompt="hello",
+            on_runner_changed=live_runners.append,
+        )
+
+        await run_claude_with_config(config)
+        assert live_runners == [cloned_runner]
+
+    @pytest.mark.asyncio
+    @pytest.mark.real_system_context
     async def test_stop_view_updated_to_cloned_runner(self, thread: MagicMock) -> None:
         """stop_view.update_runner() is called when a clone is created for system context.
 

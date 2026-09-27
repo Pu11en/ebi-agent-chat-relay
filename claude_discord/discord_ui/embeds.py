@@ -282,8 +282,18 @@ def ask_embed(question: str, header: str = "") -> discord.Embed:
     )
 
 
-def stopped_embed() -> discord.Embed:
+def stopped_embed(*, stopping: bool = False) -> discord.Embed:
     """Create an embed for a manually stopped session."""
+    if stopping:
+        return discord.Embed(
+            title="⏳ Session stopping",
+            description=(
+                "The worker is still running and cannot cancel this turn. "
+                "It may continue changing files until it finishes.\n\n"
+                "New messages will wait for it to finish."
+            ),
+            color=0xFFA500,
+        )
     return discord.Embed(
         title="⏹️ Session stopped",
         description=(

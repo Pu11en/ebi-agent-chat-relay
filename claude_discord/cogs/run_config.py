@@ -115,6 +115,9 @@ class RunConfig:
     # internal compact/AskUserQuestion reruns via dataclasses.replace, and fires
     # exactly once at the true terminal return in run_claude_with_config.
     result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None
+    # Keep the chat's run slot pointed at the runner actually executing after
+    # context cloning or model recovery, so slash Stop and preemption reach it.
+    on_runner_changed: Callable[[SessionBackend], None] | None = None
 
     # Backend/model settings resolver. When provided (interactive chat only),
     # the per-turn footer consults it for the 2-layer Codex-status toggle

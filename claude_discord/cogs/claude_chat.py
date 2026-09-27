@@ -1055,7 +1055,9 @@ class ClaudeChatCog(commands.Cog):
                 "No active session is running in this thread.", ephemeral=True
             )
             return
-        await interaction.response.send_message(embed=stopped_embed())
+        runner = self._active_runners.get(interaction.channel.id)
+        stopping = getattr(runner, "is_stopping", False) is True
+        await interaction.response.send_message(embed=stopped_embed(stopping=stopping))
 
     # ------------------------------------------------------------------
     # Shared session services — one implementation behind the slash
@@ -2214,8 +2216,8 @@ class ClaudeChatCog(commands.Cog):
         """Clear the thread's active run so the caller can register a new one.
 
         Must be called while holding ``self._thread_locks[thread.id]``. When
-        ``interrupt`` is True the in-flight runner is SIGINT'd (the ``notice`` is
-        posted first); otherwise we simply wait for it to finish — queue
+        ``interrupt`` is True the in-flight runner is asked to stop (the notice
+        distinguishes a pending stop); otherwise we simply wait for it to finish — queue
         semantics. Either way we await the run's task so its cleanup (its own
         ``finally``) completes before the caller registers a replacement, which
         is what keeps at most one runner per thread.
@@ -2229,10 +2231,15 @@ class ClaudeChatCog(commands.Cog):
             return
         existing_task = self._active_tasks.get(thread.id)
         if interrupt:
-            with contextlib.suppress(discord.HTTPException):
-                await thread.send(notice)
             with contextlib.suppress(Exception):
                 await existing_runner.interrupt()
+            if getattr(existing_runner, "is_stopping", False) is True:
+                notice = (
+                    "-# ⏳ Stop requested — the worker is still running. "
+                    "Your next message will wait until it finishes."
+                )
+            with contextlib.suppress(discord.HTTPException):
+                await thread.send(notice)
         if (
             existing_task is not None
             and existing_task is not asyncio.current_task()
@@ -2352,11 +2359,17 @@ class ClaudeChatCog(commands.Cog):
         # --- Phase 2: run the subprocess OUTSIDE the lock --------------------
         # The lock is released so a later message can interrupt this run. The
         # runner is already registered, so that message will find and evict it.
+        def update_active_runner(live_runner: SessionBackend) -> None:
+            nonlocal runner
+            runner = live_runner
+            self._active_runners[thread.id] = live_runner
+
         try:
             await run_claude_with_config(
                 RunConfig(
                     thread=thread,
                     runner=runner,
+                    on_runner_changed=update_active_runner,
                     repo=self.repo,
                     prompt=prompt,
                     session_id=session_id,

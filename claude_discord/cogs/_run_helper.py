@@ -630,6 +630,8 @@ async def _run_one_attempt(
     to the surface here, so callers only route it to the result sink.
     """
     runner = config.runner
+    if config.on_runner_changed is not None:
+        config.on_runner_changed(runner)
     processor = EventProcessor(config)
     failure: str | None = None
 

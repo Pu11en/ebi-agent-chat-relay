@@ -372,7 +372,7 @@ async def test_a_worker_that_raises_ends_the_turn_with_that_error(monkeypatch):
 
 
 async def test_timeout_interrupts_and_reports(monkeypatch):
-    """A turn that never reports back must still close, and must be cancelled."""
+    """A timeout reports the error after the uncancellable worker finishes."""
 
     class HangingSession(FakeSession):
         def run(self, prompt: str, *, on_notification=None) -> FakeResult:
@@ -389,15 +389,15 @@ async def test_timeout_interrupts_and_reports(monkeypatch):
     events = await _collect(runner, "hi")
 
     assert "Timed out" in (events[-1].error or "")
-    # The SDK runtime has no cancel method; the timeout path only wakes the
-    # queue and closes the turn, it never sends a wire request.
+    # The SDK runtime has no cancel method; the timeout path waits for the
+    # worker to return rather than sending a fictitious cancellation request.
     for _ in range(5):
         await asyncio.sleep(0)
     assert runtime.client.requests == []
 
 
-async def test_interrupt_ends_a_pending_turn_promptly(monkeypatch):
-    """The SDK has no cancel method, so Stop must at least wake the turn."""
+async def test_interrupt_keeps_turn_active_until_worker_finishes(monkeypatch):
+    """A Stop request cannot make an uncancellable worker look idle."""
     started = threading.Event()
     release = threading.Event()
 
@@ -418,12 +418,43 @@ async def test_interrupt_ends_a_pending_turn_promptly(monkeypatch):
         await asyncio.sleep(0.05)
     assert started.is_set(), "the worker never started"
 
-    await runner.interrupt()
-    events = await asyncio.wait_for(task, timeout=5)
-    release.set()
+    try:
+        await runner.interrupt()
+        await asyncio.sleep(0.02)
+        assert not task.done(), "the worker is still running, so the turn must stay active"
+        assert runner.is_stopping is True
+    finally:
+        release.set()
+        events = await asyncio.wait_for(task, timeout=5)
 
+    assert runner.is_stopping is False
+    assert any("still running" in (event.text or "") for event in events)
     assert "Stopped by the user" in (events[-1].error or "")
     assert runtime.client.requests == []  # measured: no cancel exists on the wire
+
+
+async def test_cancelled_consumer_waits_for_worker_cleanup(monkeypatch):
+    """Cancelling the stream must not free its run slot while the SDK is busy."""
+    started, release = threading.Event(), threading.Event()
+
+    class BlockingSession(FakeSession):
+        def run(self, prompt, *, on_notification=None):
+            started.set()
+            release.wait(timeout=10)
+            return FakeResult(session_id="x")
+
+    runner = DshRunner()
+    monkeypatch.setattr(runner, "_ensure_runtime", lambda: FakeRuntime(BlockingSession()))
+    task = asyncio.create_task(_collect(runner, "hi"))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(5.05)
+        assert not task.done(), "cleanup must wait for the actual worker"
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 async def test_interrupt_without_an_active_turn_is_a_noop(monkeypatch):
@@ -434,6 +465,29 @@ async def test_interrupt_without_an_active_turn_is_a_noop(monkeypatch):
     await runner.interrupt()
 
     assert runtime.client.requests == []
+
+
+async def test_stop_during_runtime_startup_does_not_start_work(monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    runtime = FakeRuntime(FakeSession())
+
+    def ensure_runtime():
+        started.set()
+        release.wait(timeout=5)
+        return runtime
+
+    runner = DshRunner()
+    monkeypatch.setattr(runner, "_ensure_runtime", ensure_runtime)
+    task = asyncio.create_task(_collect(runner, "do not start this"))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        await runner.interrupt()
+    finally:
+        release.set()
+        events = await asyncio.wait_for(task, 2)
+
+    assert runtime.session.prompts == []
+    assert "Stopped by the user" in (events[-1].error or "")
 
 
 async def test_images_are_warned_about_instead_of_silently_dropped(monkeypatch):

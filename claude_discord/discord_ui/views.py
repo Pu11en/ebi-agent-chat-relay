@@ -39,6 +39,7 @@ class StopView(discord.ui.View):
         super().__init__(timeout=None)
         self._runner = runner
         self._stopped = False
+        self._stopping = False
         self._message: discord.Message | None = None
         self._queued_task: asyncio.Task | None = None
 
@@ -105,13 +106,19 @@ class StopView(discord.ui.View):
             self._queued_task.cancel()
         else:
             await self._runner.interrupt()
+            self._stopping = getattr(self._runner, "is_stopping", False) is True
+        if self._stopping and self._message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self._message.edit(
+                    content="-# Stopping — waiting for the worker to finish", view=self
+                )
         channel_id = getattr(interaction.channel, "id", None)
         if channel_id is not None:
             with contextlib.suppress(Exception):
                 interaction.client.dispatch("session_stopped", channel_id)
 
         with contextlib.suppress(discord.HTTPException):
-            await interaction.followup.send(embed=stopped_embed())
+            await interaction.followup.send(embed=stopped_embed(stopping=self._stopping))
 
     async def disable(self, message: discord.Message | None = None) -> None:
         """Disable the button after the session ends naturally.
@@ -119,11 +126,12 @@ class StopView(discord.ui.View):
         Uses the stored message reference if ``message`` is not provided.
         No-op if the stop button was already clicked.
         """
-        if self._stopped:
+        if self._stopped and not self._stopping:
             return
 
         target = message or self._message
         self._stopped = True
+        self._stopping = False
         for child in self.children:
             if isinstance(child, discord.ui.Button):
                 child.disabled = True
