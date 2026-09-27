@@ -259,6 +259,10 @@ async function shutdown() {
   closing = true;
   clearInterval(timer);
   transport.disconnect();
+  // Send whatever he was part-way through saying. A run waits for ten seconds of
+  // silence, so a restart during that wait would otherwise throw away a finished
+  // thought without a word about it.
+  await controller?.flush?.().catch?.(() => {});
   await queue.close();
   await runtime
     .publish()

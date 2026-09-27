@@ -61,6 +61,11 @@ export function createJobQueue({
               userId: job.user_id,
               displayName: job.display_name,
               capturedAt: job.captured_at,
+              // How long he spoke for. The control layer measures silence from
+              // when he *stopped*, and `captured_at` is when he started — without
+              // this a twenty-five second sentence looks like it ended twenty-five
+              // seconds ago and the run would be sent the moment it opened.
+              durationMs: job.duration_ms,
               text,
             });
           } catch (error) {

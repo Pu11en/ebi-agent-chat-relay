@@ -133,6 +133,29 @@ the owner can also steer a session without leaving the room:
   on threads it was not addressed from, so the phrase is anchored to the start of
   the sentence and needs both halves: talking *about* the idea ("I should close
   everything I'm not using at some point") must not carry it out.
+- **One tag, one run, one message.** Say a tag and it starts collecting. Keep
+  talking: every pause under **ten seconds** resets the clock and nothing is sent.
+  Ten seconds of silence and the whole thing arrives as **one** message on that
+  thread. Then the aim is released — the next run needs its own tag, and **with no
+  tag nothing is sent at all.**
+
+  That last part is the design, not a limitation. The recogniser drops words: on
+  2026-09-27 "Luffy" never reached the transcript, and under the old
+  keep-listening window every sentence after it flowed silently into the previous
+  thread — `nami` swallowed the lot and `luffy` got nothing. With an unreliable
+  recogniser, "nothing happened" is information he can act on and "it went
+  somewhere you did not choose" is not, so silence is the failure mode.
+
+  Two details carry it. A **later tag inside a run is just a word**: the first tag
+  owns the run, so naming another thread mid-sentence can never redirect what is
+  being said. And the silence is measured from **when he stopped speaking**
+  (`captured_at + duration_ms`), never from when the text arrived — transcription
+  lags up to 30s here, and timing off arrival would count that lag as a pause and
+  cut him off mid-thought.
+
+  Recogniser noise ("Thank you.", "Okay.") is dropped rather than added, and does
+  not reset the clock — counting it as speech would hold a run open forever.
+
 - **Say the tag once, then just keep talking.** A delivered instruction leaves
   that thread listening for 90 seconds, and every further sentence resets the
   clock — so thinking out loud reaches one thread instead of needing the name in

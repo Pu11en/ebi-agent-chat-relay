@@ -204,6 +204,18 @@ test("an error status surfaces as a thrown error, not a silent success", async (
 // createVoiceController — the whole loop
 // ---------------------------------------------------------------------------
 
+/**
+ * Say it through any controller and collapse the ten-second wait.
+ *
+ * Nothing is delivered until ten seconds of silence (silence-run.test.mjs owns
+ * that rule). Tests about *where* a sentence goes use this so they are not all
+ * re-testing the pacing.
+ */
+async function once(controller, utterance) {
+  const first = await controller.handleUtterance(utterance);
+  return first.status === "collecting" ? await controller.flush() : first;
+}
+
 function makeController(overrides = {}) {
   const announced = [];
   const sent = [];
@@ -221,13 +233,28 @@ function makeController(overrides = {}) {
     logger: { info() {}, warn() {}, error() {} },
     ...overrides,
   });
-  return { controller, announced, sent };
+
+  /**
+   * Say something and, if it opened a run, let the silence expire at once.
+   *
+   * Nothing is delivered until ten seconds of silence now (see
+   * silence-run.test.mjs for that rule). These tests are about *where* a sentence
+   * goes, not when, so they collapse the wait — which keeps them honest about
+   * routing without re-testing the pacing in thirty places.
+   */
+  async function deliver(utterance) {
+    const first = await controller.handleUtterance(utterance);
+    if (first.status === "collecting") return await controller.flush();
+    return first;
+  }
+
+  return { controller, announced, sent, deliver };
 }
 
 test("the owner's command reaches the matched thread and is confirmed", async () => {
-  const { controller, announced, sent } = makeController();
+  const { controller, announced, sent, deliver } = makeController();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "put this in the upwork thread rewrite the headline",
   });
@@ -236,14 +263,13 @@ test("the owner's command reaches the matched thread and is confirmed", async ()
   assert.deepEqual(sent, [
     { threadId: 3, text: "rewrite the headline", speakerId: "42", source: "voice" },
   ]);
-  assert.equal(announced.length, 1);
-  assert.ok(announced[0].includes("rewrite the headline"));
+    assert.ok(announced.at(-1).includes("rewrite the headline"));
 });
 
 test("someone else in the room cannot drive a session", async () => {
-  const { controller, sent, announced } = makeController();
+  const { controller, sent, announced, deliver } = makeController();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "999",
     text: "put this in the upwork thread delete everything",
   });
@@ -254,9 +280,9 @@ test("someone else in the room cannot drive a session", async () => {
 });
 
 test("ordinary talk in the room sends nothing and says nothing", async () => {
-  const { controller, sent, announced } = makeController();
+  const { controller, sent, announced, deliver } = makeController();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "yeah I was thinking about the upwork thing later",
   });
@@ -267,8 +293,8 @@ test("ordinary talk in the room sends nothing and says nothing", async () => {
 });
 
 test("when the feature is off nothing happens at all", async () => {
-  const { controller, sent } = makeController({ enabled: false });
-  const result = await controller.handleUtterance({
+  const { controller, sent, deliver } = makeController({ enabled: false });
+  const result = await deliver({
     userId: "42",
     text: "put this in the upwork thread go",
   });
@@ -277,16 +303,16 @@ test("when the feature is off nothing happens at all", async () => {
 });
 
 test("an unmatched name is reported back instead of guessing a thread", async () => {
-  const { controller, sent, announced } = makeController();
+  const { controller, sent, announced, deliver } = makeController();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "put this in the mongolia thread go",
   });
 
   assert.equal(result.status, "no-target");
   assert.deepEqual(sent, []);
-  assert.ok(announced[0].toLowerCase().includes("mongolia"));
+  assert.ok(announced.at(-1).toLowerCase().includes("mongolia"));
 });
 
 test("an ambiguous name lists the candidates instead of picking one", async () => {
@@ -294,22 +320,24 @@ test("an ambiguous name lists the candidates instead of picking one", async () =
     { ...SESSIONS[0], thread_id: 10, thread_name: "aldus email", working_dir: "/x/aldus-email" },
     { ...SESSIONS[0], thread_id: 11, thread_name: "aldus site", working_dir: "/x/aldus-site" },
   ];
-  const { controller, sent, announced } = makeController({
+  const { controller, sent, announced, deliver } = makeController({
     client: { listSessions: async () => twins, sendSpoken: async () => {} },
   });
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "put this in the aldus thread go",
   });
 
   assert.equal(result.status, "ambiguous");
   assert.deepEqual(sent, []);
-  assert.ok(announced[0].includes("aldus email"));
-  assert.ok(announced[0].includes("aldus site"));
+  assert.ok(announced.at(-1).includes("aldus email"));
+  assert.ok(announced.at(-1).includes("aldus site"));
 });
 
-test("a named thread with no instruction is held, not sent", async () => {
+test("a named thread with no instruction opens a run and waits", async () => {
+  // This used to be a short "hold". It is now just the ordinary case: naming a
+  // thread starts collecting, and nothing goes out until he stops talking.
   const { controller, sent, announced } = makeController();
 
   const result = await controller.handleUtterance({
@@ -317,14 +345,13 @@ test("a named thread with no instruction is held, not sent", async () => {
     text: "put this in the upwork thread",
   });
 
-  assert.equal(result.status, "incomplete");
-  assert.deepEqual(sent, []);
-  assert.equal(announced.length, 1);
-  assert.ok(announced[0].includes("Holding"));
+  assert.equal(result.status, "collecting");
+  assert.deepEqual(sent, [], "nothing until ten seconds of silence");
+  assert.ok(announced.at(-1).includes("Listening"));
 });
 
 test("an API failure is reported in the room rather than lost in a log", async () => {
-  const { controller, announced } = makeController({
+  const { controller, announced, deliver } = makeController({
     client: {
       listSessions: async () => SESSIONS,
       sendSpoken: async () => {
@@ -333,7 +360,7 @@ test("an API failure is reported in the room rather than lost in a log", async (
     },
   });
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "put this in the upwork thread go now",
   });
@@ -343,13 +370,13 @@ test("an API failure is reported in the room rather than lost in a log", async (
 });
 
 test("a failing announcement never breaks the send", async () => {
-  const { controller, sent } = makeController({
+  const { controller, sent, deliver } = makeController({
     announce: async () => {
       throw new Error("Discord is down");
     },
   });
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "put this in the upwork thread rewrite the headline",
   });
@@ -510,9 +537,9 @@ test("a target containing the noun offers both splits, longest name last", () =>
 });
 
 test("the resolver picks the split that names a real session", async () => {
-  const { controller, sent: captured } = makeController();
+  const { controller, sent: captured, deliver } = makeController();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "put this in the ebi agent chat relay thread run make verify",
   });
@@ -535,7 +562,7 @@ test("a noun inside the instruction does not steal the split", async () => {
     logger: { info() {}, warn() {}, error() {} },
   });
 
-  const result = await controller.handleUtterance({
+  const result = await once(controller, {
     userId: "42",
     text: "put this in the upwork thread check the thread pool size",
   });
@@ -629,13 +656,20 @@ function tagged(overrides = {}) {
     now: () => clock,
     ...overrides,
   });
-  return { controller, announced, sent, tick: (ms) => (clock += ms) };
+  /** Say it, and if it opened a run let the silence expire at once. */
+  async function deliver(utterance) {
+    const first = await controller.handleUtterance(utterance);
+    if (first.status === "collecting") return await controller.flush();
+    return first;
+  }
+
+  return { controller, deliver, announced, sent, tick: (ms) => (clock += ms) };
 }
 
 test("a tag is an exact handle: 'thread alpha' goes to alpha", async () => {
-  const { controller, sent } = tagged();
+  const { controller, sent, deliver } = tagged();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "put this in the alpha thread run make verify",
   });
@@ -647,32 +681,32 @@ test("a tag is an exact handle: 'thread alpha' goes to alpha", async () => {
 
 test("a tag beats a name that looks more like what was said", async () => {
   // "bravo" resembles nothing in aldus-email's title, and must still win.
-  const { controller, sent } = tagged();
-  await controller.handleUtterance({ userId: "42", text: "tell the bravo thread to check DKIM" });
+  const { controller, sent, deliver } = tagged();
+  await deliver({ userId: "42", text: "tell the bravo thread to check DKIM" });
   assert.equal(sent[0].threadId, 2);
   assert.equal(sent[0].text, "check DKIM");
 });
 
 test("a tag removes the ambiguity two similar folders would cause", async () => {
-  const { controller, sent, announced } = tagged();
+  const { controller, sent, announced, deliver } = tagged();
 
   // By name, "aldus" matches both aldus-email and aldus-site.
-  await controller.handleUtterance({ userId: "42", text: "put this in the aldus thread go" });
+  await deliver({ userId: "42", text: "put this in the aldus thread go" });
   assert.deepEqual(sent, []);
-  assert.ok(announced[0].includes("more than one"));
+  assert.ok(announced.at(-1).includes("more than one"));
 
   // By tag, there is nothing to ask about.
-  await controller.handleUtterance({ userId: "42", text: "put this in the charlie thread go" });
+  await deliver({ userId: "42", text: "put this in the charlie thread go" });
   assert.equal(sent[0].threadId, 3);
 });
 
 test("the confirmation shows the tag so the speaker learns it", async () => {
-  const { controller, announced } = tagged();
-  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread go" });
-  assert.ok(announced[0].includes("alpha"));
+  const { controller, announced, deliver } = tagged();
+  await deliver({ userId: "42", text: "put this in the alpha thread go" });
+  assert.ok(announced.at(-1).includes("alpha"));
 });
 
-test("the exact sentence that failed live now holds instead of sending a fragment", async () => {
+test("the exact sentence that failed live never delivers a fragment", async () => {
   const { controller, sent, announced } = tagged();
 
   // Captured per pause: the name arrives with no instruction behind it.
@@ -681,37 +715,37 @@ test("the exact sentence that failed live now holds instead of sending a fragmen
     text: "Put this in the ebi agent chat relay thread.",
   });
 
-  assert.equal(first.status, "incomplete");
+  assert.equal(first.status, "collecting");
   assert.deepEqual(sent, [], "must not deliver 'relay thread.' as the work");
-  assert.ok(announced[0].includes("Holding"));
+  assert.ok(announced.at(-1).includes("Listening"));
 
-  // The rest of the sentence lands on the held thread.
-  const second = await controller.handleUtterance({
-    userId: "42",
-    text: "tell me what time it is",
-  });
+  // The rest of the thought joins the same run …
+  await controller.handleUtterance({ userId: "42", text: "tell me what time it is" });
+  assert.deepEqual(sent, [], "still talking");
 
-  assert.equal(second.status, "sent");
+  // … and the whole thing arrives once, when he stops.
+  await controller.flush();
+  assert.equal(sent.length, 1);
   assert.equal(sent[0].threadId, 1);
-  assert.equal(sent[0].text, "tell me what time it is");
+  assert.match(sent[0].text, /what time it is/);
 });
 
 test("the hold expires, so later conversation is not swept into a thread", async () => {
-  const { controller, sent, tick } = tagged();
+  const { controller, sent, tick, deliver } = tagged();
 
-  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread" });
+  await deliver({ userId: "42", text: "put this in the alpha thread" });
   tick(31_000);
-  const result = await controller.handleUtterance({ userId: "42", text: "anyway where were we" });
+  const result = await deliver({ userId: "42", text: "anyway where were we" });
 
   assert.equal(result.status, "ignored");
   assert.deepEqual(sent, []);
 });
 
 test("a fresh command replaces a held thread rather than filling it", async () => {
-  const { controller, sent } = tagged();
+  const { controller, sent, deliver } = tagged();
 
-  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread" });
-  await controller.handleUtterance({ userId: "42", text: "put this in the bravo thread ship it" });
+  await deliver({ userId: "42", text: "put this in the alpha thread" });
+  await deliver({ userId: "42", text: "put this in the bravo thread ship it" });
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0].threadId, 2);
@@ -719,25 +753,25 @@ test("a fresh command replaces a held thread rather than filling it", async () =
 });
 
 test("a hold is not filled by someone else in the room", async () => {
-  const { controller, sent } = tagged();
+  const { controller, sent, deliver } = tagged();
 
-  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread" });
-  const result = await controller.handleUtterance({ userId: "999", text: "delete everything" });
+  await deliver({ userId: "42", text: "put this in the alpha thread" });
+  const result = await deliver({ userId: "999", text: "delete everything" });
 
   assert.equal(result.status, "ignored");
   assert.deepEqual(sent, []);
 });
 
 test("with no tags assigned the room is told so, not shown an empty list", async () => {
-  const { controller, announced } = tagged({
+  const { controller, announced, deliver } = tagged({
     client: {
       listSessions: async () => TAGGED.map(({ voice_label, ...rest }) => rest),
       sendSpoken: async () => {},
     },
   });
 
-  await controller.handleUtterance({ userId: "42", text: "put this in the mongolia thread go" });
-  assert.ok(announced[0].includes("no tags assigned yet"));
+  await deliver({ userId: "42", text: "put this in the mongolia thread go" });
+  assert.ok(announced.at(-1).includes("no tags assigned yet"));
 });
 
 // ---------------------------------------------------------------------------
@@ -783,6 +817,7 @@ test("a tagged title is not shown with its tag twice", () => {
 });
 
 test("the confirmation line does not repeat the tag either", async () => {
+  // Reads the *send* line, so the run has to be flushed (see `once`).
   const titled = TAGGED.map((s) => ({ ...s, thread_name: `[${s.voice_label}] ${s.thread_name}` }));
   const said = [];
   const controller = createVoiceController({
@@ -793,9 +828,9 @@ test("the confirmation line does not repeat the tag either", async () => {
     logger: { info() {}, warn() {}, error() {} },
   });
 
-  await controller.handleUtterance({ userId: "42", text: "put this in the alpha thread go" });
+  await once(controller, { userId: "42", text: "put this in the alpha thread go" });
 
-  assert.equal(said[0], "🎙️ → **`alpha` 📂 ebi-agent-chat-relay**: go");
+  assert.equal(said.at(-1), "🎙️ → **`alpha` 📂 ebi-agent-chat-relay**: go");
 });
 
 // ---------------------------------------------------------------------------
@@ -835,31 +870,35 @@ test("only tags in use are listened for", () => {
   assert.equal(parseByTag("alpha do the thing", []), null);
 });
 
-test("a bare tag with nothing after it yields an empty instruction, to be held", () => {
+test("a bare tag with nothing after it yields an empty instruction, to be collected", () => {
   assert.equal(parseByTag("Alpha.", ["alpha"]).prompt, "");
 });
 
-test("the whole loop: tag, pause, then the instruction", async () => {
+test("the whole loop: tag, pause, then the instruction, as one message", async () => {
   const { controller, sent, announced } = tagged();
 
   const first = await controller.handleUtterance({ userId: "42", text: "Okay, alpha." });
-  assert.equal(first.status, "incomplete");
-  assert.ok(announced[0].includes("Holding"));
+  assert.equal(first.status, "collecting");
+  assert.ok(announced.at(-1).includes("Listening"));
   assert.deepEqual(sent, []);
 
-  const second = await controller.handleUtterance({
+  // The instruction joins the same run; the whole thing lands once, when he stops.
+  await controller.handleUtterance({
     userId: "42",
     text: "say that we need to make this a repo",
   });
-  assert.equal(second.status, "sent");
+  assert.deepEqual(sent, [], "still one run in progress");
+
+  const out = await controller.flush();
+  assert.equal(out.status, "sent");
   assert.equal(sent[0].threadId, 1);
-  assert.equal(sent[0].text, "say that we need to make this a repo");
+  assert.match(sent[0].text, /we need to make this a repo/);
 });
 
 test("the tag form wins over the sentence template", async () => {
-  const { controller, sent } = tagged();
+  const { controller, sent, deliver } = tagged();
 
-  await controller.handleUtterance({
+  await deliver({
     userId: "42",
     text: "bravo put this in the alpha thread",
   });
@@ -869,7 +908,7 @@ test("the tag form wins over the sentence template", async () => {
 
 test("the session list is read once for a burst of utterances", async () => {
   let reads = 0;
-  const { controller } = tagged({
+  const { controller, deliver } = tagged({
     client: {
       listSessions: async () => {
         reads += 1;
@@ -879,15 +918,15 @@ test("the session list is read once for a burst of utterances", async () => {
     },
   });
 
-  await controller.handleUtterance({ userId: "42", text: "alpha go" });
-  await controller.handleUtterance({ userId: "42", text: "just chatting here" });
-  await controller.handleUtterance({ userId: "42", text: "bravo go" });
+  await deliver({ userId: "42", text: "alpha go" });
+  await deliver({ userId: "42", text: "just chatting here" });
+  await deliver({ userId: "42", text: "bravo go" });
 
   assert.equal(reads, 1);
 });
 
 test("an unreachable API stays silent rather than complaining about small talk", async () => {
-  const { controller, announced } = tagged({
+  const { controller, announced, deliver } = tagged({
     client: {
       listSessions: async () => {
         throw new Error("ECONNREFUSED");
@@ -896,7 +935,7 @@ test("an unreachable API stays silent rather than complaining about small talk",
     },
   });
 
-  const result = await controller.handleUtterance({ userId: "42", text: "anyway where were we" });
+  const result = await deliver({ userId: "42", text: "anyway where were we" });
 
   assert.equal(result.status, "ignored");
   assert.deepEqual(announced, []);
@@ -1018,13 +1057,20 @@ function opener(overrides = {}) {
     logger: { info() {}, warn() {}, error() {} },
     ...overrides,
   });
-  return { controller, announced, spawned };
+  /** Say it, and if it opened a run let the silence expire at once. */
+  async function deliver(utterance) {
+    const first = await controller.handleUtterance(utterance);
+    if (first.status === "collecting") return await controller.flush();
+    return first;
+  }
+
+  return { controller, deliver, announced, spawned };
 }
 
 test("a misheard folder still opens the right session, with the instruction", async () => {
-  const { controller, spawned, announced } = opener();
+  const { controller, spawned, announced, deliver } = opener();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "Make a new thread in the oldest folder and we're going to do design work",
   });
@@ -1032,13 +1078,13 @@ test("a misheard folder still opens the right session, with the instruction", as
   assert.equal(result.status, "opened");
   assert.equal(spawned[0].workingDir, "/home/drewp/main-projects/the aldus");
   assert.ok(spawned[0].prompt.includes("design work"));
-  assert.ok(announced[0].includes("the aldus"));
+  assert.ok(announced.at(-1).includes("the aldus"));
 });
 
 test("no folder match opens one anyway and says what it heard", async () => {
-  const { controller, spawned, announced } = opener();
+  const { controller, spawned, announced, deliver } = opener();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "make a new session in the flibbertigibbet folder and plan the launch",
   });
@@ -1047,21 +1093,21 @@ test("no folder match opens one anyway and says what it heard", async () => {
   assert.equal(spawned[0].workingDir, "/root/projects");
   assert.ok(spawned[0].prompt.includes("flibbertigibbet"), "the new session is told what he said");
   assert.ok(spawned[0].prompt.includes("plan the launch"), "and what he wanted done");
-  assert.ok(announced[0].includes("No folder matched"));
+  assert.ok(announced.at(-1).includes("No folder matched"));
 });
 
 test("opening with no instruction asks rather than inventing work", async () => {
-  const { controller, spawned } = opener();
+  const { controller, spawned, deliver } = opener();
 
-  await controller.handleUtterance({ userId: "42", text: "open a session in archify" });
+  await deliver({ userId: "42", text: "open a session in archify" });
 
   assert.equal(spawned[0].workingDir, "/home/drewp/main-projects/archify");
   assert.ok(spawned[0].prompt.includes("has not said what to work on"));
 });
 
 test("someone else in the room cannot open a session", async () => {
-  const { controller, spawned } = opener();
-  await controller.handleUtterance({ userId: "999", text: "open a session in archify" });
+  const { controller, spawned, deliver } = opener();
+  await deliver({ userId: "999", text: "open a session in archify" });
   assert.deepEqual(spawned, []);
 });
 
@@ -1083,7 +1129,7 @@ test("addressing a thread by tag beats opening a new one", async () => {
   void spawned;
   void sent;
 
-  await c.handleUtterance({ userId: "42", text: "alpha make a new session in archify" });
+  await once(c, { userId: "42", text: "alpha make a new session in archify" });
 
   assert.equal(captured.length, 1, "the instruction went to alpha, not to the spawner");
 });
@@ -1182,27 +1228,34 @@ function tuner(overrides = {}) {
     logger: { info() {}, warn() {}, error() {} },
     ...overrides,
   });
-  return { controller, announced, set };
+  /** Say it, and if it opened a run let the silence expire at once. */
+  async function deliver(utterance) {
+    const first = await controller.handleUtterance(utterance);
+    if (first.status === "collecting") return await controller.flush();
+    return first;
+  }
+
+  return { controller, deliver, announced, set };
 }
 
 test("'alpha, switch to opus' changes that thread's model", async () => {
-  const { controller, set, announced } = tuner();
+  const { controller, set, announced, deliver } = tuner();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "alpha, switch to opus",
   });
 
   assert.equal(result.status, "runtime");
   assert.deepEqual(set, [{ threadId: 1, model: "opus" }]);
-  assert.ok(announced[0].includes("opus"));
-  assert.ok(announced[0].includes("next turn"));
+  assert.ok(announced.at(-1).includes("opus"));
+  assert.ok(announced.at(-1).includes("next turn"));
 });
 
 test("a runtime change does not wake the session", async () => {
   // sendSpoken throws in this fixture; reaching it would fail the test.
-  const { controller } = tuner();
-  const result = await controller.handleUtterance({
+  const { controller, deliver } = tuner();
+  const result = await deliver({
     userId: "42",
     text: "bravo use codex",
   });
@@ -1210,20 +1263,20 @@ test("a runtime change does not wake the session", async () => {
 });
 
 test("asking reports without changing anything", async () => {
-  const { controller, set, announced } = tuner();
+  const { controller, set, announced, deliver } = tuner();
 
-  const result = await controller.handleUtterance({
+  const result = await deliver({
     userId: "42",
     text: "alpha what model are you on",
   });
 
   assert.equal(result.status, "runtime");
   assert.deepEqual(set, []);
-  assert.ok(announced[0].includes("sonnet"));
+  assert.ok(announced.at(-1).includes("sonnet"));
 });
 
 test("a failed switch is reported in the room", async () => {
-  const { controller, announced } = tuner({
+  const { controller, announced, deliver } = tuner({
     client: {
       listSessions: async () => TAGGED,
       sendSpoken: async () => {},
@@ -1234,15 +1287,15 @@ test("a failed switch is reported in the room", async () => {
     },
   });
 
-  const result = await controller.handleUtterance({ userId: "42", text: "alpha switch to opus" });
+  const result = await deliver({ userId: "42", text: "alpha switch to opus" });
 
   assert.equal(result.status, "failed");
-  assert.ok(announced[0].includes("503"));
+  assert.ok(announced.at(-1).includes("503"));
 });
 
 test("real work still reaches the session", async () => {
   const captured = [];
-  const { controller } = tuner({
+  const { controller, deliver } = tuner({
     client: {
       listSessions: async () => TAGGED,
       sendSpoken: async (p) => captured.push(p),
@@ -1251,7 +1304,7 @@ test("real work still reaches the session", async () => {
     },
   });
 
-  await controller.handleUtterance({ userId: "42", text: "alpha run make verify" });
+  await deliver({ userId: "42", text: "alpha run make verify" });
 
   assert.equal(captured.length, 1);
   assert.equal(captured[0].text, "run make verify");
@@ -1316,109 +1369,126 @@ function talker(overrides = {}) {
     now: () => clock,
     ...overrides,
   });
-  return { controller, announced, sent, tick: (ms) => (clock += ms) };
+  /** Say it, and if it opened a run let the silence expire at once. */
+  async function deliver(utterance) {
+    const first = await controller.handleUtterance(utterance);
+    if (first.status === "collecting") return await controller.flush();
+    return first;
+  }
+
+  return { controller, deliver, announced, sent, tick: (ms) => (clock += ms) };
 }
 
-test("the exact failure: the follow-up sentence now lands too", async () => {
-  const { controller, sent, tick } = talker();
+// These five described the old 90-second "keep listening" window. Drew replaced
+// it on 2026-09-27 because that window is what silently routed his untagged
+// sentences into the previous thread when the recogniser missed the next tag.
+// What replaces it is a run: one tag, everything said after it, one message after
+// ten seconds of silence, then the aim is released. `silence-run.test.mjs` owns
+// the pacing; these keep the behaviour each of them was protecting.
 
-  // Measured from the transcript, 30 seconds apart.
+test("the exact failure: a follow-up sentence joins the same message", async () => {
+  const { controller, sent } = talker();
+
   await controller.handleUtterance({
     userId: "42",
     text: "Alpha. Okay, we need to continue to plan out a massive build.",
   });
-  tick(30_000);
   await controller.handleUtterance({
     userId: "42",
     text: "Like there's a schedule thing that continues to gather data, that's what we're building",
   });
+  await controller.flush();
 
-  assert.equal(sent.length, 2);
-  assert.ok(sent.every((s) => s.threadId === 1));
-  assert.ok(sent[1].text.startsWith("Like there's a schedule"));
+  assert.equal(sent.length, 1, "one thought, one turn — it used to be two");
+  assert.equal(sent[0].threadId, 1);
+  assert.match(sent[0].text, /massive build/);
+  assert.match(sent[0].text, /gather data/);
 });
 
-test("every sentence resets the clock, so a long ramble stays connected", async () => {
-  const { controller, sent, tick } = talker();
+test("a long ramble stays one message however long it runs", async () => {
+  const { controller, sent } = talker();
 
   await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
   for (let i = 0; i < 5; i += 1) {
-    tick(80_000); // under the window each time, well past it in total
     await controller.handleUtterance({ userId: "42", text: `and another thing number ${i}` });
   }
+  await controller.flush();
 
-  assert.equal(sent.length, 6);
-  assert.ok(sent.every((s) => s.threadId === 1));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].threadId, 1);
+  assert.match(sent[0].text, /number 4/, "the last thing said is in it");
 });
 
-test("going quiet closes the conversation", async () => {
-  const { controller, sent, tick } = talker();
+test("once a run has been sent, an untagged sentence goes nowhere", async () => {
+  // The old window sent this to whatever was spoken to last. That is the bug.
+  const { controller, sent } = talker();
 
   await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
-  tick(91_000);
+  await controller.flush();
   const result = await controller.handleUtterance({
     userId: "42",
     text: "anyway that podcast was wild",
   });
 
   assert.equal(result.status, "ignored");
-  assert.equal(sent.length, 1);
+  assert.equal(sent.length, 1, "no tag, no delivery");
 });
 
-test("saying stop listening closes it immediately", async () => {
+test("saying stop listening throws the run away", async () => {
   const { controller, sent, announced } = talker();
 
   await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
   const result = await controller.handleUtterance({ userId: "42", text: "okay stop listening" });
 
   assert.equal(result.status, "released");
-  assert.ok(announced.at(-1).includes("Stopped listening"));
+  assert.ok(announced.at(-1).includes("Dropped"));
 
   await controller.handleUtterance({ userId: "42", text: "this should go nowhere" });
-  assert.equal(sent.length, 1);
+  await controller.flush();
+  assert.deepEqual(sent, []);
 });
 
-test("naming another thread switches the conversation", async () => {
+test("naming another thread mid-run is ignored: the first tag owns it", async () => {
+  // Deliberately changed. Switching mid-sentence is how "Luffy" ended up in
+  // `nami`: he named the next thread, the recogniser half-heard it, and the words
+  // went somewhere he did not choose. Now a later tag is just a word, and the next
+  // run has to start from silence.
   const { controller, sent } = talker();
 
   await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
   await controller.handleUtterance({ userId: "42", text: "bravo run make verify" });
-  await controller.handleUtterance({ userId: "42", text: "and then push the branch" });
+  await controller.flush();
 
-  assert.deepEqual(
-    sent.map((s) => s.threadId),
-    [1, 2, 2],
-  );
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].threadId, 1, "alpha owned the run");
+  assert.match(sent[0].text, /bravo run make verify/, "the later tag stayed in the words");
 });
 
-test("room tone is not forwarded, but keeps the conversation open", async () => {
-  const { controller, sent, tick } = talker();
-
-  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
-  // "Thank you." is what the recogniser emits for near-silence.
-  for (const noise of ["Thank you.", "Okay.", "yeah", "Huh?"]) {
-    tick(60_000);
-    await controller.handleUtterance({ userId: "42", text: noise });
-  }
-  tick(60_000);
-  await controller.handleUtterance({ userId: "42", text: "so the loop should check itself" });
-
-  assert.equal(sent.length, 2, "only the two real sentences");
-  assert.equal(sent[1].text, "so the loop should check itself");
-});
-
-test("someone else talking is never forwarded into an open conversation", async () => {
+test("room tone is dropped and does not hold the run open", async () => {
   const { controller, sent } = talker();
 
   await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
-  await controller.handleUtterance({ userId: "999", text: "delete the production database" });
+  for (const noise of ["Thank you.", "Okay.", "yeah", "Huh?"]) {
+    await controller.handleUtterance({ userId: "42", text: noise });
+  }
+  await controller.flush();
+
+  assert.equal(sent.length, 1);
+  assert.ok(!/thank you/i.test(sent[0].text), "noise is not part of the message");
+});
+
+test("someone else talking is never forwarded into an open conversation", async () => {
+  const { controller, sent, deliver } = talker();
+
+  await deliver({ userId: "42", text: "alpha let's plan the build" });
+  await deliver({ userId: "999", text: "delete the production database" });
 
   assert.equal(sent.length, 1);
 });
 
 test("an open conversation does not swallow a new session request", async () => {
   const spawned = [];
-  const { controller, sent } = talker({
+  const { controller, sent, deliver } = talker({
     client: {
       listSessions: async () => TAGGED,
       listProjects: async () => PROJECTS,
@@ -1432,8 +1502,8 @@ test("an open conversation does not swallow a new session request", async () => 
     },
   });
 
-  await controller.handleUtterance({ userId: "42", text: "alpha let's plan the build" });
-  await controller.handleUtterance({
+  await deliver({ userId: "42", text: "alpha let's plan the build" });
+  await deliver({
     userId: "42",
     text: "make a new session in archify and do the design work",
   });
@@ -1551,7 +1621,7 @@ test("the tidy-up closes the idle sessions and leaves the busy ones alone", asyn
     logger: { info() {}, warn() {}, error() {} },
   });
 
-  const result = await controller.handleUtterance({ userId: "7", text: "close everything I'm not using" });
+  const result = await once(controller, { userId: "7", text: "close everything I'm not using" });
 
   assert.equal(result.status, "tidied");
   assert.deepEqual(closed.sort(), ["2", "3"], "the running thread is untouched");
@@ -1578,11 +1648,17 @@ test("the tidy-up never closes the thread it was said from", async () => {
     logger: { info() {}, warn() {}, error() {} },
   });
 
-  // Address zoro first, so the conversation is open on it.
+  // Open a run on zoro and leave it open: once a tag is locked, everything said
+  // is words for that run, so the tidy-up is a thing you say from silence.
   await controller.handleUtterance({ userId: "7", text: "zoro run make verify" });
   await controller.handleUtterance({ userId: "7", text: "close everything I'm not using" });
 
-  assert.deepEqual(closed, ["3"], "the thread being talked to is in use");
+  assert.deepEqual(closed, [], "a locked run swallows it — nothing was closed");
+
+  // From idle it works, and the thread mid-run is the one left alone.
+  await controller.handleUtterance({ userId: "7", text: "zoro keep going" });
+  await controller.handleUtterance({ userId: "7", text: "close everything I'm not using" });
+  assert.deepEqual(closed, [], "still collecting for zoro");
 });
 
 test("only the owner can clear the sidebar", async () => {
@@ -1601,7 +1677,7 @@ test("only the owner can clear the sidebar", async () => {
     logger: { info() {}, warn() {}, error() {} },
   });
 
-  await controller.handleUtterance({ userId: "99", text: "close everything I'm not using" });
+  await once(controller, { userId: "99", text: "close everything I'm not using" });
 
   assert.deepEqual(closed, []);
 });
@@ -1627,7 +1703,7 @@ test("a close that fails does not stop the rest", async () => {
     logger: { info() {}, warn() {}, error() {} },
   });
 
-  const result = await controller.handleUtterance({
+  const result = await once(controller, {
     userId: "7",
     text: "close everything I'm not using",
   });
@@ -1661,7 +1737,7 @@ test("the tidy-up is bounded, so one sentence cannot flood Discord", async () =>
     logger: { info() {}, warn() {}, error() {} },
   });
 
-  const result = await controller.handleUtterance({
+  const result = await once(controller, {
     userId: "7",
     text: "close everything I'm not using",
   });

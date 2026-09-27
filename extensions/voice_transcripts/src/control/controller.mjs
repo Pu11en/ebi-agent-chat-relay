@@ -35,6 +35,7 @@ import { resolveTarget, untagged } from "./targets.mjs";
 const IGNORED = { status: "ignored" };
 
 /** How long a named-but-unfinished command waits for its instruction. */
+/** @deprecated The hold-then-instruct window; replaced by a run (see SILENCE_SEND_MS). */
 export const FOLLOW_UP_MS = 30_000;
 
 /**
@@ -52,7 +53,22 @@ export const FOLLOW_UP_MS = 30_000;
  * utterance resets the clock, a new tag switches thread, and "stop listening"
  * ends it — the same shape the wake-word implementations converge on.
  */
+/** @deprecated The keep-listening window. It is what sent untagged speech to the
+ * previous thread when the recogniser missed a tag; a run replaces it. */
 export const ATTACH_MS = 90_000;
+
+/**
+ * How long a silence has to be before a run is sent.
+ *
+ * Measured over 8,501 real utterances: his median gap between sentences is 3.2s
+ * and 80% of gaps are under 12.7s, so anything near four seconds cuts him off
+ * mid-thought. Ten seconds is his own number and it sits inside the measurement.
+ *
+ * Timed from when he *stopped speaking*, never from when the text arrived —
+ * transcription lags by up to 30s on this machine, and timing off arrival would
+ * count that lag as a pause.
+ */
+export const SILENCE_SEND_MS = 10_000;
 
 /** Ends an open conversation without naming another thread. */
 /**
@@ -88,8 +104,10 @@ export function createVoiceController({
   logger = console,
   source = "voice",
   now = () => Date.now(),
-  followUpMs = FOLLOW_UP_MS,
-  attachMs = ATTACH_MS,
+  silenceMs = SILENCE_SEND_MS,
+  // Injected so the pacing is asserted rather than slept through.
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = (handle) => clearTimeout(handle),
   sessionsTtlMs = 10_000,
   // Where a session goes when the folder could not be worked out. Opening it
   // somewhere beats refusing: the thread gets a tag, says what it misheard, and
@@ -97,11 +115,22 @@ export function createVoiceController({
   // sentence again.
   fallbackDir = "/home/drewp/main-projects",
 }) {
-  /** @type {{session: object, target: string, at: number} | null} */
-  let held = null;
-  /** The thread an open conversation is going to, and when it last heard anything. */
-  /** @type {{session: object, at: number} | null} */
-  let attached = null;
+  /**
+   * The current run: one locked target and everything said since it was locked.
+   *
+   * A run replaces the old "send each sentence, then keep listening for 90s".
+   * That sent one thought as three messages, and when the recogniser missed the
+   * *next* tag the sentences after it flowed silently into the previous thread —
+   * `nami` swallowed everything and `luffy` got nothing.
+   *
+   * `spokeUntil` is when he stopped talking, which is what the silence is
+   * measured from. `timer` is armed for `silenceMs` after that and re-armed on
+   * every further utterance.
+   *
+   * @type {{session: object, target: string, parts: string[], spokeUntil: number,
+   *         timer: unknown} | null}
+   */
+  let run = null;
   /** @type {{sessions: Array<object>, at: number} | null} */
   let cached = null;
 
@@ -138,18 +167,6 @@ export function createVoiceController({
     return tag + name;
   }
 
-  function taken() {
-    if (held && now() - held.at <= followUpMs) return held;
-    held = null;
-    return null;
-  }
-
-  function openConversation() {
-    if (attached && now() - attached.at <= attachMs) return attached;
-    attached = null;
-    return null;
-  }
-
   async function send(session, prompt) {
     try {
       await client.sendSpoken({
@@ -164,8 +181,9 @@ export function createVoiceController({
     }
     await say(`🎙️ → **${describe(session)}**: ${prompt}`);
     logger.info?.(`[control] sent to thread ${session.thread_id}`);
-    // Keep listening: the rest of the thought is coming, without the name.
-    attached = { session, at: now() };
+    // Deliberately does *not* keep listening. Staying attached after a send is
+    // what sent his untagged sentences into the previous thread when the
+    // recogniser missed the next tag; the next run must name its own target.
     return { status: "sent", session, prompt };
   }
 
@@ -181,7 +199,6 @@ export function createVoiceController({
    * reason to leave the other twenty open.
    */
   async function tidyUp(live) {
-    const open = openConversation();
     const spare = (live ?? []).filter(
       (s) =>
         s.state !== "running" &&
@@ -189,7 +206,7 @@ export function createVoiceController({
         // sessions too, so without this the sweep re-closes them and reports a
         // number that means nothing.
         !s.closed &&
-        String(s.thread_id) !== String(open?.session?.thread_id ?? ""),
+        String(s.thread_id) !== String(run?.session?.thread_id ?? ""),
     );
     if (!spare.length) {
       await say("🎙️ Nothing to close — every session is in use.");
@@ -315,73 +332,114 @@ export function createVoiceController({
     }
   }
 
+  /** When he stopped speaking, from the capture time rather than arrival. */
+  function spokeUntilFrom(capturedAt, durationMs) {
+    const started = capturedAt ? Date.parse(capturedAt) : NaN;
+    if (Number.isNaN(started)) return now();
+    return started + (Number(durationMs) || 0);
+  }
+
+  /** Arm (or re-arm) the silence timer for the current run. */
+  function armSilence() {
+    if (!run) return;
+    if (run.timer) clearTimer(run.timer);
+    const remaining = Math.max(0, run.spokeUntil + silenceMs - now());
+    run.timer = setTimer(() => {
+      void flushRun();
+    }, remaining);
+  }
+
+  /**
+   * Ten seconds have passed. Send the whole run as one message and let go.
+   *
+   * Letting go is the point. The old behaviour kept listening for 90 seconds
+   * after a send, so a sentence whose tag the recogniser missed went to the
+   * previous thread instead of nowhere. Now the next run needs its own tag, and
+   * no tag means nothing is sent — which is how he finds out the tag was missed.
+   */
+  async function flushRun() {
+    if (!run) return IGNORED;
+    const { session, parts } = run;
+    if (run.timer) clearTimer(run.timer);
+    run = null;
+    const prompt = parts.join(" ").replace(/\s+/g, " ").trim();
+    if (prompt.length < MIN_PROMPT_CHARS) return IGNORED;
+    return await send(session, prompt);
+  }
+
   return {
-    async handleUtterance({ userId, text }) {
+    /** Exposed so a shutdown does not silently swallow a run in progress. */
+    async flush() {
+      return await flushRun();
+    },
+
+    async handleUtterance({ userId, text, capturedAt = null, durationMs = 0 }) {
       if (!enabled) return { status: "disabled" };
       if (String(userId) !== String(ownerId)) return IGNORED;
 
+      const said = String(text ?? "").trim();
+      const spokeUntil = spokeUntilFrom(capturedAt, durationMs);
+
+      // ---- a run is open: everything is words for it --------------------
+      if (run) {
+        if (RELEASE.test(said)) {
+          if (run.timer) clearTimer(run.timer);
+          const target = run.target;
+          run = null;
+          await say(`🎙️ Dropped what you were saying to **${target}**.`);
+          return { status: "released" };
+        }
+        // Recogniser noise must not hold the run open. "Thank you." is what this
+        // model emits for near-silence, so counting it as speech would reset the
+        // clock every few seconds and the message would never be sent.
+        if (said.length < MIN_PROMPT_CHARS || EMPTY_TALK.test(said)) return IGNORED;
+        // A later tag is deliberately ignored: the first one owns the run, so
+        // naming another thread mid-sentence can never redirect what he is saying.
+        run.parts.push(said);
+        run.spokeUntil = Math.max(run.spokeUntil, spokeUntil);
+        armSilence();
+        return { status: "collecting", target: run.target, parts: run.parts.length };
+      }
+
+      // ---- nothing is open: only a tag, or a standalone command, starts -
       let live;
       try {
         live = await sessions();
       } catch (error) {
-        // Without the session list there is no tag list, so nothing can be
-        // understood. Stay silent unless a thread was already being held —
-        // there the speaker is expecting an answer.
-        if (!taken()) return IGNORED;
-        await say(`🎙️ Could not reach the bot's API — ${error.message}`);
-        return { status: "failed", error: error.message };
+        // Nothing is open and the tag list is unreadable, so this utterance
+        // cannot be understood — and most utterances in a recorded room are not
+        // commands. Complaining about every one of them would fill the channel
+        // with errors about small talk, so it stays silent; a run in progress is
+        // the case where he is expecting an answer, and that is handled above.
+        logger.warn?.(`[control] could not read sessions: ${error.message}`);
+        return IGNORED;
       }
 
-      // "Close everything I'm not using" acts on every thread rather than one,
-      // so it is checked before any target is resolved — there is no target.
-      if (parseTidyUp(text)) return await tidyUp(live);
+      if (parseTidyUp(said)) return await tidyUp(live);
 
-      // Saying the tag is the primary form; the sentence template is the
-      // fallback for a thread that has no tag yet.
       const addressed = parseByTag(
-        text,
+        said,
         live.map((s) => ({ label: s.voice_label, aliases: s.voice_label_aliases })),
       );
-      // "New session in X" needs no tag — there is no thread to address yet,
-      // and nobody says that phrase in conversation. An explicit tag still wins,
-      // since naming a thread is a deliberate act.
+
       if (!addressed) {
-        const opening = parseNewSession(text);
-        if (opening) {
-          held = null;
-          return await open(opening);
-        }
+        // "New session in X" names no thread because there is no thread yet.
+        const opening = parseNewSession(said);
+        if (opening) return await open(opening);
       }
 
-      const command = addressed ?? parseCommand(text);
-
+      // The sentence template ("put this in the X thread ...") is still the
+      // fallback for a thread that has no tag yet — a tag is the primary form,
+      // not the only one.
+      const command = addressed ?? parseCommand(said);
       if (!command) {
-        const rest = String(text ?? "").trim();
-
-        // A thread was named with no instruction: this is that instruction.
-        const waiting = taken();
-        if (waiting && rest.length >= MIN_PROMPT_CHARS) {
-          held = null;
-          return await send(waiting.session, rest);
-        }
-
-        const open = openConversation();
-        if (!open) return IGNORED;
-        if (RELEASE.test(rest)) {
-          attached = null;
-          await say(`🎙️ Stopped listening to **${describe(open.session)}**.`);
-          return { status: "released" };
-        }
-        // Room tone and acknowledgement noise are not worth a turn, but they do
-        // mean the speaker is still here, so the conversation stays open.
-        if (rest.length < MIN_PROMPT_CHARS || EMPTY_TALK.test(rest)) {
-          attached.at = now();
-          return IGNORED;
-        }
-        return await send(open.session, rest);
+        // No tag and no named thread. Nothing is sent, and that silence is the
+        // whole point: with an unreliable recogniser "nothing happened" is
+        // information he can act on, and "it went somewhere you did not choose"
+        // is not.
+        return IGNORED;
       }
 
-      held = null;
       const match = resolveTarget(command.candidates, live);
       const heard = match.candidate?.target ?? command.target;
       if (match.status === "none") {
@@ -406,23 +464,23 @@ export function createVoiceController({
       const prompt = match.candidate.prompt;
 
       // "Bravo, switch to opus" changes who answers rather than asking them
-      // anything. Handled here, without waking the session: a thread whose
-      // plan has run out cannot be asked to change its own model.
+      // anything, and it is immediate — there is nothing to collect.
       const runtime = parseRuntime(prompt);
       if (runtime) return await tune(match.session, runtime);
 
-      if (prompt.length < MIN_PROMPT_CHARS) {
-        // The thread was named and the sentence stopped. Hold it for whatever
-        // is said next instead of throwing the naming away.
-        held = { session: match.session, target: heard, at: now() };
-        await say(
-          `🎙️ Holding **${describe(match.session)}** — just say what it should do ` +
-            `(within ${Math.round(followUpMs / 1000)}s).`,
-        );
-        return { status: "incomplete", session: match.session, target: heard };
-      }
-
-      return await send(match.session, prompt);
+      run = {
+        session: match.session,
+        target: heard,
+        parts: prompt ? [prompt] : [],
+        spokeUntil,
+        timer: null,
+      };
+      armSilence();
+      await say(
+        `🎙️ Listening for **${describe(match.session)}** — ` +
+          `sends ${Math.round(silenceMs / 1000)}s after you stop.`,
+      );
+      return { status: "collecting", target: heard, parts: run.parts.length };
     },
   };
 }
