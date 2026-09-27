@@ -1,98 +1,17 @@
 /**
  * Turning one spoken sentence into "this goes to that thread".
  *
- * The grammar is deliberately narrow. Everything said in a recorded room
- * reaches this function, so a loose matcher would fire on conversation — and
- * the cost of a false positive is a live agent session acting on a fragment of
- * small talk. A command therefore has to name a target *and* call it a thread:
- * "put this in the aldus thread ..." is an instruction, "the thread is fine"
- * is not.
+ * A tag is the only way to address a thread. There used to be a second way —
+ * "put this in the ebi agent chat relay thread, run make verify" — with a parser
+ * that offered every place the name might end and a resolver that scored the
+ * readings against the sessions that exist. Both are gone (2026-09-27, so the
+ * whole thing is simpler to hold in your head): every thread is tagged the moment
+ * it is created, and a tag is compared exactly, so the guessing could only add
+ * ways to be misunderstood.
  *
- * Nothing here assumes punctuation. Speech recognition emits a sentence with
- * no colon, inconsistent capitalisation and an occasional trailing full stop,
- * so the separator between the target and the instruction is the noun, not the
- * typography.
- *
- * Which is why this returns *candidate* splits rather than one answer. The noun
- * that ends the target can also occur inside the target, and a parser cannot
- * tell which: "the ebi agent chat relay thread" splits at `chat` and at
- * `thread`, and only the list of sessions that actually exist knows that the
- * second is right. Equally, "the aldus thread check the thread pool" splits at
- * either `thread`, and there the first is right. So every split is offered and
- * the resolver picks — see targets.mjs.
+ * Nothing here assumes punctuation. Speech recognition emits a sentence with no
+ * colon, inconsistent capitalisation and an occasional trailing full stop.
  */
-
-const FILLER =
-  /^(?:ok(?:ay)?|alright|right|hey|um+|uh+|so|and|well|yeah)\b[\s,.:;-]*/i;
-const NOUN = /\b(thread|session|chat)\b/gi;
-const GAP = /^[\s,.:;–—-]+/;
-
-const FORMS = [
-  // put / send / drop this in the X thread <prompt>
-  {
-    lead: /^(?:put|send|drop|push|post|add)\s+(?:this|that|it)?\s*(?:inside\s+of|inside|in\s*to|into|in|to|on)\s+(?:the\s+)?/i,
-    connector: null,
-  },
-  // tell / ask the X thread (to|that) <prompt>
-  { lead: /^(?:tell|ask)\s+(?:the\s+)?/i, connector: /^(?:to|that)\s+/i },
-  // (over) in / inside (of) the X thread, <prompt>
-  {
-    lead: /^(?:over\s+)?(?:inside\s+of|inside|in)\s+(?:the\s+)?/i,
-    connector: null,
-  },
-];
-
-/** A spoken thread name is a few words, not a clause. */
-const MAX_TARGET_WORDS = 6;
-const MAX_TARGET_CHARS = 60;
-
-function splitsFor(rest, connector) {
-  const candidates = [];
-  for (const noun of rest.matchAll(NOUN)) {
-    const target = rest.slice(0, noun.index).trim();
-    if (!target || target.length > MAX_TARGET_CHARS) continue;
-    if (target.split(/\s+/).length > MAX_TARGET_WORDS) continue;
-    let prompt = rest.slice(noun.index + noun[0].length).replace(GAP, "");
-    if (connector) prompt = prompt.replace(connector, "");
-    candidates.push({ target, prompt: prompt.trim() });
-  }
-  return candidates;
-}
-
-/**
- * @param {string} said One finished utterance.
- * @returns {{kind: "relay", target: string, prompt: string,
- *            candidates: Array<{target: string, prompt: string}>}
- *          |{kind: "incomplete", target: string}
- *          |null} `null` when this was not addressed to a thread.
- *
- * `target`/`prompt` are the first candidate; `candidates` holds every split,
- * shortest target first, for a resolver that can tell them apart.
- */
-export function parseCommand(said) {
-  if (typeof said !== "string") return null;
-  let text = said.trim().replace(/\s+/g, " ");
-  if (!text) return null;
-  // Strip however many filler openers the speaker stacked up.
-  for (let i = 0; i < 3 && FILLER.test(text); i += 1)
-    text = text.replace(FILLER, "");
-
-  for (const form of FORMS) {
-    const lead = text.match(form.lead);
-    if (!lead) continue;
-    const splits = splitsFor(text.slice(lead[0].length), form.connector);
-    if (!splits.length) continue;
-    // Splits with an empty instruction are offered too. Discarding them here
-    // is what broke the first real command: "the ebi agent chat relay thread"
-    // (said with no instruction after it) had its only non-empty reading be
-    // target "ebi agent" + instruction "relay thread", so the tail of the name
-    // was delivered as the work. Whether an instruction is missing can only be
-    // judged once the right split is known, and only the session list knows
-    // that.
-    return { kind: "relay", ...splits[0], candidates: splits };
-  }
-  return null;
-}
 
 /** Shortest instruction worth acting on; below this it is a stray word. */
 export const MIN_PROMPT_CHARS = 2;

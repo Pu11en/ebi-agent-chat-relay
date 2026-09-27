@@ -24,7 +24,6 @@
 import {
   MIN_PROMPT_CHARS,
   parseByTag,
-  parseCommand,
   parseNewSession,
   parseTidyUp,
 } from "./command.mjs";
@@ -428,10 +427,7 @@ export function createVoiceController({
         if (opening) return await open(opening);
       }
 
-      // The sentence template ("put this in the X thread ...") is still the
-      // fallback for a thread that has no tag yet — a tag is the primary form,
-      // not the only one.
-      const command = addressed ?? parseCommand(said);
+      const command = addressed;
       if (!command) {
         // No tag and no named thread. Nothing is sent, and that silence is the
         // whole point: with an unreliable recogniser "nothing happened" is
@@ -443,24 +439,13 @@ export function createVoiceController({
       const match = resolveTarget(command.candidates, live);
       const heard = match.candidate?.target ?? command.target;
       if (match.status === "none") {
-        await say(
-          `🎙️ Nothing matched **${heard}**. Say the thread's tag — ` +
-            (live
-              .filter((s) => s.voice_label)
-              .slice(0, 8)
-              .map((s) => `\`${s.voice_label}\` ${untagged(s.thread_name) || s.working_dir || ""}`)
-              .join(" · ") || "no tags assigned yet"),
-        );
-        return { status: "no-target", target: heard };
+        // Unreachable by construction: `parseByTag` only matches a word that is
+        // already a tag or alias of a session in `live`, and this looks it up in
+        // that same list. Kept as a log rather than a message to the room —
+        // there is nothing useful to tell him about a thing that cannot happen.
+        logger.warn?.(`[control] tag ${heard} parsed but did not resolve`);
+        return IGNORED;
       }
-      if (match.status === "ambiguous") {
-        await say(
-          `🎙️ **${heard}** matches more than one thread: ` +
-            `${match.options.map(describe).join(" · ")}. Say its tag instead.`,
-        );
-        return { status: "ambiguous", options: match.options };
-      }
-
       const prompt = match.candidate.prompt;
 
       // "Bravo, switch to opus" changes who answers rather than asking them

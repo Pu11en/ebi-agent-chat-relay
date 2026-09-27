@@ -94,9 +94,8 @@ the owner can also steer a session without leaving the room:
 - **Say the tag.** Every visible thread gets one word — a One Piece character
   (`luffy`, `zoro`, `nami`…) — assigned by ccdb, shown at the front of the
   Discord title and listed in a single self-updating message in the transcript
-  channel. "Put this in the zoro thread, check DKIM" is exact: a tag is a
-  handle, so it wins outright over any name matching and removes the ambiguity
-  two similar folder names cause. Tags are stable for as long as the thread
+  channel. "Zoro, check DKIM" is exact: a tag is a handle, compared letter for
+  letter, so two similar folder names can never be confused for one another. Tags are stable for as long as the thread
   stays visible and are kept when it scrolls out of view and handed back if it
   returns; only when all 26 are spoken for does the oldest absent thread give
   one up. A tag is a word you learned, so it must not change meaning underneath
@@ -165,23 +164,21 @@ the owner can also steer a session without leaving the room:
   conversation open, and nobody else in the room can be forwarded at all.
 - **If you pause mid-sentence, the thread is held.** Speech is captured per
   pause, so naming a thread and then saying what to do arrives as two
-  utterances. Naming one on its own holds it for 30 seconds and announces that
-  it is holding; the next thing you say becomes the instruction. The hold
-  expires, is replaced by a new command, and is never filled by someone else in
-  the room.
-- **"Put this in the &lt;name&gt; thread &lt;instruction&gt;"** — also *send/drop/post
-  this to*, *tell the &lt;name&gt; thread to …*, *ask the &lt;name&gt; session …*, and
-  *in the &lt;name&gt; thread, …*. `thread`, `session` and `chat` are interchangeable.
-- The name is matched against every live session's Discord thread name and its
-  working directory, on letters and digits only, so the emoji prefix, the
-  hyphens in a folder name and whatever spacing the recogniser chose all stop
-  mattering. A name that matches nothing, and a name that two different threads
-  answer to equally well, are both reported in the transcript channel rather
-  than resolved by guessing. The same folder open twice resolves to whichever
-  thread was used most recently. A name that contains one of the nouns is
-  handled too: "the ebi agent **chat** relay thread" and "the aldus thread
-  check the **thread** pool" split at different occurrences, and the split is
-  chosen by which reading names a session that exists.
+  utterances. Naming one on its own simply starts a run with nothing in it yet;
+  the next thing you say joins the same message.
+- **There is no second form.** "Put this in the ebi agent chat relay thread, run
+  make verify" used to work, and with it came a parser that offered every place
+  the name might end and a resolver that scored the readings against the sessions
+  that exist — matching folder names by sound, breaking ties on recency, and
+  reporting "that was ambiguous, say its tag instead". All of it is gone
+  (2026-09-27), about 500 lines with the tests.
+
+  It was removed for simplicity, and it cost nothing: every thread is tagged the
+  moment it is created, and a tag is compared **exactly**. The scoring could only
+  ever add ways to be misunderstood. "Where does the name end and the instruction
+  begin" is not a question anyone has to answer now, and "nothing matched" became
+  unreachable — a word only parses as a tag if it already belongs to a live
+  session, so the lookup that follows cannot fail.
 - Every send is confirmed in the transcript channel with the thread it went to
   and the instruction as transcribed, so a misheard prompt is visible
   immediately. Failures are reported there too.
