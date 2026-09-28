@@ -2561,6 +2561,20 @@ class ApiServer:
         if raw_working_dir is not None and not isinstance(raw_working_dir, str):
             return web.json_response({"error": "working_dir must be a string"}, status=400)
         working_dir = raw_working_dir.strip() if raw_working_dir else None
+        backend = data.get("backend")
+        model = data.get("model")
+        if backend is not None:
+            if not isinstance(backend, str) or backend.strip().lower() not in ALL_BACKENDS:
+                return web.json_response({"error": "invalid backend"}, status=400)
+            backend = backend.strip().lower()
+            if self.backend_settings is None:
+                return web.json_response({"error": "backend settings unavailable"}, status=503)
+        if model is not None:
+            if backend is None or not isinstance(model, str) or not 0 < len(model.strip()) <= 100:
+                return web.json_response(
+                    {"error": "model needs a valid explicit backend"}, status=400
+                )
+            model = model.strip()
 
         # Validated here rather than swallowed downstream: a typo'd user_id is a
         # caller bug and should say so, while a Discord-side failure to add the
@@ -2601,6 +2615,8 @@ class ApiServer:
                 attachments=decoded_attachments or None,
                 invite_user_id=invite_user_id,
                 working_dir=working_dir,
+                backend=backend,
+                model=model,
             )
         except Exception as exc:
             logger.error("spawn_session failed: %s", exc, exc_info=True)

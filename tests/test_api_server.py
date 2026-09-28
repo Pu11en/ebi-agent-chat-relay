@@ -604,6 +604,7 @@ class TestSpawn:
         """ApiServer client with ClaudeChatCog pre-loaded in bot.cogs."""
         bot_with_text_channel.cogs = {"ClaudeChatCog": mock_cog}
         api = ApiServer(repo=repo, bot=bot_with_text_channel, default_channel_id=12345)
+        api.backend_settings = MagicMock()
         server = TestServer(api.app)
         client = TestClient(server)
         await client.start_server()
@@ -686,6 +687,30 @@ class TestSpawn:
         )
 
         assert mock_cog.spawn_session.await_args.kwargs["working_dir"] == "/home/user/project"
+
+    @pytest.mark.asyncio
+    async def test_spawn_sets_requested_backend_and_model_before_first_turn(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        response = await spawn_client.post(
+            "/api/spawn",
+            json={"prompt": "Inspect project", "backend": "codex", "model": "auto"},
+        )
+        assert response.status == 201
+        kwargs = mock_cog.spawn_session.await_args.kwargs
+        assert kwargs["backend"] == "codex"
+        assert kwargs["model"] == "auto"
+        assert kwargs["auto_start"] is True
+
+    @pytest.mark.asyncio
+    async def test_spawn_refuses_model_without_backend(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        response = await spawn_client.post(
+            "/api/spawn", json={"prompt": "Inspect project", "model": "auto"}
+        )
+        assert response.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_spawn_rejects_non_string_working_directory(
