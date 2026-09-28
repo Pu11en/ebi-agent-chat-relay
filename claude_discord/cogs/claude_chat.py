@@ -1761,6 +1761,7 @@ class ClaudeChatCog(commands.Cog):
         text: str,
         *,
         interrupt: bool,
+        posted_sink: Callable[[list[str]], Awaitable[None]] | None = None,
     ) -> None:
         """Feed a message from another session into this thread's Claude session.
 
@@ -1782,8 +1783,12 @@ class ClaudeChatCog(commands.Cog):
         await self._ensure_thread_members(thread)
         chunks = chunk_message(text) or [text]
         seed_message = await thread.send(chunks[0])
+        message_ids = [str(seed_message.id)]
         for chunk in chunks[1:]:
             seed_message = await thread.send(chunk)
+            message_ids.append(str(seed_message.id))
+        if posted_sink is not None:
+            await posted_sink(message_ids)
 
         record = await self.repo.get(thread.id)
         session_id = record.session_id if record else None
