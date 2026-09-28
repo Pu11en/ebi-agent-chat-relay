@@ -22,7 +22,12 @@ from ..backend_settings import (
     BackendSettings,
     enabled_backends,
 )
-from ..model_catalog import claude_model_choices, codex_model_choices, dsh_model_choices
+from ..model_catalog import (
+    claude_model_choices,
+    codex_model_choices,
+    dsh_model_choices,
+    glm_model_choices,
+)
 
 if TYPE_CHECKING:
     from ..backend_factory import BackendFactory
@@ -279,6 +284,8 @@ class BackendCommandCog(commands.Cog):
             suggestions = codex_model_choices(fallback=SUGGESTED_MODELS["codex"])
         elif backend == "dsh":
             suggestions = await dsh_model_choices(fallback=SUGGESTED_MODELS["dsh"])
+        elif backend == "glm":
+            suggestions = await glm_model_choices(fallback=SUGGESTED_MODELS["glm"])
         else:
             suggestions = SUGGESTED_MODELS.get(backend, [])
         current_lower = current.lower()
@@ -308,6 +315,8 @@ class BackendCommandCog(commands.Cog):
                 models = codex_model_choices(fallback=SUGGESTED_MODELS[name])
             elif name == "dsh":
                 models = await dsh_model_choices(fallback=SUGGESTED_MODELS[name])
+            elif name == "glm":
+                models = await glm_model_choices(fallback=SUGGESTED_MODELS[name])
             else:
                 models = SUGGESTED_MODELS[name]
             catalog[name] = models

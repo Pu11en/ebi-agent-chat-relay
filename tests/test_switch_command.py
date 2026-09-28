@@ -37,6 +37,7 @@ async def test_disabled_backends_not_discovered_or_switchable(monkeypatch):
             "claude_discord.cogs.backend_command.claude_model_choices", AsyncMock(return_value=[])
         ),
         patch("claude_discord.cogs.backend_command.dsh_model_choices", AsyncMock()) as dsh,
+        patch("claude_discord.cogs.backend_command.glm_model_choices", AsyncMock(return_value=[])),
     ):
         catalog = await cog._switch_catalog()
     assert set(catalog) == {"claude", "codex", "glm"}
