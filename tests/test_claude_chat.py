@@ -1,4 +1,4 @@
-"""Tests for ClaudeChatCog: /stop command, attachment handling, and interrupt-on-new-message."""
+"""Tests for ClaudeChatCog: /stop command, attachment handling, and queued replies."""
 
 from __future__ import annotations
 
@@ -262,8 +262,8 @@ class TestRegistryAutoDiscovery:
         assert cog._registry is None
 
 
-class TestInterruptOnNewMessage:
-    """New message in active thread should interrupt the running session."""
+class TestQueueOnNewMessage:
+    """Normal replies queue; explicitly requested interruptions remain supported."""
 
     def _make_thread_message(self, thread_id: int = 42) -> MagicMock:
         """Return a discord.Message inside a Thread."""
@@ -280,12 +280,8 @@ class TestInterruptOnNewMessage:
         return msg
 
     @pytest.mark.asyncio
-    async def test_handle_thread_reply_delegates_interrupt_to_run_claude(self) -> None:
-        """_handle_thread_reply must ask _run_claude to preempt the running turn.
-
-        Serialization + interrupt now live in _run_claude (the single run slot),
-        so the reply path only needs to pass interrupt_existing=True.
-        """
+    async def test_handle_thread_reply_delegates_queue_to_run_claude(self) -> None:
+        """Ordinary replies must wait for the running turn, not preempt it."""
         cog = _make_cog()
         thread_id = 42
         message = self._make_thread_message(thread_id)
@@ -296,7 +292,7 @@ class TestInterruptOnNewMessage:
 
         cog._run_claude.assert_called_once()
         _, kwargs = cog._run_claude.call_args
-        assert kwargs.get("interrupt_existing") is True
+        assert kwargs.get("interrupt_existing", False) is False
 
     @pytest.mark.asyncio
     async def test_evict_active_run_interrupts_and_notifies(self) -> None:
@@ -363,8 +359,8 @@ class TestInterruptOnNewMessage:
         assert call_order == ["task_done", "evict_returned"]
 
     @pytest.mark.asyncio
-    async def test_run_claude_called_with_session_id_after_interrupt(self) -> None:
-        """After interrupt, _run_claude is called with the session_id from the DB."""
+    async def test_run_claude_called_with_saved_session_id(self) -> None:
+        """A reply continues the session saved in the DB."""
         cog = _make_cog()
         thread_id = 42
         message = self._make_thread_message(thread_id)
@@ -403,12 +399,12 @@ class TestInterruptOnNewMessage:
 
     @pytest.mark.asyncio
     async def test_concurrent_messages_both_reach_run_claude(self) -> None:
-        """Two near-simultaneous replies both delegate to _run_claude (interrupt=True).
+        """Two near-simultaneous replies both delegate to _run_claude in queue mode.
 
         The actual "never overlaps" guarantee is proven by
         test_real_run_claude_never_overlaps_same_thread, which exercises the
         real _run_claude. Here we only confirm both replies are handled and each
-        asks to preempt the running turn.
+        asks to wait for the running turn.
         """
         cog = _make_cog()
         thread_id = 42
@@ -419,7 +415,7 @@ class TestInterruptOnNewMessage:
         async def spy_run_claude(*args: object, **kwargs: object) -> None:
             nonlocal call_count
             call_count += 1
-            flags.append(kwargs.get("interrupt_existing"))
+            flags.append(kwargs.get("interrupt_existing", False))
             await asyncio.sleep(0.01)
 
         cog._run_claude = spy_run_claude
@@ -434,7 +430,7 @@ class TestInterruptOnNewMessage:
         await asyncio.gather(t1, t2, return_exceptions=True)
 
         assert call_count == 2
-        assert flags == [True, True]
+        assert flags == [False, False]
 
     @pytest.mark.asyncio
     async def test_real_run_claude_never_overlaps_same_thread(

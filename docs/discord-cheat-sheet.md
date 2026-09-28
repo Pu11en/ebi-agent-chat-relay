@@ -87,7 +87,7 @@ Open the worker link your project conversation gives you. Read its messages and 
 **Want to change something while it is running?**
 Click that thread's red **Stop** button, wait for it to stop, then send your new instruction.
 
-Use the button: `/stop` and simply typing a new message can fail to interrupt Codex immediately in this Ebi version.
+New messages queue behind the current turn; they do not interrupt it. Click **Stop** or use `/stop` to stop that turn and let the next queued message start. The new turn has its own Stop button. Stopping waits for the current worker to finish cleaning up, and preserves the conversation history.
 
 **Want every worker to know about a change?**
 Tell your project conversation to pass the change to the affected workers. Separate threads are separate conversations; they do not automatically share everything you say.
