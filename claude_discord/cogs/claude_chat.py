@@ -1723,6 +1723,11 @@ class ClaudeChatCog(commands.Cog):
         decides which harness runs it. The slot arguments say what kind of
         capacity the turn takes (a worker task or the build's own review).
         """
+        # A build worker's side copy may have been removed after merge. Fresh
+        # review turns must rebind the thread before the run helper looks up its
+        # saved directory, or that helper restores the deleted side-copy path.
+        if working_dir is not None:
+            await self.repo.save(thread.id, "", working_dir=working_dir)
         await self._run_claude(
             seed_message,
             thread,

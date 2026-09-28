@@ -1120,10 +1120,41 @@ async def test_build_rounds_do_not_hear_the_lounge() -> None:
 
     chat = MagicMock()
     chat._run_claude = AsyncMock()
+    chat.repo.save = AsyncMock()
+    thread = MagicMock(id=123)
     await ClaudeChatCog.run_fresh_turn(
-        chat, MagicMock(), MagicMock(), "task", working_dir="/x", result_sink=AsyncMock()
+        chat, MagicMock(), thread, "task", working_dir="/x", result_sink=AsyncMock()
     )
     assert chat._run_claude.await_args.kwargs["lounge"] is False
+    chat.repo.save.assert_awaited_once_with(123, "", working_dir="/x")
+
+
+async def test_fresh_review_rebinds_deleted_side_copy(tmp_path: Path) -> None:
+    from claude_discord.cogs.claude_chat import ClaudeChatCog
+    from claude_discord.database.models import init_db
+    from claude_discord.database.repository import SessionRepository
+
+    db = str(tmp_path / "sessions.db")
+    await init_db(db)
+    repo = SessionRepository(db)
+    await repo.save(123, "old-worker", working_dir=str(tmp_path / "deleted-side-copy"))
+    merged = tmp_path / "merged-copy"
+    merged.mkdir()
+    observed = []
+
+    async def run(_seed, thread, _prompt, *, working_dir_override, **_kwargs):  # noqa: ANN001
+        record = await repo.ensure_working_dir(thread.id, working_dir_override)
+        observed.append(record.working_dir)
+
+    chat = MagicMock()
+    chat.repo = repo
+    chat._run_claude = AsyncMock(side_effect=run)
+    thread = MagicMock(id=123)
+    await ClaudeChatCog.run_fresh_turn(
+        chat, MagicMock(), thread, "review", working_dir=str(merged), result_sink=AsyncMock()
+    )
+    assert observed == [str(merged)]
+    assert (await repo.get(123)).session_id == ""
 
 
 class TestBuildTalksInItsOwnThread:
