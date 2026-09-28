@@ -1423,7 +1423,7 @@ class ClaudeChatCog(commands.Cog):
             images=images,
             working_dir_override=record.working_dir if record else None,
             chat_only=(root_id or 0) in self._chat_only_channel_ids,
-            interrupt_existing=True,
+            resume_latest=True,
         )
 
     async def _read_session_request(self, message: discord.Message) -> SessionRequest | None:
@@ -2007,10 +2007,8 @@ class ClaudeChatCog(commands.Cog):
     async def _handle_thread_reply(self, message: discord.Message) -> None:
         """Continue a Claude Code session in an existing thread.
 
-        If Claude is already running in this thread, sends SIGINT to the active
-        session (graceful interrupt, like pressing Escape) and waits for it to
-        finish cleaning up before starting the new session.  This prevents two
-        Claude processes from running in parallel in the same thread.
+        If work is already running, queue this reply behind it. Only an explicit
+        Stop interrupts the current turn; the next reply starts after cleanup.
         """
         thread = message.channel
         assert isinstance(thread, discord.Thread)
@@ -2064,10 +2062,8 @@ class ClaudeChatCog(commands.Cog):
 
         # Determine chat_only from the parent channel of this thread.
         chat_only = (thread.parent_id or 0) in self._chat_only_channel_ids
-        # A human reply preempts whatever is running in this thread. _run_claude
-        # is the single serialization point: it interrupts the in-flight run and
-        # registers the replacement atomically under the per-thread lock, so two
-        # fast replies can never spawn parallel CLI processes.
+        # Human replies queue in the shared run slot. Reload the native session
+        # only when this reply starts: the preceding turn may create or replace it.
         await self._run_claude(
             message,
             thread,
@@ -2076,7 +2072,7 @@ class ClaudeChatCog(commands.Cog):
             images=images,
             working_dir_override=record.working_dir if record else None,
             chat_only=chat_only,
-            interrupt_existing=True,
+            resume_latest=True,
         )
 
     async def _session_id_for_current_backend(
@@ -2245,8 +2241,17 @@ class ClaudeChatCog(commands.Cog):
             and existing_task is not asyncio.current_task()
             and not existing_task.done()
         ):
-            with contextlib.suppress(Exception):
-                await existing_task
+            try:
+                # Cancelling a waiting reply must not cancel the current turn.
+                await asyncio.shield(existing_task)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                # Stop can cancel a turn still waiting for capacity. Its cleanup
+                # has finished, so advance the queue rather than cancelling it.
+            except Exception:
+                logger.exception("Previous turn failed in thread %d", thread.id)
 
     async def _run_claude(
         self,
@@ -2261,6 +2266,7 @@ class ClaudeChatCog(commands.Cog):
         result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None,
         interrupt_existing: bool = False,
         interrupt_notice: str = "-# ⚡ Interrupted. Starting with new instruction...",
+        resume_latest: bool = False,
         lounge: bool = True,
         slot: tuple[str, str, int] = ("chat", "", 0),
         recovery: tuple[str, str] | None = None,
@@ -2282,16 +2288,30 @@ class ClaudeChatCog(commands.Cog):
         thread. The subprocess itself runs *outside* the lock so a later message
         can still interrupt this run.
         """
-        session_id, prompt = await self._prepare_cross_backend_handoff(
-            thread,
-            prompt,
-            session_id,
-        )
         dashboard = self._get_dashboard()
         description = prompt[:100].replace("\n", " ")
 
         current_task = asyncio.current_task()
         lock = self._thread_locks.setdefault(thread.id, asyncio.Lock())
+
+        model_override = await self._get_current_model()
+        effective_model = model_override or self.runner.model
+
+        async def _notify_stall() -> None:
+            threshold = status._stall_hard
+            await thread.send(
+                f"-# ⚠️ No activity for {threshold}s — could be extended thinking "
+                "or context compression. Will resume automatically."
+            )
+
+        status = StatusManager(
+            user_message,
+            on_hard_stall=_notify_stall,
+            model=effective_model,
+        )
+        # A waiting reply gets an hourglass immediately, not only after the
+        # previous turn finishes. Queueing does not start the stall timer.
+        await status.set_queued()
 
         # --- Phase 1: atomically take the thread's single run slot -----------
         # Everything from evicting the previous run through registering this one
@@ -2302,6 +2322,15 @@ class ClaudeChatCog(commands.Cog):
                 thread, interrupt=interrupt_existing, notice=interrupt_notice
             )
 
+            if resume_latest and not fork:
+                latest = await self.repo.get(thread.id)
+                if latest is not None:
+                    session_id = await self._session_id_for_current_backend(thread, latest)
+                    working_dir_override = latest.working_dir
+            session_id, prompt = await self._prepare_cross_backend_handoff(
+                thread, prompt, session_id
+            )
+
             # Mark thread as PROCESSING when Claude starts
             if dashboard is not None:
                 await dashboard.set_state(
@@ -2310,23 +2339,6 @@ class ClaudeChatCog(commands.Cog):
                     description,
                     thread=thread,
                 )
-
-            model_override = await self._get_current_model()
-            effective_model = model_override or self.runner.model
-
-            async def _notify_stall() -> None:
-                threshold = status._stall_hard
-                await thread.send(
-                    f"-# ⚠️ No activity for {threshold}s — could be extended thinking "
-                    "or context compression. Will resume automatically."
-                )
-
-            status = StatusManager(
-                user_message,
-                on_hard_stall=_notify_stall,
-                model=effective_model,
-            )
-            await status.set_queued()
 
             tools_override = await self._get_allowed_tools()
             effort_override = await self._get_current_effort()
