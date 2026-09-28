@@ -570,6 +570,29 @@ class TestAuthentication:
         assert resp.status == 401
 
 
+@pytest.mark.asyncio
+async def test_invalid_model_cannot_partially_switch_thread_backend(
+    repo: NotificationRepository, bot: MagicMock
+) -> None:
+    api = ApiServer(repo=repo, bot=bot)
+    settings = MagicMock()
+    settings.set_backend = AsyncMock()
+    settings.set_model = AsyncMock()
+    api.backend_settings = settings
+    client = TestClient(TestServer(api.app))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/threads/1554145503506333736/runtime",
+            json={"backend": "codex", "model": " "},
+        )
+        assert response.status == 400
+        settings.set_backend.assert_not_awaited()
+        settings.set_model.assert_not_awaited()
+    finally:
+        await client.close()
+
+
 class TestSpawn:
     """Tests for POST /api/spawn — programmatic Claude session creation."""
 
