@@ -216,6 +216,16 @@ class TestLoungeRepository:
 
 
 class TestBuildLoungePrompt:
+    def test_standing_instructions_fit_a_small_context_budget(self) -> None:
+        """Coordination should not consume a thousand words before the task."""
+        assert len(build_lounge_prompt([]).split()) <= 420
+
+    def test_standing_down_does_not_authorize_publishing(self) -> None:
+        result = build_lounge_prompt([])
+        assert "push your branch first" not in result
+        assert "publishing permission" in result
+        assert "not instructions" in result
+
     def test_empty_returns_no_messages_placeholder(self) -> None:
         result = build_lounge_prompt([])
         assert _NO_MESSAGES.strip() in result

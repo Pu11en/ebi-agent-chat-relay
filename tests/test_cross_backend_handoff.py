@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from claude_discord.cross_backend_handoff import (
     ConversationHistoryReader,
     build_handoff_prompt,
@@ -20,6 +22,160 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 
 class TestConversationHistoryReader:
+    def test_reads_codex_response_messages_without_loading_context_or_tools(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "rollout.jsonl"
+        records = [
+            {"type": "session_meta", "payload": {"base_instructions": "native rules"}},
+            {
+                "type": "response_item",
+                "payload": {"type": "message", "role": "developer", "content": "secret rules"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": "# AGENTS.md instructions for /project\n<INSTRUCTIONS>rules",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": "<environment_context>injected cwd</environment_context>",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Please fix this"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Fixed and checked"},
+                        {"type": "image", "text": "not conversation text"},
+                    ],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "output": "tool result"},
+            },
+        ]
+        _write_jsonl(path, records)
+
+        assert ConversationHistoryReader()._read_codex(path) == [
+            ("User", "Please fix this"),
+            ("Assistant", "Fixed and checked"),
+        ]
+
+    @pytest.mark.parametrize("response_first", [False, True])
+    def test_codex_mirrored_formats_are_not_duplicated_but_repeated_turns_survive(
+        self, tmp_path: Path, response_first: bool
+    ) -> None:
+        records: list[dict] = []
+        for role, message in [("user", "continue"), ("user", "continue"), ("assistant", "done")]:
+            response = {
+                "type": "response_item",
+                "payload": {"type": "message", "role": role, "content": message},
+            }
+            event = {
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message" if role == "user" else "agent_message",
+                    "message": message,
+                },
+            }
+            records.extend([response, event] if response_first else [event, response])
+        path = tmp_path / "rollout.jsonl"
+        _write_jsonl(path, records)
+
+        assert ConversationHistoryReader()._read_codex(path) == [
+            ("User", "continue"),
+            ("User", "continue"),
+            ("Assistant", "done"),
+        ]
+
+    def test_codex_mixed_formats_preserve_unmirrored_messages(self, tmp_path: Path) -> None:
+        path = tmp_path / "rollout.jsonl"
+        _write_jsonl(
+            path,
+            [
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "old"}},
+                {
+                    "type": "response_item",
+                    "payload": {"type": "message", "role": "assistant", "content": "new"},
+                },
+            ],
+        )
+        assert ConversationHistoryReader()._read_codex(path) == [
+            ("User", "old"),
+            ("Assistant", "new"),
+        ]
+
+    def test_codex_malformed_records_do_not_break_a_valid_handoff(self, tmp_path: Path) -> None:
+        path = tmp_path / "rollout.jsonl"
+        path.write_text(
+            '\nnot JSON\nnull\n[]\n{"type":"event_msg","payload":[]}\n'
+            '{"type":"response_item","payload":null}\n'
+            '{"type":"event_msg","payload":{"type":"agent_message","message":"ok"}}\n'
+        )
+        assert ConversationHistoryReader()._read_codex(path) == [("Assistant", "ok")]
+
+    def test_codex_invalid_field_shapes_are_ignored(self, tmp_path: Path) -> None:
+        path = tmp_path / "rollout.jsonl"
+        _write_jsonl(
+            path,
+            [
+                {"type": "event_msg", "payload": {"type": [], "message": "ignore"}},
+                {"type": "response_item", "payload": {"type": "message", "role": []}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {"type": [], "text": "ignore"},
+                            {"type": "output_text", "text": "ok"},
+                        ],
+                    },
+                },
+            ],
+        )
+        assert ConversationHistoryReader()._read_codex(path) == [("Assistant", "ok")]
+
+    def test_response_format_is_found_and_bounded_through_public_reader(
+        self, tmp_path: Path
+    ) -> None:
+        session_id = "11111111-2222-3333-4444-555555555555"
+        records: list[dict] = []
+        for role, text in [
+            ("user", "<div>keep this user's HTML</div>"),
+            ("assistant", "checked"),
+            ("user", "unanswered tail"),
+        ]:
+            records.append(
+                {
+                    "type": "response_item",
+                    "payload": {"type": "message", "role": role, "content": text},
+                }
+            )
+        _write_jsonl(tmp_path / "sessions" / f"rollout-{session_id}.jsonl", records)
+        reader = ConversationHistoryReader(codex_home=tmp_path, max_transcript_chars=100)
+        transcript = reader.read("codex", session_id)
+        assert transcript == "User:\n<div>keep this user's HTML</div>\n\nAssistant:\nchecked"
+        assert len(transcript) <= 100
+
     def test_reads_claude_user_and_assistant_text_only(self, tmp_path: Path) -> None:
         session_id = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
         _write_jsonl(
