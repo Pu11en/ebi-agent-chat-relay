@@ -201,6 +201,18 @@ class TestTheAliasesActuallyReachTheEndpoint:
             "the voice layer cannot match a mishearing it was never told about"
         )
 
+    async def test_frankie_is_sent_as_an_alias_of_the_franky_tag(self) -> None:
+        settings = FakeSettings({"voice_label:10": "franky"})
+        bot = MagicMock()
+        bot.get_channel.return_value = None
+        bot.fetch_channel = AsyncMock(return_value=None)
+        views = [{"thread_id": 10, "thread_name": "[franky] repo"}]
+
+        await VoiceTagger(bot, settings).apply(views)
+
+        assert views[0]["voice_label"] == "franky"
+        assert "frankie" in views[0]["voice_label_aliases"]
+
     async def test_an_untagged_view_carries_an_empty_list_not_a_missing_key(self) -> None:
         """The voice layer does `s.voice_label_aliases ?? []`; be explicit anyway."""
         settings = FakeSettings(

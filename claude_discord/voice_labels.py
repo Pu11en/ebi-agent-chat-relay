@@ -78,6 +78,7 @@ LABEL_ALIASES: dict[str, str] = {
     "nammy": "nami",
     "sanjay": "sanji",
     "sangi": "sanji",
+    "frankie": "franky",
     "jimbe": "jinbe",
     "jimbei": "jinbe",
     "ginbe": "jinbe",
