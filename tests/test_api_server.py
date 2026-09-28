@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import os
 import tempfile
+from dataclasses import asdict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from claude_discord.database.notification_repo import NotificationRepository
-from claude_discord.ext.api_server import ApiServer
+from claude_discord.database.repository import SessionRecord
+from claude_discord.ext.api_server import ApiServer, build_jester_session_snapshot
 from claude_discord.thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 
@@ -1134,6 +1136,154 @@ class TestMarkResume:
             headers={"Content-Type": "application/json"},
         )
         assert resp.status == 400
+
+
+class TestSessionSnapshot:
+    """Tests for the side-effect-free Jester session snapshot."""
+
+    def _record(
+        self,
+        thread_id: int,
+        *,
+        session_id: str = "session",
+        working_dir: str | None = "/home/drewp/main-projects/repo",
+        last_used_at: str = "2026-09-28 10:00:00",
+    ) -> SessionRecord:
+        return SessionRecord(
+            thread_id=thread_id,
+            session_id=session_id,
+            working_dir=working_dir,
+            model=None,
+            origin="discord",
+            summary=None,
+            created_at="2026-09-28 09:00:00",
+            last_used_at=last_used_at,
+        )
+
+    def test_snapshot_helper_maps_tagged_row_with_exact_large_thread_id(self) -> None:
+        thread_id = 1554146845415055445
+
+        sessions = build_jester_session_snapshot(
+            records=[self._record(thread_id)],
+            active=[self._record(42)],
+            running_thread_ids={thread_id, 42},
+            thread_names={thread_id: "[zoro] repo session"},
+            voice_labels={thread_id: "zoro"},
+        )
+
+        assert sessions == [
+            {
+                "thread_id": "1554146845415055445",
+                "tag": "zoro",
+                "name": "[zoro] repo session",
+                "project": "/home/drewp/main-projects/repo",
+            }
+        ]
+
+    def test_snapshot_helper_does_not_modify_input_rows(self) -> None:
+        thread_id = 1554146845415055445
+        record = self._record(
+            thread_id,
+            session_id="sess-exact",
+            working_dir="/home/drewp/main-projects/unchanged",
+        )
+        before = asdict(record)
+
+        sessions = build_jester_session_snapshot(
+            records=[record],
+            active=[],
+            running_thread_ids=set(),
+            thread_names={thread_id: "[zoro] unchanged"},
+            voice_labels={thread_id: "zoro"},
+        )
+
+        assert asdict(record) == before
+        assert sessions[0] == {
+            "thread_id": "1554146845415055445",
+            "tag": "zoro",
+            "name": "[zoro] unchanged",
+            "project": "/home/drewp/main-projects/unchanged",
+        }
+
+    @pytest.mark.asyncio
+    async def test_snapshot_route_needs_a_session_store(self, client: TestClient) -> None:
+        assert (await client.get("/api/sessions/snapshot")).status == 404
+        assert (await client.get("/api/jester/sessions")).status == 503
+
+    @pytest.mark.asyncio
+    async def test_repeated_snapshot_reads_do_not_mint_tags_or_rename_threads(self, repo) -> None:
+        thread_id = 1554146845415055445
+        record = self._record(thread_id)
+        before = asdict(record)
+        session_repo = MagicMock()
+        session_repo.list_all = AsyncMock(return_value=[record])
+        settings_repo = MagicMock()
+        settings_repo.get_all = AsyncMock(return_value={f"voice_label:{thread_id}": "franky"})
+        bot = MagicMock()
+        bot.cogs = {}
+        channel = MagicMock()
+        channel.name = "[franky] project work"
+        bot.get_channel.return_value = channel
+        api = ApiServer(
+            repo=repo,
+            bot=bot,
+            default_channel_id=12345,
+            session_repo=session_repo,
+        )
+        api.settings_repo = settings_repo
+        client = TestClient(TestServer(api.app))
+        await client.start_server()
+        try:
+            with patch.object(api, "_apply_voice_labels", new_callable=AsyncMock) as tagger:
+                first = await (await client.get("/api/jester/sessions")).json()
+                second = await (await client.get("/api/jester/sessions")).json()
+            assert first == second
+            assert first["sessions"][0]["thread_id"] == str(thread_id)
+            assert first["sessions"][0]["tag"] == "franky"
+            assert "frankie" in first["sessions"][0]["aliases"]
+            assert first["sessions"][0]["state"] == "history"
+            assert asdict(record) == before
+            tagger.assert_not_awaited()
+            assert settings_repo.get_all.await_count == 2
+            assert session_repo.list_all.await_count == 2
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_old_sessions_endpoint_keeps_numeric_thread_ids(self) -> None:
+        from claude_discord.database.lounge_repo import LoungeRepository
+        from claude_discord.database.models import init_db
+        from claude_discord.database.repository import SessionRepository
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        await init_db(path)
+        notif_repo = NotificationRepository(path)
+        await notif_repo.init_db()
+        bot = MagicMock()
+        bot.session_registry = None
+        bot.cogs = {}
+        bot.get_channel.return_value = None
+        api = ApiServer(
+            repo=notif_repo,
+            bot=bot,
+            default_channel_id=12345,
+            session_repo=SessionRepository(path),
+            lounge_repo=LoungeRepository(path),
+        )
+        client = TestClient(TestServer(api.app))
+        await client.start_server()
+        try:
+            await SessionRepository(path).save(thread_id=444, session_id="sess-444")
+
+            resp = await client.get("/api/sessions")
+
+            assert resp.status == 200
+            session = (await resp.json())["sessions"][0]
+            assert session["thread_id"] == 444
+        finally:
+            await client.close()
+            os.unlink(path)
 
 
 class TestIngest:

@@ -60,6 +60,7 @@ from ..session_lifecycle import (
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+from ..voice_labels import thread_id_from_key
 from ..voice_tags import VoiceTagger
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
@@ -211,6 +212,36 @@ def _serialize_thread_message(message: Any) -> dict[str, object]:
         "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else None,
         "jump_url": getattr(message, "jump_url", None),
     }
+
+
+def build_jester_session_snapshot(
+    *,
+    records: list[Any],
+    active: list[Any] | None = None,
+    running_thread_ids: set[int] | None = None,
+    thread_names: dict[int, str] | None = None,
+    voice_labels: dict[int, str] | None = None,
+) -> list[dict[str, object]]:
+    """Build Jester's compact read-only view of existing sessions.
+
+    The caller supplies already-read database rows, cached thread titles, and
+    stored spoken tags. Runtime inputs are accepted for old callers but ignored
+    in this narrow field mapper. This helper deliberately does no Discord or
+    database access, so polling it cannot mint tags, rename threads, or modify
+    session rows.
+    """
+    _ = (active, running_thread_ids)
+    names = thread_names or {}
+    tags = voice_labels or {}
+    return [
+        {
+            "thread_id": str(record.thread_id),
+            "tag": tags.get(record.thread_id),
+            "name": names.get(record.thread_id),
+            "project": record.working_dir,
+        }
+        for record in records
+    ]
 
 
 # Max accepted request body. aiohttp defaults to 1 MiB, which 413s any real
@@ -500,6 +531,7 @@ class ApiServer:
         self.app.router.add_delete("/api/claims", self.delete_claim)
         # Cross-session observability routes (requires session_repo)
         self.app.router.add_get("/api/sessions", self.list_sessions)
+        self.app.router.add_get("/api/jester/sessions", self.session_snapshot)
         self.app.router.add_get("/api/search", self.search_sessions)
         self.app.router.add_get("/api/agents", self.list_agents)
         self.app.router.add_get("/api/handoffs/status", self.handoff_status)
@@ -2140,6 +2172,57 @@ class ApiServer:
             views = [v for v in views if v["thread_id"] != exclude_thread]
 
         return web.json_response({"sessions": views, "capacity": capacity})
+
+    async def session_snapshot(self, request: web.Request) -> web.Response:
+        """A side-effect-free, string-ID owner view for Jester voice routing."""
+        if err := self._require_session_repo():
+            return err
+        try:
+            limit = max(1, min(_MAX_SESSION_LIMIT, int(request.rel_url.query.get("limit", "100"))))
+        except ValueError:
+            return web.json_response({"error": "limit must be an integer"}, status=400)
+
+        records = await self.session_repo.list_all(limit=limit)  # type: ignore[union-attr]
+        active = self._active_sessions()
+        thread_ids = {r.thread_id for r in records} | {s.thread_id for s in active}
+        labels = await self._stored_voice_labels(thread_ids)
+        views = build_session_views(
+            records=records,
+            active=active,
+            running_thread_ids=self._running_thread_ids(),
+            lounge_messages=[],
+            thread_names=self._thread_names(thread_ids),
+            voice_labels=labels,
+        )
+        return web.json_response(
+            {
+                "sessions": [
+                    {
+                        "thread_id": str(view["thread_id"]),
+                        "tag": None if view["closed"] else view["voice_label"],
+                        "aliases": [] if view["closed"] else view["voice_label_aliases"],
+                        "name": view["thread_name"],
+                        "project": view["working_dir"],
+                        "state": view["state"],
+                        "current_task": view["current_task"],
+                        "closed": view["closed"],
+                    }
+                    for view in views
+                ]
+            }
+        )
+
+    async def _stored_voice_labels(self, thread_ids: set[int]) -> dict[int, str]:
+        """Read persisted tags without minting, renaming, or releasing any."""
+        if self.settings_repo is None or not thread_ids:
+            return {}
+        settings = await self.settings_repo.get_all()
+        labels: dict[int, str] = {}
+        for key, value in settings.items():
+            thread_id = thread_id_from_key(key)
+            if thread_id in thread_ids and value:
+                labels[thread_id] = value
+        return labels
 
     async def _apply_voice_labels(self, views: list[dict[str, Any]]) -> None:
         """Attach a spoken tag to each view, minting the missing ones.
