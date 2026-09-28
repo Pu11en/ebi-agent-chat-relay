@@ -681,6 +681,17 @@ class TestSpawn:
         assert data["thread_name"] == "Test thread"
 
     @pytest.mark.asyncio
+    async def test_spawn_uses_single_thread_tagger_so_live_tags_are_not_stolen(
+        self, spawn_client: TestClient
+    ) -> None:
+        with patch("claude_discord.ext.api_server.VoiceTagger.tag_thread",
+                   new_callable=AsyncMock, return_value=None) as tag_thread:
+            resp = await spawn_client.post("/api/spawn", json={"prompt": "Check the backlog"})
+        assert resp.status == 201
+        assert (await resp.json())["voice_label"] is None
+        tag_thread.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_spawn_passes_prompt_to_cog(
         self, spawn_client: TestClient, mock_cog: MagicMock
     ) -> None:
