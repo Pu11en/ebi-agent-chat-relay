@@ -327,38 +327,18 @@ async def _build_system_context(config: RunConfig) -> str | None:
     else:
         parts.append(
             "## File Delivery\n"
-            "When you need to send files to Discord, use your Bash tool to append "
-            "each file's ABSOLUTE path (one path per line, UTF-8) to:\n"
-            f"  {wd}/{marker}\n"
-            f"Example: `echo /absolute/path/to/file >> {wd}/{marker}`\n"
-            "The bot will attach those files when this session ends.\n"
-            "When local instructions require Discord attachment for a substantial "
-            "written deliverable, save the final text as a Markdown file and append "
-            "that file path here. Otherwise, only include files the user explicitly "
-            "asked to receive.\n\n"
+            f"Keep project outputs and notes in {wd}, not loose in its parent, "
+            "unless the user names another destination.\n"
+            "To send a requested file, append its absolute path (one per line) to "
+            f"{wd}/{marker}; the bot attaches it when you finish.\n"
+            "When local instructions require a substantial written deliverable, "
+            "save a Markdown file and list it there.\n\n"
             "## Answer short by default — cards only when asked\n"
-            "The user reads the Discord message itself and nothing else. Default "
-            "to a short chat reply: the answer, what it means for them, and the "
-            "next question. Do NOT write a Markdown card file unless they ask "
-            "for one — an unrequested wall of cards is worse than a thin answer, "
-            "because the detail is always one word away.\n"
-            'They ask with words like "more", "details", "cards", "full '
-            'version", "show me", "write it up", or by naming the document '
-            '("the plan", "a handoff", "the summary") — anything that plainly '
-            "requests the whole thing. Then write the plain-English Markdown "
-            "version and append its path to the file above: every `.md` listed "
-            "there is shown inline in the thread as colored cards, one card per "
-            "`## ` section.\n"
-            "When you are holding back substantially more, end the reply with one "
-            'short line offering it ("say `more` for the full write-up") rather '
-            "than pasting it. Never mention a file, path or plan name as if they "
-            "had read it.\n"
-            "Card rules, once they do ask: keep every point and detail of the "
-            "source; no jargon and no assumed context; start with `# Title`; use "
-            "`## ` sections (about 3 to 6), `### ` sub-headings, short bullets, "
-            "bold for key facts and emoji markers (✅ done, ⏳ now, ⬜ next, "
-            "⚠️ warning); no tables. Your chat reply (the cards appear right "
-            "after it) gives a short summary and asks the next question."
+            "Use plain English and explain the result in chat; the user has not "
+            "read your files. Do not create cards unless they ask for a plan, "
+            "handoff, document or full details. Requested Markdown cards use "
+            "# Title and ## sections; include all requested details. "
+            "Ask a question only when their answer is needed."
         )
 
     # Project catalog: only the invocation hint, never the projects. The hint

@@ -12,6 +12,7 @@ Resolution order for any field:
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -20,7 +21,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Valid backend names. Keep in sync with claude_code_core.backend.create_backend().
-ALL_BACKENDS = ("claude", "codex", "local", "dsh", "agui")
+ALL_BACKENDS = ("claude", "codex", "glm", "local", "dsh", "agui")
+
+
+def enabled_backends() -> tuple[str, ...]:
+    """Operator's selectable routes; existing stored sessions are not rewritten."""
+    configured = os.getenv("CCDB_ENABLED_BACKENDS", "").strip()
+    if not configured:
+        return ALL_BACKENDS
+    names = tuple(dict.fromkeys(name.strip() for name in configured.split(",")))
+    if not names or any(name not in ALL_BACKENDS for name in names):
+        raise ValueError("CCDB_ENABLED_BACKENDS contains an unknown backend")
+    return names
+
 
 # Settings keys
 BACKEND_GLOBAL = "backend.global"

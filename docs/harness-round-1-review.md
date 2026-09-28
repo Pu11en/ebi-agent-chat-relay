@@ -1,4 +1,27 @@
-# Harness improvement: first isolated slice for Claude review
+# Harness reset — implementation and verification record
+
+## Latest authorization and round scope
+
+The owner removed the Claude review requirement and authorized hands-off cheap
+offline verification, coordinated restart, main publication and a release tag.
+Earlier review gates below describe the first slice only, not the active workflow.
+
+The second slice adds GLM through Claude Code using per-process Z.ai credentials,
+an instance backend allowlist, fair model suggestions, bounded file-delivery
+instructions with an explicit project-output destination, and shared linked-Git-
+worktree classification for both project pickers. Existing history/explicit paths
+remain usable. It also makes AGENTS.md the real project rulebook and moves the
+long inherited guide to docs; obsolete /home/ebi Claude hooks are disabled.
+
+Checks so far: test-first reproductions; 6,082 offline tests passed, 18 warnings;
+ruff and pyright passed. These are not paid model calls, a GLM generation test,
+or proof of billing/cache savings. Global settings candidates and private backups
+are separate from this public repository; activation and release are recorded later.
+
+GLM configuration follows https://docs.z.ai/devpack/tool/claude; native AGENTS.md
+support follows https://code.claude.com/docs/en/memory (local Claude 2.1.283).
+Optional global skills/plugins and old shared memory are to be recoverably archived
+or disabled, not deleted. No Hindsight, ECC or replacement app is installed.
 
 Check: make test-one f="tests/test_cross_backend_handoff.py tests/test_lounge.py"
 Try: make verify

@@ -1,4 +1,4 @@
-# claude-code-discord-bridge (ccdb)
+# ccdb development reference (load only for the relevant subsystem)
 
 Discord frontend for Claude Code CLI. **This is a framework (OSS library), not a personal bot.**
 

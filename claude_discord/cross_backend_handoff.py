@@ -49,7 +49,7 @@ class ConversationHistoryReader:
             logger.warning("Refusing transcript lookup for invalid session ID")
             return ""
 
-        if backend == "claude":
+        if backend in ("claude", "glm"):
             path = self._find_claude_session(session_id)
             messages = self._read_claude(path) if path is not None else []
         elif backend in ("codex", "local"):

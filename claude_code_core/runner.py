@@ -93,8 +93,12 @@ class ClaudeRunner:
         effort: str | None = None,
         tools: list[str] | None = None,
         strict_mcp_config: bool = False,
+        provider: str | None = None,
     ) -> None:
         self.command = command
+        if provider not in (None, "zai"):
+            raise ValueError(f"Unknown Claude Code provider: {provider!r}")
+        self.provider = provider
         self.model = model
         self.permission_mode = permission_mode
         self.working_dir = working_dir
@@ -212,6 +216,7 @@ class ClaudeRunner:
             ),
             tools=self.tools,
             strict_mcp_config=self.strict_mcp_config,
+            provider=self.provider,
         )
 
     async def inject_tool_result(self, request_id: str, data: dict) -> None:
@@ -369,6 +374,25 @@ class ClaudeRunner:
         if self.thread_id is not None:
             env["DISCORD_THREAD_ID"] = str(self.thread_id)
         env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+        if self.provider == "zai":
+            key = env.get("ZAI_API_KEY", "").strip()
+            if not key:
+                raise ValueError("GLM requires ZAI_API_KEY; Claude/Codex are unchanged")
+            # Per-process routing only: never edit global Claude login/settings.
+            for name in (
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+            ):
+                env.pop(name, None)
+            env["ANTHROPIC_AUTH_TOKEN"] = key
+            env["ANTHROPIC_BASE_URL"] = "https://api.z.ai/api/anthropic"
+            for alias in ("HAIKU", "SONNET", "OPUS"):
+                env[f"ANTHROPIC_DEFAULT_{alias}_MODEL"] = self.model
+            env["ANTHROPIC_MODEL"] = self.model
+            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         return env
 
     def describe_api(self) -> str:
@@ -377,6 +401,8 @@ class ClaudeRunner:
         Derived from the final subprocess environment so CLI env overlays
         (e.g. an Azure Foundry switch) are reflected accurately.
         """
+        if self.provider == "zai":
+            return "Z.ai Coding Plan (Claude Code)"
         return detect_api_provider(self._build_env())
 
     async def _read_stream(self) -> AsyncGenerator[StreamEvent, None]:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -15,10 +17,10 @@ from claude_code_core.dsh_backend import VALID_EFFORTS as VALID_DSH_EFFORTS
 from claude_code_core.local_backend import pull_ollama_model, validate_ollama_model_name
 
 from ..backend_settings import (
-    ALL_BACKENDS,
     CODEX_STATUS_DEFAULT,
     CODEX_STATUS_MODES,
     BackendSettings,
+    enabled_backends,
 )
 from ..model_catalog import claude_model_choices, codex_model_choices, dsh_model_choices
 
@@ -48,6 +50,10 @@ EFFORT_ORDER: dict[str, list[str]] = {
 
 # Suggestions only: the model fields remain free text.
 SUGGESTED_MODELS: dict[str, list[tuple[str, str]]] = {
+    "glm": [
+        ("glm-5.3", "Z.ai subscription · Claude Code"),
+        ("glm-5.3-flash", "Z.ai fast model · Claude Code"),
+    ],
     "claude": [
         ("haiku", "fastest, cheapest (alias — newest Haiku)"),
         ("sonnet", "balanced (alias — newest Sonnet)"),
@@ -158,12 +164,20 @@ class BackendCommandCog(commands.Cog):
 
     # ── /backend ───────────────────────────────────────────────────
 
+    async def _backend_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[Choice[str]]:
+        return [
+            Choice(name=name, value=name)
+            for name in enabled_backends()
+            if current.casefold() in name
+        ]
+
     @app_commands.command(
         name="backend",
         description="Show or switch the AI backend",
     )
     @app_commands.choices(
-        name=[Choice(name=backend, value=backend) for backend in ALL_BACKENDS],
         scope=[
             Choice(name="thread", value=SCOPE_THREAD),
             Choice(name="global", value=SCOPE_GLOBAL),
@@ -176,6 +190,7 @@ class BackendCommandCog(commands.Cog):
             "Default: thread when invoked in a thread, otherwise global."
         ),
     )
+    @app_commands.autocomplete(name=_backend_autocomplete)
     async def backend_command(
         self,
         interaction: discord.Interaction,
@@ -198,13 +213,18 @@ class BackendCommandCog(commands.Cog):
             await interaction.response.send_message("\n".join(lines), ephemeral=True)
             return
 
-        if name not in ALL_BACKENDS:
+        if name not in enabled_backends():
             await interaction.response.send_message(
-                f"Unknown backend `{name}`. Choose: {', '.join(ALL_BACKENDS)}.",
+                f"Backend `{name}` is not enabled. Choose: {', '.join(enabled_backends())}.",
                 ephemeral=True,
             )
             return
 
+        if name == "glm" and not os.getenv("ZAI_API_KEY", "").strip():
+            await interaction.response.send_message(
+                "GLM needs ZAI_API_KEY configured.", ephemeral=True
+            )
+            return
         resolved_scope, target_thread_id = self._resolve_scope(interaction, scope)
         if resolved_scope == SCOPE_THREAD and target_thread_id is None:
             await interaction.response.send_message(
@@ -274,16 +294,24 @@ class BackendCommandCog(commands.Cog):
 
     #: Backends whose models ``/switch`` can offer. ``agui`` has no model
     #: catalog, so it stays a ``/backend`` choice.
-    _SWITCH_BACKENDS = ("claude", "codex", "local", "dsh")
+    _SWITCH_BACKENDS = ("claude", "codex", "glm", "local", "dsh")
 
     async def _switch_catalog(self) -> dict[str, list[tuple[str, str]]]:
         """Every selectable model per backend, using the same fallbacks as /model."""
-        return {
-            "claude": await claude_model_choices(fallback=SUGGESTED_MODELS["claude"]),
-            "codex": codex_model_choices(fallback=SUGGESTED_MODELS["codex"]),
-            "local": SUGGESTED_MODELS["local"],
-            "dsh": await dsh_model_choices(fallback=SUGGESTED_MODELS["dsh"]),
-        }
+        catalog = {}
+        for name in enabled_backends():
+            if name not in self._SWITCH_BACKENDS:
+                continue
+            if name == "claude":
+                models = await claude_model_choices(fallback=SUGGESTED_MODELS[name])
+            elif name == "codex":
+                models = codex_model_choices(fallback=SUGGESTED_MODELS[name])
+            elif name == "dsh":
+                models = await dsh_model_choices(fallback=SUGGESTED_MODELS[name])
+            else:
+                models = SUGGESTED_MODELS[name]
+            catalog[name] = models
+        return catalog
 
     def _chosen_switch_backend(self, interaction: discord.Interaction) -> str | None:
         """The optional ``backend`` option, when Discord sent it with the focus."""
@@ -317,7 +345,9 @@ class BackendCommandCog(commands.Cog):
             now_model = self._factory.default_model_for(now_backend)
         needle = current.lower().strip()
         choices: list[Choice[str]] = []
+        groups: list[list[Choice[str]]] = []
         for backend in order:
+            group: list[Choice[str]] = []
             emoji = _BACKEND_EMOJI.get(backend, "🤖")
             for model, description in catalog.get(backend, []):
                 label = f"{emoji} {backend} · {model} — {description}"
@@ -329,18 +359,18 @@ class BackendCommandCog(commands.Cog):
                 if marked:
                     choices.insert(0, choice)
                 else:
-                    choices.append(choice)
-                if len(choices) == 25:
-                    return choices
-        return choices
+                    group.append(choice)
+            groups.append(group)
+        # Interleave only after filtering; the selected model is pinned before
+        # truncation, so no provider disappears behind a large neighbor catalog.
+        choices.extend(choice for row in zip_longest(*groups) for choice in row if choice)
+        return choices[:25]
 
     @app_commands.command(
         name="switch",
         description="Switch AI and model in one step (pick from the list)",
     )
-    @app_commands.choices(
-        backend=[Choice(name=name, value=name) for name in _SWITCH_BACKENDS],
-    )
+    @app_commands.autocomplete(backend=_backend_autocomplete)
     @app_commands.autocomplete(choice=_switch_autocomplete)
     @app_commands.describe(
         backend="Optional: show every model for one AI instead of the mixed list.",
@@ -353,10 +383,19 @@ class BackendCommandCog(commands.Cog):
         choice: str | None = None,
     ) -> None:
         picked_backend, _, picked_model = (choice or "").partition("|")
-        if picked_backend not in self._SWITCH_BACKENDS or not picked_model:
+        if (
+            picked_backend not in self._SWITCH_BACKENDS
+            or picked_backend not in enabled_backends()
+            or not picked_model
+        ):
             hint = f" for `{backend}`" if backend else ""
             await interaction.response.send_message(
                 f"Pick a model{hint} from the list that appears as you type.", ephemeral=True
+            )
+            return
+        if picked_backend == "glm" and not os.getenv("ZAI_API_KEY", "").strip():
+            await interaction.response.send_message(
+                "GLM needs ZAI_API_KEY configured.", ephemeral=True
             )
             return
         resolved_scope, target_thread_id = self._resolve_scope(interaction, None)
