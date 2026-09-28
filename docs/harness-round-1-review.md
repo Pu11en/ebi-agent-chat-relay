@@ -2,6 +2,17 @@
 
 ## Latest authorization and round scope
 
+Integrated release candidate v4.2.0: `make verify` passed with 6,112 tests and
+18 warnings (including known asynchronous mock cleanup noise), plus clean ruff
+and pyright. The Jester commits required two type-check corrections (typed cog
+lookup and binding the receipt callback with `partial`) and one test formatting
+correction; owner-routing behavior was not redesigned. The existing setup-viewer
+fix and DSH stop-continuity fix are preserved in this integration.
+
+The candidate Codex settings were validated with native app-server `skills/list`
+without a model turn: zero enabled plugin skills and zero discovery errors;
+shared standalone skills are not yet archived at this checkpoint.
+
 The owner removed the Claude review requirement and authorized hands-off cheap
 offline verification, coordinated restart, main publication and a release tag.
 Earlier review gates below describe the first slice only, not the active workflow.

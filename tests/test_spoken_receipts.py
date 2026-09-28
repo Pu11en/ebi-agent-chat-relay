@@ -10,12 +10,15 @@ async def test_parallel_same_id_reserves_one_delivery_and_survives_reopen(tmp_pa
     path = str(tmp_path / "receipts.db")
     repo = SpokenReceiptRepository(path)
     fingerprint = payload_hash(
-        thread_id="1554146845415055445", speaker_id="488763953397235712",
-        text="Test this", mode="queue", source="voice",
+        thread_id="1554146845415055445",
+        speaker_id="488763953397235712",
+        text="Test this",
+        mode="queue",
+        source="voice",
     )
-    results = await asyncio.gather(*[
-        repo.reserve("jester-1", "1554146845415055445", fingerprint) for _ in range(5)
-    ])
+    results = await asyncio.gather(
+        *[repo.reserve("jester-1", "1554146845415055445", fingerprint) for _ in range(5)]
+    )
     assert sum(created for _, created in results) == 1
     await repo.mark_posted("jester-1", ["1554146845415055446"])
     await repo.mark_failed("jester-1", "later model error")

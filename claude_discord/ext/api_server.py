@@ -28,6 +28,7 @@ import uuid
 import zipfile
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -1496,7 +1497,7 @@ class ApiServer:
                         thread,
                         prompt,
                         interrupt=mode == MODE_INTERRUPT,
-                        posted_sink=lambda ids: self.spoken_receipts.mark_posted(request_id, ids),
+                        posted_sink=partial(self.spoken_receipts.mark_posted, request_id),
                     )
                 else:
                     await cog.deliver_relayed_message(
@@ -1567,7 +1568,7 @@ class ApiServer:
                 return web.json_response({"error": "thread not found"}, status=404)
         if not isinstance(thread, _discord.Thread):
             return web.json_response({"error": "target must be a thread"}, status=400)
-        cog = self.bot.cogs.get("ClaudeChatCog")
+        cog: Any = self.bot.cogs.get("ClaudeChatCog")
         if cog is None:
             return web.json_response({"error": "ClaudeChatCog is not loaded"}, status=503)
         stopped = await cog.stop_turn(thread_id)

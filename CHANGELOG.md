@@ -1,6 +1,6 @@
 # Changelog
 
-Last updated: 2026-09-21
+Last updated: 2026-09-28
 
 All notable changes to this project will be documented in this file.
 
@@ -10,6 +10,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 _Nothing yet._
+
+## [4.2.0] - 2026-09-28
+
+### Added
+
+- GLM route through the existing Claude Code CLI, isolated per subprocess with
+  Z.ai credentials; ordinary Claude and Codex authentication stay unchanged.
+- Optional `CCDB_ENABLED_BACKENDS` controls selectable providers without deleting
+  old session records. The model menu keeps every provider visible before its cap.
+- Owner-only session snapshot, spoken-delivery receipts, exact stop-turn support
+  and pinned backend/model on spawn for a separate voice companion.
+
+### Fixed
+
+- Current Codex history messages are included in cross-provider handoffs; generated
+  instruction envelopes, malformed records and duplicate mirrors are handled.
+- Shorter coordination and file-delivery instructions name the correct output
+  folder; billing and prompt-cache savings have not been measured.
+- Linked Git working copies no longer appear as new projects in default discovery;
+  repository src/tests/docs folders are not scanned as projects. Explicit paths
+  and recent working-copy entries remain usable.
+- Shared linked skills are visible in the setup inventory; DeepSeek stop waits for
+  its worker to finish; build-review paths survive integration; Frankie alias retained.
+- AGENTS.md is the canonical project rulebook; inherited detail is on demand in
+  docs/development-reference.md and old operator-specific Claude hooks are removed.
+
+No new agent runtime or memory service is installed by this release. Instance
+cleanup is recoverable and separate from the reusable package defaults.
 
 ## [4.1.0] - 2026-09-21
 
