@@ -2340,7 +2340,7 @@ class ApiServer:
                     "ORDER BY updated_at, turn_key LIMIT ?",
                     (since, since, after, limit + 1),
                 ) as cursor:
-                    rows = await cursor.fetchall()
+                    rows = list(await cursor.fetchall())
         except (aiosqlite.Error, OSError):
             logger.exception("Could not read Jester turn journal")
             return web.json_response({"error": "turn journal unavailable"}, status=503)
