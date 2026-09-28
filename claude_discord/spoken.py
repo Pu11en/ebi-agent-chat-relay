@@ -46,7 +46,7 @@ VOICE = "voice"
 VALID_SOURCES = (VOICE,)
 
 #: Matches the relay ceiling: one utterance, not a pasted document.
-MAX_SPOKEN_TEXT_CHARS = 4000
+MAX_SPOKEN_TEXT_CHARS = 24_000
 
 
 def build_spoken_prompt(*, text: str, source: str = VOICE) -> str:

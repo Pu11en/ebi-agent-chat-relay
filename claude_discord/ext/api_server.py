@@ -40,6 +40,7 @@ from claude_code_core.transcript_search import default_transcripts_root
 from ..agent_router import AgentRoute, parse_agent_routes
 from ..backend_settings import ALL_BACKENDS
 from ..catalog_service import entry_to_dict, project_to_dict, resolution_to_dict
+from ..database.spoken_receipts import SpokenReceiptRepository, payload_hash
 from ..discord_ui.file_sender import send_file_blobs
 from ..handoff_status import load_handoff_status, render_handoff_status
 from ..lounge import API_AUTH_HEADER, length_hint
@@ -60,6 +61,7 @@ from ..session_lifecycle import (
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+from ..voice_labels import thread_id_from_key
 from ..voice_tags import VoiceTagger
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
@@ -213,6 +215,36 @@ def _serialize_thread_message(message: Any) -> dict[str, object]:
     }
 
 
+def build_jester_session_snapshot(
+    *,
+    records: list[Any],
+    active: list[Any] | None = None,
+    running_thread_ids: set[int] | None = None,
+    thread_names: dict[int, str] | None = None,
+    voice_labels: dict[int, str] | None = None,
+) -> list[dict[str, object]]:
+    """Build Jester's compact read-only view of existing sessions.
+
+    The caller supplies already-read database rows, cached thread titles, and
+    stored spoken tags. Runtime inputs are accepted for old callers but ignored
+    in this narrow field mapper. This helper deliberately does no Discord or
+    database access, so polling it cannot mint tags, rename threads, or modify
+    session rows.
+    """
+    _ = (active, running_thread_ids)
+    names = thread_names or {}
+    tags = voice_labels or {}
+    return [
+        {
+            "thread_id": str(record.thread_id),
+            "tag": tags.get(record.thread_id),
+            "name": names.get(record.thread_id),
+            "project": record.working_dir,
+        }
+        for record in records
+    ]
+
+
 # Max accepted request body. aiohttp defaults to 1 MiB, which 413s any real
 # ingest (a full conversation thread plus base64 attachments). Base64 inflates
 # the decoded payload ~4/3, so the body limit must exceed the decoded
@@ -227,6 +259,7 @@ _UNSAFE_FILENAME_RE = re.compile(r"[^\w.\-]+")
 # is the caller's (a run-state correlation id, a split key such as
 # "<parent-thread>:<slug>"), so the shape is loose but bounded and path-safe.
 _CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,119}$")
+_SPOKEN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
 _THREAD_META_KEY = "thread_meta:{thread_id}"
 
 # GET /obsidian redirect hardening: the two query values fully control the
@@ -466,6 +499,7 @@ class ApiServer:
         # so a removed channel doesn't log a warning on every single post.
         self._lounge_mirror_disabled = False
 
+        self.spoken_receipts = SpokenReceiptRepository(repo.db_path)
         self.app = web.Application(client_max_size=self.max_body_bytes)
         if os.getenv("CCDB_CONTROL_PLANE_HOST_GUARD", "1").lower() not in ("0", "false", "no"):
             self.app.middlewares.append(self._host_middleware)
@@ -500,6 +534,7 @@ class ApiServer:
         self.app.router.add_delete("/api/claims", self.delete_claim)
         # Cross-session observability routes (requires session_repo)
         self.app.router.add_get("/api/sessions", self.list_sessions)
+        self.app.router.add_get("/api/jester/sessions", self.session_snapshot)
         self.app.router.add_get("/api/search", self.search_sessions)
         self.app.router.add_get("/api/agents", self.list_agents)
         self.app.router.add_get("/api/handoffs/status", self.handoff_status)
@@ -519,10 +554,14 @@ class ApiServer:
         # a peer session's relay — see claude_discord/spoken.py for why the two
         # cannot share a prompt or a guard.
         self.app.router.add_post("/api/threads/{thread_id}/spoken", self.deliver_spoken_message)
+        self.app.router.add_get(
+            "/api/threads/{thread_id}/spoken/{request_id}", self.get_spoken_receipt
+        )
         # Which agent answers in this thread, for a surface that has no slash
         # commands of its own to offer.
         self.app.router.add_get("/api/threads/{thread_id}/runtime", self.get_thread_runtime)
         self.app.router.add_post("/api/threads/{thread_id}/runtime", self.set_thread_runtime)
+        self.app.router.add_post("/api/threads/{thread_id}/stop-turn", self.stop_thread_turn)
         self.app.router.add_post("/api/threads/{thread_id}/close", self.close_session)
         # Generic spawn metadata: which parent a thread belongs to and the
         # caller's correlation id, so a lost spawn answer can be reconciled.
@@ -1425,22 +1464,115 @@ class ApiServer:
         if not isinstance(thread, _discord.Thread):
             return web.json_response({"error": "Target must be a thread"}, status=400)
 
+        request_id = data.get("request_id")
+        if request_id is not None and (
+            not isinstance(request_id, str) or not _SPOKEN_REQUEST_ID_RE.fullmatch(request_id)
+        ):
+            return web.json_response({"error": "invalid request_id"}, status=400)
+        if request_id:
+            fingerprint = payload_hash(
+                thread_id=str(thread_id),
+                speaker_id=str(data.get("speaker_id") or ""),
+                text=text,
+                mode=mode,
+                source=source,
+            )
+            receipt, created = await self.spoken_receipts.reserve(
+                request_id, str(thread_id), fingerprint
+            )
+            if receipt.thread_id != str(thread_id) or receipt.payload_hash != fingerprint:
+                return web.json_response(
+                    {"error": "request_id already belongs to different input"}, status=409
+                )
+            if not created:
+                return web.json_response(receipt.public(), status=200)
+
         prompt = build_spoken_prompt(text=text, source=source)
-        asyncio.create_task(
-            cog.deliver_relayed_message(thread, prompt, interrupt=mode == MODE_INTERRUPT)
-        )
+
+        async def deliver() -> None:
+            try:
+                if request_id:
+                    await cog.deliver_relayed_message(
+                        thread,
+                        prompt,
+                        interrupt=mode == MODE_INTERRUPT,
+                        posted_sink=lambda ids: self.spoken_receipts.mark_posted(request_id, ids),
+                    )
+                else:
+                    await cog.deliver_relayed_message(
+                        thread, prompt, interrupt=mode == MODE_INTERRUPT
+                    )
+            except Exception:
+                logger.exception("Spoken request delivery failed for thread %s", thread_id)
+                if request_id:
+                    await self.spoken_receipts.mark_failed(
+                        request_id, "delivery failed or incomplete"
+                    )
+
+        asyncio.create_task(deliver())
         # The words themselves are never logged: a live microphone is the one
         # input where an operator has not chosen what the log will contain.
         logger.info(
-            "Spoken message delivered to thread %s (source=%s, mode=%s, chars=%s)",
+            "Spoken message accepted for thread %s (source=%s, mode=%s, chars=%s)",
             str(thread_id).replace("\r", "").replace("\n", ""),
             str(source).replace("\r", "").replace("\n", ""),
             str(mode).replace("\r", "").replace("\n", ""),
             len(text),
         )
         return web.json_response(
-            {"status": "delivered", "thread_id": thread_id, "mode": mode, "source": source},
+            {
+                "status": "accepted",
+                "thread_id": str(thread_id),
+                "mode": mode,
+                "source": source,
+                "request_id": request_id,
+            },
             status=202,
+        )
+
+    async def get_spoken_receipt(self, request: web.Request) -> web.Response:
+        """Read the receipt for one exact target; polling has no side effects."""
+        thread_id = request.match_info.get("thread_id", "")
+        request_id = request.match_info.get("request_id", "")
+        if not thread_id.isdigit() or not _SPOKEN_REQUEST_ID_RE.fullmatch(request_id):
+            return web.json_response({"error": "invalid receipt identity"}, status=400)
+        receipt = await self.spoken_receipts.get(request_id)
+        if receipt is None or receipt.thread_id != thread_id:
+            return web.json_response({"error": "receipt not found"}, status=404)
+        return web.json_response(receipt.public())
+
+    async def stop_thread_turn(self, request: web.Request) -> web.Response:
+        """Stop only the named active turn on an explicit owner voice request."""
+        raw_thread_id = request.match_info.get("thread_id", "")
+        if not raw_thread_id.isdigit():
+            return web.json_response({"error": "invalid thread_id"}, status=400)
+        owner_id = getattr(self.bot, "owner_id", None)
+        if not isinstance(owner_id, int):
+            return web.json_response({"error": "owner is not configured"}, status=503)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict) or str(body.get("speaker_id") or "") != str(owner_id):
+            return web.json_response({"error": "only the owner may stop a turn"}, status=403)
+
+        import discord as _discord
+
+        thread_id = int(raw_thread_id)
+        thread = self.bot.get_channel(thread_id)
+        if thread is None:
+            try:
+                thread = await self.bot.fetch_channel(thread_id)
+            except Exception:
+                return web.json_response({"error": "thread not found"}, status=404)
+        if not isinstance(thread, _discord.Thread):
+            return web.json_response({"error": "target must be a thread"}, status=400)
+        cog = self.bot.cogs.get("ClaudeChatCog")
+        if cog is None:
+            return web.json_response({"error": "ClaudeChatCog is not loaded"}, status=503)
+        stopped = await cog.stop_turn(thread_id)
+        return web.json_response(
+            {"thread_id": raw_thread_id, "status": "stopped" if stopped else "idle"}
         )
 
     async def get_thread_runtime(self, request: web.Request) -> web.Response:
@@ -2141,6 +2273,57 @@ class ApiServer:
 
         return web.json_response({"sessions": views, "capacity": capacity})
 
+    async def session_snapshot(self, request: web.Request) -> web.Response:
+        """A side-effect-free, string-ID owner view for Jester voice routing."""
+        if err := self._require_session_repo():
+            return err
+        try:
+            limit = max(1, min(_MAX_SESSION_LIMIT, int(request.rel_url.query.get("limit", "100"))))
+        except ValueError:
+            return web.json_response({"error": "limit must be an integer"}, status=400)
+
+        records = await self.session_repo.list_all(limit=limit)  # type: ignore[union-attr]
+        active = self._active_sessions()
+        thread_ids = {r.thread_id for r in records} | {s.thread_id for s in active}
+        labels = await self._stored_voice_labels(thread_ids)
+        views = build_session_views(
+            records=records,
+            active=active,
+            running_thread_ids=self._running_thread_ids(),
+            lounge_messages=[],
+            thread_names=self._thread_names(thread_ids),
+            voice_labels=labels,
+        )
+        return web.json_response(
+            {
+                "sessions": [
+                    {
+                        "thread_id": str(view["thread_id"]),
+                        "tag": None if view["closed"] else view["voice_label"],
+                        "aliases": [] if view["closed"] else view["voice_label_aliases"],
+                        "name": view["thread_name"],
+                        "project": view["working_dir"],
+                        "state": view["state"],
+                        "current_task": view["current_task"],
+                        "closed": view["closed"],
+                    }
+                    for view in views
+                ]
+            }
+        )
+
+    async def _stored_voice_labels(self, thread_ids: set[int]) -> dict[int, str]:
+        """Read persisted tags without minting, renaming, or releasing any."""
+        if self.settings_repo is None or not thread_ids:
+            return {}
+        settings = await self.settings_repo.get_all()
+        labels: dict[int, str] = {}
+        for key, value in settings.items():
+            thread_id = thread_id_from_key(key)
+            if thread_id in thread_ids and value:
+                labels[thread_id] = value
+        return labels
+
     async def _apply_voice_labels(self, views: list[dict[str, Any]]) -> None:
         """Attach a spoken tag to each view, minting the missing ones.
 
@@ -2378,6 +2561,20 @@ class ApiServer:
         if raw_working_dir is not None and not isinstance(raw_working_dir, str):
             return web.json_response({"error": "working_dir must be a string"}, status=400)
         working_dir = raw_working_dir.strip() if raw_working_dir else None
+        backend = data.get("backend")
+        model = data.get("model")
+        if backend is not None:
+            if not isinstance(backend, str) or backend.strip().lower() not in ALL_BACKENDS:
+                return web.json_response({"error": "invalid backend"}, status=400)
+            backend = backend.strip().lower()
+            if self.backend_settings is None:
+                return web.json_response({"error": "backend settings unavailable"}, status=503)
+        if model is not None:
+            if backend is None or not isinstance(model, str) or not 0 < len(model.strip()) <= 100:
+                return web.json_response(
+                    {"error": "model needs a valid explicit backend"}, status=400
+                )
+            model = model.strip()
 
         # Validated here rather than swallowed downstream: a typo'd user_id is a
         # caller bug and should say so, while a Discord-side failure to add the
@@ -2418,6 +2615,8 @@ class ApiServer:
                 attachments=decoded_attachments or None,
                 invite_user_id=invite_user_id,
                 working_dir=working_dir,
+                backend=backend,
+                model=model,
             )
         except Exception as exc:
             logger.error("spawn_session failed: %s", exc, exc_info=True)
