@@ -905,6 +905,30 @@ class TestSpawn:
         assert kwargs.get("auto_start") is False
 
     @pytest.mark.asyncio
+    async def test_explicit_empty_spawn_creates_a_thread_without_a_task(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        resp = await spawn_client.post("/api/spawn", json={
+            "empty": True, "thread_name": "Jobs", "auto_start": False,
+            "working_dir": "/projects/jobs", "backend": "codex",
+        })
+        assert resp.status == 201
+        assert mock_cog.spawn_session.await_args.args[1] == ""
+        assert mock_cog.spawn_session.await_args.kwargs["auto_start"] is False
+
+    @pytest.mark.asyncio
+    async def test_empty_spawn_requires_a_title_and_no_automatic_task(
+        self, spawn_client: TestClient, mock_cog: MagicMock
+    ) -> None:
+        for body in ({"empty": True},
+                     {"empty": True, "thread_name": "Jobs"},
+                     {"empty": True, "thread_name": "Jobs", "auto_start": False,
+                      "prompt": "run this"}):
+            resp = await spawn_client.post("/api/spawn", json=body)
+            assert resp.status == 400
+        mock_cog.spawn_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_spawn_invalid_json_returns_400(self, spawn_client: TestClient) -> None:
         resp = await spawn_client.post(
             "/api/spawn",

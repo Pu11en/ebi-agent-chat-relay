@@ -1674,10 +1674,12 @@ class ClaudeChatCog(commands.Cog):
         # still passed to _run_claude below (the CLI has no such limit), so
         # chunking only affects what's shown in the thread, never what Claude
         # receives. The last chunk becomes the status-reaction anchor.
-        chunks = chunk_message(prompt) or [prompt]
-        seed_message = await thread.send(chunks[0])
-        for chunk in chunks[1:]:
-            seed_message = await thread.send(chunk)
+        seed_message = None
+        if prompt:
+            chunks = chunk_message(prompt) or [prompt]
+            seed_message = await thread.send(chunks[0])
+            for chunk in chunks[1:]:
+                seed_message = await thread.send(chunk)
         # Surface any caller-provided attachments in the thread so they're
         # viewable alongside the prompt (e.g. files attached to a Forgejo Issue).
         if attachments:
@@ -1690,6 +1692,8 @@ class ClaudeChatCog(commands.Cog):
             if model:
                 await settings.set_model(backend, model, thread_id=thread.id)
         if auto_start:
+            if seed_message is None:
+                raise ValueError("an automatic session needs a prompt")
             # Run Claude in the background so /api/spawn returns immediately.
             # The caller gets the thread reference without waiting for Claude to finish.
             asyncio.create_task(
