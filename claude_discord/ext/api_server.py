@@ -1637,12 +1637,7 @@ class ApiServer:
                 return web.json_response(
                     {"error": f"backend must be one of {', '.join(ALL_BACKENDS)}"}, status=400
                 )
-            await self.backend_settings.set_backend(backend, thread_id=thread_id)
 
-        # A model belongs to a backend, so a model-only change applies to
-        # whichever backend the thread is on now — that is what "use sonnet
-        # here" means when nobody mentioned a backend.
-        effective = backend or await self.backend_settings.current_backend(thread_id)
         if model is not None:
             model = str(model).strip()
             if not model or len(model) > 100:
@@ -1650,6 +1645,15 @@ class ApiServer:
                     {"error": "model must be a non-blank string of at most 100 characters"},
                     status=400,
                 )
+
+        if backend is not None:
+            await self.backend_settings.set_backend(backend, thread_id=thread_id)
+
+        # A model belongs to a backend, so a model-only change applies to
+        # whichever backend the thread is on now — that is what "use sonnet
+        # here" means when nobody mentioned a backend.
+        effective = backend or await self.backend_settings.current_backend(thread_id)
+        if model is not None:
             await self.backend_settings.set_model(effective, model, thread_id=thread_id)
 
         logger.info(
