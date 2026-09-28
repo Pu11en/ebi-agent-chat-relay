@@ -2444,6 +2444,7 @@ class ApiServer:
         payload = [
             {
                 "thread_id": r.thread_id,
+                "thread_id_str": None if r.thread_id is None else str(r.thread_id),
                 "session_id": r.session_id,
                 "thread_name": names.get(r.thread_id) if r.thread_id is not None else None,
                 "summary": r.summary,
