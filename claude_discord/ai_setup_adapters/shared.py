@@ -16,13 +16,17 @@ Two facts shape the availability it reports:
 "Discovered" is the strongest claim this adapter ever makes: it sees files,
 not loaders.  Verified loading comes from runtime evidence handed to the
 harness adapters.
+
+Installed skill directories may be links to shared libraries or packages.
+Only their SKILL.md is read, bounded to that package's resolved directory;
+the original installation path remains the item's identity and source.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from claude_discord.ai_setup_collector import AdapterResult, CollectionContext
@@ -275,8 +279,18 @@ class SharedSetupAdapter:
         return AdapterResult(items=tuple(items), diagnostics=tuple(diagnostics))
 
     def _item(self, root: SetupRoot, found: _Found, context: CollectionContext) -> InventoryItem:
-        facts = read_file_facts(root, found.path)
-        summary = _skill_description(root, found.path) if found.kind is SetupKind.SKILL else None
+        # Directory links are a supported way to install skills. Limit this
+        # exception to the package, so a SKILL.md file link cannot escape it;
+        # instruction, memory and configuration boundaries stay unchanged.
+        read_root = (
+            replace(root, path=found.path.parent, companions=())
+            if found.kind is SetupKind.SKILL
+            else root
+        )
+        facts = read_file_facts(read_root, found.path)
+        summary = (
+            _skill_description(read_root, found.path) if found.kind is SetupKind.SKILL else None
+        )
         ownership = found.ownership or root.ownership
         return InventoryItem(
             identity=ItemIdentity(kind=found.kind, source_key=root.key, name=found.name),

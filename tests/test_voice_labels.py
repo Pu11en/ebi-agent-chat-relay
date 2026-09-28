@@ -364,6 +364,7 @@ class TestMishearings:
     def test_a_mishearing_resolves_to_its_tag(self) -> None:
         assert heard_as("lucy") == "luffy"
         assert heard_as("zorro") == "zoro"
+        assert heard_as("Frankie") == "franky"
 
     def test_a_tag_resolves_to_itself(self) -> None:
         for label in SPOKEN_LABELS:

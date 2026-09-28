@@ -335,6 +335,63 @@ def codex_model_choices(
     return fallback
 
 
+# ── GLM through Claude Code ───────────────────────────────────────────
+
+_glm_cache: tuple[list[tuple[str, str]] | None, float] | None = None
+_glm_cache_lock: asyncio.Lock | None = None
+
+
+async def glm_model_choices(
+    *, fallback: list[tuple[str, str]], env: Mapping[str, str] | None = None
+) -> list[tuple[str, str]]:
+    """Cached subscription metadata, independent of DSH; never a generation call."""
+    global _glm_cache, _glm_cache_lock
+    env = os.environ if env is None else env
+    key = env.get("ZAI_API_KEY", "").strip()
+    if not key or env.get("CCDB_MODEL_DISCOVERY", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return fallback
+    if _glm_cache_lock is None:
+        _glm_cache_lock = asyncio.Lock()
+    async with _glm_cache_lock:
+        now = time.monotonic()
+        if _glm_cache is not None and now < _glm_cache[1]:
+            return _glm_cache[0] if _glm_cache[0] is not None else fallback
+        try:
+            payload = await asyncio.to_thread(
+                _get_json,
+                "https://api.z.ai/api/coding/paas/v4/models",
+                {"Authorization": f"Bearer {key}", "accept": "application/json"},
+                REQUEST_TIMEOUT_SECONDS,
+            )
+            ids = dict.fromkeys(
+                entry["id"]
+                for entry in payload.get("data", [])
+                if isinstance(entry, dict)
+                and isinstance(entry.get("id"), str)
+                and entry["id"].startswith("glm-")
+                and len(entry["id"]) <= 80
+            )
+            preferred = [value for value, _ in fallback if value in ids]
+            choices = [
+                (value, "Z.ai subscription · Claude Code")
+                for value in preferred + [value for value in ids if value not in preferred]
+            ]
+        except Exception:
+            # Transport exceptions can contain headers; never log their content.
+            logger.warning("GLM model discovery unavailable; using static suggestions")
+            choices = []
+        _glm_cache = (
+            choices or None,
+            now + (CACHE_TTL_SECONDS if choices else FAILURE_TTL_SECONDS),
+        )
+        return choices or fallback
+
+
 # ── DSH routes (DeepSeek and Z.ai) ─────────────────────────────────────
 #
 # The `dsh` backend hosts more than one provider, so its autocomplete is the

@@ -138,13 +138,14 @@ Two consequences of the runtime's design are worth knowing before you rely on th
   dsh threads in ten worktrees is therefore ~3.8 GB resident. The trade is deliberate: a
   runtime is what keeps a thread's context alive. Evicting idle runtimes would cap the
   footprint at the cost of exactly what a bot restart already costs — a fresh session.
-- **Stop ends the Discord turn, not the agent's work.** The bundled SDK runtime implements only
-  `initialize`, `session/prompt`, and `shutdown` — there is no cancel method on the wire. The
-  Stop button therefore closes the turn immediately (the thread reports "Stopped by the user")
-  while the shared runtime finishes the agent's work in the background; nothing coordinates a
-  later turn with that leftover work — the runtime may still be busy when the next message
-  arrives. The same gap means image attachments are not supported: the
-  runner warns that the image was not sent rather than silently dropping it.
+- **Stop waits for the worker to finish.** The bundled SDK runtime implements only
+  `initialize`, `session/prompt`, and `shutdown` — there is no cancel method on the wire.
+  The Stop button and `/stop` report **Stopping** while the worker remains active and may
+  continue changing files. The thread stays busy, and follow-up messages wait until the
+  worker returns; they cannot overlap the unfinished turn. A timed-out worker also retains
+  its run slot until it finishes. If the SDK hangs indefinitely, this wait has no deadline:
+  recovering the shared runtime requires operator intervention and may affect other sessions.
+  Image attachments are also unsupported: the runner warns that the image was not sent.
 
 The runtime is a subprocess, and it inherits the bot's environment. ccdb scrubs the credentials it
 strips from every other backend (`DISCORD_BOT_TOKEN` and friends) for the moment the runtime

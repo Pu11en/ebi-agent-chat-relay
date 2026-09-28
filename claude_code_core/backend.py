@@ -61,9 +61,12 @@ def create_backend(
             to its CLI config.
         **kwargs: Forwarded to the runner constructor.
     """
-    if backend == "claude":
+    if backend in ("claude", "glm"):
         from .runner import ClaudeRunner
 
+        if backend == "glm":
+            kwargs["provider"] = "zai"
+            model = model or "glm-5.3"
         runner: SessionBackend = ClaudeRunner(model=model, **kwargs)  # type: ignore[arg-type]
     elif backend == "codex":
         from .codex_runner import CodexRunner

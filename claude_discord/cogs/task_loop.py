@@ -3218,7 +3218,11 @@ class TaskLoopCog(commands.Cog):
             verdict, note = "skipped", ""
             if landed and checks_ok:
                 verdict, note = await self._review_manifest_task(
-                    running, assignment.outcome, base_commit, thread=sub, cwd=cwd
+                    running,
+                    assignment.outcome,
+                    base_commit,
+                    thread=sub,
+                    cwd=project_copy.path / rel,
                 )
                 if verdict != "skipped":
                     checks.append(f"review ({verdict}): {note or 'approved'}")

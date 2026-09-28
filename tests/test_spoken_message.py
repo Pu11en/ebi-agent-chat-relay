@@ -130,6 +130,8 @@ async def test_spoken_message_is_delivered_unwrapped_and_queued(
     body = await resp.json()
     assert body["mode"] == "queue"
     assert body["source"] == "voice"
+    assert body["status"] == "accepted"
+    assert body["thread_id"] == str(THREAD)
 
     await asyncio.sleep(0)  # let the background delivery task run
     cog.deliver_relayed_message.assert_awaited_once()
@@ -211,6 +213,45 @@ async def test_speaking_is_not_rate_limited_the_way_agent_relay_is(
     assert cog.deliver_relayed_message.await_count == 4
 
 
+async def test_same_owner_request_id_posts_once_and_has_exact_thread_receipt(
+    api_client: TestClient, cog: MagicMock
+) -> None:
+    async def delivered(_thread, _prompt, *, interrupt, posted_sink):
+        assert interrupt is False
+        await posted_sink(["1554146845415055446"])
+
+    cog.deliver_relayed_message.side_effect = delivered
+    payload = {"text": "run the checks", "speaker_id": str(OWNER), "request_id": "jester-test-1"}
+    first = await api_client.post(f"/api/threads/{THREAD}/spoken", json=payload)
+    assert first.status == 202 and (await first.json())["status"] == "accepted"
+    await asyncio.sleep(0.05)
+    again = await api_client.post(f"/api/threads/{THREAD}/spoken", json=payload)
+    assert again.status == 200 and (await again.json())["status"] == "posted"
+    assert cog.deliver_relayed_message.await_count == 1
+    receipt = await api_client.get(f"/api/threads/{THREAD}/spoken/jester-test-1")
+    assert (await receipt.json())["message_ids"] == ["1554146845415055446"]
+    wrong_thread = await api_client.get("/api/threads/1554146845415055447/spoken/jester-test-1")
+    assert wrong_thread.status == 404
+    conflict = await api_client.post(
+        f"/api/threads/{THREAD}/spoken", json={**payload, "text": "delete the checks"}
+    )
+    assert conflict.status == 409
+    assert cog.deliver_relayed_message.await_count == 1
+
+
+async def test_long_owner_prompt_is_accepted_without_truncation(
+    api_client: TestClient, cog: MagicMock
+) -> None:
+    text = "Check this detail. " * 500
+    response = await api_client.post(
+        f"/api/threads/{THREAD}/spoken",
+        json={"text": text, "speaker_id": str(OWNER)},
+    )
+    assert response.status == 202
+    await asyncio.sleep(0)
+    assert text.strip() in cog.deliver_relayed_message.call_args.args[1]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -242,3 +283,28 @@ async def test_spoken_to_non_thread_channel_is_rejected(
         f"/api/threads/{THREAD}/spoken", json={"text": "hi", "speaker_id": str(OWNER)}
     )
     assert resp.status == 400
+
+
+async def test_owner_stop_turn_targets_one_exact_thread(
+    api_client: TestClient, cog: MagicMock
+) -> None:
+    cog.stop_turn = AsyncMock(side_effect=[True, False])
+    path = f"/api/threads/{THREAD}/stop-turn"
+    first = await api_client.post(path, json={"speaker_id": str(OWNER)})
+    assert first.status == 200
+    assert await first.json() == {"thread_id": str(THREAD), "status": "stopped"}
+    again = await api_client.post(path, json={"speaker_id": str(OWNER)})
+    assert (await again.json())["status"] == "idle"
+    assert cog.stop_turn.await_args_list[0].args == (THREAD,)
+    assert cog.stop_turn.await_count == 2
+
+
+async def test_stop_turn_rejects_non_owner_and_non_thread(
+    api_client: TestClient, bot: MagicMock, cog: MagicMock
+) -> None:
+    cog.stop_turn = AsyncMock()
+    path = f"/api/threads/{THREAD}/stop-turn"
+    assert (await api_client.post(path, json={"speaker_id": str(STRANGER)})).status == 403
+    bot.get_channel.return_value = MagicMock(spec=discord.TextChannel)
+    assert (await api_client.post(path, json={"speaker_id": str(OWNER)})).status == 400
+    cog.stop_turn.assert_not_awaited()

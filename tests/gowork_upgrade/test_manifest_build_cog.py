@@ -362,6 +362,8 @@ async def test_a_reviewer_verdict_decides_and_a_broken_review_blocks(repo: Path)
     async def turn(seed, thread, prompt, *, working_dir, result_sink, **slot):  # noqa: ANN001
         if "review" in prompt.lower() and "APPROVE" in prompt:
             step = next((ln for ln in prompt.splitlines() if ln.startswith("The step: ")), "")
+            if step:
+                assert Path(working_dir).is_dir(), "review must run in the merged project copy"
             for key, verdict in verdicts.items():
                 if key in step:
                     await result_sink(verdict or None, None if verdict else "reviewer crashed")

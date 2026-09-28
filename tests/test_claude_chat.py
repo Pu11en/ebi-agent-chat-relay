@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
 
+from claude_code_core.dsh_backend import DshRunner
 from claude_discord.cogs.claude_chat import ClaudeChatCog
 from claude_discord.concurrency import SessionRegistry
 
@@ -106,6 +108,22 @@ def _make_channel_interaction() -> MagicMock:
 
 
 class TestStopCommand:
+    @pytest.mark.asyncio
+    async def test_stop_reports_worker_still_running(self) -> None:
+        cog = _make_cog()
+        interaction = _make_thread_interaction()
+        runner = MagicMock()
+        runner.interrupt = AsyncMock()
+        runner.is_stopping = True
+        cog._active_runners[12345] = runner
+
+        await cog.stop_session.callback(cog, interaction)
+
+        embed = interaction.response.send_message.call_args.kwargs["embed"]
+        assert "stopping" in embed.title.lower()
+        assert "still running" in embed.description.lower()
+        assert cog.active_count == 1
+
     @pytest.mark.asyncio
     async def test_stop_outside_thread_sends_ephemeral(self) -> None:
         """Using /stop outside a thread sends an ephemeral error."""
@@ -481,6 +499,72 @@ class TestInterruptOnNewMessage:
         assert max_concurrency == 1
         # No orphaned runner left registered after both finished.
         assert thread_id not in cog._active_runners
+
+
+@pytest.mark.asyncio
+async def test_dsh_followup_waits_for_stopped_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real chat run slot stays occupied until the blocking SDK call returns."""
+    import claude_discord.cogs.claude_chat as chat_mod
+
+    started, release = threading.Event(), threading.Event()
+    prompts: list[str] = []
+
+    class BlockingSession:
+        def run(self, prompt: str, *, on_notification: object = None) -> object:
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                started.set()
+                release.wait(timeout=5)
+            return SimpleNamespace(final_response="done")
+
+    runtime = SimpleNamespace(start_session=lambda session_id: BlockingSession())
+    monkeypatch.setattr(DshRunner, "_ensure_runtime", lambda self: runtime)
+    cog = _make_cog()
+    cog._get_dashboard = lambda: None
+    cog._get_current_model = AsyncMock(return_value=None)
+    cog._get_allowed_tools = AsyncMock(return_value=None)
+    cog._get_current_effort = AsyncMock(return_value=None)
+    cog._build_runner_for_thread = AsyncMock(side_effect=lambda **kwargs: DshRunner())
+    monkeypatch.setattr(chat_mod, "StatusManager", lambda *a, **k: _StubStatus())
+    live_runners: list[DshRunner] = []
+
+    async def run(config):
+        # The helper clones for system context; its own test verifies this hook.
+        runner = config.runner.clone()
+        live_runners.append(runner)
+        if getattr(config, "on_runner_changed", None) is not None:
+            config.on_runner_changed(runner)
+        async for _ in runner.run(config.prompt, config.session_id):
+            pass
+
+    monkeypatch.setattr(chat_mod, "run_claude_with_config", run)
+    message = MagicMock(spec=discord.Message)
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 987
+    thread.send = AsyncMock()
+    first = asyncio.create_task(cog._run_claude(message, thread, "first", None, chat_only=True))
+    second = None
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        assert cog._active_runners[987] is live_runners[0]
+        second = asyncio.create_task(
+            cog._run_claude(
+                message, thread, "second", None, chat_only=True, interrupt_existing=True
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert prompts == ["first"]
+        assert cog.active_count == 1
+        assert not first.done()
+        assert any("wait" in str(call).lower() for call in thread.send.call_args_list)
+    finally:
+        release.set()
+        await asyncio.wait_for(first, 2)
+        if second is not None:
+            await asyncio.wait_for(second, 2)
+
+    assert prompts == ["first", "second"]
+    assert cog.active_count == 0
 
 
 class TestSpawnSession:

@@ -53,9 +53,9 @@ Three measured properties of the SDK shape everything below.
   itself.
 
 * **There is no wire-level cancel.** The bundled SDK runtime implements only
-  ``initialize``, ``session/prompt``, and ``shutdown``, so the Stop button ends
-  the Discord turn (the queue is woken and the thread reports "Stopped by the
-  user") while the shared runtime finishes the agent's work. The same gap makes
+  ``initialize``, ``session/prompt``, and ``shutdown``, so Stop reports that
+  the worker is still running and keeps the turn active until it finishes.
+  The relay's per-thread run slot therefore also holds any follow-up. The same gap makes
   image attachments unsupported: the composition mounts no attachment store, so
   the runner refuses to pretend — it warns that the image was not sent instead.
 """
@@ -446,6 +446,11 @@ class DshRunner:
         self._cancelled = threading.Event()
         self._turn_lock = threading.Lock()
 
+    @property
+    def is_stopping(self) -> bool:
+        """A stop was requested, but the blocking SDK worker has not finished."""
+        return self._cancelled.is_set() and self._active_session is not None
+
     # ── Session identity ────────────────────────────────────
 
     def _session_for_turn(
@@ -617,6 +622,7 @@ class DshRunner:
         turn_prompt = self._with_standing_instruction(prompt)
         estimated = estimate_tokens(turn_prompt)
 
+        self._cancelled.clear()
         try:
             runtime = await asyncio.to_thread(self._ensure_runtime)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user
@@ -624,17 +630,19 @@ class DshRunner:
             yield self._error_event(dsh_session, str(exc))
             return
 
+        if self._cancelled.is_set():
+            yield self._error_event(dsh_session, "Stopped by the user")
+            return
+
         queue: asyncio.Queue[Any] = asyncio.Queue()
         loop = asyncio.get_running_loop()
-        self._cancelled.clear()
         self._queue = queue
         self._loop = loop
         with self._turn_lock:
             self._active_session = dsh_session
 
-        # Once this turn ends the queue is abandoned, but a stopped dsh turn
-        # leaves the agent running in the shared runtime — its notifications
-        # must stop accumulating into a queue nobody drains.
+        # Ignore late notifications if the stream consumer is cancelled.
+        # Cleanup still waits for the SDK worker before releasing the run slot.
         queue_closed = threading.Event()
 
         def push(item: Any) -> None:
@@ -648,41 +656,47 @@ class DshRunner:
         )
 
         error: str | None = None
-        timed_out = False
+        stop_notice_sent = False
         try:
             while True:
                 try:
-                    item = await asyncio.wait_for(queue.get(), timeout=self.timeout_seconds)
+                    item = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=None if self._cancelled.is_set() else self.timeout_seconds,
+                    )
                 except TimeoutError:
-                    timed_out = True
-                    break
+                    error = f"Timed out after {self.timeout_seconds} seconds"
+                    await self.interrupt()
+                    continue
                 if item is _DONE:
                     break
                 if isinstance(item, BaseException):
                     error = f"DeepSeek Harness run failed: {item}"
                     break
+                if self._cancelled.is_set():
+                    if not stop_notice_sent:
+                        yield StreamEvent(
+                            raw={},
+                            message_type=MessageType.SYSTEM,
+                            text=(
+                                "Stopping — the DeepSeek worker is still running. "
+                                "This backend cannot cancel a running turn; it may continue "
+                                "changing files until it finishes. New messages will wait."
+                            ),
+                        )
+                        stop_notice_sent = True
+                    continue
                 for event in self._map_notification(item, dsh_session):
                     estimated += estimate_tokens(event.text or "") + estimate_tokens(
                         event.thinking or ""
                     )
                     yield event
-                if self._cancelled.is_set():
-                    break
         finally:
             queue_closed.set()
-            if timed_out:
-                error = f"Timed out after {self.timeout_seconds} seconds"
-                asyncio.ensure_future(self.interrupt())
-            # A stopped turn must not wait out the worker: the user already
-            # asked for it to end. A normal turn gets a bounded chance to
-            # unwind; abandoning the thread is never a licence to block the
-            # event loop waiting for it.
-            if self._cancelled.is_set():
-                worker.cancel()
-            else:
-                await asyncio.wait({worker}, timeout=5.0)
-                if not worker.done():
-                    worker.cancel()
+            # Cancelling asyncio.to_thread cannot stop its underlying thread.
+            # Keep the owning chat task (and its run slot) alive until the real
+            # worker returns, even when the stream consumer was cancelled.
+            await asyncio.shield(worker)
             with self._turn_lock:
                 self._active_session = None
                 self._queue = None
@@ -697,17 +711,7 @@ class DshRunner:
         yield final
 
     async def interrupt(self) -> None:
-        """End the Discord-side turn now.
-
-        The bundled SDK runtime implements only ``initialize``, ``session/prompt``
-        and ``shutdown`` — measured in the runtime source, there is no cancel
-        method on the wire — so "stop" cannot stop the agent itself. What it
-        does stop is the Discord turn: the pending queue is woken immediately,
-        streaming ends, and the thread reports "Stopped by the user" while the
-        shared runtime finishes the agent's work in the background. Nothing
-        coordinates a later turn with that leftover work — the runtime may
-        still be busy when the next message arrives.
-        """
+        """Request a stop without pretending the uncancellable SDK has stopped."""
         self._cancelled.set()
         with self._turn_lock:
             queue = self._queue
@@ -715,12 +719,14 @@ class DshRunner:
         if queue is None or loop is None:
             return
         try:
-            loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+            # Wake the consumer to publish the pending-stop notice. Only the
+            # worker is allowed to send _DONE and release this turn.
+            loop.call_soon_threadsafe(queue.put_nowait, None)
         except RuntimeError:  # the loop is already closing
             return
 
     async def kill(self) -> None:
-        """Stop the turn. The shared runtime cannot be killed, only let run."""
+        """Request a stop; the shared runtime must finish its active work."""
         await self.interrupt()
 
     async def inject_tool_result(self, request_id: str, data: dict) -> None:

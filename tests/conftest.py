@@ -21,7 +21,7 @@ from claude_discord.claude.types import MessageType, StreamEvent
 #: on the machine the bot runs on — 45 of them did. Sanitizing here makes a local
 #: run mean the same thing as CI; a test that wants a value sets it with
 #: monkeypatch.setenv.
-_LEAKY_PREFIXES = ("CCDB_", "DISCORD_", "CLAUDE_", "ANTHROPIC_", "CODEX_")
+_LEAKY_PREFIXES = ("CCDB_", "DISCORD_", "CLAUDE_", "ANTHROPIC_", "CODEX_", "ZAI_", "DEEPSEEK_")
 _KEPT = frozenset({"CLAUDE_CODE_ENTRYPOINT"})
 
 

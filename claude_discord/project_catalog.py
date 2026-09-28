@@ -37,6 +37,8 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path, PurePath
 
+from .project_paths import is_linked_worktree
+
 DEFAULT_QUERY_LIMIT = 25
 MAX_QUERY_LIMIT = 200
 
@@ -591,7 +593,7 @@ class ProjectDiscovery:
             # Follows symlinks: a symlinked project folder is still a direct
             # child, and its catalog path stays inside the approved root.  A
             # dangling symlink is not a directory and is skipped.
-            return entry.is_dir()
+            return entry.is_dir() and not is_linked_worktree(Path(entry.path))
         except OSError:
             return False
 

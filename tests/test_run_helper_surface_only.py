@@ -26,6 +26,17 @@ def _runner() -> MagicMock:
     return runner
 
 
+async def test_file_briefing_is_compact_and_names_the_output_folder() -> None:
+    runner = _runner()
+    runner.api_port = None
+    context = await _build_system_context(
+        RunConfig(surface=MemorySurface(), runner=runner, prompt="x")
+    )
+    assert context is not None
+    assert "Keep project outputs and notes in /tmp/example" in context
+    assert len(context.split()) < 160
+
+
 async def test_system_context_is_built_without_a_discord_thread() -> None:
     surface = MemorySurface()
     config = RunConfig(

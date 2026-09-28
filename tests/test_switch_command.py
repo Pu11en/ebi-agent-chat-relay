@@ -12,6 +12,62 @@ from tests.test_backend_command_session_clear import (
 )
 
 
+async def test_large_catalog_keeps_every_backend_visible_and_current_model_first():
+    settings = await _settings()
+    cog = _make_cog(settings)
+    catalog = {
+        "claude": [(f"model-{i}", "x") for i in range(30)] + [("opus", "current")],
+        "codex": [("gpt-6-astra", "x")],
+        "glm": [("glm-5.3", "x")],
+    }
+    with patch.object(cog, "_switch_catalog", AsyncMock(return_value=catalog)):
+        choices = await cog._switch_autocomplete(_make_thread_interaction(thread_id=42), "")
+    assert len(choices) == 25
+    assert choices[0].value == "claude|opus"
+    assert {"codex|gpt-6-astra", "glm|glm-5.3"} <= {c.value for c in choices}
+
+
+async def test_disabled_backends_not_discovered_or_switchable(monkeypatch):
+    monkeypatch.setenv("CCDB_ENABLED_BACKENDS", "claude,codex,glm")
+    monkeypatch.setenv("ZAI_API_KEY", "test-key")
+    settings = await _settings()
+    cog = _make_cog(settings)
+    with (
+        patch(
+            "claude_discord.cogs.backend_command.claude_model_choices", AsyncMock(return_value=[])
+        ),
+        patch("claude_discord.cogs.backend_command.dsh_model_choices", AsyncMock()) as dsh,
+        patch("claude_discord.cogs.backend_command.glm_model_choices", AsyncMock(return_value=[])),
+    ):
+        catalog = await cog._switch_catalog()
+    assert set(catalog) == {"claude", "codex", "glm"}
+    dsh.assert_not_awaited()
+    interaction = _make_thread_interaction(thread_id=42)
+    await cog.switch_command.callback(cog, interaction, choice="dsh|deepseek-v4-flash")
+    assert await settings.current_backend(42) == "claude"
+
+
+async def test_glm_switch_rejected_before_changing_settings_when_key_missing(monkeypatch):
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    settings = await _settings()
+    cog = _make_cog(settings)
+    interaction = _make_thread_interaction(thread_id=42)
+    await cog.switch_command.callback(cog, interaction, choice="glm|glm-5.3")
+    assert await settings.current_backend(42) == "claude"
+    assert "ZAI_API_KEY" in interaction.response.send_message.await_args.args[0]
+
+
+async def test_glm_switch_stores_separate_route_without_touching_claude(monkeypatch):
+    monkeypatch.setenv("ZAI_API_KEY", "test-key")
+    settings = await _settings()
+    cog = _make_cog(settings)
+    interaction = _make_thread_interaction(thread_id=42)
+    await cog.switch_command.callback(cog, interaction, choice="glm|glm-5.3")
+    assert await settings.current_backend(42) == "glm"
+    assert await settings.current_model("glm", 42) == "glm-5.3"
+    assert await settings.current_backend(None) == "claude"
+
+
 async def _settings() -> BackendSettings:
     return BackendSettings(
         await _new_settings_repo(),

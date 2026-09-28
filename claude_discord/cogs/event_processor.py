@@ -64,6 +64,8 @@ def _backend_name_from_runner(runner: object) -> str:
         return "agui"
     if cls == "DshRunner":
         return "dsh"
+    if getattr(runner, "provider", None) == "zai":
+        return "glm"
     return "claude"
 
 

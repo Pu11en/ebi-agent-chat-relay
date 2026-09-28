@@ -19,6 +19,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
+from .project_paths import is_linked_worktree
+
 #: Folders that are never a working directory worth offering.
 SKIP_NAMES = frozenset(
     {
@@ -44,7 +46,11 @@ def _normalize(value: str) -> str:
 
 
 def _is_offerable(path: Path) -> bool:
-    return not path.name.startswith(".") and path.name not in SKIP_NAMES
+    return (
+        not path.name.startswith(".")
+        and path.name not in SKIP_NAMES
+        and not is_linked_worktree(path)
+    )
 
 
 def scan_project_folders(
@@ -88,7 +94,9 @@ def scan_project_folders(
             found.append(text)
             if len(found) >= cap:
                 break
-        level = children
+        # A repository's src/tests/docs folders are not sibling projects.
+        # Non-repository grouping folders (e.g. clients/) still get one level.
+        level = [child for child in children if not (child / ".git").exists()]
     # The roots themselves are legitimate working folders, but never the point.
     for root in roots_seen:
         text = str(root)

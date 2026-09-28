@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # here only goes stale as the Codex console default moves.
 DEFAULT_MODEL: dict[str, str | None] = {
     "claude": "sonnet",
+    "glm": "glm-5.3",
     "codex": None,
     "local": None,
     # The DeepSeek Harness runtime is *initialised* with a provider/model
@@ -39,6 +40,7 @@ DEFAULT_MODEL: dict[str, str | None] = {
 }
 DEFAULT_COMMAND = {
     "claude": "claude",
+    "glm": "claude",
     "codex": "codex",
     "local": "codex",
     "dsh": "dsh",
@@ -81,7 +83,7 @@ class BackendFactory:
         self.agui_token = agui_token
 
     def command_for(self, backend: str) -> str:
-        if backend == "claude":
+        if backend in ("claude", "glm"):
             return self.claude_command
         if backend in ("codex", "local"):
             # The local backend is the same CLI, pointed at a ccdb-owned
@@ -135,7 +137,10 @@ class BackendFactory:
         # the operator's standing instructions silently Claude-only, which
         # matters most on `local`: a small model needs a short, blunt directive
         # far more than a frontier one does.
-        if backend in ("claude", "codex", "local", "dsh") and self.append_system_prompt is not None:
+        if (
+            backend in ("claude", "glm", "codex", "local", "dsh")
+            and self.append_system_prompt is not None
+        ):
             kwargs["append_system_prompt"] = self.append_system_prompt
         # The env-level ``effort`` stays Claude-only. Codex effort is resolved
         # per-backend from BackendSettings at spawn time, and the valid values

@@ -1055,7 +1055,9 @@ class ClaudeChatCog(commands.Cog):
                 "No active session is running in this thread.", ephemeral=True
             )
             return
-        await interaction.response.send_message(embed=stopped_embed())
+        runner = self._active_runners.get(interaction.channel.id)
+        stopping = getattr(runner, "is_stopping", False) is True
+        await interaction.response.send_message(embed=stopped_embed(stopping=stopping))
 
     # ------------------------------------------------------------------
     # Shared session services — one implementation behind the slash
@@ -1723,6 +1725,11 @@ class ClaudeChatCog(commands.Cog):
         decides which harness runs it. The slot arguments say what kind of
         capacity the turn takes (a worker task or the build's own review).
         """
+        # A build worker's side copy may have been removed after merge. Fresh
+        # review turns must rebind the thread before the run helper looks up its
+        # saved directory, or that helper restores the deleted side-copy path.
+        if working_dir is not None:
+            await self.repo.save(thread.id, "", working_dir=working_dir)
         await self._run_claude(
             seed_message,
             thread,
@@ -1756,6 +1763,7 @@ class ClaudeChatCog(commands.Cog):
         text: str,
         *,
         interrupt: bool,
+        posted_sink: Callable[[list[str]], Awaitable[None]] | None = None,
     ) -> None:
         """Feed a message from another session into this thread's Claude session.
 
@@ -1777,8 +1785,12 @@ class ClaudeChatCog(commands.Cog):
         await self._ensure_thread_members(thread)
         chunks = chunk_message(text) or [text]
         seed_message = await thread.send(chunks[0])
+        message_ids = [str(seed_message.id)]
         for chunk in chunks[1:]:
             seed_message = await thread.send(chunk)
+            message_ids.append(str(seed_message.id))
+        if posted_sink is not None:
+            await posted_sink(message_ids)
 
         record = await self.repo.get(thread.id)
         session_id = record.session_id if record else None
@@ -2204,8 +2216,8 @@ class ClaudeChatCog(commands.Cog):
         """Clear the thread's active run so the caller can register a new one.
 
         Must be called while holding ``self._thread_locks[thread.id]``. When
-        ``interrupt`` is True the in-flight runner is SIGINT'd (the ``notice`` is
-        posted first); otherwise we simply wait for it to finish — queue
+        ``interrupt`` is True the in-flight runner is asked to stop (the notice
+        distinguishes a pending stop); otherwise we simply wait for it to finish — queue
         semantics. Either way we await the run's task so its cleanup (its own
         ``finally``) completes before the caller registers a replacement, which
         is what keeps at most one runner per thread.
@@ -2219,10 +2231,15 @@ class ClaudeChatCog(commands.Cog):
             return
         existing_task = self._active_tasks.get(thread.id)
         if interrupt:
-            with contextlib.suppress(discord.HTTPException):
-                await thread.send(notice)
             with contextlib.suppress(Exception):
                 await existing_runner.interrupt()
+            if getattr(existing_runner, "is_stopping", False) is True:
+                notice = (
+                    "-# ⏳ Stop requested — the worker is still running. "
+                    "Your next message will wait until it finishes."
+                )
+            with contextlib.suppress(discord.HTTPException):
+                await thread.send(notice)
         if (
             existing_task is not None
             and existing_task is not asyncio.current_task()
@@ -2342,11 +2359,17 @@ class ClaudeChatCog(commands.Cog):
         # --- Phase 2: run the subprocess OUTSIDE the lock --------------------
         # The lock is released so a later message can interrupt this run. The
         # runner is already registered, so that message will find and evict it.
+        def update_active_runner(live_runner: SessionBackend) -> None:
+            nonlocal runner
+            runner = live_runner
+            self._active_runners[thread.id] = live_runner
+
         try:
             await run_claude_with_config(
                 RunConfig(
                     thread=thread,
                     runner=runner,
+                    on_runner_changed=update_active_runner,
                     repo=self.repo,
                     prompt=prompt,
                     session_id=session_id,

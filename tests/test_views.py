@@ -134,6 +134,28 @@ class TestStopViewButtonClick:
 
 class TestStopViewDisable:
     @pytest.mark.asyncio
+    async def test_pending_stop_shows_stopping_until_worker_finishes(self) -> None:
+        runner = _make_runner()
+        runner.is_stopping = True
+        view = StopView(runner)
+        message = MagicMock(spec=discord.Message)
+        message.edit = AsyncMock()
+        view.set_message(message)
+        interaction = _make_interaction()
+
+        await _click(view, interaction)
+
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        assert "stopping" in embed.title.lower()
+        assert "still running" in embed.description.lower()
+        assert "resume" not in embed.description.lower()
+        assert "stopping" in message.edit.call_args.kwargs["content"].lower()
+
+        runner.is_stopping = False
+        await view.disable()
+        assert "finished" in message.edit.call_args.kwargs["content"].lower()
+
+    @pytest.mark.asyncio
     async def test_disable_edits_message(self) -> None:
         """disable() edits the status message to show the deactivated button."""
         runner = _make_runner()

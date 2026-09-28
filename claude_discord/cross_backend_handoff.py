@@ -49,7 +49,7 @@ class ConversationHistoryReader:
             logger.warning("Refusing transcript lookup for invalid session ID")
             return ""
 
-        if backend == "claude":
+        if backend in ("claude", "glm"):
             path = self._find_claude_session(session_id)
             messages = self._read_claude(path) if path is not None else []
         elif backend in ("codex", "local"):
@@ -88,7 +88,7 @@ class ConversationHistoryReader:
             block.get("text", "")
             for block in content
             if isinstance(block, dict)
-            and block.get("type") in {"text", "input_text", "output_text"}
+            and block.get("type") in ("text", "input_text", "output_text")
             and isinstance(block.get("text"), str)
         )
 
@@ -117,31 +117,63 @@ class ConversationHistoryReader:
 
     def _read_codex(self, path: Path) -> list[tuple[str, str]]:
         messages: list[tuple[str, str]] = []
+        previous_format: str | None = None
         try:
             with path.open(encoding="utf-8", errors="replace") as stream:
                 for line in stream:
-                    if len(line) > _MAX_JSONL_LINE_CHARS or '"event_msg"' not in line:
+                    if len(line) > _MAX_JSONL_LINE_CHARS:
                         continue
                     try:
                         record = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if record.get("type") != "event_msg":
+                    message = self._codex_message(record)
+                    if message is None:
                         continue
-                    payload = record.get("payload", {})
-                    event_type = payload.get("type")
-                    content = payload.get("message")
-                    if event_type not in {"user_message", "agent_message"} or not isinstance(
-                        content, str
-                    ):
+                    source_format = record["type"]
+                    # Some CLI versions mirror each message in both formats.
+                    # Only collapse neighboring cross-format copies, not genuine
+                    # repeated messages such as two consecutive "continue" turns.
+                    if messages and messages[-1] == message and previous_format != source_format:
                         continue
-                    content = content.strip()
-                    if content:
-                        role = "User" if event_type == "user_message" else "Assistant"
-                        messages.append((role, content))
+                    messages.append(message)
+                    previous_format = source_format
         except OSError:
             logger.warning("Could not read Codex transcript for handoff", exc_info=True)
         return messages
+
+    def _codex_message(self, record: object) -> tuple[str, str] | None:
+        """Read conversation text from either rollout format, never tool/context records."""
+        if not isinstance(record, dict):
+            return None
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        if record.get("type") == "event_msg":
+            roles = {"user_message": "User", "agent_message": "Assistant"}
+            event_type = payload.get("type")
+            role = roles.get(event_type) if isinstance(event_type, str) else None
+            content = payload.get("message")
+            if role is None or not isinstance(content, str):
+                return None
+        elif record.get("type") == "response_item" and payload.get("type") == "message":
+            roles = {"user": "User", "assistant": "Assistant"}
+            message_role = payload.get("role")
+            role = roles.get(message_role) if isinstance(message_role, str) else None
+            if role is None:
+                return None
+            content = self._text_content(payload.get("content"))
+        else:
+            return None
+        content = content.strip()
+        # Codex records these generated instruction envelopes as user messages.
+        # They belong to the source harness, not to the user's conversation.
+        if not content or (
+            role == "User"
+            and content.startswith(("# AGENTS.md instructions for ", "<environment_context>"))
+        ):
+            return None
+        return role, content
 
     def _format_bounded(self, messages: list[tuple[str, str]]) -> str:
         """Keep complete turns and distribute the character budget across them."""
