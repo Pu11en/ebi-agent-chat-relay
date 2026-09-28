@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+import aiosqlite
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 from claude_code_core.thread_search import run_thread_search
@@ -535,6 +536,7 @@ class ApiServer:
         # Cross-session observability routes (requires session_repo)
         self.app.router.add_get("/api/sessions", self.list_sessions)
         self.app.router.add_get("/api/jester/sessions", self.session_snapshot)
+        self.app.router.add_get("/api/jester/turns", self.jester_turns)
         self.app.router.add_get("/api/search", self.search_sessions)
         self.app.router.add_get("/api/agents", self.list_agents)
         self.app.router.add_get("/api/handoffs/status", self.handoff_status)
@@ -2309,6 +2311,62 @@ class ApiServer:
                     }
                     for view in views
                 ]
+            }
+        )
+
+    async def jester_turns(self, request: web.Request) -> web.Response:
+        """Read bounded Discord turn journal updates without modifying EBI state."""
+        if err := self._require_session_repo():
+            return err
+        since = request.query.get("since", "")
+        after = request.query.get("after", "")
+        try:
+            parsed = datetime.fromisoformat(since)
+            if parsed.tzinfo is None or len(since) > 40 or len(after) > 150:
+                raise ValueError("invalid cursor")
+            limit = max(1, min(200, int(request.query.get("limit", "100"))))
+        except ValueError:
+            return web.json_response({"error": "invalid turn cursor"}, status=400)
+        db_path = Path(self.session_repo.db_path).resolve()  # type: ignore[union-attr]
+        try:
+            async with aiosqlite.connect(db_path.as_uri() + "?mode=ro", uri=True, timeout=1) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT turn_key, thread_id, state, next_attempt_at, expires_at, "
+                    "claimed_at, accepted_at, created_at, updated_at "
+                    "FROM capacity_pending_turns WHERE frontend = 'discord' AND "
+                    "(updated_at > ? OR (updated_at = ? AND turn_key > ?)) "
+                    "ORDER BY updated_at, turn_key LIMIT ?",
+                    (since, since, after, limit + 1),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+        except (aiosqlite.Error, OSError):
+            logger.exception("Could not read Jester turn journal")
+            return web.json_response({"error": "turn journal unavailable"}, status=503)
+        page = rows[:limit]
+        return web.json_response(
+            {
+                "turns": [
+                    {
+                        "turn_key": row["turn_key"],
+                        "thread_id": str(row["thread_id"]),
+                        "state": row["state"],
+                        "parked": row["state"] == "scheduled"
+                        and row["next_attempt_at"] == row["expires_at"],
+                        "claimed_at": row["claimed_at"],
+                        "accepted_at": row["accepted_at"],
+                        "created_at": row["created_at"],
+                        "updated_at": row["updated_at"],
+                    }
+                    for row in page
+                ],
+                "next": None
+                if not page
+                else {
+                    "since": page[-1]["updated_at"],
+                    "after": page[-1]["turn_key"],
+                },
+                "has_more": len(rows) > limit,
             }
         )
 
