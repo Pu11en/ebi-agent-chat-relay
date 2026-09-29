@@ -6,6 +6,7 @@ import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -499,6 +500,130 @@ class TestResume:
         assert await cog.resume_all() == 0
         assert cog._store.all() == []
 
+    @pytest.mark.parametrize("row", ["none", "open", "discord_archived"])
+    async def test_a_build_whose_thread_was_put_away_by_a_person_is_dropped_silently(
+        self, repo: Path, row: str
+    ) -> None:
+        """Archived by hand or by Discord, and the loop did not close it: a closed session."""
+        from claude_code_core.loop_store import LoopRecord
+
+        cog, chat, thread = _cog_with_chat()
+        copy = await create_work_copy(repo, repo / "PLAN.md", root=cog._work_root)
+        cog._store.save(
+            LoopRecord(
+                repo_dir=str(repo),
+                plan_path=str(repo / "PLAN.md"),
+                copy_path=str(copy.path),
+                copy_plan=str(copy.plan_path),
+                branch=copy.branch,
+                worker_thread_id=thread.id,
+                report_channel_id=1,
+                checkpoints=True,
+            )
+        )
+        if row != "none":
+            sessions = await _sessions(repo, chat)
+            await sessions.save(thread.id, "abc-def")
+            if row == "discord_archived":
+                await sessions.mark_closed(thread.id, "Discord archived it.", "discord_archived")
+        thread.archived, thread.locked = True, False
+        report_channel = MagicMock(spec=discord.TextChannel)
+        report_channel.id = 1
+        report_channel.send = AsyncMock()
+        cog.bot.get_channel = MagicMock(
+            side_effect=lambda cid: thread if cid == thread.id else report_channel
+        )
+
+        assert await cog.resume_all() == 0
+        thread.send.assert_not_awaited()
+        report_channel.send.assert_not_awaited()
+        chat.run_fresh_turn.assert_not_awaited()
+        assert cog._store.all() == [] and cog.running == []
+        assert copy.path.exists()  # the work itself is never thrown away here
+
+    async def test_a_finished_build_the_loop_closed_resumes_its_wait_without_a_word(
+        self, repo: Path
+    ) -> None:
+        """The loop put the thread away itself (workflow close): its "looks good" wait
+        comes back after a restart, but nothing is said into the archived thread."""
+        from claude_code_core.loop_store import LoopRecord
+
+        (repo / "PLAN.md").write_text("- [x] Task 1: a\n")
+        _git(repo, "commit", "-qam", "done")
+        cog, chat, thread = _cog_with_chat()
+        cog._check_it_myself = AsyncMock(return_value=[])
+        copy = await create_work_copy(repo, repo / "PLAN.md", root=cog._work_root)
+        cog._store.save(
+            LoopRecord(
+                repo_dir=str(repo),
+                plan_path=str(repo / "PLAN.md"),
+                copy_path=str(copy.path),
+                copy_plan=str(copy.plan_path),
+                branch=copy.branch,
+                worker_thread_id=thread.id,
+                report_channel_id=1,
+                checkpoints=True,
+                waiting_status="COMPLETE",
+                waiting_detail="restored after a restart",
+            )
+        )
+        sessions = await _sessions(repo, chat)
+        await sessions.save(thread.id, "abc-def")
+        await sessions.mark_closed(thread.id, "Build finished.", "workflow_close_on_done")
+        thread.archived, thread.locked = True, False
+        thread.name = "🔁 Task loop · repo"
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        cog.bot.get_channel = MagicMock(
+            side_effect=lambda cid: thread if cid == thread.id else channel
+        )
+
+        assert await cog.resume_all() == 1
+        try:
+            for _ in range(500):
+                if cog._waiters:
+                    break
+                await asyncio.sleep(0.01)
+            assert cog._waiters, "the looks-good wait is restored"
+            thread.send.assert_not_awaited()  # no "Back after a restart" into a put-away thread
+            chat.run_fresh_turn.assert_not_awaited()
+            assert cog._store.all()[0].waiting_status == "COMPLETE"
+            await _type_when_asked(cog, 1, "looks good")
+            await _let_it_finish(cog)
+            assert cog._store.all() == [] and cog.running == []
+        finally:
+            await cog.cog_unload()
+
+    async def test_a_build_whose_thread_was_deleted_is_dropped_silently(self, repo: Path) -> None:
+        from claude_code_core.loop_store import LoopRecord
+
+        cog, chat, thread = _cog_with_chat()
+        copy = await create_work_copy(repo, repo / "PLAN.md", root=cog._work_root)
+        report = MagicMock(spec=discord.TextChannel)
+        report.id = 1
+        report.send = AsyncMock()
+        cog.bot.get_channel = MagicMock(side_effect=lambda cid: report if cid == 1 else None)
+        cog.bot.fetch_channel = AsyncMock(
+            side_effect=discord.NotFound(MagicMock(status=404), "gone")
+        )
+        cog._store.save(
+            LoopRecord(
+                repo_dir=str(repo),
+                plan_path=str(repo / "PLAN.md"),
+                copy_path=str(copy.path),
+                copy_plan=str(copy.plan_path),
+                branch=copy.branch,
+                worker_thread_id=999,
+                report_channel_id=1,
+            )
+        )
+
+        assert await cog.resume_all() == 0
+        report.send.assert_not_awaited()
+        assert cog._store.all() == [] and cog.running == []
+        assert copy.path.exists()
+
 
 async def _type_when_asked(cog: TaskLoopCog, channel_id: int, text: str) -> None:
     """Act like Drew: wait for the bot's question in *channel_id*, then type.
@@ -518,6 +643,33 @@ async def _type_when_asked(cog: TaskLoopCog, channel_id: int, text: str) -> None
                 return
         await asyncio.sleep(0.01)
     raise AssertionError("the bot never asked")
+
+
+async def _let_it_finish(cog: TaskLoopCog) -> None:
+    """Wait for the running build to end; nothing running is fine too."""
+    for running in list(cog.running):
+        if running.task is not None:
+            await asyncio.wait_for(running.task, 10)
+
+
+async def _sessions(repo: Path, chat: MagicMock) -> Any:
+    """A real session store, for tests about rows: the cog reads and closes through it."""
+    from claude_discord.database.models import init_db
+    from claude_discord.database.repository import SessionRepository
+
+    db = str(repo / "sessions.db")
+    await init_db(db)
+    chat.repo = SessionRepository(db)
+    return chat.repo
+
+
+def _put_away_thread(thread_id: int, *, archived: bool) -> MagicMock:
+    """A thread as Discord reports it: ``archived`` is its own word, not a stand-in's."""
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = thread_id
+    thread.archived, thread.locked = archived, False
+    thread.send = AsyncMock()
+    return thread
 
 
 class TestEnding:
@@ -542,11 +694,26 @@ class TestEnding:
         thread.edit.assert_awaited_with(archived=True)
         assert cog._store.all() == []
 
-    async def test_finished_worker_archives_before_waiting_for_verdict(self, repo: Path) -> None:
-        cog, _chat, thread = _cog_with_chat()
-        thread.edit = AsyncMock()
+    async def test_finished_build_closes_its_thread_before_waiting_for_verdict(
+        self, repo: Path
+    ) -> None:
+        """The card's wait stays where it is; the thread is put away properly.
+
+        Archiving the thread without closing its row made a ghost: a session that
+        read open for a thread nobody could see. Now the row and the thread agree
+        (workflow close: archived, never locked or deleted), and the memory stays.
+        """
+        from claude_code_core.session_repo import CloseAuthority
+
+        cog, chat, thread = _cog_with_chat()
+        thread.name = "🔁 Task loop · repo"
         thread.delete = AsyncMock()
         channel = self._channel()
+        sessions = await _sessions(repo, chat)
+        await sessions.save(thread.id, "abc-def")
+        cog.bot.get_channel = MagicMock(
+            side_effect=lambda cid: thread if cid == thread.id else channel
+        )
         await cog.start_loop(channel, str(repo / "PLAN.md"))
 
         for _ in range(500):
@@ -555,11 +722,75 @@ class TestEnding:
             await asyncio.sleep(0.01)
 
         assert cog.running and cog.running[0].finished
-        thread.edit.assert_awaited_with(archived=True, reason="go-work finished")
+        row = await sessions.get(thread.id)
+        assert row is not None and row.is_closed and not row.archive_pending
+        assert row.close_authority == CloseAuthority.WORKFLOW_CLOSE_ON_DONE.value
+        assert row.session_id == "abc-def"  # its memory survives for a reopen
+        thread.edit.assert_awaited_with(archived=True)
+        assert all("locked" not in c.kwargs for c in thread.edit.await_args_list)
         thread.delete.assert_not_awaited()
 
+        # A later "looks good" still keeps the work and closes the threads without error.
         await _type_when_asked(cog, 1, "looks good")
-        await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
+        await _let_it_finish(cog)
+        posted = " ".join(str(c.args[0]) for c in channel.send.call_args_list if c.args)
+        assert "✅ Kept" in posted
+        assert "- [x]" in (repo / "PLAN.md").read_text()
+        assert cog._store.all() == []
+
+    async def test_fix_after_the_finish_reopens_the_builds_thread(self, repo: Path) -> None:
+        """ "fix" puts the build back to work where it was: the thread comes back, memory kept."""
+        cog, chat, thread = _cog_with_chat()
+        thread.name = "🔁 Task loop · repo"
+        thread.delete = AsyncMock()
+        channel = self._channel()
+        sessions = await _sessions(repo, chat)
+        await sessions.save(thread.id, "abc-def")
+        cog.bot.get_channel = MagicMock(
+            side_effect=lambda cid: thread if cid == thread.id else channel
+        )
+        await cog.start_loop(channel, str(repo / "PLAN.md"))
+
+        await _type_when_asked(cog, 1, "fix")
+        for _ in range(1000):
+            if chat.run_fresh_turn.await_count >= 2 and cog.running and cog.running[0].finished:
+                break
+            await asyncio.sleep(0.01)
+        assert chat.run_fresh_turn.await_count == 2  # the fix step ran in the same thread
+        thread.edit.assert_any_await(archived=False, locked=False)  # reopened for the fix round
+        posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+        assert "Got it, fixing" in posted  # said in the thread, once it was back
+        row = await sessions.get(thread.id)
+        assert row is not None and row.is_closed and row.session_id == "abc-def"  # put away again
+        thread.edit.assert_awaited_with(archived=True)
+
+        await _type_when_asked(cog, 1, "looks good")
+        await _let_it_finish(cog)
+        assert "Fix:" in (repo / "PLAN.md").read_text()
+        assert cog._store.all() == []
+
+    async def test_looks_good_puts_a_thread_brought_back_by_chat_away_again(
+        self, repo: Path
+    ) -> None:
+        """A question typed in the finished thread un-archives it (Discord's doing) while the
+        row stays closed; the close on "looks good" must still leave the thread archived."""
+        from claude_code_core.session_repo import CloseAuthority
+
+        cog, chat, thread = _cog_with_chat()
+        sessions = await _sessions(repo, chat)
+        await sessions.save(thread.id, "abc-def")
+        await sessions.mark_closed(
+            thread.id, "Build finished.", CloseAuthority.WORKFLOW_CLOSE_ON_DONE
+        )
+        thread.archived, thread.locked = False, False
+        cog.bot.get_channel = MagicMock(return_value=thread)
+
+        assert await cog._close_worker_thread(thread) is True
+        thread.edit.assert_awaited_once_with(archived=True)
+
+        thread.archived = True  # and once it is away, a further close leaves it be
+        assert await cog._close_worker_thread(thread) is True
+        thread.edit.assert_awaited_once()
 
     async def test_after_the_build_the_thread_is_a_normal_chat(self, repo: Path) -> None:
         cog, chat, thread = _cog_with_chat()
@@ -2551,3 +2782,154 @@ class TestLegacyLoopRecovery:
             assert "crashed" not in posted
         finally:
             await cog.cog_unload()
+
+
+class TestNothingIsPostedIntoAPutAwayThread:
+    """A person's own message is the only thing that reopens a thread.
+
+    Discord un-archives a thread the moment anything lands in it, so a reminder,
+    a restart note, a question or a summary posted by the bot would quietly bring
+    back a conversation the person had put away. Each of those goes through the
+    one guard in ``thread_policy`` and is skipped, not queued, when the target is
+    archived.
+    """
+
+    @pytest.mark.parametrize("archived", [True, False])
+    async def test_the_looks_good_reminder_leaves_an_archived_starting_thread_alone(
+        self, repo: Path, archived: bool
+    ) -> None:
+        import claude_discord.cogs.task_loop as mod
+
+        cog, chat, thread = _cog_with_chat()
+        thread.delete = AsyncMock()
+        channel = _put_away_thread(1, archived=archived)
+        with patch.object(mod, "VERDICT_REMIND_SECONDS", 0.05):
+            await cog.start_loop(channel, str(repo / "PLAN.md"))
+            for _ in range(500):
+                if cog.running and cog.running[0].finished:
+                    break
+                await asyncio.sleep(0.01)
+            assert cog.running and cog.running[0].finished
+            await asyncio.sleep(0.3)  # several reminder ticks
+            reminders = [
+                c for c in channel.send.call_args_list if c.args and "Still waiting" in c.args[0]
+            ]
+            assert bool(reminders) is not archived
+            await _type_when_asked(cog, 1, "looks good")
+            await _let_it_finish(cog)
+
+    @pytest.mark.parametrize("archived", [True, False])
+    async def test_a_parked_build_reminds_only_a_visible_thread(
+        self, repo: Path, archived: bool
+    ) -> None:
+        import claude_discord.cogs.task_loop as mod
+
+        cog, chat, thread = _cog_with_chat()
+        thread.archived, thread.locked = archived, False
+        thread.delete = AsyncMock()
+
+        async def stuck(*args, result_sink, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            await result_sink("STUCK: need a user decision", None)
+
+        chat.run_fresh_turn.side_effect = stuck
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 1
+        channel.send = AsyncMock()
+        with patch.object(mod, "VERDICT_REMIND_SECONDS", 0.05):
+            await cog.start_loop(channel, str(repo / "PLAN.md"))
+            for _ in range(500):
+                if cog.running and cog.running[0].parked:
+                    break
+                await asyncio.sleep(0.01)
+            assert cog.running and cog.running[0].parked
+            await asyncio.sleep(0.3)
+            reminders = [
+                c for c in thread.send.call_args_list if c.args and "Still waiting on" in c.args[0]
+            ]
+            assert bool(reminders) is not archived
+            await _type_when_asked(cog, 555, "throw it away")
+            await _let_it_finish(cog)
+
+    async def test_a_blocker_question_is_not_posted_into_an_archived_thread(
+        self, repo: Path
+    ) -> None:
+        from claude_discord.cogs.task_loop import _Running
+
+        cog, _chat, _thread = _cog_with_chat()
+        target = _put_away_thread(1, archived=True)
+        running = _Running(MagicMock(), repo, 555, 1, build_id="build-1", report_target=target)
+
+        await cog._post_blocker(running, "blocker-1", "Which key should I use?")
+        target.send.assert_not_awaited()  # stays unposted: a restart reposts it once visible
+
+        target.archived = False
+        await cog._post_blocker(running, "blocker-1", "Which key should I use?")
+        target.send.assert_awaited_once()
+
+    async def test_a_build_keeps_reporting_once_its_thread_is_back(self) -> None:
+        """The thread as Discord shows it now decides, not the object the build holds.
+
+        discord.py stops updating a thread object once its thread is archived: it
+        drops the object from its cache and makes a new one when the thread comes
+        back. A build resumed after a restart holds the cached object, so after
+        its finish put the thread away and "fix" brought it back, that object
+        still says archived — and every report of the fix rounds was skipped.
+        """
+        cog, _chat, _ = _cog_with_chat()
+        held = _put_away_thread(555, archived=True)  # the object the build started with
+        live = _put_away_thread(555, archived=False)  # the thread as Discord shows it now
+
+        cog.bot.get_channel = MagicMock(side_effect=lambda cid: live if cid == 555 else None)
+        assert await cog._may_post(held, "a build report")
+
+        # Right after the loop's own unarchive the cache may not have caught up yet.
+        cog.bot.get_channel = MagicMock(return_value=None)
+        cog.bot.fetch_channel = AsyncMock(return_value=live)
+        assert await cog._may_post(held, "a build report")
+
+        # Still archived in Discord: left alone, and a failed look changes nothing.
+        cog.bot.fetch_channel = AsyncMock(return_value=_put_away_thread(555, archived=True))
+        assert not await cog._may_post(held, "a build report")
+        cog.bot.fetch_channel = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "x"))
+        assert not await cog._may_post(held, "a build report")
+
+    async def test_the_morning_summary_is_not_posted_into_an_archived_thread(self) -> None:
+        import datetime as dt
+
+        from claude_code_core.build_queue import QueueItem
+
+        cog, _chat, _ = _cog_with_chat()
+        report = _put_away_thread(1, archived=True)
+        cog.bot.get_channel = MagicMock(return_value=report)
+        cog._queue.started(QueueItem(plan_path="/x/PLAN-a.md", report_id=1), "alpha", 700)
+        cog._queue.state.history[-1]["started"] = "2026-09-15T23:30:00"
+
+        await cog._maybe_morning_summary(dt.datetime(2026, 9, 16, 8, 5))
+        report.send.assert_not_awaited()
+        assert cog._queue.state.last_summary == "2026-09-16"  # dropped, not left to nag later
+
+    async def test_the_orphaned_build_note_is_not_posted_into_an_archived_thread(
+        self, repo: Path
+    ) -> None:
+        from claude_code_core.loop_store import LoopRecord
+
+        cog, _chat, _thread = _cog_with_chat()
+        copy = await create_work_copy(repo, repo / "PLAN.md", root=cog._work_root)
+        report = _put_away_thread(1, archived=True)
+        cog.bot.get_channel = MagicMock(side_effect=lambda cid: report if cid == 1 else None)
+        cog.bot.fetch_channel = AsyncMock(side_effect=RuntimeError("Unknown Channel"))
+        cog._store.save(
+            LoopRecord(
+                repo_dir=str(repo),
+                plan_path=str(repo / "PLAN.md"),
+                copy_path=str(copy.path),
+                copy_plan=str(copy.plan_path),
+                branch=copy.branch,
+                worker_thread_id=999,
+                report_channel_id=1,
+            )
+        )
+
+        assert await cog.resume_all() == 0
+        report.send.assert_not_awaited()
+        assert cog._store.all() == []
