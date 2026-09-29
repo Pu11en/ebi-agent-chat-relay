@@ -2505,3 +2505,27 @@ class TestLegacyLoopRecovery:
             assert chat.run_fresh_turn.await_count == 1, "continues once the person says so"
         finally:
             await cog.cog_unload()
+
+    async def test_repeated_restarts_of_a_legacy_build_never_spend(self, repo: Path) -> None:
+        """Design matrix: waiting/ambiguous loop -> repeated restart -> zero calls."""
+        cog, chat, thread = await self._legacy(repo, "Try: inspect it\n\n- [x] Task 1: a\n")
+        store, work_root = cog._store, cog._work_root
+        report_channel = MagicMock(id=1, send=AsyncMock())
+        for _restart in range(3):
+            assert await cog.resume_all() == 1
+            for _ in range(500):
+                if cog._waiters:
+                    break
+                await asyncio.sleep(0.01)
+            assert cog._waiters
+            await cog.cog_unload()
+            chat.run_fresh_turn.assert_not_awaited()
+            cog._quick_ai.assert_not_awaited()
+            cog._check_it_myself.assert_not_awaited()
+            assert store.all()[0].waiting_status == "COMPLETE"
+            cog, chat, _ = _cog_with_chat()
+            cog._check_it_myself = AsyncMock(return_value=[])
+            cog._store, cog._work_root = store, work_root
+            cog.bot.get_channel = MagicMock(
+                side_effect=lambda cid: thread if cid == thread.id else report_channel
+            )

@@ -199,3 +199,55 @@ async def test_resumed_run_may_advance_its_own_binding(identity_repo: SessionRep
     record = await identity_repo.get(surface.thread_key)
     assert record is not None and record.session_id == "forked-id"
     assert processor.session_id == "forked-id"
+
+
+async def test_backend_switch_next_reply_and_reload_resume_the_new_binding(
+    identity_repo: SessionRepository,
+) -> None:
+    """Design matrix row 1: A -> B -> next reply -> process reload."""
+    import discord
+
+    from claude_discord.cogs.claude_chat import ClaudeChatCog
+
+    surface = MemorySurface()
+    thread_id = surface.thread_key
+    await identity_repo.save(thread_id, "codex-a", backend="codex")
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = thread_id
+    thread.send = AsyncMock()
+
+    def chat(repo: SessionRepository) -> ClaudeChatCog:
+        settings = MagicMock()
+        settings.current_backend = AsyncMock(return_value="claude")
+        history = MagicMock()
+        history.read.return_value = "User:\nold question\n\nAssistant:\nold answer"
+        return ClaudeChatCog(
+            bot=MagicMock(),
+            repo=repo,
+            runner=MagicMock(),
+            backend_settings=settings,
+            conversation_history=history,
+        )
+
+    first = chat(identity_repo)
+    resume, prompt = await first._prepare_cross_backend_handoff(thread, "continue", "codex-a")
+    assert resume is None and "old answer" in prompt
+    first._conversation_history.read.assert_called_once_with("codex", "codex-a")
+    handoff = _processor(identity_repo, surface, resume)
+    await handoff.process(StreamEvent(message_type=MessageType.SYSTEM, session_id="claude-b"))
+    await handoff.process(
+        StreamEvent(
+            message_type=MessageType.RESULT, is_complete=True, session_id="claude-b", text="ok"
+        )
+    )
+    await handoff.finalize()
+
+    reloaded_repo = SessionRepository(identity_repo.db_path)  # a new process
+    record = await reloaded_repo.get(thread_id)
+    assert record is not None and (record.session_id, record.backend) == ("claude-b", "claude")
+    reloaded = chat(reloaded_repo)
+    resume, prompt = await reloaded._prepare_cross_backend_handoff(
+        thread, "next reply", record.session_id
+    )
+    assert (resume, prompt) == ("claude-b", "next reply"), "native resume, no second handoff"
+    reloaded._conversation_history.read.assert_not_called()
