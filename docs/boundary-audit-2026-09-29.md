@@ -51,3 +51,38 @@ the fake worker's `git commit` found nothing to commit, then its teardown report
 the crashed task). It passed 5/5 alone and the immediate rerun of the full gate —
 with no other work running — passed: **6,232 passed, five known warnings, zero
 errors in 543.41s**. Recorded as a second fixture flake under load, not fixed.
+
+## Adversarial review pass over the integration (task 6.2)
+
+Each attack below was checked against the code; none produced a new defect beyond
+those already fixed or recorded above.
+
+- **Stale SYSTEM event** (not covered by the result compare-and-set): the chat
+  path's `_evict_active_run` awaits the previous run's task in both queue and
+  interrupt modes, so an older run cannot emit SYSTEM after a newer one binds.
+  Paths outside that lock (scheduler follow-ups, direct API turns) remain the
+  recorded concurrency hazard.
+- **Workflow no-lock bypass**: only `workflow_close_on_done` rows archive
+  unlocked, and a later user close rewrites `close_authority` through
+  `request_close`, so a person's close still locks. A pending workflow close
+  completed by chat finalization stays unlocked (tested).
+- **Ledger truthfulness**: `_close_worker_thread` reports done only when the
+  stored close exists, the tag exclusion was written and no archive is pending;
+  every failure path returns False, so the ledger keeps the worker owed.
+- **Legacy restoration**: the restored record is saved with `checkpoints=True`
+  before launch, so a crash during launch cannot re-trigger spending; manifest
+  builds keep the ledger path; invalid waits park (tested).
+- **Diagnostic writes**: the inspector never opens a writable connection; with
+  no WAL it opens immutable (a concurrent writer can at worst make the read fail,
+  which is reported as unavailable); with a WAL it opens `mode=ro`.
+- **Health exposure**: commit, pid and start time only; no path, environment or
+  secret. Git runs with fixed argv, `--no-optional-locks`, 2-second timeout.
+- **Security-audit checklist** (`.agents/skills/security-audit/SKILL.md`): no new
+  `shell=True`, no user text in argv, no new environment variables passed to
+  model subprocesses, secrets only sent as the configured API bearer header by the
+  operator's live-check script and never printed; Ruff S counts unchanged per
+  batch except the documented, suppressed S603/S608 constants.
+
+Gate after the pass: `make verify` **6,233 passed, five known warnings, zero
+errors in 533.93s**; no unexplained asynchronous failures. Two load-only fixture
+flakes observed during the day are recorded above and in the scenario matrix.
