@@ -7,44 +7,46 @@ do not claim this checkpoint means credits have run out.
 
 ## Claude Code continuation — September 29 (read this first)
 
-Current heads (both worktrees preserved, nothing pushed/deployed/restarted):
+Nothing was pushed, deployed, restarted or repaired live. Both worktrees preserved.
 
-- EBI candidate `fix/harness-round-2-20260928` HEAD `b5c49f5`, on top of `8021f53`:
-  `cbd42d9` Go Work worker archives use the durable session outbox (whole-build →
-  archive failure → fresh repos/services/cogs → converges; never locks workflow
-  closes; `retry_archives` counts threads); `48f6466` legacy group workers close
-  only when the build is kept (`landed_workers` in the loop record) and loop
-  records saved before checkpoints wait instead of spending on restart
-  (`checkpoints` marker; finished → verdict wait, unfinished plain plan → parked,
-  manifest → ledger reconciliation); `6fe2442` no orphan thread for an empty
-  auto-start spawn (726ecaf review); `b5c49f5` a late result from an evicted run
-  cannot replace a newer binding (compare-and-set, task 2.3).
-  Gates: `make verify` **6,204 passed** (after cbd42d9) and **6,210 passed, five
-  known warnings, zero errors, 575s** (after b5c49f5); formatting/lint/pyright clean.
-  Evidence: `docs/session-close-recovery-2026-09-29.md`,
-  `docs/worker-lifecycle-review-2026-09-28.md`, `docs/identity-and-recovery-2026-09-29.md`.
-  Uncommitted in progress: `claude_discord/runtime_identity.py` +
-  `tests/test_runtime_identity.py` (task 5.2 boot identity; health wiring next).
-- Jester candidate `fix/jester-stabilization-20260928` HEAD `e44cedd`, on top of
-  `bc10c47`: `23f9c5a` JV-06 (failed dismissal write no longer keeps Jester in the
-  room / crashes on departure; single rejoin), `5e18881` JV-07 (proposer rejects
-  clipped spans; repeated task says "not sent again"), `dafd664` three-commit review
-  verdicts, `b657576` pending-speech bound test + ledger rows, `e44cedd` JV-08
-  (result attachment not re-posted when saving "posted" fails). Checks: **150 Node,
-  7 Python, 16/16 isolated simulations**. Report: `STABILIZATION-REVIEW-2026-09-28.md`.
-- REL-01 note: two writer mechanisms that produce `(claude, old ID)` are guarded
-  (`bd518f5` error echo; `b5c49f5` stale result). The first launch that used the
-  old ID remains UNKNOWN.
-- The `Loop ... handles pid ... is closed` diagnostic appears only in parallel
-  (`-n 8`) Go Work runs; three serial passes did not show it. Unattributed.
-- Rollback hazard for activation: older code drops loop records carrying new
-  fields on its next save. Back up `~/.local/state/ccdb/gowork-loops.json` first.
+**Urgent for Drew:** do not restart the live bot on current main. Its
+`resume_all` would resume build `thread-1554146845415055445` (closed by Drew,
+manifest plan with 21 open tasks) and dispatch paid workers. See
+`docs/activation-checklist-2026-09-29.md` in the EBI candidate for the dry run,
+tested rollback (a code-only rollback breaks every session read) and steps.
 
-Next (in order): finish 5.2 health wiring + gate; 5.1 read-only diagnostic;
-5.3 live-check profiles; 3.2 remaining tag interleavings; 6.1 scenario matrix;
-6.4 dry-run manifest + rollback checklist; Jester remaining UNTESTED ledger rows.
-OpenSpec checkboxes were not changed in this continuation: slices are checked,
-whole tasks are not claimed.
+EBI candidate `fix/harness-round-2-20260928` HEAD `949873f` (on `8021f53`):
+`cbd42d9` worker archives via durable outbox (whole-build + process-reconstruction
+test); `48f6466` legacy workers close only when the build is kept + legacy loops
+wait instead of spending; `6fe2442` no orphan thread on empty auto-start spawn;
+`b5c49f5` stale result cannot replace a newer binding; `3f146aa` + `949873f`
+running revision in health; `3171054` read-only consistency inspector + profile
+live check (no `/api/sessions`); `2726312` activation checklist; `1cb3d74`
+worker never tagged when its exclusion write fails; `22a400f` runnable scenario
+matrix (`scripts/scenario-matrix.sh`, 9 rows, 54 tests, all pass).
+Last gate: `make verify` **6,229 passed, five known warnings, zero errors**.
+Evidence docs: `docs/identity-and-recovery-2026-09-29.md`,
+`docs/session-close-recovery-2026-09-29.md`, `docs/worker-lifecycle-review-2026-09-28.md`,
+`docs/voice-tag-integrity-2026-09-28.md`, `docs/scenario-matrix-2026-09-29.md`.
+
+Jester candidate `fix/jester-stabilization-20260928` HEAD `e44cedd` (on `bc10c47`):
+JV-06 presence write failures, JV-07 proposer spans / truthful repeats, JV-08
+result re-post on mark failure, three-commit review verdicts, ledger updates.
+Checks: **150 Node, 7 Python, 16/16 simulations**. Report:
+`STABILIZATION-REVIEW-2026-09-28.md`.
+
+Live read-only findings (not repaired): two closed sessions still hold tags
+(`1553779983158349925` zoro, `1553899450227757156` nami); 363 rows, pool
+exhausted, 16 open untagged. REL-01 window narrowed to 18:54:36–19:07:19; writer
+still unknown. Parallel-only `Loop ... pid ... is closed` diagnostic unattributed.
+`test_two_builds_for_one_project_integrate_in_turn` flaked once under load
+(work copies named by second; recorded, not changed).
+
+Remaining (next session): Jester UNTESTED offline rows (absent-state brain
+counters, brain subprocess/credential boundary, retention clock), duplicate
+Discord delivery sequence, cross-process ordering review, work-copy naming
+collision, then Drew's approval for activation (7.1) and the microphone trial.
+OpenSpec checkboxes were deliberately not ticked; slices are evidenced in docs.
 
 ## Drew's request and authority
 
