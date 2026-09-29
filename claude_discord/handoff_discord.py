@@ -187,13 +187,16 @@ async def ensure_job_thread(
     task_id: str,
     *,
     fetch_channel: Callable[[int], Awaitable[Any]] | None = None,
+    lifecycle: Any | None = None,
 ) -> Any:
     """Open the job thread on ``starter``, or return the one already there.
 
     Either bot may open it: the name is a pure function of the task id, and
     when the other side wins the race Discord refuses a second thread on the
     same message, in which case the existing one is fetched by the starter's
-    id. An archived thread is unarchived so the next post is visible.
+    id. An archived thread is unarchived so the next post is visible, and —
+    given the session ``lifecycle`` — its row is reopened with it, so a
+    visible thread never sits behind a closed row that silences every post.
     """
     thread = getattr(starter, "thread", None)
     if thread is None:
@@ -210,6 +213,11 @@ async def ensure_job_thread(
     if getattr(thread, "archived", False) and hasattr(thread, "edit"):
         with contextlib.suppress(Exception):
             await thread.edit(archived=False)
+        if lifecycle is not None:
+            try:
+                await lifecycle.reopen(int(thread.id))
+            except Exception:
+                logger.warning("could not reopen the job thread %s's session", thread.id)
     return thread
 
 

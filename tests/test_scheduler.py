@@ -438,7 +438,15 @@ class TestFollowUpRespectsSessionState:
     """A scheduled follow-up must obey the same session contracts as a reply."""
 
     @staticmethod
-    async def _setup(tmp_path, repo: TaskRepository, *, closed: bool, backend: str):
+    async def _setup(
+        tmp_path,
+        repo: TaskRepository,
+        *,
+        closed: bool,
+        backend: str,
+        archived: bool = False,
+        one_shot: bool = False,
+    ):
         import discord
 
         from claude_discord.database.models import init_db
@@ -457,9 +465,13 @@ class TestFollowUpRespectsSessionState:
                 interval_seconds=86400,
                 channel_id=99,
                 thread_id=555555,
+                one_shot=one_shot,
             )
         )
         thread = AsyncMock(spec=discord.Thread)
+        thread.id = 555555
+        thread.archived = archived
+        thread.locked = False
         thread.send = AsyncMock()
         bot = _make_bot()
         bot.get_channel = MagicMock(
@@ -473,7 +485,25 @@ class TestFollowUpRespectsSessionState:
         cog = SchedulerCog(
             bot, _make_runner(), repo=repo, session_repo=sessions, backend_settings=settings
         )
+        cog._test_thread = thread  # type: ignore[attr-defined]
         return cog, task
+
+    async def test_follow_up_skips_an_archived_thread_whose_row_is_still_open(
+        self, tmp_path, repo: TaskRepository
+    ) -> None:
+        """A post would un-archive the thread; only the person reopens it."""
+        cog, task = await self._setup(
+            tmp_path, repo, closed=False, backend="codex", archived=True, one_shot=True
+        )
+        with patch(
+            "claude_discord.cogs.scheduler.run_claude_with_config", new_callable=AsyncMock
+        ) as run:
+            await cog._run_task(task)
+        run.assert_not_awaited()
+        cog._test_thread.send.assert_not_awaited()
+        stored = await repo.get(task["id"])
+        assert stored is not None
+        assert not stored["enabled"], "a skipped one-shot follow-up is marked done, not retried"
 
     async def test_follow_up_never_starts_a_turn_in_a_closed_session(
         self, tmp_path, repo: TaskRepository

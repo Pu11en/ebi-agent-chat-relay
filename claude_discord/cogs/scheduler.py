@@ -24,6 +24,7 @@ from claude_code_core.frontend import ConversationSurface, Notice, NoticeLevel
 
 from ..backend_settings import session_is_resumable
 from ..frontend import DiscordFrontend
+from ..thread_policy import may_post_unsolicited
 from ._run_helper import run_claude_with_config
 from .headless_backend import build_headless_runner
 from .run_config import RunConfig
@@ -146,16 +147,20 @@ class SchedulerCog(commands.Cog):
                         if self.session_repo is not None
                         else None
                     )
-                    # A closed (or closing) session takes no new turns. Checked
-                    # before posting: a message would also unarchive the thread.
-                    if record is not None and not record.is_open:
+                    # A closed (or closing) session takes no new turns, and nor
+                    # does a thread put away on Discord while its row still reads
+                    # open. Checked before posting: a message would un-archive it.
+                    native = getattr(surface, "native_thread", None)
+                    thread_hidden = native is not None and not await may_post_unsolicited(native)
+                    if (record is not None and not record.is_open) or thread_hidden:
                         logger.info(
-                            "SchedulerCog: skipping task %d (%s); session %d is %s",
+                            "SchedulerCog: skipping task %d (%s); conversation %d is %s",
                             task_id,
                             task["name"],
                             thread_id,
-                            record.lifecycle_state,
+                            "archived" if thread_hidden else getattr(record, "lifecycle_state", ""),
                         )
+                        await self._mark_skipped(task)
                         return
                     await surface.send_notice(
                         Notice(level=NoticeLevel.INFO, body=f"🔄 **[Follow-up]** `{task['name']}`")
@@ -220,6 +225,15 @@ class SchedulerCog(commands.Cog):
             logger.exception("SchedulerCog: task %d (%s) failed", task_id, task["name"])
         finally:
             self._running.discard(task_id)
+
+    async def _mark_skipped(self, task: dict) -> None:
+        """A skipped one-shot follow-up is spent, not retried.
+
+        A recurring task keeps its schedule (``next_run_at`` was already
+        advanced), so it runs again once the person reopens the thread.
+        """
+        if task.get("one_shot"):
+            await self.repo.set_enabled(task["id"], enabled=False)
 
     async def _open_new_conversation(self, task: dict) -> ConversationSurface | None:
         """Start a fresh conversation under the task's parent channel.
