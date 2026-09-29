@@ -20,7 +20,7 @@ candidate breaks every session read. Both are handled in
 `docs/activation-checklist-2026-09-29.md` (EBI candidate), which also lists the
 decisions to make before activation (incl. `17c65de`'s resume-prompt policy).
 
-- EBI candidate `fix/harness-round-2-20260928` HEAD **`62c66d6`** (16 commits
+- EBI candidate `fix/harness-round-2-20260928` HEAD **`62c66d6`** (14 commits
   on `8021f53` today). Last gate `make verify`: **6,233 passed, five known
   warnings, zero errors**. `scripts/scenario-matrix.sh`: 9 rows, all pass.
   Evidence: `docs/boundary-audit-2026-09-29.md` (start here),
