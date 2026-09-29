@@ -12,7 +12,7 @@ Jester was NOT redeployed (candidate `1348470` still pending its own activation)
 
 - Idle check: no claims, 100/100 snapshot sessions history, no agent CLI running,
   last bot turn 00:08. Lounge notices posted before (id 2677) and after.
-- Backup (bot stopped): `~/.local/state/ccdb/activation-backup-20260929-083117/`
+- Backup (bot stopped): `~/.local/state/ccdb/activation-backup-20260929-083125/`
   — `sessions.db` (integrity ok), `gowork-loops.json`, `gowork-blockers.json`,
   `builds/`, `SHA256SUMS`, `previous-main-commit` (`8e021d2`).
 - Deploy: local merge of `fix/harness-round-2-20260928` (`62c66d6`) into `main`
