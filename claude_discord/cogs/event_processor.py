@@ -693,7 +693,10 @@ class EventProcessor:
                         name=f"inbox-classify-{self._config.surface.thread_key}",
                     )
 
-        if event.session_id:
+        # An error may echo a rejected resume ID, including one owned by another
+        # backend. Only a successful result can establish/update native identity;
+        # keep any binding already verified by SYSTEM rather than poisoning it.
+        if event.session_id and not event.error:
             if self._config.repo:
                 await self._config.repo.save(
                     self._config.surface.thread_key,
