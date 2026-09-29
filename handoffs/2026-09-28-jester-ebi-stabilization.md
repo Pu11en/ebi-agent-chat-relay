@@ -5,6 +5,34 @@ NOT deployed or complete. Start with the "Claude Code continuation" section belo
 Keep this briefing current after each checked batch. Credit balance is unavailable;
 do not claim this checkpoint means credits have run out.
 
+## Activation record — September 29, 08:31–08:35 CDT (read this first)
+
+Drew approved activating the EBI candidate and keeping `17c65de`'s resume rule.
+Jester was NOT redeployed (candidate `1348470` still pending its own activation).
+
+- Idle check: no claims, 100/100 snapshot sessions history, no agent CLI running,
+  last bot turn 00:08. Lounge notices posted before (id 2677) and after.
+- Backup (bot stopped): `~/.local/state/ccdb/activation-backup-20260929-083117/`
+  — `sessions.db` (integrity ok), `gowork-loops.json`, `gowork-blockers.json`,
+  `builds/`, `SHA256SUMS`, `previous-main-commit` (`8e021d2`).
+- Deploy: local merge of `fix/harness-round-2-20260928` (`62c66d6`) into `main`
+  as `1656b6d` (not pushed; main is ahead of origin). Restarted
+  `ebi-agent-chat-relay.service`; pre-start "All checks passed. Starting bot (1656b6d)".
+- Verified: `/api/health` runtime commit `1656b6d`, `running_matches_disk: true`,
+  clean tree; schema migrated (363 rows, 0 pending archives); no errors and no
+  agent launches after start. Loop decisions as predicted: closed build
+  `thread-1554146845415055445` not resumed (record removed, copy kept); finished
+  `thread-1554145503506333736` restored as a verdict wait (checks not rerun).
+- Live check (jester profile): 10 pass, 1 fail — closed sessions
+  `1553779983158349925` (zoro) and `1553899450227757156` (nami) still hold tags
+  until the next tag allocation releases them. Recheck after the next new session.
+- Rollback if needed: follow `docs/activation-checklist-2026-09-29.md`
+  (restore the backup DB or drop the two new columns; restore the loop store;
+  reset main to `8e021d2`).
+
+Open: Jester activation (separate approval), microphone trial, OpenSpec 7.3/7.4
+(post-activation sample review after real use).
+
 ## Claude Code continuation — September 29 (read this first)
 
 Authorized local work is complete up to the approval boundary. Nothing was pushed,
