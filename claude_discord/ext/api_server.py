@@ -2212,7 +2212,8 @@ class ApiServer:
 
         Lets a session discover its peers before touching a shared repository:
         which threads are alive, where they are working, and what they last
-        announced in the AI Lounge.  Read-only.
+        announced in the AI Lounge. This also maintains spoken tags and titles;
+        use the session_snapshot endpoint for a read-only snapshot.
 
         Query params:
             limit: Max persisted sessions to consider (default 20, max 100).
@@ -2395,7 +2396,7 @@ class ApiServer:
         ever be tagged, which made the tag depend on something polling this
         endpoint — see that module's docstring.
         """
-        await VoiceTagger(self.bot, self.settings_repo).apply(views)
+        await VoiceTagger(self.bot, self.settings_repo, session_repo=self.session_repo).apply(views)
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.
@@ -2699,9 +2700,11 @@ class ApiServer:
 
         logger.info("Spawned new Claude session in thread %s (%s)", thread.id, thread.name)
         await self._record_thread_metadata(thread.id, parent_thread_id, correlation_id)
-        # A single-thread bulk pass treats every other thread as absent and
-        # can steal a live voice tag. Mint only a genuinely free word here.
-        label = await VoiceTagger(self.bot, self.settings_repo).tag_thread(thread)
+        # Make the new thread addressable using the same ownership and lifecycle
+        # checks as the roster; no free word means explicitly untagged.
+        label = await VoiceTagger(
+            self.bot, self.settings_repo, session_repo=self.session_repo
+        ).tag_thread(thread)
         return web.json_response(
             {
                 "status": "spawned",

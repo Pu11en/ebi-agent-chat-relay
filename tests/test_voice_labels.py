@@ -61,14 +61,14 @@ def test_a_stored_tag_for_an_invisible_thread_is_not_returned() -> None:
     assert labels == {10: first}
 
 
-def test_the_oldest_absent_thread_gives_up_its_tag_when_the_pool_runs_dry() -> None:
-    """Snowflake ids are chronological, so the smallest is the stalest tag."""
+def test_an_absent_thread_keeps_its_tag_even_when_the_pool_runs_dry() -> None:
+    """Page membership and age are not authority to take an open session's name."""
     stored = {100 + i: label for i, label in enumerate(SPOKEN_LABELS)}
     labels, new, released = assign_labels([9999], stored)
 
-    assert labels == {9999: SPOKEN_LABELS[0]}, "the oldest absent thread held it"
-    assert released == {100}
-    assert new == {9999: SPOKEN_LABELS[0]}
+    assert labels == {}
+    assert released == set()
+    assert new == {}
 
 
 def test_a_visible_thread_never_has_its_tag_taken() -> None:

@@ -502,7 +502,9 @@ class ClaudeChatCog(commands.Cog):
         if not category_allowed(thread):
             return
         try:
-            await VoiceTagger(self.bot, self._settings_repo).tag_thread(thread)
+            await VoiceTagger(self.bot, self._settings_repo, session_repo=self.repo).tag_thread(
+                thread
+            )
         except Exception:
             logger.warning("Could not tag new thread %s", thread.id, exc_info=True)
 
@@ -1599,6 +1601,7 @@ class ClaudeChatCog(commands.Cog):
         backend: str | None = None,
         model: str | None = None,
         read_only: bool = False,
+        voice_addressable: bool = True,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -1645,6 +1648,8 @@ class ClaudeChatCog(commands.Cog):
             read_only: Restrict the worker to a read-only tool set in argv
                         (a handoff with ``edit: false``). Raises before the
                         thread is created when the backend cannot honour it.
+            voice_addressable: False for workflow workers and reviewers that must
+                        never occupy a spoken tag. The choice survives restarts.
 
         Returns:
             The newly created :class:`discord.Thread`.
@@ -1656,11 +1661,15 @@ class ClaudeChatCog(commands.Cog):
             default_working_dir if isinstance(default_working_dir, str) else None
         )
         name = (thread_name or prompt)[:100]
-        thread = await channel.create_thread(
-            name=name,
-            type=discord.ChannelType.public_thread,
-            auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
-        )
+        tagger = VoiceTagger(self.bot, self._settings_repo)
+        async with tagger.lock:
+            thread = await channel.create_thread(
+                name=name,
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+            )
+            if not voice_addressable:
+                await tagger.exclude_thread(thread.id)
         # Added before the seed message so the requester sees the thread from its
         # first line, not after Claude has already been talking to itself.
         if invite_user_id:
