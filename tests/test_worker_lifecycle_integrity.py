@@ -12,9 +12,9 @@ import discord
 import pytest
 
 from claude_code_core.loop_store import LoopRecord, LoopStore
+from claude_code_core.session_repo import CloseAuthority
 from claude_code_core.task_loop import LoopOutcome, Status
 from claude_code_core.work_copy import WorkCopy, create_work_copy
-from claude_discord.cogs.claude_chat import ClaudeChatCog
 from claude_discord.cogs.task_loop import TaskLoopCog, _Running
 from claude_discord.database.models import init_db
 from claude_discord.database.repository import SessionRepository
@@ -114,18 +114,19 @@ async def test_finished_build_remains_runnable_while_waiting_for_verdict(build: 
     cog._check_it_myself = AsyncMock(return_value=[])
     cog._missing_steps = AsyncMock(return_value=[])
     cog._lessons = AsyncMock(return_value=[])
-    chat_gate = ClaudeChatCog.__new__(ClaudeChatCog)
-    chat_gate.repo = build.sessions
 
     async def verdict(*args: object) -> tuple[str, bool]:
         record = await build.sessions.get(100)
-        assert record is not None and record.is_open, "review is not workflow completion"
-        assert not await chat_gate._close_requested(100), "normal questions must still enter"
-        assert record.session_id == "parent-native"
+        assert record is not None and record.is_closed, "the card puts the thread away"
+        assert record.close_authority == CloseAuthority.WORKFLOW_CLOSE_ON_DONE.value
+        assert record.session_id == "parent-native"  # its memory survives for the reopen
         return "fix", False
 
     cog._wait_or_wake = AsyncMock(side_effect=verdict)
     assert await cog._wrap_up(running) == "fix"
+    reopened = await build.sessions.get(100)
+    assert reopened is not None and reopened.is_open, '"fix" reopens the thread to work in'
+    running.thread.edit.assert_any_await(archived=False, locked=False)
     running.thread.delete.assert_not_awaited()
 
 
