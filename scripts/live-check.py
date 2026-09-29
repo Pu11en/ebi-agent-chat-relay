@@ -272,10 +272,13 @@ def evaluate(profile: Profile, seen: Observed) -> list[Result]:
             "snapshot unavailable" if rows is None else "snapshot has no counts (older bot)",
         )
     else:
+        # other_threads (other bots', hand-made) is information only, never a failure.
+        others = counts.get("other_threads")
+        extra = f"; {len(others)} other threads not EBI's" if isinstance(others, list) else ""
         check(
             open_count == active_threads,
             "open sessions match Discord's active threads",
-            f"open_count {open_count} vs discord_active_threads {active_threads}",
+            f"open_count {open_count} vs discord_active_threads {active_threads}{extra}",
         )
 
     if seen.sessions_api_references is None:

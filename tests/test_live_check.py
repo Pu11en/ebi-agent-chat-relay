@@ -190,6 +190,28 @@ def test_open_count_must_equal_discords_active_thread_count() -> None:
     assert marks(live_check.evaluate(profile, healthy(jester_sessions=same)))[name] == "PASS"
 
 
+def test_other_bots_threads_never_fail_the_count_check() -> None:
+    profile = live_check.load_profile({})
+    name = "open sessions match Discord's active threads"
+    others = [
+        {
+            "thread_id": str(n),
+            "name": f"foreign {n}",
+            "owner_id": "1550644558176460961",
+            "owner_name": "david",
+            "channel": "control-center",
+        }
+        for n in range(4)
+    ]
+    body = snapshot(row("1"), other_threads=others)
+    results = live_check.evaluate(profile, healthy(jester_sessions=body))
+    assert "FAIL" not in marks(results).values()
+    mark, detail = next((m, d) for m, n, d in results if n == name)
+    assert mark == "PASS"
+    assert "open_count 1 vs discord_active_threads 1" in detail
+    assert "4 other threads not EBI's" in detail
+
+
 def test_snapshot_without_visibility_or_counts_is_skipped_not_passed() -> None:
     profile = live_check.load_profile({})
     older = {"sessions": [{"thread_id": "1", "tag": "zoro", "closed": False}]}
