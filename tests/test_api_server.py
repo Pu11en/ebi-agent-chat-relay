@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
+from collections.abc import AsyncIterator
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiosqlite
+import discord
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from claude_discord.database.notification_repo import NotificationRepository
-from claude_discord.database.repository import SessionRecord
+from claude_discord.database.repository import SessionRecord, SessionRepository
 from claude_discord.ext.api_server import ApiServer, build_jester_session_snapshot
 from claude_discord.thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
@@ -1242,6 +1247,7 @@ class TestSessionSnapshot:
         session_id: str = "session",
         working_dir: str | None = "/home/drewp/main-projects/repo",
         last_used_at: str = "2026-09-28 10:00:00",
+        lifecycle_state: str = "open",
     ) -> SessionRecord:
         return SessionRecord(
             thread_id=thread_id,
@@ -1252,7 +1258,102 @@ class TestSessionSnapshot:
             summary=None,
             created_at="2026-09-28 09:00:00",
             last_used_at=last_used_at,
+            lifecycle_state=lifecycle_state,
         )
+
+    @staticmethod
+    def _session_repo(records: list[SessionRecord]) -> MagicMock:
+        """A session store whose ``list_all`` filters and caps like the real one."""
+
+        async def list_all(
+            limit: int = 50, origin: str | None = None, *, lifecycle_state: object = None
+        ) -> list[SessionRecord]:
+            state = getattr(lifecycle_state, "value", lifecycle_state)
+            rows = [r for r in records if state is None or r.lifecycle_state == state]
+            rows.sort(key=lambda r: r.last_used_at, reverse=True)
+            return rows[:limit]
+
+        session_repo = MagicMock()
+        session_repo.list_all = AsyncMock(side_effect=list_all)
+        return session_repo
+
+    @staticmethod
+    def _thread(name: str, *, archived: bool = False) -> MagicMock:
+        thread = MagicMock()
+        thread.name = name
+        thread.archived = archived
+        thread.edit = AsyncMock()
+        return thread
+
+    @staticmethod
+    def _bot(cached: dict[int, MagicMock] | None = None) -> MagicMock:
+        """A bot whose channel cache holds exactly ``cached`` and fetches nothing."""
+        bot = MagicMock()
+        bot.cogs = {}
+        bot.session_registry = None
+        bot.guilds = []
+        known = cached or {}
+        bot.get_channel.side_effect = lambda thread_id: known.get(thread_id)
+        bot.fetch_channel = AsyncMock()
+        return bot
+
+    @staticmethod
+    def _api(
+        repo: NotificationRepository,
+        *,
+        bot: MagicMock,
+        session_repo: object,
+        settings_repo: MagicMock | None = None,
+    ) -> ApiServer:
+        api = ApiServer(
+            repo=repo,
+            bot=bot,
+            default_channel_id=12345,
+            session_repo=session_repo,  # type: ignore[arg-type]
+        )
+        api.settings_repo = settings_repo
+        return api
+
+    @staticmethod
+    @contextlib.asynccontextmanager
+    async def _serving(api: ApiServer) -> AsyncIterator[TestClient]:
+        client = TestClient(TestServer(api.app))
+        await client.start_server()
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    @pytest.fixture
+    async def session_db(self) -> AsyncIterator[str]:
+        from claude_discord.database.models import init_db
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        await init_db(path)
+        yield path
+        os.unlink(path)
+
+    @staticmethod
+    async def _seed(path: str, *, open_indexes: set[int], total: int = 150) -> None:
+        """Write ``total`` rows in one transaction; row ``i`` is newer than row ``i - 1``."""
+        base = datetime(2026, 9, 1, 0, 0, 0)
+        rows = [
+            (
+                1000 + i,
+                f"sess-{i}",
+                (base + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"),
+                "open" if i in open_indexes else "closed",
+            )
+            for i in range(total)
+        ]
+        async with aiosqlite.connect(path) as db:
+            await db.executemany(
+                "INSERT INTO sessions (thread_id, session_id, last_used_at, lifecycle_state)"
+                " VALUES (?, ?, ?, ?)",
+                rows,
+            )
+            await db.commit()
 
     def test_snapshot_helper_maps_tagged_row_with_exact_large_thread_id(self) -> None:
         thread_id = 1554146845415055445
@@ -1309,39 +1410,186 @@ class TestSessionSnapshot:
         thread_id = 1554146845415055445
         record = self._record(thread_id)
         before = asdict(record)
-        session_repo = MagicMock()
-        session_repo.list_all = AsyncMock(return_value=[record])
+        session_repo = self._session_repo([record])
         settings_repo = MagicMock()
         settings_repo.get_all = AsyncMock(return_value={f"voice_label:{thread_id}": "franky"})
-        bot = MagicMock()
-        bot.cogs = {}
-        channel = MagicMock()
-        channel.name = "[franky] project work"
-        bot.get_channel.return_value = channel
-        api = ApiServer(
-            repo=repo,
-            bot=bot,
-            default_channel_id=12345,
-            session_repo=session_repo,
-        )
-        api.settings_repo = settings_repo
-        client = TestClient(TestServer(api.app))
-        await client.start_server()
-        try:
+        channel = self._thread("[franky] project work")
+        bot = self._bot({thread_id: channel})
+        api = self._api(repo, bot=bot, session_repo=session_repo, settings_repo=settings_repo)
+        async with self._serving(api) as client:
             with patch.object(api, "_apply_voice_labels", new_callable=AsyncMock) as tagger:
                 first = await (await client.get("/api/jester/sessions")).json()
                 second = await (await client.get("/api/jester/sessions")).json()
-            assert first == second
-            assert first["sessions"][0]["thread_id"] == str(thread_id)
-            assert first["sessions"][0]["tag"] == "franky"
-            assert "frankie" in first["sessions"][0]["aliases"]
-            assert first["sessions"][0]["state"] == "history"
-            assert asdict(record) == before
-            tagger.assert_not_awaited()
-            assert settings_repo.get_all.await_count == 2
-            assert session_repo.list_all.await_count == 2
-        finally:
-            await client.close()
+        assert first["sessions"] == second["sessions"]
+        assert first["open_count"] == second["open_count"] == 1
+        assert first["sessions"][0]["thread_id"] == str(thread_id)
+        assert first["sessions"][0]["tag"] == "franky"
+        assert "frankie" in first["sessions"][0]["aliases"]
+        assert first["sessions"][0]["state"] == "history"
+        assert first["sessions"][0]["visible"] is True
+        assert asdict(record) == before
+        tagger.assert_not_awaited()
+        # The read touches nothing but the two listings: no row, setting or title changes.
+        assert {call[0] for call in session_repo.mock_calls} == {"list_all"}
+        assert {call[0] for call in settings_repo.mock_calls} == {"get_all"}
+        assert channel.mock_calls == []
+        bot.fetch_channel.assert_not_awaited()
+        assert settings_repo.get_all.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_snapshot_says_how_many_spoken_tag_words_exist(self, repo) -> None:
+        """Jester's "why has this thread no tag?" answer needs the size of the pool."""
+        thread_id = 1554146845415055445
+        session_repo = self._session_repo([self._record(thread_id)])
+        settings_repo = MagicMock()
+        settings_repo.get_all = AsyncMock(return_value={})
+        bot = self._bot({thread_id: self._thread("project work")})
+        api = self._api(repo, bot=bot, session_repo=session_repo, settings_repo=settings_repo)
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions")).json()
+        assert body["tag_words"] == 10
+        assert {"sessions", "open_count", "discord_active_threads", "generated_at"} <= set(body)
+
+    @pytest.mark.asyncio
+    async def test_every_open_row_is_listed_and_closed_rows_are_not(
+        self, repo: NotificationRepository, session_db: str
+    ) -> None:
+        # 150 rows, three open; the oldest open row (1000) lies beyond any newest-100 page.
+        await self._seed(session_db, open_indexes={0, 75, 149})
+        bot = self._bot()
+        bot.fetch_channel = AsyncMock(side_effect=lambda tid: self._thread(f"thread {tid}"))
+        api = self._api(repo, bot=bot, session_repo=SessionRepository(session_db))
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions")).json()
+
+        rows = body["sessions"]
+        assert {row["thread_id"] for row in rows} == {"1000", "1075", "1149"}
+        assert [row["closed"] for row in rows] == [False, False, False]
+        assert body["open_count"] == 3
+        assert {row["name"] for row in rows} == {"thread 1000", "thread 1075", "thread 1149"}
+        assert [row["visible"] for row in rows] == [True, True, True]
+        assert {call.args[0] for call in bot.fetch_channel.await_args_list} == {1000, 1075, 1149}
+        assert datetime.fromisoformat(body["generated_at"]).tzinfo is not None
+
+    @pytest.mark.asyncio
+    async def test_include_closed_adds_the_newest_closed_rows_flagged_closed(
+        self, repo: NotificationRepository, session_db: str
+    ) -> None:
+        await self._seed(session_db, open_indexes={0, 75, 149})
+        bot = self._bot()
+        bot.fetch_channel = AsyncMock(side_effect=lambda tid: self._thread(f"thread {tid}"))
+        api = self._api(repo, bot=bot, session_repo=SessionRepository(session_db))
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions?include_closed=1")).json()
+            capped = await (
+                await client.get("/api/jester/sessions?include_closed=1&limit=10")
+            ).json()
+            assert (await client.get("/api/jester/sessions?include_closed=maybe")).status == 400
+
+        open_rows = [row for row in body["sessions"] if not row["closed"]]
+        closed_rows = [row for row in body["sessions"] if row["closed"]]
+        assert {row["thread_id"] for row in open_rows} == {"1000", "1075", "1149"}
+        assert len(closed_rows) == 100
+        closed_ids = {row["thread_id"] for row in closed_rows}
+        assert "1148" in closed_ids
+        assert "1001" not in closed_ids  # the newest hundred, not the oldest
+        assert all(row["tag"] is None and row["aliases"] == [] for row in closed_rows)
+        assert body["open_count"] == 3
+        assert sum(row["closed"] for row in capped["sessions"]) == 10
+        # Closed rows are never fetched, and the second read is served from the cache.
+        assert {call.args[0] for call in bot.fetch_channel.await_args_list} == {1000, 1075, 1149}
+        assert bot.fetch_channel.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_uncached_open_row_is_named_by_one_fetch_then_remembered(self, repo) -> None:
+        bot = self._bot()
+        bot.fetch_channel = AsyncMock(return_value=self._thread("[zoro] repo session"))
+        api = self._api(repo, bot=bot, session_repo=self._session_repo([self._record(4242)]))
+        async with self._serving(api) as client:
+            first = await (await client.get("/api/jester/sessions")).json()
+            second = await (await client.get("/api/jester/sessions")).json()
+
+        assert first["sessions"][0]["name"] == "[zoro] repo session"
+        assert first["sessions"][0]["visible"] is True
+        assert second["sessions"] == first["sessions"]
+        bot.fetch_channel.assert_awaited_once_with(4242)
+
+    @pytest.mark.asyncio
+    async def test_archived_cached_thread_is_not_visible(self, repo) -> None:
+        bot = self._bot({4242: self._thread("[zoro] parked", archived=True)})
+        api = self._api(repo, bot=bot, session_repo=self._session_repo([self._record(4242)]))
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions")).json()
+
+        assert body["sessions"][0]["name"] == "[zoro] parked"
+        assert body["sessions"][0]["visible"] is False
+        bot.fetch_channel.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_gone_thread_is_not_visible_and_is_not_asked_again(self, repo) -> None:
+        bot = self._bot()
+        bot.fetch_channel = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "gone"))
+        api = self._api(repo, bot=bot, session_repo=self._session_repo([self._record(4242)]))
+        async with self._serving(api) as client:
+            first = await (await client.get("/api/jester/sessions")).json()
+            second = await (await client.get("/api/jester/sessions")).json()
+
+        assert first["sessions"][0]["visible"] is False
+        assert first["sessions"][0]["name"] is None
+        assert second["sessions"] == first["sessions"]
+        bot.fetch_channel.assert_awaited_once_with(4242)
+
+    @pytest.mark.asyncio
+    async def test_fetches_are_capped_and_the_newest_threads_are_resolved_first(self, repo) -> None:
+        records = [
+            self._record(1000 + i, last_used_at=f"2026-09-28 10:{i:02d}:00") for i in range(30)
+        ]
+        bot = self._bot()
+        bot.fetch_channel = AsyncMock(side_effect=lambda tid: self._thread(f"thread {tid}"))
+        api = self._api(repo, bot=bot, session_repo=self._session_repo(records))
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions")).json()
+
+        assert bot.fetch_channel.await_count == 25
+        unknown = [row for row in body["sessions"] if row["visible"] is None]
+        # The five oldest wait for the next read; their names are unknown, not invented.
+        assert {row["thread_id"] for row in unknown} == {str(1000 + i) for i in range(5)}
+        assert all(row["name"] is None for row in unknown)
+        assert body["open_count"] == 30
+
+    @pytest.mark.asyncio
+    async def test_a_failing_fetch_leaves_visibility_unknown_without_failing_the_read(
+        self, repo
+    ) -> None:
+        records = [
+            self._record(1000 + i, last_used_at=f"2026-09-28 10:{i:02d}:00") for i in range(3)
+        ]
+        bot = self._bot()
+        bot.fetch_channel = AsyncMock(side_effect=RuntimeError("discord unreachable"))
+        api = self._api(repo, bot=bot, session_repo=self._session_repo(records))
+        async with self._serving(api) as client:
+            resp = await client.get("/api/jester/sessions")
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert [row["visible"] for row in body["sessions"]] == [None, None, None]
+        assert [row["name"] for row in body["sessions"]] == [None, None, None]
+        # One failure ends fetching for this read rather than repeating it per row.
+        assert bot.fetch_channel.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_discord_active_threads_counts_only_unarchived_cached_threads(self, repo) -> None:
+        guild = MagicMock()
+        guild.threads = [self._thread("a"), self._thread("b", archived=True), self._thread("c")]
+        bot = self._bot()
+        bot.guilds = [guild]
+        api = self._api(repo, bot=bot, session_repo=self._session_repo([]))
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions")).json()
+
+        assert body["discord_active_threads"] == 2
+        assert body["sessions"] == []
+        assert body["open_count"] == 0
 
     @pytest.mark.asyncio
     async def test_old_sessions_endpoint_keeps_numeric_thread_ids(self) -> None:
@@ -2305,3 +2553,59 @@ class TestCloseSession:
     async def test_without_the_service_the_endpoint_says_so(self, client):
         response = await client.post("/api/threads/555/close", json={"actor": "42"})
         assert response.status == 503
+
+
+class TestProjectLookupWorkerClose:
+    """The lookup worker is a helper thread: its row closes, and it never wakes a closed origin."""
+
+    @pytest.mark.asyncio
+    async def test_result_skips_archived_requester_and_closes_worker_row(
+        self, repo: NotificationRepository, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from claude_discord.session_lifecycle import CloseState, SessionLifecycleService
+
+        monkeypatch.setenv("CCDB_PROJECT_LOOKUP_ROOT", str(tmp_path))
+        worker_thread = MagicMock()
+        worker_thread.id = 444
+        worker_thread.name = "lookup"
+        worker_thread.edit = AsyncMock()
+        origin_thread = MagicMock()
+        origin_thread.id = 111
+        origin_thread.archived = True
+        origin_thread.send = AsyncMock()
+        cog = MagicMock()
+        cog.spawn_session = AsyncMock(return_value=worker_thread)
+        channel = MagicMock(spec=discord.TextChannel)
+        bot = MagicMock()
+        bot.cogs = {"ClaudeChatCog": cog}
+        bot.get_channel.side_effect = lambda cid: {12345: channel, 111: origin_thread}.get(cid)
+        lifecycle = MagicMock(spec=SessionLifecycleService)
+        lifecycle.close = AsyncMock(
+            return_value=SimpleNamespace(
+                state=CloseState.CLOSED,
+                record=SimpleNamespace(is_closed=True, archive_pending=False),
+                archived=True,
+            )
+        )
+        api = ApiServer(repo=repo, bot=bot, default_channel_id=12345)
+        api.lifecycle = lifecycle
+        client = TestClient(TestServer(api.app))
+        await client.start_server()
+        try:
+            resp = await client.post(
+                "/api/project-lookup", json={"text": "find it", "from_thread": 111}
+            )
+            assert resp.status == 201
+            sink = cog.spawn_session.await_args.kwargs["result_sink"]
+            await sink("Found it.", None)
+        finally:
+            await client.close()
+
+        origin_thread.send.assert_not_awaited()
+        lifecycle.close.assert_awaited_once()
+        closed_id, authorization = lifecycle.close.await_args.args
+        assert closed_id == 444
+        assert authorization.is_workflow
+        worker_thread.edit.assert_not_awaited()

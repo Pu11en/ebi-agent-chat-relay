@@ -27,7 +27,8 @@ import time
 import uuid
 import zipfile
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,7 @@ from urllib.parse import urlsplit
 import aiosqlite
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
+from claude_code_core.session_repo import LifecycleState
 from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
@@ -63,8 +65,8 @@ from ..session_lifecycle import (
 )
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
-from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
-from ..voice_labels import thread_id_from_key
+from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES, may_post_unsolicited, thread_is_archived
+from ..voice_labels import SPOKEN_LABELS, thread_id_from_key
 from ..voice_tags import VoiceTagger
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
@@ -110,6 +112,19 @@ _MAX_DISCORD_THREAD_NAME_LENGTH = 100
 # of history into its own context window.
 _DEFAULT_SESSION_LIMIT = 20
 _MAX_SESSION_LIMIT = 100
+# /api/jester/sessions — the read-only snapshot. Open rows are enumerated in
+# full: an open session is a thread visible in Discord, and Discord allows far
+# fewer live threads per guild than this, so the scan limit is a safety net,
+# not a page size.
+_OPEN_SESSION_SCAN_LIMIT = 10_000
+# How many threads missing from the bot's cache one snapshot may fetch from
+# Discord. A verdict is remembered, so a steady poll costs nothing; the cap
+# bounds the first read after a restart and any read Discord answers slowly.
+_MAX_SNAPSHOT_THREAD_FETCHES = 25
+# How long a fetched verdict (title, archived, gone) is trusted. The bot's own
+# cache is consulted first and holds every live thread, so a thread that comes
+# back is seen at once; this only bounds how long a stale verdict can live.
+_SNAPSHOT_FACT_TTL_SECONDS = 600.0
 _DEFAULT_THREAD_MESSAGE_LIMIT = 30
 _MAX_THREAD_MESSAGE_LIMIT = 100
 _DEFAULT_SEARCH_LIMIT = 15
@@ -216,6 +231,27 @@ def _serialize_thread_message(message: Any) -> dict[str, object]:
         "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else None,
         "jump_url": getattr(message, "jump_url", None),
     }
+
+
+@dataclass(frozen=True)
+class _ThreadFact:
+    """What Discord last said about a thread, for the Jester snapshot.
+
+    ``visible`` is True for a thread Discord shows, False for one that is
+    archived or gone, and None when nothing is known.
+    """
+
+    name: str | None
+    visible: bool | None
+
+
+def _fact_from_channel(channel: Any) -> _ThreadFact:
+    """Read a cached or fetched channel; only a real title counts as a name."""
+    name = getattr(channel, "name", None)
+    return _ThreadFact(
+        name=name if isinstance(name, str) else None,
+        visible=not getattr(channel, "archived", False),
+    )
 
 
 def build_jester_session_snapshot(
@@ -488,6 +524,11 @@ class ApiServer:
         # Loop/rate brake for thread-to-thread relays. Process-local by design:
         # after a restart there are no in-flight relay chains to protect.
         self.relay_guard = RelayGuard()
+        # Verdicts the Jester snapshot fetched for threads the bot's cache does
+        # not hold (archived, gone, never seen), by thread id, with the monotonic
+        # deadline after which the thread is asked again. Bounded by the number
+        # of open rows; the bot's cache is always consulted before this.
+        self._snapshot_thread_facts: dict[int, tuple[float, _ThreadFact]] = {}
         # Friendly names for relay targets, e.g. "drewai" -> a Discord thread.
         self.agent_directory = parse_agent_routes(os.getenv("CCDB_AGENT_ROUTES"))
         # AI Lounge Discord mirror (OPTIONAL, human-facing). When a channel is
@@ -2159,12 +2200,8 @@ class ApiServer:
                 error=error,
             )
             worker_thread = worker_thread_holder.get("thread")
-            if worker_thread is not None and hasattr(worker_thread, "edit"):
-                with contextlib.suppress(Exception):
-                    await worker_thread.edit(
-                        archived=True,
-                        reason="project lookup completed",
-                    )
+            if worker_thread is not None:
+                await self._close_project_lookup_worker(worker_thread, cog)
 
         try:
             thread = await cog.spawn_session(
@@ -2194,6 +2231,32 @@ class ApiServer:
             status=201,
         )
 
+    async def _close_project_lookup_worker(self, worker_thread: Any, cog: Any) -> None:
+        """Close the finished lookup worker's session, not just its thread.
+
+        A bare archive left the row open: a ghost session holding a spoken tag.
+        The lifecycle service closes the row on the workflow's authority and
+        archives the thread unlocked. Only a thread with no session row (or no
+        lifecycle service) falls back to the plain archive it always had.
+        """
+        lifecycle = self.lifecycle or getattr(cog, "lifecycle", None)
+        if isinstance(lifecycle, SessionLifecycleService):
+            try:
+                outcome = await lifecycle.close(
+                    int(worker_thread.id),
+                    CloseAuthorization.from_workflow("project-lookup", close_on_done=True),
+                )
+            except Exception:
+                logger.warning(
+                    "Could not close project lookup worker %s", worker_thread.id, exc_info=True
+                )
+                return
+            if outcome.state is not CloseState.NO_SESSION:
+                return
+        if hasattr(worker_thread, "edit") and not thread_is_archived(worker_thread):
+            with contextlib.suppress(Exception):
+                await worker_thread.edit(archived=True, reason="project lookup completed")
+
     async def _send_project_lookup_result(
         self,
         *,
@@ -2207,6 +2270,10 @@ class ApiServer:
                 target = await self.bot.fetch_channel(thread_id)
         if target is None or not hasattr(target, "send"):
             logger.warning("Project lookup result target %s is not reachable", thread_id)
+            return
+        if not await may_post_unsolicited(target):
+            # The requester put that conversation away; a post would reopen it.
+            logger.info("Project lookup result not posted: thread %s is archived", thread_id)
             return
 
         if error:
@@ -2292,41 +2359,85 @@ class ApiServer:
         return web.json_response({"sessions": views, "capacity": capacity})
 
     async def session_snapshot(self, request: web.Request) -> web.Response:
-        """A side-effect-free, string-ID owner view for Jester voice routing."""
+        """GET /api/jester/sessions — the read-only, string-ID owner view for voice routing.
+
+        "Open" means visible in Discord, so every row whose lifecycle is not
+        closed is listed, in full; closed rows appear only with
+        ``include_closed=1`` — the newest ``limit`` (default and at most 100),
+        flagged ``closed`` — so a history search can still find them. Each row
+        also says whether Discord shows the thread (``visible``: True for a live
+        thread, False for one archived or gone, None when unknown), and the
+        envelope carries ``open_count``, ``discord_active_threads`` (what the
+        bot's cache shows, for comparison) and ``generated_at``. Reading this
+        never mints a tag, renames a thread or writes a row — only
+        ``/api/sessions`` does — so Jester may poll it freely.
+        """
         if err := self._require_session_repo():
             return err
+        query = request.rel_url.query
         try:
-            limit = max(1, min(_MAX_SESSION_LIMIT, int(request.rel_url.query.get("limit", "100"))))
+            include_closed = _catalog_flag(query.get("include_closed"), field="include_closed")
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        try:
+            closed_limit = max(1, min(_MAX_SESSION_LIMIT, int(query.get("limit", "100"))))
         except ValueError:
             return web.json_response({"error": "limit must be an integer"}, status=400)
 
-        records = await self.session_repo.list_all(limit=limit)  # type: ignore[union-attr]
+        # A row that is not closed is open: `closing` is a wrap-up in flight and
+        # its thread is still on screen. The store filters one state at a time.
+        open_rows = await self.session_repo.list_all(  # type: ignore[union-attr]
+            limit=_OPEN_SESSION_SCAN_LIMIT, lifecycle_state=LifecycleState.OPEN
+        )
+        closing_rows = await self.session_repo.list_all(  # type: ignore[union-attr]
+            limit=_OPEN_SESSION_SCAN_LIMIT, lifecycle_state=LifecycleState.CLOSING
+        )
+        records = sorted(open_rows + closing_rows, key=lambda r: r.last_used_at, reverse=True)
+        if include_closed:
+            records += await self.session_repo.list_all(  # type: ignore[union-attr]
+                limit=closed_limit, lifecycle_state=LifecycleState.CLOSED
+            )
         active = self._active_sessions()
         thread_ids = {r.thread_id for r in records} | {s.thread_id for s in active}
+        # Live registry entries first, then open rows newest first: the threads
+        # most likely to be spoken to are resolved before the fetch cap bites.
+        # Closed rows are never fetched; their thread is archived by definition.
+        fetch_order = [s.thread_id for s in active]
+        fetch_order += [r.thread_id for r in records if not r.is_closed]
+        facts = await self._resolve_thread_facts(thread_ids, fetch_order=fetch_order)
         labels = await self._stored_voice_labels(thread_ids)
         views = build_session_views(
             records=records,
             active=active,
             running_thread_ids=self._running_thread_ids(),
             lounge_messages=[],
-            thread_names=self._thread_names(thread_ids),
+            thread_names={tid: f.name for tid, f in facts.items() if f.name is not None},
             voice_labels=labels,
         )
+        sessions: list[dict[str, Any]] = []
+        for view in views:
+            fact = facts.get(view["thread_id"])
+            sessions.append(
+                {
+                    "thread_id": str(view["thread_id"]),
+                    "tag": None if view["closed"] else view["voice_label"],
+                    "aliases": [] if view["closed"] else view["voice_label_aliases"],
+                    "name": view["thread_name"],
+                    "project": view["working_dir"],
+                    "state": view["state"],
+                    "current_task": view["current_task"],
+                    "closed": view["closed"],
+                    "visible": None if fact is None else fact.visible,
+                }
+            )
         return web.json_response(
             {
-                "sessions": [
-                    {
-                        "thread_id": str(view["thread_id"]),
-                        "tag": None if view["closed"] else view["voice_label"],
-                        "aliases": [] if view["closed"] else view["voice_label_aliases"],
-                        "name": view["thread_name"],
-                        "project": view["working_dir"],
-                        "state": view["state"],
-                        "current_task": view["current_task"],
-                        "closed": view["closed"],
-                    }
-                    for view in views
-                ]
+                "sessions": sessions,
+                "open_count": sum(1 for s in sessions if not s["closed"]),
+                "discord_active_threads": self._discord_active_threads(),
+                "generated_at": datetime.now(UTC).isoformat(),
+                # The size of the spoken-tag pool: why a thread may have no tag.
+                "tag_words": len(SPOKEN_LABELS),
             }
         )
 
@@ -2506,6 +2617,69 @@ class ApiServer:
             if isinstance(name, str):
                 names[thread_id] = name
         return names
+
+    async def _resolve_thread_facts(
+        self, thread_ids: set[int], *, fetch_order: list[int]
+    ) -> dict[int, _ThreadFact]:
+        """Title and visibility per thread for the Jester snapshot, cheaply.
+
+        The bot's channel cache answers first: it holds every live thread and
+        drops one the moment it is archived, so a thread that comes back is
+        seen at once. What it lacks is asked of Discord — the ``fetch_order``
+        threads only, at most ``_MAX_SNAPSHOT_THREAD_FETCHES`` per read — and
+        the verdict is remembered for a while so polling stays cheap. "Gone" is
+        a verdict; any other failure ends fetching for this read, because
+        Discord being unreachable must not turn one poll into twenty-five slow
+        calls. A thread past the cap or the failure is simply unknown. Nothing
+        here writes anywhere, and nothing raises.
+        """
+        import discord
+
+        now = time.monotonic()
+        facts: dict[int, _ThreadFact] = {}
+        for thread_id in thread_ids:
+            channel = self.bot.get_channel(thread_id)
+            if channel is not None:
+                facts[thread_id] = _fact_from_channel(channel)
+                continue
+            remembered = self._snapshot_thread_facts.get(thread_id)
+            if remembered is not None and remembered[0] > now:
+                facts[thread_id] = remembered[1]
+        fetched = 0
+        for thread_id in fetch_order:
+            if thread_id in facts:
+                continue
+            if fetched >= _MAX_SNAPSHOT_THREAD_FETCHES:
+                break
+            fetched += 1
+            try:
+                fact = _fact_from_channel(await self.bot.fetch_channel(thread_id))
+            except discord.NotFound:
+                fact = _ThreadFact(name=None, visible=False)
+            except Exception:
+                logger.warning(
+                    "Snapshot could not fetch thread %s; leaving the rest unknown this read",
+                    thread_id,
+                    exc_info=True,
+                )
+                break
+            self._snapshot_thread_facts[thread_id] = (now + _SNAPSHOT_FACT_TTL_SECONDS, fact)
+            facts[thread_id] = fact
+        return facts
+
+    def _discord_active_threads(self) -> int:
+        """Non-archived threads in the bot's cache, across every guild it serves.
+
+        discord.py drops a thread from the cache when it is archived, so this is
+        the number of threads on screen in Discord — what ``open_count`` should
+        agree with. No API calls are made.
+        """
+        return sum(
+            1
+            for guild in getattr(self.bot, "guilds", None) or []
+            for thread in getattr(guild, "threads", None) or []
+            if not getattr(thread, "archived", True)
+        )
 
     async def get_thread_messages(self, request: web.Request) -> web.Response:
         """GET /api/threads/{thread_id}/messages — read another thread's conversation.
