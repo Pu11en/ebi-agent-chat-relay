@@ -39,3 +39,13 @@ Remaining gaps, stated rather than implied:
   too, so it was left for a separate reviewed slice.
 - Everything here is offline. Live Discord behavior, the microphone path and
   latency need the separately approved activation and trial.
+
+## Follow-up: work-copy name collision fixed
+
+RED: `test_two_copies_started_in_the_same_second_get_distinct_names` — two
+`create_work_copy` calls started together failed with "a branch named
+'gowork/plan-…' already exists". Copies (and project copies) now retry a taken
+per-second name after waiting for the next second (at most five attempts), keeping
+the exact name format that saved loop records are validated against, so no
+record-format or rollback change. Work-copy tests **21 passed**; Go Work, task-loop,
+lifecycle and work-copy suites **521 passed in 52.26s**; full gate **6,230 passed, five known warnings, zero errors**.
