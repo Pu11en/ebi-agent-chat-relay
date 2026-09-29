@@ -1577,12 +1577,56 @@ class TestSessionSnapshot:
         # One failure ends fetching for this read rather than repeating it per row.
         assert bot.fetch_channel.await_count == 1
 
+    _BOT_ID = 1546642963709427832
+    _OTHER_BOT_ID = 1550644558176460961
+    _OWNER_ID = 424242
+
+    @staticmethod
+    def _owned_thread(
+        thread_id: int,
+        name: str,
+        *,
+        owner_id: int | None,
+        channel: str | None = "control-center",
+        archived: bool = False,
+    ) -> MagicMock:
+        thread = MagicMock()
+        thread.id = thread_id
+        thread.name = name
+        thread.archived = archived
+        thread.owner_id = owner_id
+        thread.parent = None if channel is None else MagicMock()
+        if thread.parent is not None:
+            thread.parent.name = channel
+        return thread
+
+    def _guild_bot(self, threads: list[MagicMock], *, names: dict[int, str]) -> MagicMock:
+        """A bot user ``_BOT_ID`` whose cache holds ``threads`` and knows ``names``."""
+        guild = MagicMock()
+        guild.threads = threads
+
+        def member(user_id: int) -> MagicMock | None:
+            if user_id not in names:
+                return None
+            found = MagicMock()
+            found.display_name = names[user_id]
+            return found
+
+        guild.get_member.side_effect = member
+        bot = self._bot({t.id: t for t in threads})
+        bot.user.id = self._BOT_ID
+        bot.guilds = [guild]
+        bot.get_user.return_value = None
+        return bot
+
     @pytest.mark.asyncio
     async def test_discord_active_threads_counts_only_unarchived_cached_threads(self, repo) -> None:
-        guild = MagicMock()
-        guild.threads = [self._thread("a"), self._thread("b", archived=True), self._thread("c")]
-        bot = self._bot()
-        bot.guilds = [guild]
+        guild_threads = [
+            self._owned_thread(1, "a", owner_id=self._BOT_ID),
+            self._owned_thread(2, "b", owner_id=self._BOT_ID, archived=True),
+            self._owned_thread(3, "c", owner_id=self._BOT_ID),
+        ]
+        bot = self._guild_bot(guild_threads, names={})
         api = self._api(repo, bot=bot, session_repo=self._session_repo([]))
         async with self._serving(api) as client:
             body = await (await client.get("/api/jester/sessions")).json()
@@ -1590,6 +1634,81 @@ class TestSessionSnapshot:
         assert body["discord_active_threads"] == 2
         assert body["sessions"] == []
         assert body["open_count"] == 0
+        assert body["other_threads"] == []
+
+    @pytest.mark.asyncio
+    async def test_other_bots_and_hand_made_threads_are_listed_not_counted(self, repo) -> None:
+        guild_threads = [
+            self._owned_thread(100, "[zoro] podlox", owner_id=self._BOT_ID),
+            self._owned_thread(101, "cranesignal", owner_id=self._OTHER_BOT_ID, channel="workers"),
+            self._owned_thread(102, "youtube-money", owner_id=self._OTHER_BOT_ID),
+            self._owned_thread(103, "hand made", owner_id=self._OWNER_ID),
+            self._owned_thread(104, "old foreign", owner_id=self._OTHER_BOT_ID, archived=True),
+        ]
+        bot = self._guild_bot(guild_threads, names={self._OTHER_BOT_ID: "david"})
+        api = self._api(repo, bot=bot, session_repo=self._session_repo([self._record(100)]))
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions")).json()
+
+        assert body["open_count"] == 1
+        assert body["discord_active_threads"] == 1
+        assert body["other_threads"] == [
+            {
+                "thread_id": "103",
+                "name": "hand made",
+                "owner_id": str(self._OWNER_ID),
+                "owner_name": None,
+                "channel": "control-center",
+            },
+            {
+                "thread_id": "102",
+                "name": "youtube-money",
+                "owner_id": str(self._OTHER_BOT_ID),
+                "owner_name": "david",
+                "channel": "control-center",
+            },
+            {
+                "thread_id": "101",
+                "name": "cranesignal",
+                "owner_id": str(self._OTHER_BOT_ID),
+                "owner_name": "david",
+                "channel": "workers",
+            },
+        ]
+        # Reading other threads is cache-only.
+        bot.fetch_channel.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_hand_made_thread_with_a_session_row_counts_as_ebis_own(self, repo) -> None:
+        guild_threads = [self._owned_thread(200, "hand made", owner_id=self._OWNER_ID)]
+        bot = self._guild_bot(guild_threads, names={})
+        api = self._api(repo, bot=bot, session_repo=self._session_repo([self._record(200)]))
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions")).json()
+
+        assert body["open_count"] == body["discord_active_threads"] == 1
+        assert body["other_threads"] == []
+
+    @pytest.mark.asyncio
+    async def test_other_threads_are_capped_at_25_newest_first(self, repo) -> None:
+        guild_threads = [
+            self._owned_thread(300 + i, f"t{i}", owner_id=self._OTHER_BOT_ID, channel=None)
+            for i in range(30)
+        ]
+        bot = self._guild_bot(guild_threads, names={})
+        user = MagicMock()
+        user.display_name = "I mac codex"
+        bot.get_user.side_effect = lambda uid: user if uid == self._OTHER_BOT_ID else None
+        api = self._api(repo, bot=bot, session_repo=self._session_repo([]))
+        async with self._serving(api) as client:
+            body = await (await client.get("/api/jester/sessions")).json()
+
+        others = body["other_threads"]
+        assert body["discord_active_threads"] == 0
+        assert len(others) == 25
+        assert [o["thread_id"] for o in others] == [str(329 - i) for i in range(25)]
+        assert others[0]["owner_name"] == "I mac codex"
+        assert others[0]["channel"] is None
 
     @pytest.mark.asyncio
     async def test_old_sessions_endpoint_keeps_numeric_thread_ids(self) -> None:

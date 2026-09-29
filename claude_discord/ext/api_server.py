@@ -121,6 +121,8 @@ _OPEN_SESSION_SCAN_LIMIT = 10_000
 # Discord. A verdict is remembered, so a steady poll costs nothing; the cap
 # bounds the first read after a restart and any read Discord answers slowly.
 _MAX_SNAPSHOT_THREAD_FETCHES = 25
+# Other bots' and hand-made threads listed in the Jester snapshot, newest first.
+_MAX_OTHER_THREADS = 25
 # How long a fetched verdict (title, archived, gone) is trusted. The bot's own
 # cache is consulted first and holds every live thread, so a thread that comes
 # back is seen at once; this only bounds how long a stale verdict can live.
@@ -2367,8 +2369,11 @@ class ApiServer:
         flagged ``closed`` — so a history search can still find them. Each row
         also says whether Discord shows the thread (``visible``: True for a live
         thread, False for one archived or gone, None when unknown), and the
-        envelope carries ``open_count``, ``discord_active_threads`` (what the
-        bot's cache shows, for comparison) and ``generated_at``. Reading this
+        envelope carries ``open_count``, ``discord_active_threads`` (EBI's own
+        live threads in the bot's cache — bot-owned or backed by an open row —
+        for comparison), ``other_threads`` (live threads the bot can see that
+        are not EBI's, such as other bots' or hand-made ones, newest first, at
+        most 25) and ``generated_at``. Reading this
         never mints a tag, renames a thread or writes a row — only
         ``/api/sessions`` does — so Jester may poll it freely.
         """
@@ -2430,11 +2435,15 @@ class ApiServer:
                     "visible": None if fact is None else fact.visible,
                 }
             )
+        own_thread_ids = {r.thread_id for r in records if not r.is_closed}
+        own_thread_ids |= {s.thread_id for s in active}
+        active_threads, other_threads = self._discord_active_threads(own_thread_ids)
         return web.json_response(
             {
                 "sessions": sessions,
                 "open_count": sum(1 for s in sessions if not s["closed"]),
-                "discord_active_threads": self._discord_active_threads(),
+                "discord_active_threads": active_threads,
+                "other_threads": other_threads,
                 "generated_at": datetime.now(UTC).isoformat(),
                 # The size of the spoken-tag pool: why a thread may have no tag.
                 "tag_words": len(SPOKEN_LABELS),
@@ -2667,19 +2676,58 @@ class ApiServer:
             facts[thread_id] = fact
         return facts
 
-    def _discord_active_threads(self) -> int:
-        """Non-archived threads in the bot's cache, across every guild it serves.
+    def _discord_active_threads(
+        self, own_thread_ids: set[int]
+    ) -> tuple[int, list[dict[str, str | None]]]:
+        """EBI's own live threads in the bot's cache, and the others it can see.
 
-        discord.py drops a thread from the cache when it is archived, so this is
-        the number of threads on screen in Discord — what ``open_count`` should
-        agree with. No API calls are made.
+        discord.py drops a thread from the cache when it is archived, so the
+        non-archived cached threads are the ones on screen in Discord. A thread
+        is EBI's when this bot owns it or ``own_thread_ids`` (open rows and live
+        sessions) names it; that count is what ``open_count`` should agree with.
+        The rest — other bots' threads, hand-made ones — are described, newest
+        first, at most ``_MAX_OTHER_THREADS``. Cache only; no API calls.
         """
-        return sum(
-            1
-            for guild in getattr(self.bot, "guilds", None) or []
-            for thread in getattr(guild, "threads", None) or []
-            if not getattr(thread, "archived", True)
-        )
+        bot_id = getattr(getattr(self.bot, "user", None), "id", None)
+        own = 0
+        others: list[tuple[int, dict[str, str | None]]] = []
+        for guild in getattr(self.bot, "guilds", None) or []:
+            for thread in getattr(guild, "threads", None) or []:
+                if getattr(thread, "archived", True):
+                    continue
+                thread_id = getattr(thread, "id", None)
+                owner_id = getattr(thread, "owner_id", None)
+                if thread_id in own_thread_ids or (bot_id is not None and owner_id == bot_id):
+                    own += 1
+                    continue
+                name = getattr(thread, "name", None)
+                parent_name = getattr(getattr(thread, "parent", None), "name", None)
+                others.append(
+                    (
+                        thread_id if isinstance(thread_id, int) else 0,
+                        {
+                            "thread_id": str(thread_id),
+                            "name": name if isinstance(name, str) else None,
+                            "owner_id": None if owner_id is None else str(owner_id),
+                            "owner_name": self._cached_user_name(guild, owner_id),
+                            "channel": parent_name if isinstance(parent_name, str) else None,
+                        },
+                    )
+                )
+        # Snowflake IDs grow with time, so the highest ID is the newest thread.
+        others.sort(key=lambda pair: pair[0], reverse=True)
+        return own, [view for _, view in others[:_MAX_OTHER_THREADS]]
+
+    def _cached_user_name(self, guild: Any, user_id: Any) -> str | None:
+        """A member's display name, else a cached user's; None when not cached."""
+        if not isinstance(user_id, int):
+            return None
+        for person in (guild.get_member(user_id), self.bot.get_user(user_id)):
+            for attr in ("display_name", "name"):
+                value = getattr(person, attr, None)
+                if isinstance(value, str) and value:
+                    return value
+        return None
 
     async def get_thread_messages(self, request: web.Request) -> web.Response:
         """GET /api/threads/{thread_id}/messages — read another thread's conversation.
