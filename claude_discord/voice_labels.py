@@ -19,9 +19,12 @@ called `bravo` this morning is still `bravo` tonight. A tag that shifted when a
 new thread appeared would be worse than no tag, because the speaker would not
 know it had shifted.
 
-*Recycling* — the pool is 26 long and a busy machine has hundreds of archived
-threads, so a tag is released when its thread leaves the visible set and handed
-to the next one that needs it. Without that, tags would run out in a week.
+*Recycling* — the pool is short and a busy machine has hundreds of archived
+threads, so a tag is released when its session closes and handed to the next
+one that needs it. Open means visible in Discord: a thread archived there (by
+hand, by EBI, or by Discord's 7-day auto-archive) or deleted is a closed session
+and gives its word back; typing in it again reopens it and it gets a tag again.
+Without that, tags would run out in a week.
 """
 
 from __future__ import annotations
@@ -125,18 +128,23 @@ def assign_labels(
 ) -> tuple[dict[int, str], dict[int, str], set[int]]:
     """Give every thread in ``thread_ids`` a tag, keeping the ones it has.
 
-    A tag is a word the speaker has learned, so it is held for as long as it can
-    be: a thread keeps its tag after it scrolls out of the visible set. Absence
-    and age do not prove closure. Only holders explicitly released by the caller
-    give up a word; unused words precede just-released ones to avoid immediately
-    changing what a recently spoken name means.
+    A tag is a word the speaker has learned, so it is held for as long as its
+    session is open: a thread keeps its tag after it scrolls off a listing page,
+    because absence from a page and age do not prove closure. Closure does, and a
+    thread archived or deleted in Discord is closed — the caller closes it first
+    and then names it in ``released_ids``. Only holders explicitly released by the
+    caller give up a word; unused words precede just-released ones to avoid
+    immediately changing what a recently spoken name means.
 
     Args:
         thread_ids: The visible threads, in the order tags should be handed out
-            (most relevant first — those are the ones most likely to be spoken).
+            (most relevant first — those are the ones most likely to be spoken;
+            the owner's own threads before workflow helper threads, so helpers
+            get only leftover words).
         existing: Stored thread_id → tag, including threads no longer visible.
         released_ids: Holders whose release has already succeeded in storage.
-            Never infer these from a page boundary or Discord archive state.
+            Never infer these from a page boundary; a Discord archive releases a
+            word only through the session close it causes.
 
     Returns:
         ``(labels, new, released)`` — the mapping for the visible threads, the
