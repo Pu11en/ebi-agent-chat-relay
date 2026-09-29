@@ -22,6 +22,7 @@ from discord.ext import commands, tasks
 
 from claude_code_core.frontend import ConversationSurface, Notice, NoticeLevel
 
+from ..backend_settings import session_is_resumable
 from ..frontend import DiscordFrontend
 from ._run_helper import run_claude_with_config
 from .headless_backend import build_headless_runner
@@ -140,18 +141,47 @@ class SchedulerCog(commands.Cog):
                         task["name"],
                     )
                 else:
+                    record = (
+                        await self.session_repo.get(thread_id)
+                        if self.session_repo is not None
+                        else None
+                    )
+                    # A closed (or closing) session takes no new turns. Checked
+                    # before posting: a message would also unarchive the thread.
+                    if record is not None and not record.is_open:
+                        logger.info(
+                            "SchedulerCog: skipping task %d (%s); session %d is %s",
+                            task_id,
+                            task["name"],
+                            thread_id,
+                            record.lifecycle_state,
+                        )
+                        return
                     await surface.send_notice(
                         Notice(level=NoticeLevel.INFO, body=f"🔄 **[Follow-up]** `{task['name']}`")
                     )
-                    # Try to resume the previous session in this conversation
-                    if self.session_repo is not None:
-                        record = await self.session_repo.get(thread_id)
-                        if record is not None:
+                    # Resume the previous session only if the current backend can.
+                    if record is not None:
+                        working_dir = record.working_dir
+                        current = (
+                            await self.backend_settings.current_backend(thread_id)
+                            if self.backend_settings is not None
+                            else None
+                        )
+                        if current is None or session_is_resumable(record.backend, current):
                             session_id = record.session_id
-                            working_dir = record.working_dir
                             logger.info(
                                 "SchedulerCog: resuming session %s in thread %d",
                                 session_id,
+                                thread_id,
+                            )
+                        else:
+                            logger.info(
+                                "SchedulerCog: %s cannot resume %s session %s in thread %d; "
+                                "starting fresh",
+                                current,
+                                record.backend,
+                                record.session_id,
                                 thread_id,
                             )
 

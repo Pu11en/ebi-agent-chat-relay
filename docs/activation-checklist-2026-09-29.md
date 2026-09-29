@@ -50,6 +50,14 @@ REL-02. Only rows with ledger acceptance (commit + checks) may be closed, and th
 candidate does that itself for builds it runs; historical rows need per-row
 evidence first. No close-by-directory or bulk close.
 
+## Decisions Drew should make explicitly before activation
+
+- Accept `17c65de`'s restart/upgrade resume wording: resumed turns continue the
+  already-authorized task without asking the user to reconfirm (the old wording
+  asked for reconfirmation before any code change, commit or PR).
+- Whether to release the two closed holders' tags by hand (items 1–2) or let the
+  candidate allocator do it.
+
 ## Activation steps (for an approved idle window)
 
 1. Recheck idle: `/api/claims` empty, lounge quiet, no running turns

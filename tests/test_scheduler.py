@@ -432,3 +432,68 @@ class TestSchedulerCogFollowUp:
         assert run_config.runner.working_dir == "/home/ebi"
 
         os.unlink(session_db_path)
+
+
+class TestFollowUpRespectsSessionState:
+    """A scheduled follow-up must obey the same session contracts as a reply."""
+
+    @staticmethod
+    async def _setup(tmp_path, repo: TaskRepository, *, closed: bool, backend: str):
+        import discord
+
+        from claude_discord.database.models import init_db
+
+        path = str(tmp_path / "sessions.db")
+        await init_db(path)
+        sessions = SessionRepository(path)
+        await sessions.save(555555, "codex-rollout-id", "/work", backend="codex")
+        if closed:
+            await sessions.request_close(555555, "direct_interaction")
+            await sessions.mark_closed(555555, "done")
+        task = await repo.get(
+            await repo.create(
+                name="followup",
+                prompt="Check again",
+                interval_seconds=86400,
+                channel_id=99,
+                thread_id=555555,
+            )
+        )
+        thread = AsyncMock(spec=discord.Thread)
+        thread.send = AsyncMock()
+        bot = _make_bot()
+        bot.get_channel = MagicMock(
+            side_effect=lambda cid: {99: MagicMock(spec=discord.TextChannel), 555555: thread}.get(
+                cid
+            )
+        )
+        settings = MagicMock()
+        settings.current_backend = AsyncMock(return_value=backend)
+        settings.current_model = AsyncMock(return_value=None)
+        cog = SchedulerCog(
+            bot, _make_runner(), repo=repo, session_repo=sessions, backend_settings=settings
+        )
+        return cog, task
+
+    async def test_follow_up_never_starts_a_turn_in_a_closed_session(
+        self, tmp_path, repo: TaskRepository
+    ) -> None:
+        cog, task = await self._setup(tmp_path, repo, closed=True, backend="codex")
+        with patch(
+            "claude_discord.cogs.scheduler.run_claude_with_config", new_callable=AsyncMock
+        ) as run:
+            await cog._run_task(task)
+        run.assert_not_awaited()
+
+    async def test_follow_up_does_not_resume_another_backends_id(
+        self, tmp_path, repo: TaskRepository
+    ) -> None:
+        cog, task = await self._setup(tmp_path, repo, closed=False, backend="claude")
+        with (
+            patch("claude_discord.cogs.scheduler.build_headless_runner", new_callable=AsyncMock),
+            patch(
+                "claude_discord.cogs.scheduler.run_claude_with_config", new_callable=AsyncMock
+            ) as run,
+        ):
+            await cog._run_task(task)
+        assert run.call_args[0][0].session_id is None, "Claude cannot resume a Codex rollout"
