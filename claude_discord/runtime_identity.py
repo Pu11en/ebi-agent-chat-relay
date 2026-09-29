@@ -52,15 +52,24 @@ class RuntimeIdentity:
         }
 
 
-def _revision(root: Path, git: GitRunner) -> tuple[str, bool | None]:
+def _git_argv(root: Path, *args: str) -> list[str]:
+    # --no-optional-locks: reading must never rewrite the checkout's index.
+    return ["git", "--no-optional-locks", "-C", str(root), *args]
+
+
+def _head(root: Path, git: GitRunner) -> str:
     try:
-        commit = git(["git", "-C", str(root), "rev-parse", "HEAD"]).strip()
+        return git(_git_argv(root, "rev-parse", "HEAD")).strip() or UNKNOWN
     except Exception:
-        return UNKNOWN, None
-    if not commit:
+        return UNKNOWN
+
+
+def _revision(root: Path, git: GitRunner) -> tuple[str, bool | None]:
+    commit = _head(root, git)
+    if commit == UNKNOWN:
         return UNKNOWN, None
     try:
-        status = git(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"])
+        status = git(_git_argv(root, "status", "--porcelain", "--untracked-files=no"))
     except Exception:
         return commit, None
     return commit, bool(status.strip())
@@ -78,8 +87,7 @@ def capture_identity(root: Path = _SOURCE_ROOT, *, git: GitRunner = _run_git) ->
 
 async def disk_revision(root: Path = _SOURCE_ROOT, *, git: GitRunner = _run_git) -> str:
     """The revision checked out on disk now, which may differ from what is running."""
-    commit, _dirty = await asyncio.to_thread(_revision, root, git)
-    return commit
+    return await asyncio.to_thread(_head, root, git)
 
 
 #: Captured at import, which happens during startup.

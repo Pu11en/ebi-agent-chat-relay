@@ -54,3 +54,18 @@ async def test_unavailable_git_is_labeled_unknown() -> None:
 def test_dirty_tree_is_reported() -> None:
     boot = capture_identity(Path("/src"), git=fake_git({"head": "c" * 40, "status": " M x.py\n"}))
     assert boot.dirty is True
+
+
+async def test_git_reads_take_no_optional_locks_and_health_only_resolves_head() -> None:
+    """A liveness probe must not rewrite the checkout's index."""
+    calls: list[list[str]] = []
+
+    def git(argv: list[str]) -> str:
+        calls.append(argv)
+        return "d" * 40 if "rev-parse" in argv else ""
+
+    capture_identity(Path("/src"), git=git)
+    assert all("--no-optional-locks" in argv for argv in calls)
+    calls.clear()
+    assert await disk_revision(Path("/src"), git=git) == "d" * 40
+    assert [argv[-2:] for argv in calls] == [["rev-parse", "HEAD"]]

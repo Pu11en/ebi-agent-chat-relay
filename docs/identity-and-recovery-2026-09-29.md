@@ -112,3 +112,20 @@ rows**, no duplicate tags, 0 free words with 16 open untagged sessions, and
 Zoro thread) and `1553899450227757156`. Nothing was repaired. Coverage limit:
 legacy workers created before explicit ineligibility have no marker, so they are
 counted as user sessions; the check cannot tell them apart from the database alone.
+
+## Follow-ups (September 29, later)
+
+- `runtime_identity` now passes `--no-optional-locks` to every Git read and
+  health's per-request disk check runs only `rev-parse HEAD`, so a liveness probe
+  never refreshes the checkout's index. Regression added; gate **6,229 passed,
+  five known warnings, zero errors in 543.26s**.
+- REL-01, narrowed from the live bot log (read-only): the Claude handoff
+  conversation `70615534…` initialized at 18:54:36 and its transcript's last entry
+  is 19:07:13 CDT. The next turn launched at 19:07:19 and failed immediately
+  (`error_during_execution`). Both live reply paths reload the stored record under
+  the thread lock before launching, so the stored record itself must already have
+  held `01a0e5ff…` with a Claude-compatible backend at 19:07:19: the overwrite
+  happened inside 18:54:36–19:07:19, most plausibly around the handoff turn's end.
+  The log records no identity writes, so the writer is still UNKNOWN; the two
+  mechanisms that can produce the pair are guarded, and a 19:07:20 error echo in
+  the live code would then have re-persisted it on every later attempt.
