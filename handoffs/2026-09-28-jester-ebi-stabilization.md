@@ -7,46 +7,42 @@ do not claim this checkpoint means credits have run out.
 
 ## Claude Code continuation — September 29 (read this first)
 
-Nothing was pushed, deployed, restarted or repaired live. Both worktrees preserved.
+Authorized local work is complete up to the approval boundary. Nothing was pushed,
+deployed, restarted or repaired live. Both worktrees and all history preserved.
+OpenSpec `stabilize-session-reliability`: **25 of 29 tasks** now ticked with an
+evidence map in `openspec/changes/stabilize-session-reliability/evidence-2026-09-29.md`;
+only section 7 (approval, activation, live checks, microphone trial) remains.
 
-**Urgent for Drew:** do not restart the live bot on current main. Its
-`resume_all` would resume build `thread-1554146845415055445` (closed by Drew,
-manifest plan with 21 open tasks) and dispatch paid workers. See
-`docs/activation-checklist-2026-09-29.md` in the EBI candidate for the dry run,
-tested rollback (a code-only rollback breaks every session read) and steps.
+**Urgent for Drew:** do not restart the live bot on current main. Its `resume_all`
+would resume build `thread-1554146845415055445` (closed by Drew; manifest plan with
+21 open tasks) and dispatch paid workers. Also: a code-only rollback of the
+candidate breaks every session read. Both are handled in
+`docs/activation-checklist-2026-09-29.md` (EBI candidate), which also lists the
+decisions to make before activation (incl. `17c65de`'s resume-prompt policy).
 
-EBI candidate `fix/harness-round-2-20260928` HEAD `949873f` (on `8021f53`):
-`cbd42d9` worker archives via durable outbox (whole-build + process-reconstruction
-test); `48f6466` legacy workers close only when the build is kept + legacy loops
-wait instead of spending; `6fe2442` no orphan thread on empty auto-start spawn;
-`b5c49f5` stale result cannot replace a newer binding; `3f146aa` + `949873f`
-running revision in health; `3171054` read-only consistency inspector + profile
-live check (no `/api/sessions`); `2726312` activation checklist; `1cb3d74`
-worker never tagged when its exclusion write fails; `22a400f` runnable scenario
-matrix (`scripts/scenario-matrix.sh`, 9 rows, 54 tests, all pass).
-Last gate: `make verify` **6,229 passed, five known warnings, zero errors**.
-Evidence docs: `docs/identity-and-recovery-2026-09-29.md`,
-`docs/session-close-recovery-2026-09-29.md`, `docs/worker-lifecycle-review-2026-09-28.md`,
-`docs/voice-tag-integrity-2026-09-28.md`, `docs/scenario-matrix-2026-09-29.md`.
+- EBI candidate `fix/harness-round-2-20260928` HEAD **`62c66d6`** (16 commits
+  on `8021f53` today). Last gate `make verify`: **6,233 passed, five known
+  warnings, zero errors**. `scripts/scenario-matrix.sh`: 9 rows, all pass.
+  Evidence: `docs/boundary-audit-2026-09-29.md` (start here),
+  `docs/identity-and-recovery-2026-09-29.md`, `docs/scenario-matrix-2026-09-29.md`,
+  `docs/activation-checklist-2026-09-29.md`, plus the earlier lifecycle/tag docs.
+- Jester candidate `fix/jester-stabilization-20260928` HEAD **`1348470`**
+  (JV-01…JV-10). Checks: **156 Node, 7 Python, 16/16 simulations**. Ledger
+  cross-checked against the full V1 scope; unbuilt V1 features are GAP rows
+  (overlap priority, readback, blockers list, first-turn start check, crash
+  transcript marker) — feature work for Drew to schedule, not done here.
+- Live read-only findings (not repaired): two closed sessions hold tags
+  (`1553779983158349925` zoro, `1553899450227757156` nami); pool exhausted with 16
+  open untagged. REL-01 window narrowed to 18:54:36–19:07:19; writer unknown.
+- Recorded hazards, not changed: scheduler/API turns outside the chat lock,
+  per-process archive ordering lock, no message-ID dedupe, import rows without a
+  backend, Codex `OPENAI_API_KEY` fallback question. Two load-only test flakes and
+  the parallel-only `Loop ... pid ... is closed` diagnostic remain unattributed.
 
-Jester candidate `fix/jester-stabilization-20260928` HEAD `e44cedd` (on `bc10c47`):
-JV-06 presence write failures, JV-07 proposer spans / truthful repeats, JV-08
-result re-post on mark failure, three-commit review verdicts, ledger updates.
-Checks: **150 Node, 7 Python, 16/16 simulations**. Report:
-`STABILIZATION-REVIEW-2026-09-28.md`.
-
-Live read-only findings (not repaired): two closed sessions still hold tags
-(`1553779983158349925` zoro, `1553899450227757156` nami); 363 rows, pool
-exhausted, 16 open untagged. REL-01 window narrowed to 18:54:36–19:07:19; writer
-still unknown. Parallel-only `Loop ... pid ... is closed` diagnostic unattributed.
-`test_two_builds_for_one_project_integrate_in_turn` flaked once under load
-(work copies named by second; recorded, not changed).
-
-Remaining (next session): Jester UNTESTED offline rows (absent-state brain
-counters, brain subprocess/credential boundary, retention clock), duplicate
-Discord delivery sequence, cross-process ordering review, work-copy naming
-collision, then Drew's approval for activation (7.1) and the microphone trial.
-OpenSpec checkboxes were deliberately not ticked; slices are evidenced in docs.
+Next session prompt: "Read the Claude Code continuation section of
+handoffs/2026-09-28-jester-ebi-stabilization.md and the EBI candidate's
+docs/activation-checklist-2026-09-29.md. Drew decides activation; do not restart,
+deploy or change live state without his explicit approval of that checklist."
 
 ## Drew's request and authority
 
