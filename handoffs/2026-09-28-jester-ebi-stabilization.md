@@ -1,8 +1,50 @@
 # Jester + EBI stabilization — resume here
 
-Checkpoint: September 29, 2026. Local work in progress, NOT deployed or complete.
+Checkpoint: September 29, 2026 (Claude Code continuation). Local work in progress,
+NOT deployed or complete. Start with the "Claude Code continuation" section below.
 Keep this briefing current after each checked batch. Credit balance is unavailable;
 do not claim this checkpoint means credits have run out.
+
+## Claude Code continuation — September 29 (read this first)
+
+Current heads (both worktrees preserved, nothing pushed/deployed/restarted):
+
+- EBI candidate `fix/harness-round-2-20260928` HEAD `b5c49f5`, on top of `8021f53`:
+  `cbd42d9` Go Work worker archives use the durable session outbox (whole-build →
+  archive failure → fresh repos/services/cogs → converges; never locks workflow
+  closes; `retry_archives` counts threads); `48f6466` legacy group workers close
+  only when the build is kept (`landed_workers` in the loop record) and loop
+  records saved before checkpoints wait instead of spending on restart
+  (`checkpoints` marker; finished → verdict wait, unfinished plain plan → parked,
+  manifest → ledger reconciliation); `6fe2442` no orphan thread for an empty
+  auto-start spawn (726ecaf review); `b5c49f5` a late result from an evicted run
+  cannot replace a newer binding (compare-and-set, task 2.3).
+  Gates: `make verify` **6,204 passed** (after cbd42d9) and **6,210 passed, five
+  known warnings, zero errors, 575s** (after b5c49f5); formatting/lint/pyright clean.
+  Evidence: `docs/session-close-recovery-2026-09-29.md`,
+  `docs/worker-lifecycle-review-2026-09-28.md`, `docs/identity-and-recovery-2026-09-29.md`.
+  Uncommitted in progress: `claude_discord/runtime_identity.py` +
+  `tests/test_runtime_identity.py` (task 5.2 boot identity; health wiring next).
+- Jester candidate `fix/jester-stabilization-20260928` HEAD `e44cedd`, on top of
+  `bc10c47`: `23f9c5a` JV-06 (failed dismissal write no longer keeps Jester in the
+  room / crashes on departure; single rejoin), `5e18881` JV-07 (proposer rejects
+  clipped spans; repeated task says "not sent again"), `dafd664` three-commit review
+  verdicts, `b657576` pending-speech bound test + ledger rows, `e44cedd` JV-08
+  (result attachment not re-posted when saving "posted" fails). Checks: **150 Node,
+  7 Python, 16/16 isolated simulations**. Report: `STABILIZATION-REVIEW-2026-09-28.md`.
+- REL-01 note: two writer mechanisms that produce `(claude, old ID)` are guarded
+  (`bd518f5` error echo; `b5c49f5` stale result). The first launch that used the
+  old ID remains UNKNOWN.
+- The `Loop ... handles pid ... is closed` diagnostic appears only in parallel
+  (`-n 8`) Go Work runs; three serial passes did not show it. Unattributed.
+- Rollback hazard for activation: older code drops loop records carrying new
+  fields on its next save. Back up `~/.local/state/ccdb/gowork-loops.json` first.
+
+Next (in order): finish 5.2 health wiring + gate; 5.1 read-only diagnostic;
+5.3 live-check profiles; 3.2 remaining tag interleavings; 6.1 scenario matrix;
+6.4 dry-run manifest + rollback checklist; Jester remaining UNTESTED ledger rows.
+OpenSpec checkboxes were not changed in this continuation: slices are checked,
+whole tasks are not claimed.
 
 ## Drew's request and authority
 
