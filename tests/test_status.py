@@ -52,7 +52,7 @@ class TestHardStallCallback:
         await sm.cleanup()
 
     @pytest.mark.asyncio
-    async def test_callback_resets_after_activity(self) -> None:
+    async def test_callback_does_not_repeat_after_activity_in_same_turn(self) -> None:
         callback = AsyncMock()
         msg = _make_message()
         sm = StatusManager(msg, on_hard_stall=callback)
@@ -64,7 +64,7 @@ class TestHardStallCallback:
         await sm.set_tool(ToolCategory.READ)
         sm._last_activity = loop.time() - STALL_HARD_SECONDS - 1
         await asyncio.sleep(2.5)
-        assert callback.await_count == 2
+        assert callback.await_count == 1
         await sm.cleanup()
 
     @pytest.mark.asyncio

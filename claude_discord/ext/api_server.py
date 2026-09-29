@@ -2582,9 +2582,16 @@ class ApiServer:
 
         empty = data.get("empty") is True
         prompt = (data.get("prompt") or "").strip()
-        if empty and (data.get("auto_start", True) is not False or not isinstance(data.get("thread_name"), str) or
-                      not data["thread_name"].strip() or prompt):
-            return web.json_response({"error": "empty spawn needs auto_start=false, a thread_name, and no prompt"}, status=400)
+        if empty and (
+            data.get("auto_start", True) is not False
+            or not isinstance(data.get("thread_name"), str)
+            or not data["thread_name"].strip()
+            or prompt
+        ):
+            return web.json_response(
+                {"error": "empty spawn needs auto_start=false, a thread_name, and no prompt"},
+                status=400,
+            )
         if not empty and not prompt:
             return web.json_response({"error": "prompt is required"}, status=400)
 

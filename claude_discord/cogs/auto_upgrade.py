@@ -25,6 +25,7 @@ from discord.ext import commands
 from claude_code_core.win_subprocess import NO_WINDOW
 
 from ..protocols import DrainAware
+from ..resume_prompt import build_restart_resume_prompt
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 
 logger = logging.getLogger(__name__)
@@ -402,14 +403,7 @@ class AutoUpgradeCog(commands.Cog):
                     tid,
                     session_id=session_id,
                     reason="bot_upgrade",
-                    resume_prompt=(
-                        "The bot restarted after a package upgrade. "
-                        "Please report what you were working on before resuming. "
-                        "⚠️ Context may have been compressed, which means the approval status of "
-                        "planned tasks could be lost. "
-                        "Before making any code changes, commits, or PRs, "
-                        "re-confirm with the user that they want you to proceed."
-                    ),
+                    resume_prompt=build_restart_resume_prompt(after_upgrade=True),
                 )
                 marked += 1
             except Exception:

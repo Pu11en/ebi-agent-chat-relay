@@ -55,6 +55,7 @@ from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
 from ..handoff_sender import build_project_lookup_handoff_event, send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
+from ..resume_prompt import build_restart_resume_prompt
 from ..session_request import SessionRequest, mentions_a_session, read_session_request
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ..voice_labels import tagged_title, title_tag
@@ -1851,14 +1852,7 @@ class ClaudeChatCog(commands.Cog):
                     thread_id,
                     session_id=session_id,
                     reason="bot_shutdown",
-                    resume_prompt=(
-                        "The bot restarted. "
-                        "Please report what you were working on before resuming. "
-                        "⚠️ Context may have been compressed, which means the approval status of "
-                        "planned tasks could be lost. "
-                        "Before making any code changes, commits, or PRs, "
-                        "re-confirm with the user that they want you to proceed."
-                    ),
+                    resume_prompt=build_restart_resume_prompt(),
                 )
                 logger.info(
                     "Marked thread %d for restart-resume (session=%s)", thread_id, session_id
@@ -1945,14 +1939,7 @@ class ClaudeChatCog(commands.Cog):
                 )
                 continue
 
-            resume_prompt = entry.resume_prompt or (
-                "The bot restarted. "
-                "Please report what you were working on before resuming. "
-                "⚠️ Context may have been compressed, which means the approval status of "
-                "planned tasks could be lost. "
-                "Before making any code changes, commits, or PRs, "
-                "re-confirm with the user that they want you to proceed."
-            )
+            resume_prompt = entry.resume_prompt or build_restart_resume_prompt()
             record = await self.repo.get(thread_id)
             working_dir = getattr(record, "working_dir", None)
             if not isinstance(working_dir, str):

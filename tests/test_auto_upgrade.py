@@ -841,6 +841,27 @@ class TestMarkSessionsForResume:
         assert call_kwargs["reason"] == "bot_upgrade"
 
     @pytest.mark.asyncio
+    async def test_mark_sessions_resume_prompt_preserves_existing_authority(self) -> None:
+        """An upgrade restart continues work authorized in the saved conversation."""
+        bot = MagicMock(spec=commands.Bot)
+        resume_repo = MagicMock()
+        resume_repo.mark = AsyncMock(return_value=1)
+        bot.resume_repo = resume_repo
+        del bot.session_repo
+
+        cog = self._make_cog_with_restart(bot)
+        thread = MagicMock(spec=discord.Thread)
+        thread.send = AsyncMock()
+
+        await cog._mark_sessions_for_resume(frozenset({111}), thread)
+
+        prompt: str = resume_repo.mark.call_args.kwargs["resume_prompt"]
+        assert "saved conversation" in prompt
+        assert "continue the authorized task" in prompt
+        assert "Do not ask the user to repeat or reconfirm" in prompt
+        assert "approval status" not in prompt
+
+    @pytest.mark.asyncio
     async def test_mark_sessions_handles_mark_failure_gracefully(self) -> None:
         """Continues marking other threads even if one fails."""
         bot = MagicMock(spec=commands.Bot)
