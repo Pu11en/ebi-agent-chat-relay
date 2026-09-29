@@ -8,7 +8,7 @@ do not claim this checkpoint means credits have run out.
 ## Activation record — September 29, 08:31–08:35 CDT (read this first)
 
 Drew approved activating the EBI candidate and keeping `17c65de`'s resume rule.
-Jester was NOT redeployed (candidate `1348470` still pending its own activation).
+Jester activated at 08:47: `main` fast-forwarded f804d99 → `1348470`, service restarted and active; state backup in `activation-backup-20260929-083125/jester/`.
 
 - Idle check: no claims, 100/100 snapshot sessions history, no agent CLI running,
   last bot turn 00:08. Lounge notices posted before (id 2677) and after.
