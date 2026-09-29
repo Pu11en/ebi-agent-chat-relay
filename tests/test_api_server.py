@@ -1679,6 +1679,26 @@ class TestSessionSnapshot:
         bot.fetch_channel.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_an_uncached_owner_name_is_looked_up_once(self, repo) -> None:
+        guild_threads = [
+            self._owned_thread(101, "cranesignal", owner_id=self._OTHER_BOT_ID, channel="workers"),
+            self._owned_thread(102, "youtube-money", owner_id=self._OTHER_BOT_ID),
+        ]
+        bot = self._guild_bot(guild_threads, names={})
+        david = MagicMock()
+        david.display_name = "david"
+        bot.fetch_user = AsyncMock(return_value=david)
+        api = self._api(repo, bot=bot, session_repo=self._session_repo([]))
+        async with self._serving(api) as client:
+            first = await (await client.get("/api/jester/sessions")).json()
+            second = await (await client.get("/api/jester/sessions")).json()
+
+        assert [t["owner_name"] for t in first["other_threads"]] == ["david", "david"]
+        assert [t["owner_name"] for t in second["other_threads"]] == ["david", "david"]
+        # One lookup per owner for the life of the process, never per request.
+        bot.fetch_user.assert_awaited_once_with(self._OTHER_BOT_ID)
+
+    @pytest.mark.asyncio
     async def test_a_hand_made_thread_with_a_session_row_counts_as_ebis_own(self, repo) -> None:
         guild_threads = [self._owned_thread(200, "hand made", owner_id=self._OWNER_ID)]
         bot = self._guild_bot(guild_threads, names={})

@@ -473,6 +473,8 @@ class ApiServer:
         self.host = host
         self.port = port
         self.api_secret = api_secret
+        # Other bots' names for the Jester snapshot, looked up once per process.
+        self._owner_names: dict[int, str | None] = {}
         self.ingest_token = ingest_token
         self.ingest_host = ingest_host
         self.ingest_port = ingest_port
@@ -2438,6 +2440,7 @@ class ApiServer:
         own_thread_ids = {r.thread_id for r in records if not r.is_closed}
         own_thread_ids |= {s.thread_id for s in active}
         active_threads, other_threads = self._discord_active_threads(own_thread_ids)
+        await self._fill_owner_names(other_threads)
         return web.json_response(
             {
                 "sessions": sessions,
@@ -2717,6 +2720,37 @@ class ApiServer:
         # Snowflake IDs grow with time, so the highest ID is the newest thread.
         others.sort(key=lambda pair: pair[0], reverse=True)
         return own, [view for _, view in others[:_MAX_OTHER_THREADS]]
+
+    async def _fill_owner_names(self, other_threads: list[dict[str, str | None]]) -> None:
+        """Name the other bots that run ``other_threads`` when the cache could not.
+
+        Bots rarely sit in the member cache, so "run by someone else" would be all
+        Jester could say. Each unknown owner is fetched once for the life of the
+        process (a few per read at most); a failed lookup leaves the name unknown.
+        """
+        import discord
+
+        lookups = 0
+        for view in other_threads:
+            owner = view.get("owner_id")
+            if view.get("owner_name") or not owner or not owner.isdigit():
+                continue
+            user_id = int(owner)
+            if user_id not in self._owner_names:
+                if lookups >= 5:
+                    continue
+                lookups += 1
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                except discord.NotFound:
+                    self._owner_names[user_id] = None
+                    continue
+                except Exception:
+                    logger.debug("Snapshot could not look up user %s", user_id, exc_info=True)
+                    continue
+                name = getattr(user, "display_name", None) or getattr(user, "name", None)
+                self._owner_names[user_id] = name if isinstance(name, str) and name else None
+            view["owner_name"] = self._owner_names[user_id]
 
     def _cached_user_name(self, guild: Any, user_id: Any) -> str | None:
         """A member's display name, else a cached user's; None when not cached."""
