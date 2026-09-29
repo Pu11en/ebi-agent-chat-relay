@@ -153,3 +153,32 @@ async def test_retry_archives_counts_threads_not_tasks(stores):
     state.mark_archived.side_effect = lambda task, thread_id: owed.remove((task, thread_id))
     cog._build_state = MagicMock(return_value=state)
     assert await cog.retry_archives(SimpleNamespace(worker_thread_id=999)) == 2
+
+
+async def test_failed_worker_exclusion_cannot_leave_a_tagged_orphan(stores):
+    """Task 3.2: a storage failure while registering a worker must not free it for tagging."""
+    repo, settings = stores
+    bot = MagicMock(settings_repo=settings)
+    cog = ClaudeChatCog(bot=bot, repo=repo, runner=MagicMock(), settings_repo=settings)
+    thread = thread_at()
+    events = []
+    real_set = settings.set
+
+    async def failing_set(key, value):
+        if key.startswith("voice_addressable:"):
+            raise OSError("settings unavailable")
+        return await real_set(key, value)
+
+    settings.set = failing_set
+
+    async def create(**kwargs):
+        events.append(asyncio.create_task(cog.on_thread_create(thread)))
+        await asyncio.sleep(0)
+        return thread
+
+    channel = MagicMock(create_thread=AsyncMock(side_effect=create))
+    with pytest.raises(OSError):
+        await cog.spawn_session(channel, "work", auto_start=False, voice_addressable=False)
+    await asyncio.gather(*events)
+    assert await settings.get("voice_label:123") is None, "an internal worker took a user tag"
+    thread.edit.assert_not_awaited()

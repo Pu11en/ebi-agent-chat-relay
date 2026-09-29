@@ -78,8 +78,22 @@ class VoiceTagger:
             self.bot._voice_tag_lock = lock
         return lock
 
+    @property
+    def ineligible(self) -> set[int]:
+        """Workers excluded in this process, honored even if storing it failed."""
+        known = getattr(self.bot, "_voice_ineligible", None)
+        if not isinstance(known, set):
+            known = set()
+            self.bot._voice_ineligible = known
+        return known
+
     async def exclude_thread(self, thread_id: int) -> None:
-        """Persist worker exclusion. Caller holds ``lock`` while registering a thread."""
+        """Persist worker exclusion. Caller holds ``lock`` while registering a thread.
+
+        Recorded in memory first: if the store refuses the write, the caller still
+        sees the error, but this process never hands the worker a user's tag.
+        """
+        self.ineligible.add(thread_id)
         if self.settings_repo is not None:
             await self.settings_repo.set(f"voice_addressable:{thread_id}", "false")
             await self.settings_repo.delete(label_key(thread_id))
@@ -124,6 +138,7 @@ class VoiceTagger:
         if stored is None or self.settings_repo is None:
             return None
         existing, excluded = stored
+        excluded |= self.ineligible
         closed = set(closed or ())
         if self.session_repo is not None:
             try:

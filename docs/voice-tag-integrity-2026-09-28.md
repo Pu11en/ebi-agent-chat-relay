@@ -82,3 +82,17 @@ worker exclusion-write failures, context-nudge's separate tag-transfer writer,
 closure/retitle races, premature build-parent closure, legacy worker deletion and
 legacy loop recovery. Keep the broader plan tasks open until their full contracts
 have evidence; do not deploy the remaining dirty candidate.
+
+## Worker exclusion-write failure (September 29, task 3.2)
+
+RED: `test_failed_worker_exclusion_cannot_leave_a_tagged_orphan`. When the settings
+store refused the `voice_addressable:<id> = false` write during worker creation,
+`spawn_session` raised after the Discord thread existed and released the tag lock;
+the queued thread-create event then gave that orphan internal thread the user tag
+`luffy`. `VoiceTagger.exclude_thread` now records the worker in a process-wide
+ineligible set before writing, and every allocation honors it; the caller still
+receives the storage error. Limit: after a restart, an orphan whose exclusion was
+never stored is unknown to the allocator again (it has no session row and no
+marker); the live check reports it only as an untagged/tagged thread.
+Focused checks: worker sessions **8 passed**; voice/tag/worker/spawn selection
+**399 passed**.
