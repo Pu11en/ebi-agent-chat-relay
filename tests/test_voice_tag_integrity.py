@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
@@ -15,11 +16,13 @@ from aiohttp.test_utils import make_mocked_request
 
 from claude_code_core.session_repo import CloseAuthority
 from claude_discord.cogs.claude_chat import ClaudeChatCog
+from claude_discord.cogs.thread_follow import ThreadFollowCog
 from claude_discord.database.models import init_db
 from claude_discord.database.notification_repo import NotificationRepository
 from claude_discord.database.repository import SessionRepository
 from claude_discord.database.settings_repo import SettingsRepository
 from claude_discord.ext.api_server import ApiServer
+from claude_discord.lifecycle_adapters import build_lifecycle_service
 from claude_discord.voice_labels import SPOKEN_LABELS, label_key
 from claude_discord.voice_tags import VoiceTagger
 
@@ -100,15 +103,30 @@ async def test_closed_off_page_holder_is_released_without_a_new_allocation(roste
     assert await roster.settings.get(label_key(2)) == SPOKEN_LABELS[1]
 
 
-async def test_archived_but_open_holder_keeps_its_name(roster: Roster) -> None:
-    before = await fill_pool(roster)
+async def test_archived_holder_is_closed_by_the_sweep_and_its_word_freed(roster: Roster) -> None:
+    """ "Open" means visible in Discord: an archived holder is a closed session."""
+    await fill_pool(roster)
     archived = thread_at(1)
     archived.archived = True
-    roster.bot.get_channel.side_effect = lambda tid: archived if tid == 1 else None
-    await roster.api._apply_voice_labels([{"thread_id": 999, "closed": False}])
-    assert await roster.settings.get_all() == before
-    assert (await roster.sessions.get(1)).is_open
+    live = {tid: thread_at(tid, f"[{SPOKEN_LABELS[tid - 1]}] c") for tid in range(2, 11)}
+    roster.bot.get_channel.side_effect = lambda tid: archived if tid == 1 else live.get(tid)
+    lifecycle = build_lifecycle_service(roster.bot, SimpleNamespace(), roster.sessions)
+    cog = ThreadFollowCog(
+        roster.bot, repo=roster.sessions, settings_repo=roster.settings, lifecycle=lifecycle
+    )
+
+    report = await cog.sweep()
+    views = [{"thread_id": 999, "closed": False}]
+    await roster.api._apply_voice_labels(views)
+
+    assert report["closed"] == 1
+    record = await roster.sessions.get(1)
+    assert record is not None and record.is_closed
+    assert record.close_authority == CloseAuthority.DISCORD_ARCHIVED.value
+    assert await roster.settings.get(label_key(1)) is None
+    assert views[0]["voice_label"] == SPOKEN_LABELS[0]
     archived.edit.assert_not_awaited()
+    archived.send.assert_not_awaited()
 
 
 @pytest.mark.parametrize("bulk", [False, True])

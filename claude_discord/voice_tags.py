@@ -20,12 +20,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import discord
 
 from claude_code_core.session_repo import SessionRepository
 
+from .handoff_discord import THREAD_NAME_PREFIX as HANDOFF_THREAD_PREFIX
+from .thread_policy import thread_is_archived
 from .voice_labels import (
     aliases_for,
     assign_labels,
@@ -38,7 +41,22 @@ from .voice_labels import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["MAX_RETITLES_PER_CALL", "VoiceTagger"]
+__all__ = ["HELPER_TITLE_PREFIXES", "MAX_RETITLES_PER_CALL", "VoiceTagger"]
+
+#: Title prefixes of the threads workflows open for themselves: Go Work's ⚡
+#: workers and 🔁 build threads, project-lookup workers and handoff job threads.
+#:
+#: Read from the title because no stored row marker says "helper" — the one
+#: stored marker, ``voice_addressable:<id>=false``, is stricter and keeps a
+#: thread out of the pool entirely. A helper that is not excluded still gets a
+#: word, but only a leftover one, and gives it back when the owner needs it:
+#: the words are for the conversations Drew himself speaks to.
+HELPER_TITLE_PREFIXES: tuple[str, ...] = (
+    "⚡",
+    "🔁",
+    "🔎 Project lookup",
+    HANDOFF_THREAD_PREFIX,
+)
 
 #: How many threads one bulk pass may look up and retitle.
 #:
@@ -132,7 +150,9 @@ class VoiceTagger:
 
         Inspect every stored holder, not every historical session. Without a
         lifecycle repository only explicit closed views/worker exclusions permit
-        release; unknown and archived-but-open holders keep their names.
+        release; unknown holders keep their names. A thread archived or deleted in
+        Discord releases its name once ThreadFollowCog has closed its session
+        (discord_archived).
         """
         stored = await self._stored()
         if stored is None or self.settings_repo is None:
@@ -175,6 +195,83 @@ class VoiceTagger:
                     "Could not assign spoken tag for thread %s", thread_id, exc_info=True
                 )
         return labels
+
+    # -- the follow pass, over the threads Discord still shows -------------
+
+    @staticmethod
+    def is_helper_title(title: str | None) -> bool:
+        """Was this thread opened by a workflow rather than by the owner?"""
+        base = strip_title_tag(title or "")
+        return bool(base) and base.startswith(HELPER_TITLE_PREFIXES)
+
+    async def rebalance(self, threads: Mapping[int, Any]) -> dict[str, int]:
+        """Release closed holders' words and hand free ones out, owner threads first.
+
+        ``threads`` maps open session rows to the Discord threads the caller
+        already resolved, most relevant first; nothing is fetched here, so a
+        pass over a quiet roster costs no Discord call at all. Only visible
+        (unarchived) threads take part — an archived thread is a closed
+        session waiting for its close to be recorded, not a candidate.
+
+        The owner's threads are offered words before any helper, and when the
+        pool is empty an untagged owner thread takes a word back from a helper
+        (the helper's title loses the tag). A word never moves between two
+        owner threads: that would change what a name Drew already learned means.
+        Titles are edited only on visible, unlocked threads.
+        """
+        report = {"assigned": 0, "reclaimed": 0, "retagged": 0}
+        visible = {
+            tid: thread
+            for tid, thread in threads.items()
+            if isinstance(thread, discord.Thread) and not thread_is_archived(thread)
+        }
+        owners = [tid for tid, t in visible.items() if not self.is_helper_title(t.name)]
+        helpers = [tid for tid in visible if tid not in set(owners)]
+        async with self.lock:
+            before = await self._stored()
+            labels = await self._assign(owners + helpers)
+            if before is None or labels is None or self.settings_repo is None:
+                return report
+            held, excluded = before
+            excluded |= self.ineligible
+            report["assigned"] = sum(1 for tid, word in labels.items() if held.get(tid) != word)
+            wanting = [tid for tid in owners if tid not in labels and tid not in excluded]
+            # The helper least recently used gives its word up first.
+            donors = [tid for tid in reversed(helpers) if tid in labels]
+            for owner in wanting:
+                if not donors:
+                    break
+                donor = donors.pop(0)
+                word = labels[donor]
+                try:
+                    await self.settings_repo.delete(label_key(donor))
+                    del labels[donor]
+                    await self.settings_repo.set(label_key(owner), word)
+                except Exception:
+                    logger.warning("Could not move a helper's spoken tag", exc_info=True)
+                    continue
+                labels[owner] = word
+                report["reclaimed"] += 1
+                logger.info(
+                    "Spoken tag %r moved from helper thread %s to owner thread %s",
+                    word,
+                    donor,
+                    owner,
+                )
+        for tid, thread in visible.items():
+            if report["retagged"] >= MAX_RETITLES_PER_CALL:
+                break
+            label = labels.get(tid)
+            if title_tag(thread.name) == label or thread.locked is True:
+                continue
+            wanted = tagged_title(thread.name, label) if label else strip_title_tag(thread.name)
+            try:
+                await thread.edit(name=wanted)
+            except Exception as exc:  # rate limit, permissions, archived race
+                logger.debug("Could not retitle thread %s: %s", tid, exc)
+                continue
+            report["retagged"] += 1
+        return report
 
     async def show_in_titles(self, views: list[dict[str, Any]]) -> None:
         """Put each thread's tag at the front of its Discord title.
