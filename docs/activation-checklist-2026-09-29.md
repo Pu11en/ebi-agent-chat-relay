@@ -76,6 +76,93 @@ evidence first. No close-by-directory or bulk close.
 6. Watch the log for the two loop decisions above and for any unexpected launch.
    Jester's candidate (`e44cedd`) is deployed separately, after its own review.
 
+## Corrections from the 2026-09-29 dry run (step A4) — these amend the steps above
+
+Read these with the steps; where they differ, the correction wins.
+
+### The restart window
+
+- **Stop the health timer first, restart it last.**
+  `ebi-agent-chat-relay-health.timer` runs `scripts/health-check.sh` every two
+  minutes; the script retries `/api/health` three times five seconds apart and
+  then runs `systemctl --user restart ebi-agent-chat-relay.service`. So the bot
+  comes back ~15 s into any stop, on the old code, in the middle of the merge.
+  Before the window: `systemctl --user stop ebi-agent-chat-relay-health.timer`.
+  After the new bot is healthy: `systemctl --user start
+  ebi-agent-chat-relay-health.timer`, and confirm with `systemctl --user
+  list-timers ebi-agent-chat-relay-health.timer`.
+- **Merge with the bot stopped.** The live checkout is an editable install: the
+  running process imports from the working tree, so a merge under a running bot
+  changes the code a live turn is executing.
+- **Run pre-start's import gate by hand in the live checkout before starting**,
+  so a bad merge is found while the bot is still stopped and never reaches the
+  unit's rollback path:
+  `~/.local/bin/uv sync --extra voice --extra deepseek && .venv/bin/python -c
+  "from claude_discord.main import main"`.
+- Rollback steps are unchanged (see the section below); the health timer stays
+  stopped until the rollback bot is healthy, too.
+
+### The idle gate (all four must hold before stopping)
+
+1. No agent process under the bot: `pid=$(systemctl --user show -p MainPID
+   --value ebi-agent-chat-relay.service); pgrep -P "$pid"` prints nothing (an
+   agent turn is a child CLI process of the bot).
+2. `GET /api/claims` returns `{"claims": []}`.
+3. No running rows in the read-only snapshot: every row of
+   `GET /api/jester/sessions` has a `state` other than `running`.
+4. Lounge quiet: `GET /api/lounge` shows nothing newer than the last handoff.
+
+`/api/jester/turns` needs a zoned cursor: `GET /api/jester/turns?since=$(date -u
+-d '-15 minutes' +%FT%TZ)` (a bare call answers 400 "invalid turn cursor"). It
+is a cross-check of the turn journal, not a substitute for 1–3.
+
+### Baseline for "the restart posted nothing into an archived thread"
+
+Before stopping, record every open-row thread's last message and archived
+flag; after the new bot is up, record them again and diff. An archived thread
+whose `last_message_id` changed was posted into; the restart must not do that.
+
+```bash
+cd /home/drewp/main-projects/ebi-agent-chat-relay
+token=$(grep -E '^DISCORD_BOT_TOKEN=' .env | cut -d'=' -f2- | tr -d '"')   # never echo it
+ids=$(curl -s -H "Authorization: Bearer $CCDB_API_SECRET" http://127.0.0.1:9876/api/jester/sessions \
+  | python3 -c 'import json,sys; print(" ".join(r["thread_id"] for r in json.load(sys.stdin)["sessions"]))')
+for id in $ids; do
+  # printf is a shell builtin and -H @- reads the header from stdin, so the
+  # token never appears in curl's argv (visible to anything listing processes).
+  printf 'Authorization: Bot %s\n' "$token" | curl -s -H @- "https://discord.com/api/v10/channels/$id" \
+    | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c.get("id"), c.get("last_message_id"), c.get("thread_metadata",{}).get("archived"))'
+done | sort > "$HOME/.local/state/ccdb/thread-baseline-before.txt"
+```
+
+Run the same loop into `thread-baseline-after.txt` once the new bot answers
+`/api/health`, over the SAME ids — `ids=$(cut -d' ' -f1
+"$HOME/.local/state/ccdb/thread-baseline-before.txt")` instead of a fresh
+snapshot, because the new bot's sweep closes the rows of archived threads and
+they would drop out of a new list, hiding exactly the posts this looks for —
+then `diff` the two files. Expect: no change in `last_message_id` on any line
+whose third column is `True`; the only other differences allowed are threads
+the owner typed in.
+
+### The new proof and check tooling
+
+- `scripts/live-check.py` now fails when an open row is not visible in Discord,
+  when `open_count` differs from `discord_active_threads`, when any script under
+  `scripts/` names the allocating session listing, and (jester profile) when
+  Jester opened a turn with a backchannel since its unit started
+  (`JESTER_TURN_LOG`, default `~/main-projects/jester-voice/logs/turns.jsonl`).
+  Against the pre-activation bot the two Discord rules show SKIP (older bot);
+  after activation they must show PASS.
+- `scripts/discord-thread-proof.py` proves archive → closed + tag released,
+  unarchive → open, delete → closed, with one scratch thread it always deletes.
+  It refuses to run without `CCDB_PROOF_CONFIRM=yes`, reads the bot token from
+  the live `.env` and never prints it. Run it only after activation (the old
+  bot does not follow Discord, so its archived stage would just time out):
+  `cd /home/drewp/main-projects/ebi-agent-chat-relay && CCDB_PROOF_CONFIRM=yes
+  CCDB_API_SECRET=… .venv/bin/python scripts/discord-thread-proof.py`.
+- `scripts/deferred-restart.sh` now waits on `/api/jester/sessions` (read-only)
+  instead of the allocating listing; its behaviour is otherwise unchanged.
+
 ## Rollback (tested offline on a temporary copy)
 
 The candidate adds `sessions.lifecycle_version` and `sessions.archive_pending`.

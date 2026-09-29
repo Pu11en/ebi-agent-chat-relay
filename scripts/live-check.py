@@ -11,8 +11,14 @@ and every one of those bugs lived somewhere a unit test cannot reach:
 * live state had accumulated (25 of 26 tags held by closed sessions)
 
 So this talks to the running bot, reads the real database, and prints one line
-per check. It is strictly read-only: it never calls ``/api/sessions`` (listing
-there can allocate tags), opens the database read-only, and starts no model.
+per check. It is strictly read-only: it reads the Jester snapshot, never the
+allocating session listing (listing there can mint tags and rename threads),
+opens the database read-only, and starts no model. One rule greps ``scripts/``
+so no helper script quietly goes back to the allocating listing either.
+
+"Open" means visible in Discord (the 2026-09-29 owner decision), so two rules
+compare the bot's open rows with what Discord shows: every open row must be
+visible, and the open count must equal the number of active Discord threads.
 
 What to check comes from the environment, so no machine's paths are built in:
 
@@ -22,6 +28,8 @@ What to check comes from the environment, so no machine's paths are built in:
   CCDB_BOT_UNIT            systemd --user unit of the bot (optional)
   CCDB_BOT_LOG             bot log file to scan for repeated errors (optional)
   JESTER_UNIT              jester profile: Jester's systemd --user unit
+  JESTER_TURN_LOG          jester profile: Jester's turn log (turns.jsonl),
+                           default ~/main-projects/jester-voice/logs/turns.jsonl
   CCDB_VOICE_UNIT          legacy-voice profile: the older voice service unit
   CCDB_VOICE_RUNTIME       legacy-voice profile: its deployed extension directory
 
@@ -40,10 +48,10 @@ import re
 import subprocess
 import sys
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -59,6 +67,33 @@ from claude_discord.voice_labels import aliases_for  # noqa: E402
 PROFILES = ("none", "jester", "legacy-voice")
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
+# The listing that mints tags and renames threads as a side effect of being
+# read. Spelled in two halves so this checker never trips its own grep.
+ALLOCATING_LISTING = "/api/" + "sessions"
+# Where Jester writes one JSON line per spoken turn (jester-voice
+# src/conversation.mjs); the owner's machine keeps the project under ~/main-projects.
+DEFAULT_JESTER_TURN_LOG = Path.home() / "main-projects" / "jester-voice" / "logs" / "turns.jsonl"
+
+# Jester's own vocabulary (jester-voice src/backchannel.mjs): a listening sound
+# Jester must never open with, and the bare acknowledgements that, alone, are
+# not a turn worth answering.
+FILLER_TOKENS = frozenset(
+    {"mm", "mhm", "mm-hm", "mm-hmm", "mmhmm", "hmm", "hm", "uh-huh", "uhhuh", "uh", "um"}
+)
+BACKCHANNEL_TOKENS = FILLER_TOKENS | {
+    "yeah",
+    "yep",
+    "yup",
+    "yes",
+    "ok",
+    "okay",
+    "right",
+    "sure",
+    "alright",
+}
+_WORD = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")
+_SPACED_UH_HUH = re.compile(r"\buh[\s-]+huh\b", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -69,6 +104,7 @@ class Profile:
     bot_unit: str | None = None
     bot_log: Path | None = None
     jester_unit: str | None = None
+    jester_turn_log: Path = DEFAULT_JESTER_TURN_LOG
     voice_unit: str | None = None
     voice_runtime: Path | None = None
 
@@ -89,6 +125,7 @@ def load_profile(env: Mapping[str, str]) -> Profile:
         bot_unit=env.get("CCDB_BOT_UNIT") or None,
         bot_log=path("CCDB_BOT_LOG"),
         jester_unit=env.get("JESTER_UNIT") or None,
+        jester_turn_log=path("JESTER_TURN_LOG") or DEFAULT_JESTER_TURN_LOG,
         voice_unit=env.get("CCDB_VOICE_UNIT") or None,
         voice_runtime=path("CCDB_VOICE_RUNTIME"),
     )
@@ -107,9 +144,48 @@ class Observed:
     voice_probe: dict[str, object] | None = None
     repeated_errors: dict[str, int] | None = None
     edit_rejections: int | None = None
+    #: Jester's ``turn`` records since its unit started; None when unconfigured.
+    jester_turns: list[dict[str, object]] | None = None
+    #: ``file:line`` of every script naming the allocating listing; None if unread.
+    sessions_api_references: tuple[str, ...] | None = None
 
 
 Result = tuple[str, str, str]
+
+
+def _words(text: object) -> list[str]:
+    """Jester's normalisation: lowercase, straight apostrophes, "Hmmm" -> "hmm"."""
+    spelled = _SPACED_UH_HUH.sub("uh-huh", str(text or ""))
+    return [
+        re.sub(r"(.)\1{2,}", r"\1\1", word.lower().replace("’", "'"))
+        for word in _WORD.findall(spelled)
+    ]
+
+
+def opens_with_backchannel(text: object) -> bool:
+    """True when the first spoken word is a listening sound ("Mm-hmm. I'm here.")."""
+    words = _words(text)
+    return bool(words) and words[0] in FILLER_TOKENS
+
+
+def is_backchannel_only(text: object) -> bool:
+    """True for one or two acknowledgement tokens ("Mm-hmm.", "okay yeah"), never more."""
+    words = _words(text)
+    return 1 <= len(words) <= 2 and all(word in BACKCHANNEL_TOKENS for word in words)
+
+
+def _snapshot_rows(snapshot: object) -> list[dict[str, object]] | None:
+    """The session rows of a Jester snapshot, or None when there is no readable list."""
+    if not isinstance(snapshot, dict):
+        return None
+    rows = snapshot.get("sessions")
+    if not isinstance(rows, list):
+        return None
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _turn_label(turn: Mapping[str, object], text: object) -> str:
+    return f"{turn.get('at', '?')} {str(text)[:60]!r}"
 
 
 def evaluate(profile: Profile, seen: Observed) -> list[Result]:
@@ -167,9 +243,78 @@ def evaluate(profile: Profile, seen: Observed) -> list[Result]:
             f"untagged {report.untagged_user_sessions}, {report.free_tags} free",
         )
 
+    # "Open" means visible in Discord, so the snapshot's open rows are compared
+    # with what Discord shows. A snapshot from a bot older than step A2 carries
+    # neither ``visible`` nor the counts; that is unknown, not a pass.
+    rows = _snapshot_rows(seen.jester_sessions)
+    open_rows = None if rows is None else [r for r in rows if not r.get("closed")]
+    if open_rows is None:
+        check(None, "open sessions are visible in Discord", "snapshot unavailable")
+    elif any("visible" not in r for r in open_rows):
+        check(
+            None, "open sessions are visible in Discord", "snapshot has no visibility (older bot)"
+        )
+    else:
+        hidden = [
+            str(r.get("name") or r.get("thread_id")) for r in open_rows if r["visible"] is False
+        ]
+        check(
+            not hidden,
+            "open sessions are visible in Discord",
+            f"open session not visible in Discord: {hidden}",
+        )
+    counts = seen.jester_sessions if isinstance(seen.jester_sessions, dict) else {}
+    open_count, active_threads = counts.get("open_count"), counts.get("discord_active_threads")
+    if not isinstance(open_count, int) or not isinstance(active_threads, int):
+        check(
+            None,
+            "open sessions match Discord's active threads",
+            "snapshot unavailable" if rows is None else "snapshot has no counts (older bot)",
+        )
+    else:
+        check(
+            open_count == active_threads,
+            "open sessions match Discord's active threads",
+            f"open_count {open_count} vs discord_active_threads {active_threads}",
+        )
+
+    if seen.sessions_api_references is None:
+        check(None, "no script calls the tag-minting session listing", "scripts/ unreadable")
+    else:
+        check(
+            not seen.sessions_api_references,
+            "no script calls the tag-minting session listing",
+            f"{ALLOCATING_LISTING} named in {list(seen.sessions_api_references)}",
+        )
+
     if profile.name == "jester":
         unit(profile.jester_unit, "Jester")
         check(isinstance(seen.jester_sessions, dict), "Jester's read-only session snapshot answers")
+        turns = seen.jester_turns
+        if turns is None:
+            unread = "turn log or Jester unit not configured"
+            check(None, "Jester never opens with a backchannel", unread)
+            check(None, "Jester does not answer backchannel-only turns", unread)
+        else:
+            openers = [t for t in turns if opens_with_backchannel(t.get("heardText"))]
+            check(
+                not openers,
+                "Jester never opens with a backchannel",
+                f"{len(openers)} turn(s) since the unit started, first "
+                + (_turn_label(openers[0], openers[0].get("heardText")) if openers else ""),
+            )
+            # Jester logs the owner's words as ``ownerText`` on the turn that
+            # answered them; a log without that field has nothing to judge.
+            with_owner = [t for t in turns if isinstance(t.get("ownerText"), str)]
+            answered = [t for t in with_owner if is_backchannel_only(t["ownerText"])]
+            check(
+                None if not with_owner else not answered,
+                "Jester does not answer backchannel-only turns",
+                "turn log carries no owner text"
+                if not with_owner
+                else f"{len(answered)} answered, first "
+                + (_turn_label(answered[0], answered[0]["ownerText"]) if answered else ""),
+            )
     if profile.name == "legacy-voice":
         unit(profile.voice_unit, "voice")
         if seen.voice_digests is None:
@@ -286,6 +431,54 @@ def log_since(log: Path, started: datetime | None) -> list[str] | None:
     return out
 
 
+def turns_since(log: Path, started: datetime | None) -> list[dict[str, object]] | None:
+    """Jester's ``turn`` records logged after *started*, or None when unknowable.
+
+    systemd reports the unit start in local time without a zone, while Jester
+    stamps every line in UTC (``new Date().toISOString()``), so the start is
+    made zone-aware before comparing; a naive string comparison would be off by
+    the UTC offset. Lines that are not JSON, or carry no readable time, are
+    skipped rather than guessed at.
+    """
+    if started is None or not log.is_file():
+        return None
+    cutoff = started.astimezone() if started.tzinfo is None else started
+    out: list[dict[str, object]] = []
+    with log.open(errors="replace") as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+                at = datetime.fromisoformat(str(record["at"]))
+            except (ValueError, TypeError, KeyError):
+                continue
+            if not isinstance(record, dict) or record.get("type") != "turn":
+                continue
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=UTC)
+            if at >= cutoff:
+                out.append(record)
+    return out
+
+
+def scripts_naming_session_listing(scripts_dir: Path) -> tuple[str, ...] | None:
+    """``file:line`` for every shell or Python script mentioning the allocating listing.
+
+    A plain grep, on purpose: a comment recommending it is how the next helper
+    ends up calling it. None when the directory cannot be read.
+    """
+    if not scripts_dir.is_dir():
+        return None
+    found: list[str] = []
+    scripts: Iterable[Path] = sorted(
+        p for p in scripts_dir.iterdir() if p.is_file() and p.suffix in (".sh", ".py")
+    )
+    for script in scripts:
+        for number, line in enumerate(script.read_text(errors="replace").splitlines(), 1):
+            if ALLOCATING_LISTING in line:
+                found.append(f"{script.name}:{number}")
+    return tuple(found)
+
+
 def voice_probe(report_db: Path) -> dict[str, object] | None:
     """Drive the older voice integration's parser with one real stored tag."""
     import sqlite3
@@ -349,18 +542,23 @@ def observe(profile: Profile, read: Callable[[Profile, str], object | None] = ap
             tree_digest(REPO / "extensions/voice_transcripts/src"),
             tree_digest(live) if live.exists() else "<missing>",
         )
+    # "Since the unit started" needs the unit; without it the turn log is unread.
+    turns = None
+    if profile.name == "jester" and profile.jester_unit is not None:
+        turns = turns_since(profile.jester_turn_log, unit_started_at(profile.jester_unit))
     return Observed(
         health=health if isinstance(health, dict) else None,
         disk_commit=run("git", "-C", str(REPO), "rev-parse", "HEAD"),
         report=inspect_database(profile.db),
         units=units,
-        jester_sessions=(
-            read(profile, "/api/jester/sessions?limit=100") if profile.name == "jester" else None
-        ),
+        # The read-only snapshot lists every open row; ``limit`` only pages closed ones.
+        jester_sessions=read(profile, "/api/jester/sessions"),
         voice_digests=digests,
         voice_probe=voice_probe(profile.db) if profile.name == "legacy-voice" else None,
         repeated_errors=repeated,
         edit_rejections=rejections,
+        jester_turns=turns,
+        sessions_api_references=scripts_naming_session_listing(REPO / "scripts"),
     )
 
 
