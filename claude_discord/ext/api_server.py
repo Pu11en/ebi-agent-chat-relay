@@ -54,6 +54,7 @@ from ..project_lookup_worker import (
     resolve_project_lookup_root,
 )
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
+from ..runtime_identity import BOOT_IDENTITY, UNKNOWN, RuntimeIdentity, disk_revision
 from ..session_lifecycle import (
     CloseAuthorization,
     CloseState,
@@ -428,6 +429,8 @@ class ApiServer:
                 raise ValueError("A non-loopback control-plane bind requires an API secret")
         self.repo = repo
         self.bot = bot
+        self.runtime_identity: RuntimeIdentity = BOOT_IDENTITY
+        self.disk_revision: Callable[[], Awaitable[str]] = disk_revision
         self.default_channel_id = default_channel_id
         self.host = host
         self.port = port
@@ -754,11 +757,18 @@ class ApiServer:
             # A liveness probe must answer even when the store is unreadable.
             logger.exception("Health check could not read the notification backlog")
 
+        # What is running is fixed at startup; the checkout on disk may have moved.
+        running = self.runtime_identity
+        on_disk = await self.disk_revision()
+        known = UNKNOWN not in (running.commit, on_disk)
         return web.json_response(
             {
                 "status": "degraded" if overdue else "ok",
                 "overdue_notifications": overdue,
                 "timestamp": datetime.now().isoformat(),
+                "runtime": running.as_dict(),
+                "disk_commit": on_disk,
+                "running_matches_disk": (running.commit == on_disk) if known else None,
             }
         )
 

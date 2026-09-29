@@ -66,3 +66,20 @@ working-directory row, then raised. The check now runs before anything is create
   (`waiting_*`, `landed_workers`, `checkpoints`) and drops them on its next save.
   Back up the loop store before activation. Making the loader ignore unknown
   fields was rejected: an older loader ignoring a saved wait would resume and spend.
+
+## Running identity in health (task 5.2)
+
+`claude_discord/runtime_identity.py` captures pid, start time, Git commit and
+dirty flag once at import during startup (argv `git`, 2-second timeout, no shell).
+`/api/health` now adds `runtime` (that fixed identity), `disk_commit` (read on each
+request) and `running_matches_disk` (`null` when either side is unknown). RED:
+`test_checkout_change_after_start_does_not_change_running_identity` failed with
+`KeyError: 'runtime'`; it now proves a later checkout changes only `disk_commit`.
+Unavailable Git is reported as `"unknown"`, never guessed. Gate: `make verify`
+**6,213 passed, five known warnings, zero errors in 565.66s**.
+
+Limits: identity is taken when `api_server` is first imported, which is during
+startup; modules imported lazily later could come from a newer checkout, so a
+mismatch proves drift but a match does not prove every module is from one commit.
+`/api/health` bypasses API auth, so the commit hash, pid and start time are visible
+to anyone who can reach the (normally loopback-only) API port.
