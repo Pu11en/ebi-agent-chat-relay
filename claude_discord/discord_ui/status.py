@@ -175,7 +175,6 @@ class StatusManager:
     def _reset_stall_timer(self) -> None:
         """Reset the stall timer (activity detected)."""
         self._last_activity = asyncio.get_running_loop().time()
-        self._hard_stall_notified = False
 
     def _cancel_stall_timer(self) -> None:
         """Cancel the stall timer."""

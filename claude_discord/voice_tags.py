@@ -17,14 +17,19 @@ shape of failure as a fix that was committed and never deployed.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import discord
 
+from claude_code_core.session_repo import SessionRepository
+
+from .handoff_discord import THREAD_NAME_PREFIX as HANDOFF_THREAD_PREFIX
+from .thread_policy import thread_is_archived
 from .voice_labels import (
-    SPOKEN_LABELS,
     aliases_for,
     assign_labels,
     label_key,
@@ -36,7 +41,22 @@ from .voice_labels import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["MAX_RETITLES_PER_CALL", "VoiceTagger"]
+__all__ = ["HELPER_TITLE_PREFIXES", "MAX_RETITLES_PER_CALL", "VoiceTagger"]
+
+#: Title prefixes of the threads workflows open for themselves: Go Work's ⚡
+#: workers and 🔁 build threads, project-lookup workers and handoff job threads.
+#:
+#: Read from the title because no stored row marker says "helper" — the one
+#: stored marker, ``voice_addressable:<id>=false``, is stricter and keeps a
+#: thread out of the pool entirely. A helper that is not excluded still gets a
+#: word, but only a leftover one, and gives it back when the owner needs it:
+#: the words are for the conversations Drew himself speaks to.
+HELPER_TITLE_PREFIXES: tuple[str, ...] = (
+    "⚡",
+    "🔁",
+    "🔎 Project lookup",
+    HANDOFF_THREAD_PREFIX,
+)
 
 #: How many threads one bulk pass may look up and retitle.
 #:
@@ -52,42 +72,57 @@ MAX_RETITLES_PER_CALL = 12
 class VoiceTagger:
     """Assigns and displays spoken tags. Safe with no settings repository."""
 
-    def __init__(self, bot: Any, settings_repo: Any | None) -> None:
+    def __init__(
+        self,
+        bot: Any,
+        settings_repo: Any | None,
+        *,
+        session_repo: SessionRepository | None = None,
+    ) -> None:
         self.bot = bot
         self.settings_repo = settings_repo
+        self.session_repo = session_repo
+        if self.session_repo is None:
+            bot_repo = getattr(bot, "session_repo", None)
+            if isinstance(bot_repo, SessionRepository):
+                self.session_repo = bot_repo
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        """Serialize creation/registration and tag allocation across entry points."""
+        lock = getattr(self.bot, "_voice_tag_lock", None)
+        if not isinstance(lock, asyncio.Lock):
+            lock = asyncio.Lock()
+            self.bot._voice_tag_lock = lock
+        return lock
+
+    @property
+    def ineligible(self) -> set[int]:
+        """Workers excluded in this process, honored even if storing it failed."""
+        known = getattr(self.bot, "_voice_ineligible", None)
+        if not isinstance(known, set):
+            known = set()
+            self.bot._voice_ineligible = known
+        return known
+
+    async def exclude_thread(self, thread_id: int) -> None:
+        """Persist worker exclusion. Caller holds ``lock`` while registering a thread.
+
+        Recorded in memory first: if the store refuses the write, the caller still
+        sees the error, but this process never hands the worker a user's tag.
+        """
+        self.ineligible.add(thread_id)
+        if self.settings_repo is not None:
+            await self.settings_repo.set(f"voice_addressable:{thread_id}", "false")
+            await self.settings_repo.delete(label_key(thread_id))
 
     # -- one thread, at the moment it is created ---------------------------
 
     async def tag_thread(self, thread: discord.Thread) -> str | None:
-        """Give ``thread`` a tag now, and show it in the title.
-
-        Returns the tag, or None when there is nowhere to store one or every word
-        is already promised to a live thread. Untagged is the right answer in that
-        case: reusing a word another thread answers to would send a spoken
-        instruction to the wrong repository, which is the one unacceptable
-        outcome here.
-        """
-        if self.settings_repo is None:
-            return None
-        existing = await self._stored()
-        if existing is None:
-            return None
-
-        label = existing.get(thread.id)
-        if label is None:
-            # Deliberately *not* `assign_labels`: that takes the whole visible set
-            # and may reclaim a word from a thread absent from it. Handed a single
-            # id, every other thread looks absent, so it would cheerfully take a
-            # word a live thread still answers to. Here only a genuinely free word
-            # will do, and none available means untagged.
-            label = next((w for w in SPOKEN_LABELS if w not in set(existing.values())), None)
-            if label is None:
-                return None
-            with contextlib.suppress(Exception):
-                await self.settings_repo.set(label_key(thread.id), label)
-        # The tag is recorded before the rename, so a thread whose title could not
-        # be changed is still addressable by the word it now owns.
-        if title_tag(thread.name) != label:
+        async with self.lock:
+            labels = await self._assign([thread.id])
+            label = labels.get(thread.id) if labels is not None else None
+        if label is not None and title_tag(thread.name) != label:
             with contextlib.suppress(discord.HTTPException):
                 await thread.edit(name=tagged_title(thread.name, label))
         return label
@@ -95,42 +130,148 @@ class VoiceTagger:
     # -- the bulk pass, over a set of session views ------------------------
 
     async def apply(self, views: list[dict[str, Any]]) -> None:
-        """Attach a tag to each view, minting the missing ones.
+        async with self.lock:
+            labels = await self._assign(
+                [v["thread_id"] for v in views],
+                closed={v["thread_id"] for v in views if v.get("closed")},
+            )
+            for view in views:
+                label = labels.get(view["thread_id"]) if labels is not None else None
+                view["voice_label"] = label
+                view["voice_label_aliases"] = list(aliases_for(label))
+        # A failed snapshot is unknown, not evidence that a title is stale.
+        if labels is not None:
+            await self.show_in_titles(views)
 
-        A closed session is not somewhere work is happening, so it is given no
-        word and does not keep the one it had. Both mattered: the pool is 26 long
-        and finished sessions were holding most of it, and the tag still resolved
-        — saying it delivered an instruction into a session that was over.
+    async def _assign(
+        self, thread_ids: list[int], *, closed: set[int] | None = None
+    ) -> dict[int, str] | None:
+        """Assign under ``lock``; return only persisted promises, or unknown.
+
+        Inspect every stored holder, not every historical session. Without a
+        lifecycle repository only explicit closed views/worker exclusions permit
+        release; unknown holders keep their names. A thread archived or deleted in
+        Discord releases its name once ThreadFollowCog has closed its session
+        (discord_archived).
         """
-        existing = await self._stored()
-        # `_stored` returns None for both "nowhere to store one" and "could not
-        # read", and either way there is nothing to assign; narrowing on the repo
-        # as well is what tells the type checker the writes below are safe.
-        if existing is None or self.settings_repo is None:
-            return
-
-        ordered = [v["thread_id"] for v in views if not v.get("closed")]
-        labels, minted, released = assign_labels(ordered, existing)
-        finished = {v["thread_id"] for v in views if v.get("closed")} & set(existing)
-        released |= finished
-
-        for thread_id, label in minted.items():
-            with contextlib.suppress(Exception):
-                await self.settings_repo.set(label_key(thread_id), label)
-        # A tag is only taken back when all 26 are spoken for; a thread that has
-        # merely scrolled out of view keeps the word the speaker learned for it.
-        for thread_id in released:
-            with contextlib.suppress(Exception):
+        stored = await self._stored()
+        if stored is None or self.settings_repo is None:
+            return None
+        existing, excluded = stored
+        excluded |= self.ineligible
+        closed = set(closed or ())
+        if self.session_repo is not None:
+            try:
+                for thread_id in set(existing) | set(thread_ids):
+                    record = await self.session_repo.get(thread_id)
+                    if record is not None:
+                        if record.is_closed:
+                            closed.add(thread_id)
+                        else:
+                            closed.discard(thread_id)
+            except Exception:
+                logger.warning("Could not read spoken-tag lifecycle evidence", exc_info=True)
+                return None
+        excluded |= closed
+        released: set[int] = set()
+        for thread_id in excluded & set(existing):
+            try:
                 await self.settings_repo.delete(label_key(thread_id))
-        for view in views:
-            label = labels.get(view["thread_id"])
-            view["voice_label"] = label
-            # The words the recogniser writes instead of this tag. The voice layer
-            # treats them as wake words, so a tag sent without them is a tag that
-            # only matches when the recogniser happens to spell it right — saying
-            # "Zorro" stopped reaching `zoro` the moment this line went missing.
-            view["voice_label_aliases"] = list(aliases_for(label))
-        await self.show_in_titles(views)
+            except Exception:
+                logger.warning(
+                    "Could not release spoken tag for thread %s", thread_id, exc_info=True
+                )
+            else:
+                released.add(thread_id)
+        labels, minted, _ = assign_labels(
+            [tid for tid in thread_ids if tid not in excluded], existing, released_ids=released
+        )
+        for thread_id, label in minted.items():
+            try:
+                await self.settings_repo.set(label_key(thread_id), label)
+            except Exception:
+                labels.pop(thread_id, None)
+                logger.warning(
+                    "Could not assign spoken tag for thread %s", thread_id, exc_info=True
+                )
+        return labels
+
+    # -- the follow pass, over the threads Discord still shows -------------
+
+    @staticmethod
+    def is_helper_title(title: str | None) -> bool:
+        """Was this thread opened by a workflow rather than by the owner?"""
+        base = strip_title_tag(title or "")
+        return bool(base) and base.startswith(HELPER_TITLE_PREFIXES)
+
+    async def rebalance(self, threads: Mapping[int, Any]) -> dict[str, int]:
+        """Release closed holders' words and hand free ones out, owner threads first.
+
+        ``threads`` maps open session rows to the Discord threads the caller
+        already resolved, most relevant first; nothing is fetched here, so a
+        pass over a quiet roster costs no Discord call at all. Only visible
+        (unarchived) threads take part — an archived thread is a closed
+        session waiting for its close to be recorded, not a candidate.
+
+        The owner's threads are offered words before any helper, and when the
+        pool is empty an untagged owner thread takes a word back from a helper
+        (the helper's title loses the tag). A word never moves between two
+        owner threads: that would change what a name Drew already learned means.
+        Titles are edited only on visible, unlocked threads.
+        """
+        report = {"assigned": 0, "reclaimed": 0, "retagged": 0}
+        visible = {
+            tid: thread
+            for tid, thread in threads.items()
+            if isinstance(thread, discord.Thread) and not thread_is_archived(thread)
+        }
+        owners = [tid for tid, t in visible.items() if not self.is_helper_title(t.name)]
+        helpers = [tid for tid in visible if tid not in set(owners)]
+        async with self.lock:
+            before = await self._stored()
+            labels = await self._assign(owners + helpers)
+            if before is None or labels is None or self.settings_repo is None:
+                return report
+            held, excluded = before
+            excluded |= self.ineligible
+            report["assigned"] = sum(1 for tid, word in labels.items() if held.get(tid) != word)
+            wanting = [tid for tid in owners if tid not in labels and tid not in excluded]
+            # The helper least recently used gives its word up first.
+            donors = [tid for tid in reversed(helpers) if tid in labels]
+            for owner in wanting:
+                if not donors:
+                    break
+                donor = donors.pop(0)
+                word = labels[donor]
+                try:
+                    await self.settings_repo.delete(label_key(donor))
+                    del labels[donor]
+                    await self.settings_repo.set(label_key(owner), word)
+                except Exception:
+                    logger.warning("Could not move a helper's spoken tag", exc_info=True)
+                    continue
+                labels[owner] = word
+                report["reclaimed"] += 1
+                logger.info(
+                    "Spoken tag %r moved from helper thread %s to owner thread %s",
+                    word,
+                    donor,
+                    owner,
+                )
+        for tid, thread in visible.items():
+            if report["retagged"] >= MAX_RETITLES_PER_CALL:
+                break
+            label = labels.get(tid)
+            if title_tag(thread.name) == label or thread.locked is True:
+                continue
+            wanted = tagged_title(thread.name, label) if label else strip_title_tag(thread.name)
+            try:
+                await thread.edit(name=wanted)
+            except Exception as exc:  # rate limit, permissions, archived race
+                logger.debug("Could not retitle thread %s: %s", tid, exc)
+                continue
+            report["retagged"] += 1
+        return report
 
     async def show_in_titles(self, views: list[dict[str, Any]]) -> None:
         """Put each thread's tag at the front of its Discord title.
@@ -190,7 +331,7 @@ class VoiceTagger:
             logger.debug("Could not resolve thread %s: %s", thread_id, exc)
             return None
 
-    async def _stored(self) -> dict[int, str] | None:
+    async def _stored(self) -> tuple[dict[int, str], set[int]] | None:
         """Every tag currently promised, or None when it cannot be read."""
         if self.settings_repo is None:
             return None
@@ -200,8 +341,13 @@ class VoiceTagger:
             logger.warning("Could not read spoken tags", exc_info=True)
             return None
         existing: dict[int, str] = {}
+        excluded: set[int] = set()
         for key, value in stored.items():
             thread_id = thread_id_from_key(key)
             if thread_id is not None:
                 existing[thread_id] = value
-        return existing
+            if key.startswith("voice_addressable:") and value == "false":
+                suffix = key.removeprefix("voice_addressable:")
+                if suffix.isdigit():
+                    excluded.add(int(suffix))
+        return existing, excluded

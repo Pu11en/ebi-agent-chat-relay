@@ -50,6 +50,8 @@ def repo(tmp_path: Path) -> Path:
 def _cog() -> tuple[TaskLoopCog, MagicMock, list[MagicMock], list[tuple[str, float]]]:
     bot = MagicMock()
     chat = MagicMock()
+    chat.repo.get = AsyncMock(return_value=None)
+    chat._settings_repo = None
     threads: list[MagicMock] = []
     worked: list[tuple[str, float]] = []
 
@@ -152,7 +154,7 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
 
     def make_edit(thread: MagicMock):  # noqa: ANN202
         async def edit(**kwargs: object) -> None:
-            if kwargs.get("archived"):
+            if kwargs.get("archived") and thread is not threads[0]:
                 ledger = json.loads(
                     (
                         cog._store.path.with_name("builds") / f"thread-{threads[0].id}.json"
@@ -190,13 +192,11 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
 
     assert set(archived_after.values()) == {"accepted", "failed"}  # saved before archived
     assert failures == [threads[2].id, threads[2].id]  # the hook, then the end-of-build retry
-    # The build's own thread is only ever archived by the finish flow (with its reason),
-    # never by the per-task archive; the planning channel is never touched.
-    assert all(
-        c.kwargs.get("reason") == "go-work finished"
-        for c in worker.edit.call_args_list
-        if c.kwargs.get("archived")
-    )
+    # The finished card puts the parent away properly (workflow close: row closed,
+    # archived, never locked); integration's own close later repeats harmlessly.
+    # The planning channel and every conversation's history stay intact.
+    worker.edit.assert_any_await(archived=True)
+    worker.delete.assert_not_awaited()
     assert not hasattr(channel, "edit") or not channel.edit.called
     for thread in threads[1:]:  # task worker threads are archived, never deleted
         thread.delete.assert_not_called()

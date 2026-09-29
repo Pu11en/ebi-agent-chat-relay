@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from claude_code_core.work_copy import is_gowork_branch, is_under_work_root
@@ -57,6 +57,17 @@ class LoopRecord:
     #: project path is not enough; the worker thread is unique per build and survives
     #: restarts, which is what legacy records (saved without an id) derive it from.
     build_id: str = ""
+    #: A user decision survives a restart; None means execution may resume.
+    waiting_status: str | None = None
+    waiting_detail: str = ""
+    waiting_fails: list[str] = field(default_factory=list)
+    waiting_proposed: list[str] = field(default_factory=list)
+    #: Legacy parallel workers merged into the build copy. They are accepted, and
+    #: closed, only when the build itself is kept.
+    landed_workers: list[int] = field(default_factory=list)
+    #: Written by code that saves every wait. Without it, a record with no saved
+    #: wait may have been waiting for the person when it was stored.
+    checkpoints: bool = False
 
     def __post_init__(self) -> None:
         if not self.build_id:

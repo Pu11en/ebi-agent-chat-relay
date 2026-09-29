@@ -61,6 +61,11 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    "error:coroutine .* was never awaited:RuntimeWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
 # A hung test must fail with every thread's stack, not pin CI for six hours.
 timeout = 300
 timeout_method = "thread"

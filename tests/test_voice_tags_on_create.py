@@ -131,6 +131,7 @@ class TestTheListenerCoversEveryPath:
 
         cog = ClaudeChatCog.__new__(ClaudeChatCog)
         cog.bot = MagicMock()
+        cog.repo = MagicMock(get=AsyncMock(return_value=None))
         cog._settings_repo = settings
         cog._channel_ids = channel_ids if channel_ids is not None else {77}
         return cog
@@ -251,6 +252,7 @@ class TestTheGuardCannotSilentlySkip:
 
         cog = ClaudeChatCog.__new__(ClaudeChatCog)
         cog.bot = MagicMock()
+        cog.repo = MagicMock(get=AsyncMock(return_value=None))
         cog._settings_repo = settings
         cog._channel_ids = channel_ids
         return cog

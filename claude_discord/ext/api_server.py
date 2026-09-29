@@ -27,7 +27,8 @@ import time
 import uuid
 import zipfile
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,7 @@ from urllib.parse import urlsplit
 import aiosqlite
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
+from claude_code_core.session_repo import LifecycleState
 from claude_code_core.thread_search import run_thread_search
 from claude_code_core.transcript_search import default_transcripts_root
 
@@ -54,6 +56,7 @@ from ..project_lookup_worker import (
     resolve_project_lookup_root,
 )
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
+from ..runtime_identity import BOOT_IDENTITY, UNKNOWN, RuntimeIdentity, disk_revision
 from ..session_lifecycle import (
     CloseAuthorization,
     CloseState,
@@ -62,8 +65,8 @@ from ..session_lifecycle import (
 )
 from ..session_view import STATE_HISTORY, STATE_RUNNING, build_session_views
 from ..spoken import MAX_SPOKEN_TEXT_CHARS, VALID_SOURCES, VOICE, build_spoken_prompt
-from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
-from ..voice_labels import thread_id_from_key
+from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES, may_post_unsolicited, thread_is_archived
+from ..voice_labels import SPOKEN_LABELS, thread_id_from_key
 from ..voice_tags import VoiceTagger
 from . import ingest_manifest, teams_sync
 from .teams_store import TeamsVaultStore
@@ -109,6 +112,21 @@ _MAX_DISCORD_THREAD_NAME_LENGTH = 100
 # of history into its own context window.
 _DEFAULT_SESSION_LIMIT = 20
 _MAX_SESSION_LIMIT = 100
+# /api/jester/sessions — the read-only snapshot. Open rows are enumerated in
+# full: an open session is a thread visible in Discord, and Discord allows far
+# fewer live threads per guild than this, so the scan limit is a safety net,
+# not a page size.
+_OPEN_SESSION_SCAN_LIMIT = 10_000
+# How many threads missing from the bot's cache one snapshot may fetch from
+# Discord. A verdict is remembered, so a steady poll costs nothing; the cap
+# bounds the first read after a restart and any read Discord answers slowly.
+_MAX_SNAPSHOT_THREAD_FETCHES = 25
+# Other bots' and hand-made threads listed in the Jester snapshot, newest first.
+_MAX_OTHER_THREADS = 25
+# How long a fetched verdict (title, archived, gone) is trusted. The bot's own
+# cache is consulted first and holds every live thread, so a thread that comes
+# back is seen at once; this only bounds how long a stale verdict can live.
+_SNAPSHOT_FACT_TTL_SECONDS = 600.0
 _DEFAULT_THREAD_MESSAGE_LIMIT = 30
 _MAX_THREAD_MESSAGE_LIMIT = 100
 _DEFAULT_SEARCH_LIMIT = 15
@@ -215,6 +233,27 @@ def _serialize_thread_message(message: Any) -> dict[str, object]:
         "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else None,
         "jump_url": getattr(message, "jump_url", None),
     }
+
+
+@dataclass(frozen=True)
+class _ThreadFact:
+    """What Discord last said about a thread, for the Jester snapshot.
+
+    ``visible`` is True for a thread Discord shows, False for one that is
+    archived or gone, and None when nothing is known.
+    """
+
+    name: str | None
+    visible: bool | None
+
+
+def _fact_from_channel(channel: Any) -> _ThreadFact:
+    """Read a cached or fetched channel; only a real title counts as a name."""
+    name = getattr(channel, "name", None)
+    return _ThreadFact(
+        name=name if isinstance(name, str) else None,
+        visible=not getattr(channel, "archived", False),
+    )
 
 
 def build_jester_session_snapshot(
@@ -428,10 +467,14 @@ class ApiServer:
                 raise ValueError("A non-loopback control-plane bind requires an API secret")
         self.repo = repo
         self.bot = bot
+        self.runtime_identity: RuntimeIdentity = BOOT_IDENTITY
+        self.disk_revision: Callable[[], Awaitable[str]] = disk_revision
         self.default_channel_id = default_channel_id
         self.host = host
         self.port = port
         self.api_secret = api_secret
+        # Other bots' names for the Jester snapshot, looked up once per process.
+        self._owner_names: dict[int, str | None] = {}
         self.ingest_token = ingest_token
         self.ingest_host = ingest_host
         self.ingest_port = ingest_port
@@ -485,6 +528,11 @@ class ApiServer:
         # Loop/rate brake for thread-to-thread relays. Process-local by design:
         # after a restart there are no in-flight relay chains to protect.
         self.relay_guard = RelayGuard()
+        # Verdicts the Jester snapshot fetched for threads the bot's cache does
+        # not hold (archived, gone, never seen), by thread id, with the monotonic
+        # deadline after which the thread is asked again. Bounded by the number
+        # of open rows; the bot's cache is always consulted before this.
+        self._snapshot_thread_facts: dict[int, tuple[float, _ThreadFact]] = {}
         # Friendly names for relay targets, e.g. "drewai" -> a Discord thread.
         self.agent_directory = parse_agent_routes(os.getenv("CCDB_AGENT_ROUTES"))
         # AI Lounge Discord mirror (OPTIONAL, human-facing). When a channel is
@@ -754,11 +802,18 @@ class ApiServer:
             # A liveness probe must answer even when the store is unreadable.
             logger.exception("Health check could not read the notification backlog")
 
+        # What is running is fixed at startup; the checkout on disk may have moved.
+        running = self.runtime_identity
+        on_disk = await self.disk_revision()
+        known = UNKNOWN not in (running.commit, on_disk)
         return web.json_response(
             {
                 "status": "degraded" if overdue else "ok",
                 "overdue_notifications": overdue,
                 "timestamp": datetime.now().isoformat(),
+                "runtime": running.as_dict(),
+                "disk_commit": on_disk,
+                "running_matches_disk": (running.commit == on_disk) if known else None,
             }
         )
 
@@ -2149,12 +2204,8 @@ class ApiServer:
                 error=error,
             )
             worker_thread = worker_thread_holder.get("thread")
-            if worker_thread is not None and hasattr(worker_thread, "edit"):
-                with contextlib.suppress(Exception):
-                    await worker_thread.edit(
-                        archived=True,
-                        reason="project lookup completed",
-                    )
+            if worker_thread is not None:
+                await self._close_project_lookup_worker(worker_thread, cog)
 
         try:
             thread = await cog.spawn_session(
@@ -2184,6 +2235,32 @@ class ApiServer:
             status=201,
         )
 
+    async def _close_project_lookup_worker(self, worker_thread: Any, cog: Any) -> None:
+        """Close the finished lookup worker's session, not just its thread.
+
+        A bare archive left the row open: a ghost session holding a spoken tag.
+        The lifecycle service closes the row on the workflow's authority and
+        archives the thread unlocked. Only a thread with no session row (or no
+        lifecycle service) falls back to the plain archive it always had.
+        """
+        lifecycle = self.lifecycle or getattr(cog, "lifecycle", None)
+        if isinstance(lifecycle, SessionLifecycleService):
+            try:
+                outcome = await lifecycle.close(
+                    int(worker_thread.id),
+                    CloseAuthorization.from_workflow("project-lookup", close_on_done=True),
+                )
+            except Exception:
+                logger.warning(
+                    "Could not close project lookup worker %s", worker_thread.id, exc_info=True
+                )
+                return
+            if outcome.state is not CloseState.NO_SESSION:
+                return
+        if hasattr(worker_thread, "edit") and not thread_is_archived(worker_thread):
+            with contextlib.suppress(Exception):
+                await worker_thread.edit(archived=True, reason="project lookup completed")
+
     async def _send_project_lookup_result(
         self,
         *,
@@ -2197,6 +2274,10 @@ class ApiServer:
                 target = await self.bot.fetch_channel(thread_id)
         if target is None or not hasattr(target, "send"):
             logger.warning("Project lookup result target %s is not reachable", thread_id)
+            return
+        if not await may_post_unsolicited(target):
+            # The requester put that conversation away; a post would reopen it.
+            logger.info("Project lookup result not posted: thread %s is archived", thread_id)
             return
 
         if error:
@@ -2212,7 +2293,8 @@ class ApiServer:
 
         Lets a session discover its peers before touching a shared repository:
         which threads are alive, where they are working, and what they last
-        announced in the AI Lounge.  Read-only.
+        announced in the AI Lounge. This also maintains spoken tags and titles;
+        use the session_snapshot endpoint for a read-only snapshot.
 
         Query params:
             limit: Max persisted sessions to consider (default 20, max 100).
@@ -2281,41 +2363,93 @@ class ApiServer:
         return web.json_response({"sessions": views, "capacity": capacity})
 
     async def session_snapshot(self, request: web.Request) -> web.Response:
-        """A side-effect-free, string-ID owner view for Jester voice routing."""
+        """GET /api/jester/sessions — the read-only, string-ID owner view for voice routing.
+
+        "Open" means visible in Discord, so every row whose lifecycle is not
+        closed is listed, in full; closed rows appear only with
+        ``include_closed=1`` — the newest ``limit`` (default and at most 100),
+        flagged ``closed`` — so a history search can still find them. Each row
+        also says whether Discord shows the thread (``visible``: True for a live
+        thread, False for one archived or gone, None when unknown), and the
+        envelope carries ``open_count``, ``discord_active_threads`` (EBI's own
+        live threads in the bot's cache — bot-owned or backed by an open row —
+        for comparison), ``other_threads`` (live threads the bot can see that
+        are not EBI's, such as other bots' or hand-made ones, newest first, at
+        most 25) and ``generated_at``. Reading this
+        never mints a tag, renames a thread or writes a row — only
+        ``/api/sessions`` does — so Jester may poll it freely.
+        """
         if err := self._require_session_repo():
             return err
+        query = request.rel_url.query
         try:
-            limit = max(1, min(_MAX_SESSION_LIMIT, int(request.rel_url.query.get("limit", "100"))))
+            include_closed = _catalog_flag(query.get("include_closed"), field="include_closed")
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        try:
+            closed_limit = max(1, min(_MAX_SESSION_LIMIT, int(query.get("limit", "100"))))
         except ValueError:
             return web.json_response({"error": "limit must be an integer"}, status=400)
 
-        records = await self.session_repo.list_all(limit=limit)  # type: ignore[union-attr]
+        # A row that is not closed is open: `closing` is a wrap-up in flight and
+        # its thread is still on screen. The store filters one state at a time.
+        open_rows = await self.session_repo.list_all(  # type: ignore[union-attr]
+            limit=_OPEN_SESSION_SCAN_LIMIT, lifecycle_state=LifecycleState.OPEN
+        )
+        closing_rows = await self.session_repo.list_all(  # type: ignore[union-attr]
+            limit=_OPEN_SESSION_SCAN_LIMIT, lifecycle_state=LifecycleState.CLOSING
+        )
+        records = sorted(open_rows + closing_rows, key=lambda r: r.last_used_at, reverse=True)
+        if include_closed:
+            records += await self.session_repo.list_all(  # type: ignore[union-attr]
+                limit=closed_limit, lifecycle_state=LifecycleState.CLOSED
+            )
         active = self._active_sessions()
         thread_ids = {r.thread_id for r in records} | {s.thread_id for s in active}
+        # Live registry entries first, then open rows newest first: the threads
+        # most likely to be spoken to are resolved before the fetch cap bites.
+        # Closed rows are never fetched; their thread is archived by definition.
+        fetch_order = [s.thread_id for s in active]
+        fetch_order += [r.thread_id for r in records if not r.is_closed]
+        facts = await self._resolve_thread_facts(thread_ids, fetch_order=fetch_order)
         labels = await self._stored_voice_labels(thread_ids)
         views = build_session_views(
             records=records,
             active=active,
             running_thread_ids=self._running_thread_ids(),
             lounge_messages=[],
-            thread_names=self._thread_names(thread_ids),
+            thread_names={tid: f.name for tid, f in facts.items() if f.name is not None},
             voice_labels=labels,
         )
+        sessions: list[dict[str, Any]] = []
+        for view in views:
+            fact = facts.get(view["thread_id"])
+            sessions.append(
+                {
+                    "thread_id": str(view["thread_id"]),
+                    "tag": None if view["closed"] else view["voice_label"],
+                    "aliases": [] if view["closed"] else view["voice_label_aliases"],
+                    "name": view["thread_name"],
+                    "project": view["working_dir"],
+                    "state": view["state"],
+                    "current_task": view["current_task"],
+                    "closed": view["closed"],
+                    "visible": None if fact is None else fact.visible,
+                }
+            )
+        own_thread_ids = {r.thread_id for r in records if not r.is_closed}
+        own_thread_ids |= {s.thread_id for s in active}
+        active_threads, other_threads = self._discord_active_threads(own_thread_ids)
+        await self._fill_owner_names(other_threads)
         return web.json_response(
             {
-                "sessions": [
-                    {
-                        "thread_id": str(view["thread_id"]),
-                        "tag": None if view["closed"] else view["voice_label"],
-                        "aliases": [] if view["closed"] else view["voice_label_aliases"],
-                        "name": view["thread_name"],
-                        "project": view["working_dir"],
-                        "state": view["state"],
-                        "current_task": view["current_task"],
-                        "closed": view["closed"],
-                    }
-                    for view in views
-                ]
+                "sessions": sessions,
+                "open_count": sum(1 for s in sessions if not s["closed"]),
+                "discord_active_threads": active_threads,
+                "other_threads": other_threads,
+                "generated_at": datetime.now(UTC).isoformat(),
+                # The size of the spoken-tag pool: why a thread may have no tag.
+                "tag_words": len(SPOKEN_LABELS),
             }
         )
 
@@ -2395,7 +2529,7 @@ class ApiServer:
         ever be tagged, which made the tag depend on something polling this
         endpoint — see that module's docstring.
         """
-        await VoiceTagger(self.bot, self.settings_repo).apply(views)
+        await VoiceTagger(self.bot, self.settings_repo, session_repo=self.session_repo).apply(views)
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.
@@ -2496,6 +2630,139 @@ class ApiServer:
                 names[thread_id] = name
         return names
 
+    async def _resolve_thread_facts(
+        self, thread_ids: set[int], *, fetch_order: list[int]
+    ) -> dict[int, _ThreadFact]:
+        """Title and visibility per thread for the Jester snapshot, cheaply.
+
+        The bot's channel cache answers first: it holds every live thread and
+        drops one the moment it is archived, so a thread that comes back is
+        seen at once. What it lacks is asked of Discord — the ``fetch_order``
+        threads only, at most ``_MAX_SNAPSHOT_THREAD_FETCHES`` per read — and
+        the verdict is remembered for a while so polling stays cheap. "Gone" is
+        a verdict; any other failure ends fetching for this read, because
+        Discord being unreachable must not turn one poll into twenty-five slow
+        calls. A thread past the cap or the failure is simply unknown. Nothing
+        here writes anywhere, and nothing raises.
+        """
+        import discord
+
+        now = time.monotonic()
+        facts: dict[int, _ThreadFact] = {}
+        for thread_id in thread_ids:
+            channel = self.bot.get_channel(thread_id)
+            if channel is not None:
+                facts[thread_id] = _fact_from_channel(channel)
+                continue
+            remembered = self._snapshot_thread_facts.get(thread_id)
+            if remembered is not None and remembered[0] > now:
+                facts[thread_id] = remembered[1]
+        fetched = 0
+        for thread_id in fetch_order:
+            if thread_id in facts:
+                continue
+            if fetched >= _MAX_SNAPSHOT_THREAD_FETCHES:
+                break
+            fetched += 1
+            try:
+                fact = _fact_from_channel(await self.bot.fetch_channel(thread_id))
+            except discord.NotFound:
+                fact = _ThreadFact(name=None, visible=False)
+            except Exception:
+                logger.warning(
+                    "Snapshot could not fetch thread %s; leaving the rest unknown this read",
+                    thread_id,
+                    exc_info=True,
+                )
+                break
+            self._snapshot_thread_facts[thread_id] = (now + _SNAPSHOT_FACT_TTL_SECONDS, fact)
+            facts[thread_id] = fact
+        return facts
+
+    def _discord_active_threads(
+        self, own_thread_ids: set[int]
+    ) -> tuple[int, list[dict[str, str | None]]]:
+        """EBI's own live threads in the bot's cache, and the others it can see.
+
+        discord.py drops a thread from the cache when it is archived, so the
+        non-archived cached threads are the ones on screen in Discord. A thread
+        is EBI's when this bot owns it or ``own_thread_ids`` (open rows and live
+        sessions) names it; that count is what ``open_count`` should agree with.
+        The rest — other bots' threads, hand-made ones — are described, newest
+        first, at most ``_MAX_OTHER_THREADS``. Cache only; no API calls.
+        """
+        bot_id = getattr(getattr(self.bot, "user", None), "id", None)
+        own = 0
+        others: list[tuple[int, dict[str, str | None]]] = []
+        for guild in getattr(self.bot, "guilds", None) or []:
+            for thread in getattr(guild, "threads", None) or []:
+                if getattr(thread, "archived", True):
+                    continue
+                thread_id = getattr(thread, "id", None)
+                owner_id = getattr(thread, "owner_id", None)
+                if thread_id in own_thread_ids or (bot_id is not None and owner_id == bot_id):
+                    own += 1
+                    continue
+                name = getattr(thread, "name", None)
+                parent_name = getattr(getattr(thread, "parent", None), "name", None)
+                others.append(
+                    (
+                        thread_id if isinstance(thread_id, int) else 0,
+                        {
+                            "thread_id": str(thread_id),
+                            "name": name if isinstance(name, str) else None,
+                            "owner_id": None if owner_id is None else str(owner_id),
+                            "owner_name": self._cached_user_name(guild, owner_id),
+                            "channel": parent_name if isinstance(parent_name, str) else None,
+                        },
+                    )
+                )
+        # Snowflake IDs grow with time, so the highest ID is the newest thread.
+        others.sort(key=lambda pair: pair[0], reverse=True)
+        return own, [view for _, view in others[:_MAX_OTHER_THREADS]]
+
+    async def _fill_owner_names(self, other_threads: list[dict[str, str | None]]) -> None:
+        """Name the other bots that run ``other_threads`` when the cache could not.
+
+        Bots rarely sit in the member cache, so "run by someone else" would be all
+        Jester could say. Each unknown owner is fetched once for the life of the
+        process (a few per read at most); a failed lookup leaves the name unknown.
+        """
+        import discord
+
+        lookups = 0
+        for view in other_threads:
+            owner = view.get("owner_id")
+            if view.get("owner_name") or not owner or not owner.isdigit():
+                continue
+            user_id = int(owner)
+            if user_id not in self._owner_names:
+                if lookups >= 5:
+                    continue
+                lookups += 1
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                except discord.NotFound:
+                    self._owner_names[user_id] = None
+                    continue
+                except Exception:
+                    logger.debug("Snapshot could not look up user %s", user_id, exc_info=True)
+                    continue
+                name = getattr(user, "display_name", None) or getattr(user, "name", None)
+                self._owner_names[user_id] = name if isinstance(name, str) and name else None
+            view["owner_name"] = self._owner_names[user_id]
+
+    def _cached_user_name(self, guild: Any, user_id: Any) -> str | None:
+        """A member's display name, else a cached user's; None when not cached."""
+        if not isinstance(user_id, int):
+            return None
+        for person in (guild.get_member(user_id), self.bot.get_user(user_id)):
+            for attr in ("display_name", "name"):
+                value = getattr(person, attr, None)
+                if isinstance(value, str) and value:
+                    return value
+        return None
+
     async def get_thread_messages(self, request: web.Request) -> web.Response:
         """GET /api/threads/{thread_id}/messages — read another thread's conversation.
 
@@ -2580,8 +2847,19 @@ class ApiServer:
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
+        empty = data.get("empty") is True
         prompt = (data.get("prompt") or "").strip()
-        if not prompt:
+        if empty and (
+            data.get("auto_start", True) is not False
+            or not isinstance(data.get("thread_name"), str)
+            or not data["thread_name"].strip()
+            or prompt
+        ):
+            return web.json_response(
+                {"error": "empty spawn needs auto_start=false, a thread_name, and no prompt"},
+                status=400,
+            )
+        if not empty and not prompt:
             return web.json_response({"error": "prompt is required"}, status=400)
 
         raw_channel_id = data.get("channel_id") or self.default_channel_id
@@ -2688,18 +2966,17 @@ class ApiServer:
 
         logger.info("Spawned new Claude session in thread %s (%s)", thread.id, thread.name)
         await self._record_thread_metadata(thread.id, parent_thread_id, correlation_id)
-        # Tag it now rather than on the next poll. A thread opened by voice is
-        # the one its owner wants to talk to *immediately*, and a spoken
-        # instruction cannot reach an untagged thread — so a minute of being
-        # unaddressable lands exactly where it is least affordable.
-        spawn_view: list[dict[str, Any]] = [{"thread_id": thread.id, "thread_name": thread.name}]
-        await self._apply_voice_labels(spawn_view)
+        # Make the new thread addressable using the same ownership and lifecycle
+        # checks as the roster; no free word means explicitly untagged.
+        label = await VoiceTagger(
+            self.bot, self.settings_repo, session_repo=self.session_repo
+        ).tag_thread(thread)
         return web.json_response(
             {
                 "status": "spawned",
                 "thread_id": str(thread.id),
-                "thread_name": spawn_view[0].get("thread_name") or thread.name,
-                "voice_label": spawn_view[0].get("voice_label"),
+                "thread_name": thread.name,
+                "voice_label": label,
                 "parent_thread_id": None if parent_thread_id is None else str(parent_thread_id),
                 "correlation_id": correlation_id,
             },

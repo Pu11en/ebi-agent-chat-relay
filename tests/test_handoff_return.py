@@ -220,6 +220,111 @@ async def test_record_and_deliver_handoff_result_archives_worker_thread_after_de
     worker_thread.edit.assert_awaited_once_with(archived=True, reason="handoff completed")
 
 
+def _closing_lifecycle() -> MagicMock:
+    from claude_discord.session_lifecycle import CloseState, SessionLifecycleService
+
+    lifecycle = MagicMock(spec=SessionLifecycleService)
+    lifecycle.close = AsyncMock(
+        return_value=SimpleNamespace(
+            state=CloseState.CLOSED,
+            record=SimpleNamespace(is_closed=True, archive_pending=False),
+            archived=True,
+        )
+    )
+    lifecycle.reopen = AsyncMock()
+    return lifecycle
+
+
+@pytest.mark.asyncio
+async def test_delivery_closes_the_job_session_with_workflow_authority(
+    handoff_repo: HandoffRepository,
+) -> None:
+    """The job thread's row closes through the lifecycle service, not a bare archive."""
+    await _record_running_task(handoff_repo)
+    await handoff_repo.set_job_thread(TASK_ID, "drewai", 999)
+    origin_thread = SimpleNamespace(id=333, send=AsyncMock(), guild=SimpleNamespace(id=111))
+    worker_thread = SimpleNamespace(id=999, edit=AsyncMock())
+    lifecycle = _closing_lifecycle()
+    bot = MagicMock()
+    bot.cogs = {"ClaudeChatCog": SimpleNamespace(lifecycle=lifecycle)}
+    bot.get_channel.side_effect = lambda channel_id: {
+        333: origin_thread,
+        999: worker_thread,
+    }.get(channel_id)
+
+    delivered = await record_and_deliver_handoff_result(
+        repo=handoff_repo,
+        bot=bot,
+        task_id=TASK_ID,
+        local_agent_id="drewai",
+        text="Found it.",
+        error=None,
+        now=NOW,
+        event_id_factory=lambda: RESULT_ID,
+    )
+
+    assert delivered is True
+    origin_thread.send.assert_awaited_once()
+    lifecycle.close.assert_awaited_once()
+    closed_id, authorization = lifecycle.close.await_args.args
+    assert closed_id == 999
+    assert authorization.is_workflow
+    worker_thread.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_archived_origin_gets_no_post(handoff_repo: HandoffRepository) -> None:
+    """Only the person reopens a conversation they put away; the result waits instead."""
+    await _record_running_task(handoff_repo)
+    await handoff_repo.set_job_thread(TASK_ID, "drewai", 999)
+    origin_thread = SimpleNamespace(
+        id=333, send=AsyncMock(), guild=SimpleNamespace(id=111), archived=True
+    )
+    worker_thread = SimpleNamespace(id=999, edit=AsyncMock())
+    lifecycle = _closing_lifecycle()
+    bot = MagicMock()
+    bot.cogs = {"ClaudeChatCog": SimpleNamespace(lifecycle=lifecycle)}
+    bot.get_channel.side_effect = lambda channel_id: {
+        333: origin_thread,
+        999: worker_thread,
+    }.get(channel_id)
+
+    delivered = await record_and_deliver_handoff_result(
+        repo=handoff_repo,
+        bot=bot,
+        task_id=TASK_ID,
+        local_agent_id="drewai",
+        text="Found it.",
+        error=None,
+        now=NOW,
+        event_id_factory=lambda: RESULT_ID,
+    )
+
+    assert delivered is False
+    origin_thread.send.assert_not_awaited()
+    pending = await handoff_repo.pending_deliveries(now=NOW + timedelta(days=1))
+    assert len(pending) == 1, "kept for a later delivery if the person reopens the thread"
+    lifecycle.close.assert_awaited_once()  # the finished job's own thread still closes
+
+
+@pytest.mark.asyncio
+async def test_ensure_job_thread_unarchive_also_reopens_the_row() -> None:
+    from claude_discord.handoff_discord import ensure_job_thread
+
+    lifecycle = _closing_lifecycle()
+    thread = SimpleNamespace(id=999, archived=True, edit=AsyncMock())
+    starter = SimpleNamespace(id=999, thread=thread)
+
+    assert await ensure_job_thread(starter, TASK_ID, lifecycle=lifecycle) is thread
+
+    thread.edit.assert_awaited_once_with(archived=False)
+    lifecycle.reopen.assert_awaited_once_with(999)
+
+    visible = SimpleNamespace(id=998, archived=False, edit=AsyncMock())
+    await ensure_job_thread(SimpleNamespace(id=998, thread=visible), TASK_ID, lifecycle=lifecycle)
+    lifecycle.reopen.assert_awaited_once()  # a visible thread has nothing to reopen
+
+
 @pytest.mark.asyncio
 async def test_record_and_deliver_handoff_result_keeps_worker_open_until_origin_receives_result(
     handoff_repo: HandoffRepository,

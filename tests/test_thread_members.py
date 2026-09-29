@@ -203,6 +203,20 @@ class TestEnsureThreadMembers:
 
 class TestSpawnSessionMembers:
     @pytest.mark.asyncio
+    async def test_explicit_empty_thread_has_no_seed_message_or_worker(self) -> None:
+        cog = _make_cog(member_ids=set())
+        channel = MagicMock(spec=discord.TextChannel)
+        thread = _make_thread()
+        thread.send = AsyncMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+
+        result = await cog.spawn_session(channel, "", thread_name="Jobs", auto_start=False)
+
+        assert result is thread
+        thread.send.assert_not_awaited()
+        assert channel.create_thread.await_args.kwargs["name"] == "Jobs"
+
+    @pytest.mark.asyncio
     async def test_spawn_adds_configured_members(self) -> None:
         cog = _make_cog(member_ids={7})
         channel = MagicMock(spec=discord.TextChannel)

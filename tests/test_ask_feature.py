@@ -342,18 +342,15 @@ class TestCollectAskAnswers:
 
 
 class TestCollectAskAnswersTimeout:
-    """Tests for asyncio.TimeoutError handling in collect_ask_answers (Python 3.10 compat)."""
+    """Tests for timeout handling in collect_ask_answers."""
 
     @pytest.mark.asyncio
     async def test_collect_ask_answers_handles_asyncio_timeout(self) -> None:
-        """collect_ask_answers does not raise on asyncio.TimeoutError (Python 3.10 compat).
+        """A real wait_for timeout returns None instead of escaping to _run_helper.
 
-        On Python 3.10, asyncio.TimeoutError is NOT a subclass of the built-in
-        TimeoutError. If the wait_for call times out, collect_ask_answers must
-        catch the exception and return None (graceful timeout) rather than
-        propagating an unhandled exception to _run_helper.
+        Use a zero deadline so wait_for owns cancellation of the queue coroutine;
+        mocking wait_for to raise would abandon that coroutine without awaiting it.
         """
-        import asyncio
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from claude_discord.claude.types import AskOption, AskQuestion
@@ -369,10 +366,7 @@ class TestCollectAskAnswersTimeout:
         thread.id = 12345
         thread.send = AsyncMock(return_value=mock_msg)
 
-        with patch(
-            "claude_discord.discord_ui.ask_handler.asyncio.wait_for",
-            side_effect=asyncio.TimeoutError,
-        ):
+        with patch("claude_discord.discord_ui.ask_handler.ASK_ANSWER_TIMEOUT", 0):
             result = await collect_ask_answers(thread, [q], session_id="abc123")
 
         assert result is None  # timeout → no answer → returns None

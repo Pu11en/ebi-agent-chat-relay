@@ -156,6 +156,8 @@ def test_worker_threads_are_remembered_until_archived(state: BuildState) -> None
     assert state.unarchived_threads() == ()  # still running: nothing to archive yet
 
     state.submit_result(API, attempt.attempt_id, commit="abc", checks=["ok"])
+    assert state.unarchived_threads() == ()  # finished is not accepted
+    state.accept(API, attempt.attempt_id)
     assert state.unarchived_threads() == ((API, 4242),)
     state.mark_archived(API)
     state.mark_archived(API)  # idempotent
@@ -168,16 +170,16 @@ def test_worker_threads_are_remembered_until_archived(state: BuildState) -> None
         state.note_thread(API, "thread-11:product.catalog-api:9", thread_id=1)
 
 
-def test_an_earlier_attempts_thread_is_still_archived_after_a_repair_rework_or_retry(
+def test_earlier_accepted_threads_archive_but_failed_attempts_remain_open(
     state: BuildState,
 ) -> None:
-    """T14 across T18/T19/T21 (found by the T31 demo): a fresh attempt must not make the
-    previous attempt's still-open worker thread disappear from the archive list."""
+    """A new attempt preserves history and does not invent closure authority."""
     attempt = state.begin(API)
     state.note_thread(API, attempt.attempt_id, thread_id=4242)
     state.block(API, "the tests failed")
     state.repair(API)  # a new attempt, before anyone archived thread 4242
-    assert state.unarchived_threads() == ((API, 4242),)  # pending task, old thread listed
+    assert state.unarchived_threads() == ()
+    assert state[API].earlier_threads == (4242,)  # still retained for attention
 
     second = state.begin(API)
     state.note_thread(API, second.attempt_id, thread_id=4343)
@@ -185,9 +187,6 @@ def test_an_earlier_attempts_thread_is_still_archived_after_a_repair_rework_or_r
     state.accept(API, second.attempt_id)
     state.note_plan_version("product", 3)
     state.rework(API, "the plan changed")  # thread 4343 was never archived either
-    assert set(state.unarchived_threads()) == {(API, 4242), (API, 4343)}
-
-    state.mark_archived(API, thread_id=4242)
     assert state.unarchived_threads() == ((API, 4343),)
     again = open_build_state(state.path, state.tree, build_id="thread-11")
     assert again.unarchived_threads() == ((API, 4343),)  # survives reopen
@@ -198,9 +197,8 @@ def test_an_earlier_attempts_thread_is_still_archived_after_a_repair_rework_or_r
     again.note_thread(API, third.attempt_id, thread_id=4444)
     again.block(API, "stuck")
     again.retry(API)  # a person's retry: the same rule
-    assert again.unarchived_threads() == ((API, 4444),)
-    again.mark_archived(API, thread_id=4444)
     assert again.unarchived_threads() == ()
+    assert again[API].earlier_threads == (4242, 4444)
 
 
 def test_two_handles_on_one_ledger_never_lose_each_others_writes(state: BuildState) -> None:

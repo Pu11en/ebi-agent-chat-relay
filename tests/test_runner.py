@@ -398,13 +398,10 @@ class TestInterrupt:
         runner = ClaudeRunner()
         mock_process = MagicMock()
         mock_process.returncode = None
-        mock_process.wait = AsyncMock(return_value=0)
+        mock_process.wait = AsyncMock(side_effect=TimeoutError)
         runner._process = mock_process
 
-        with (
-            patch("asyncio.wait_for", side_effect=TimeoutError),
-            patch.object(runner, "kill", new_callable=AsyncMock) as mock_kill,
-        ):
+        with patch.object(runner, "kill", new_callable=AsyncMock) as mock_kill:
             await runner.interrupt()
 
         if os.name == "nt":
@@ -426,13 +423,10 @@ class TestInterrupt:
         runner = ClaudeRunner()
         mock_process = MagicMock()
         mock_process.returncode = None
-        mock_process.wait = AsyncMock(return_value=0)
+        mock_process.wait = AsyncMock(side_effect=asyncio.TimeoutError)
         runner._process = mock_process
 
-        with (
-            patch("asyncio.wait_for", side_effect=asyncio.TimeoutError),
-            patch.object(runner, "kill", new_callable=AsyncMock) as mock_kill,
-        ):
+        with patch.object(runner, "kill", new_callable=AsyncMock) as mock_kill:
             await runner.interrupt()  # must not raise
 
         if os.name == "nt":
@@ -458,11 +452,10 @@ class TestKill:
         runner = ClaudeRunner()
         mock_process = MagicMock()
         mock_process.returncode = None
-        mock_process.wait = AsyncMock(return_value=0)
+        mock_process.wait = AsyncMock(side_effect=[asyncio.TimeoutError, 0])
         runner._process = mock_process
 
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
-            await runner.kill()  # must not raise
+        await runner.kill()  # must not raise
 
         mock_process.kill.assert_called_once()
 
@@ -482,6 +475,8 @@ class TestRunTimeout:
         runner = ClaudeRunner(timeout_seconds=5)
 
         mock_process = AsyncMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdin.drain = AsyncMock()
         mock_process.returncode = None
         mock_process.stdout = AsyncMock()
         mock_process.stderr = AsyncMock()

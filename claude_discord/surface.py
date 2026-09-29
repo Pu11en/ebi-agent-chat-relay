@@ -140,9 +140,16 @@ def discover_allowed_user_ids(
 class DiscordActivity:
     """One tool call, shown as an embed that is edited when it finishes."""
 
-    def __init__(self, message: discord.Message | None, spec: ActivitySpec) -> None:
+    def __init__(
+        self,
+        message: discord.Message | None,
+        spec: ActivitySpec,
+        *,
+        is_muted: Callable[[], bool] | None = None,
+    ) -> None:
         self._message = message
         self._spec = spec
+        self._is_muted = is_muted
         self._finished = False
         self._started_at = time.monotonic()
         self._timer = (
@@ -173,8 +180,11 @@ class DiscordActivity:
         if self._timer is not None and not self._timer.done():
             self._timer.cancel()
 
+    def _muted(self) -> bool:
+        return self._is_muted is not None and self._is_muted()
+
     async def update(self, detail: str) -> None:
-        if self._finished or self._message is None:
+        if self._finished or self._message is None or self._muted():
             return
         message = self._message
 
@@ -182,7 +192,7 @@ class DiscordActivity:
             # Re-checked at send time, not at submit time: a queued tick can be
             # given its slot *after* the tool finished, and would then repaint
             # "⏳ 30s elapsed" over the completed result.
-            if self._finished:
+            if self._finished or self._muted():
                 return
             await message.edit(embed=_activity_embed(self._spec, detail))
 
@@ -199,7 +209,7 @@ class DiscordActivity:
             return
         self._finished = True
         self._stop_timer()
-        if self._message is None:
+        if self._message is None or self._muted():
             return
         title = _activity_title(self._spec)
         try:
@@ -219,7 +229,7 @@ class DiscordActivity:
             return
         self._finished = True
         self._stop_timer()
-        if self._message is None:
+        if self._message is None or self._muted():
             return
         if self._spec.kind == "todo":
             with contextlib.suppress(Exception):
@@ -259,13 +269,23 @@ class DiscordStream:
 class DiscordInterrupt:
     """The Stop button, wrapped so the protocol does not name discord.ui."""
 
-    def __init__(self, view: StopView, thread: discord.abc.Messageable) -> None:
+    def __init__(
+        self,
+        view: StopView,
+        thread: discord.abc.Messageable,
+        *,
+        is_muted: Callable[[], bool] | None = None,
+    ) -> None:
         self._view = view
         self._thread = thread
         self._disabled = False
+        self._is_muted = is_muted
 
     async def bump(self) -> None:
         if self._disabled:
+            return
+        if self._is_muted is not None and self._is_muted():
+            self._view.mute()
             return
         await self._view.bump(self._thread)  # type: ignore[arg-type]
 
@@ -273,6 +293,8 @@ class DiscordInterrupt:
         if self._disabled:
             return
         self._disabled = True
+        if self._is_muted is not None and self._is_muted():
+            self._view.mute()  # disable locally, edit nothing
         await self._view.disable()
 
 
@@ -321,6 +343,8 @@ class DiscordSurface:
         self._interrupt_view = interrupt_view
         self._status: StatusManager | None = status_manager
         self._thread_missing = False
+        self._muted = False
+        self._stop_views: list[StopView] = [] if interrupt_view is None else [interrupt_view]
 
     # -- identity ----------------------------------------------------------
     @property
@@ -360,7 +384,7 @@ class DiscordSurface:
 
     # -- output ------------------------------------------------------------
     async def send_text(self, text: str) -> str | None:
-        if self._thread_missing:
+        if self.muted:
             return None
         last: discord.Message | None = None
         for chunk in render_for(text, DISCORD_CAPABILITIES):
@@ -375,7 +399,7 @@ class DiscordSurface:
         return str(last.id) if last else None
 
     async def send_notice(self, notice: Notice) -> str | None:
-        if self._thread_missing:
+        if self.muted:
             return None
         embed = discord.Embed(color=_NOTICE_COLOR.get(notice.level, COLOR_INFO))
         if notice.title:
@@ -396,7 +420,7 @@ class DiscordSurface:
         return str(sent.id)
 
     async def deliver_files(self, files: Sequence[OutboundFile]) -> None:
-        if self._thread_missing or not files:
+        if self.muted or not files:
             return
         paths = [f.path for f in files if f.path]
         blobs = [(f.display_name, f.blob) for f in files if f.blob is not None]
@@ -407,7 +431,7 @@ class DiscordSurface:
 
     async def send_markdown_cards(self, text: str) -> None:
         """Show a Markdown document inline as Components V2 cards."""
-        if self._thread_missing:
+        if self.muted:
             return
         from .discord_ui.md_cards import build_views
 
@@ -415,10 +439,10 @@ class DiscordSurface:
             await self._thread.send(view=view, allowed_mentions=discord.AllowedMentions.none())
 
     def open_stream(self) -> DiscordStream:
-        return DiscordStream(StreamingMessageManager(self._thread))
+        return DiscordStream(StreamingMessageManager(self._thread, is_muted=lambda: self.muted))
 
     async def open_activity(self, spec: ActivitySpec) -> DiscordActivity:
-        if self._thread_missing:
+        if self.muted:
             return DiscordActivity(None, spec)
         message: discord.Message | None = None
         try:
@@ -427,7 +451,38 @@ class DiscordSurface:
             self._remember_missing_thread()
         except discord.HTTPException:
             pass
-        return DiscordActivity(message, spec)
+        return DiscordActivity(message, spec, is_muted=lambda: self.muted)
+
+    @property
+    def muted(self) -> bool:
+        """Nothing more may reach this thread: it was archived, deleted or is gone."""
+        return self._muted or self._thread_missing
+
+    def mute(self) -> None:
+        """Go silent at once: the thread was archived or deleted mid-turn.
+
+        Discord un-archives a thread the moment anything is posted or edited in
+        it, so a run still finishing after the person put the thread away would
+        bring it straight back. The chat cog stops the run separately; from
+        here on every send, edit, Stop-button bump, status reaction and stall
+        notice is dropped with a debug log instead. Synchronous so a gateway
+        handler can call it before awaiting anything, and idempotent.
+        """
+        if self._muted:
+            return
+        self._muted = True
+        logger.debug("Thread %s muted; dropping further delivery", self._thread.id)
+        for view in self._stop_views:
+            view.mute()
+        status = self._status
+        if status is not None:
+            # The stall notice and emoji changes run on the status manager's own
+            # timers; cancelling them is what keeps the "no activity" line from
+            # landing in the archived thread after the surface went quiet.
+            status._cancel_stall_timer()  # pyright: ignore[reportPrivateUsage]
+            debounce = status._debounce_task  # pyright: ignore[reportPrivateUsage]
+            if debounce is not None and not debounce.done():
+                debounce.cancel()
 
     def _remember_missing_thread(self) -> None:
         if not self._thread_missing:
@@ -436,6 +491,8 @@ class DiscordSurface:
 
     # -- state -------------------------------------------------------------
     async def set_status(self, status: StatusKind) -> None:
+        if self.muted:
+            return
         manager = self._ensure_status()
         if manager is None:
             return
@@ -453,7 +510,7 @@ class DiscordSurface:
             await manager.set_thinking()
 
     async def clear_status(self) -> None:
-        if self._status is not None:
+        if self._status is not None and not self.muted:
             await self._status.cleanup()
 
     def _ensure_status(self) -> StatusManager | None:
@@ -463,6 +520,11 @@ class DiscordSurface:
 
     # -- interaction -------------------------------------------------------
     async def prompt_choice(self, prompt: ChoicePrompt) -> tuple[str, ...] | None:
+        if self.muted:
+            # Nobody can answer in a closed thread: fall back as a timeout
+            # would, so a permission request still fails closed.
+            default = prompt.default_on_timeout
+            return (default,) if default is not None else None
         view = ChoiceView(prompt, allowed_user_ids=self._allowed_user_ids)
         embed = discord.Embed(
             title=(prompt.header or "Question")[:256],
@@ -482,6 +544,8 @@ class DiscordSurface:
     async def prompt_form(self, prompt: FormPrompt) -> dict[str, str] | None:
         """Discord modals can only open from an interaction, so the form is
         offered behind a button rather than appearing unprompted."""
+        if self.muted:
+            return None
         view = FormLauncher(prompt, allowed_user_ids=self._allowed_user_ids)
         embed = discord.Embed(
             title=prompt.title[:256],
@@ -496,6 +560,8 @@ class DiscordSurface:
         return await view.wait_for_answer()
 
     async def prompt_url(self, title: str, url: str, *, notify: Mention | None = None) -> bool:
+        if self.muted:
+            return False
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(label=title[:80], url=url))
         try:
@@ -507,12 +573,18 @@ class DiscordSurface:
 
     async def offer_interrupt(self, on_stop: Callable[[], Awaitable[None]]) -> DiscordInterrupt:
         view = self._interrupt_view or StopView(_StopAdapter(on_stop))  # type: ignore[arg-type]
-        return DiscordInterrupt(view, self._thread)
+        if view not in self._stop_views:
+            self._stop_views.append(view)
+        if self.muted:
+            view.mute()
+        return DiscordInterrupt(view, self._thread, is_muted=lambda: self.muted)
 
     # -- management --------------------------------------------------------
     async def rename(self, title: str) -> None:
         if not isinstance(self._thread, discord.Thread):
             return  # a channel is not ours to rename
+        if self.muted:
+            return  # a rename would un-archive the thread
         with contextlib.suppress(discord.HTTPException):
             await self._thread.edit(name=title[:100])
 

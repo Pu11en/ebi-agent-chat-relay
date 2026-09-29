@@ -182,6 +182,7 @@ class FakeWorkers:
     max_running: int = 0
     _gates: dict[tuple[str, int], asyncio.Event] = field(default_factory=dict)
     _backend_settings: Any = None
+    repo: Any = field(default_factory=lambda: MagicMock(get=AsyncMock(return_value=None)))
 
     def gate(self, task_id: str, attempt: int) -> asyncio.Event:
         return self._gates.setdefault((task_id, attempt), asyncio.Event())
@@ -694,6 +695,12 @@ class _Demo:
         }
         kept = [m for m in self.posted if "Kept" in str(m.content)]
         worker_threads = [t for t in self.workers.threads if t.id not in (a_thread.id, b_thread.id)]
+        attention_threads = {
+            thread_id
+            for record in {**all_a, **all_b}.values()
+            for thread_id in record.get("earlier_threads", [])
+            if thread_id not in record.get("earlier_accepted_threads", [])
+        }
         self.check(
             BEHAVIOURS[10],
             all(r["status"] == "accepted" for r in {**all_a, **all_b}.values())
@@ -701,11 +708,15 @@ class _Demo:
             and len(kept) == 2
             and _git(self.repo, "remote").strip() == ""
             and all(not t.delete.called for t in worker_threads)
-            and all(self.workers.archived(t.id) for t in worker_threads),
+            and bool(attention_threads)
+            and all(
+                self.workers.archived(t.id) == (t.id not in attention_threads)
+                for t in worker_threads
+            ),
             "every task is accepted with checks, both builds were combined into the project "
             f"on this computer ({sum(landed.values())} files, failed attempts' evidence "
-            "included) with no reply and no remote; every worker thread is archived, none "
-            "deleted",
+            "included) with no reply and no remote; accepted workers are archived, "
+            "failed/unaccepted attempts stay open, none deleted",
         )
 
 

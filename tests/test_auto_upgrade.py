@@ -12,7 +12,6 @@ from discord.ext import commands
 from claude_discord.cogs.auto_upgrade import AutoUpgradeCog, UpgradeApprovalView, UpgradeConfig
 
 _PATCH_EXEC = "asyncio.create_subprocess_exec"
-_PATCH_WAIT = "asyncio.wait_for"
 _PATCH_SLEEP = "asyncio.sleep"
 
 
@@ -143,10 +142,7 @@ class TestUpgradeSteps:
         """If upgrade step fails, should add error reaction."""
         msg = _make_message()
         proc_fail = _make_process(returncode=1, stdout=b"error")
-        with (
-            patch(_PATCH_EXEC, new_callable=AsyncMock, return_value=proc_fail),
-            patch(_PATCH_WAIT, new_callable=AsyncMock, return_value=(b"error", b"")),
-        ):
+        with patch(_PATCH_EXEC, new_callable=AsyncMock, return_value=proc_fail):
             await cog.on_message(msg)
 
         msg.add_reaction.assert_called_with("❌")
@@ -159,10 +155,7 @@ class TestUpgradeSteps:
         """Successful upgrade should add check reaction."""
         msg = _make_message()
         proc_ok = _make_process()
-        with (
-            patch(_PATCH_EXEC, new_callable=AsyncMock, return_value=proc_ok),
-            patch(_PATCH_WAIT, new_callable=AsyncMock, return_value=(b"ok", b"")),
-        ):
+        with patch(_PATCH_EXEC, new_callable=AsyncMock, return_value=proc_ok):
             await cog.on_message(msg)
 
         msg.add_reaction.assert_called_with("✅")
@@ -176,10 +169,7 @@ class TestUpgradeSteps:
         msg = _make_message()
         thread = msg.create_thread.return_value
         proc_ok = _make_process()
-        with (
-            patch(_PATCH_EXEC, new_callable=AsyncMock, return_value=proc_ok),
-            patch(_PATCH_WAIT, new_callable=AsyncMock, return_value=(b"ok", b"")),
-        ):
+        with patch(_PATCH_EXEC, new_callable=AsyncMock, return_value=proc_ok):
             await cog.on_message(msg)
 
         send_calls = [str(c) for c in thread.send.call_args_list]
@@ -217,7 +207,6 @@ class TestUpgradeSteps:
 
         with (
             patch(_PATCH_EXEC, side_effect=mock_subprocess_exec),
-            patch(_PATCH_WAIT, new_callable=AsyncMock, return_value=(b"ok", b"")),
             patch(_PATCH_SLEEP, new_callable=AsyncMock),
         ):
             await cog.on_message(msg)
@@ -641,15 +630,14 @@ class TestRestartApproval:
             exec_calls.append(args)
             return proc_ok
 
+        bot.wait_for = AsyncMock()
         with (
             patch(_PATCH_EXEC, side_effect=mock_subprocess),
-            patch(_PATCH_WAIT, new_callable=AsyncMock, return_value=(b"ok", b"")),
             patch(_PATCH_SLEEP, new_callable=AsyncMock),
         ):
             await cog.on_message(msg)
 
         # Should have restarted without calling wait_for
-        bot.wait_for = AsyncMock()
         bot.wait_for.assert_not_called()
         # restart command should have fired
         assert len(exec_calls) == 3
@@ -841,6 +829,27 @@ class TestMarkSessionsForResume:
         assert call_kwargs["reason"] == "bot_upgrade"
 
     @pytest.mark.asyncio
+    async def test_mark_sessions_resume_prompt_preserves_existing_authority(self) -> None:
+        """An upgrade restart continues work authorized in the saved conversation."""
+        bot = MagicMock(spec=commands.Bot)
+        resume_repo = MagicMock()
+        resume_repo.mark = AsyncMock(return_value=1)
+        bot.resume_repo = resume_repo
+        del bot.session_repo
+
+        cog = self._make_cog_with_restart(bot)
+        thread = MagicMock(spec=discord.Thread)
+        thread.send = AsyncMock()
+
+        await cog._mark_sessions_for_resume(frozenset({111}), thread)
+
+        prompt: str = resume_repo.mark.call_args.kwargs["resume_prompt"]
+        assert "saved conversation" in prompt
+        assert "continue the authorized task" in prompt
+        assert "Do not ask the user to repeat or reconfirm" in prompt
+        assert "approval status" not in prompt
+
+    @pytest.mark.asyncio
     async def test_mark_sessions_handles_mark_failure_gracefully(self) -> None:
         """Continues marking other threads even if one fails."""
         bot = MagicMock(spec=commands.Bot)
@@ -890,12 +899,10 @@ class TestMarkSessionsForResume:
 
         with (
             patch(_PATCH_EXEC, new_callable=AsyncMock) as mock_exec,
-            patch(_PATCH_WAIT, new_callable=AsyncMock) as mock_wait,
             patch(_PATCH_SLEEP, new_callable=AsyncMock),
         ):
             proc = _make_process(returncode=0, stdout=b"ok")
             mock_exec.return_value = proc
-            mock_wait.return_value = (b"ok", b"")
 
             # Drain check: return True immediately (no active sessions during drain)
             cog._drain_check = lambda: True

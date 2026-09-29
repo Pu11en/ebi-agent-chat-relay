@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import os
 import tempfile
@@ -55,8 +56,13 @@ from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
 from ..handoff_sender import build_project_lookup_handoff_event, send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
+from ..resume_prompt import build_restart_resume_prompt
 from ..session_request import SessionRequest, mentions_a_session, read_session_request
-from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
+from ..thread_policy import (
+    THREAD_AUTO_ARCHIVE_MINUTES,
+    may_post_unsolicited,
+    thread_is_archived,
+)
 from ..voice_labels import tagged_title, title_tag
 from ..voice_tags import VoiceTagger
 from ._run_helper import run_claude_with_config
@@ -77,6 +83,10 @@ logger = logging.getLogger(__name__)
 # roughly 40 x 2,000 characters — far more than any real prompt, while still
 # refusing to walk an entire thread's history on a malformed one.
 SEED_CONTEXT_MESSAGE_LIMIT = 40
+
+# Upper bound on the startup Discord sweep, so a slow guild listing cannot hold
+# the restart resumes behind it indefinitely.
+_SWEEP_TIMEOUT_SECONDS = 120.0
 
 # ---------------------------------------------------------------------------
 # /help command metadata
@@ -230,6 +240,12 @@ class ClaudeChatCog(commands.Cog):
         # Used by _handle_thread_reply to wait for an interrupted session
         # to fully clean up before starting the replacement session.
         self._active_tasks: dict[int, asyncio.Task] = {}
+        # The surface each running turn posts through, so a thread Discord put
+        # away mid-run can be silenced (mute_run) before its close lands.
+        self._active_surfaces: dict[int, Any] = {}
+        # Threads muted while their turn runs: the surface may be built after
+        # the mute, and the turn's end must not ping into an archived thread.
+        self._muted_runs: set[int] = set()
         self._thread_locks: dict[int, asyncio.Lock] = {}
         # Dashboard may be None until bot is ready; resolved lazily in _get_dashboard()
         self._dashboard = dashboard
@@ -284,6 +300,7 @@ class ClaudeChatCog(commands.Cog):
         dashboard: ThreadStatusDashboard | None,
         description: str,
         notify_user_id: int | None,
+        muted: bool = False,
     ) -> None:
         """End the turn's bookkeeping — and say nothing at all when it closed the session.
 
@@ -293,9 +310,11 @@ class ClaudeChatCog(commands.Cog):
         archived, locked, and back in the sidebar a second later. `/close` while
         idle was always fine — it answers ephemerally and posts nothing. It is
         the close asked for *during* a turn, which is every close the agent
-        carries out itself, that this exists for.
+        carries out itself, that this exists for. A ``muted`` turn is the same
+        case seen from Discord's side: its thread was archived or deleted while
+        it ran, and the close may not have been recorded yet.
         """
-        closing = await self._close_requested(thread.id)
+        closing = muted or await self._close_requested(thread.id)
         # The close asked for during this turn waits for exactly this point: the
         # run slot is released, so the lifecycle sees the thread as idle.
         await self._complete_pending_close(thread.id)
@@ -326,6 +345,75 @@ class ClaudeChatCog(commands.Cog):
         except Exception:
             logger.exception("Could not complete the pending close for thread %s", thread_id)
 
+    async def _reopen_for_message(self, thread: discord.Thread) -> None:
+        """A person's message brings a closed session back before anything runs.
+
+        Typing (or speaking) into a thread is the one thing that means "I want
+        this open again", whoever closed it. The row reopens with its stored
+        native session id and backend, the thread is un-archived and unlocked so
+        the reply can land, and it gets a spoken tag again. A close EBI itself is
+        still finishing (a person's or a workflow's) is left alone: its own
+        wrap-up note is a message in the thread and must not undo it.
+        """
+        try:
+            record = await self.repo.get(thread.id)
+        except Exception:
+            logger.warning("Could not read the session row for thread %s", thread.id, exc_info=True)
+            return
+        reopened = False
+        if record is not None and not record.is_open and self.lifecycle is not None:
+            try:
+                reopened = await self.lifecycle.reopen_from_discord(thread.id)
+            except Exception:
+                logger.exception("Could not reopen the session for thread %s", thread.id)
+        if record is not None and not record.is_open and not reopened:
+            return
+        if thread_is_archived(thread) or getattr(thread, "locked", False) is True:
+            try:
+                await thread.edit(archived=False, locked=False)
+            except discord.HTTPException:
+                logger.warning("Could not unarchive thread %s", thread.id, exc_info=True)
+        if reopened:
+            try:
+                await VoiceTagger(self.bot, self._settings_repo, session_repo=self.repo).tag_thread(
+                    thread
+                )
+            except Exception:
+                logger.warning("Could not tag reopened thread %s", thread.id, exc_info=True)
+
+    async def _close_from_discord(self, thread_id: int, reason: str) -> None:
+        """Close a session whose thread Discord archived or deleted: recorded, never posted."""
+        if self.lifecycle is None:
+            return
+        from ..session_lifecycle import CloseAuthorization
+
+        try:
+            await self.lifecycle.close(thread_id, CloseAuthorization.from_discord(reason))
+        except Exception:
+            logger.exception("Could not close the session for put-away thread %s", thread_id)
+
+    async def _thread_for_restart(self, thread_id: int) -> Any | None:
+        """The channel a restart may post into, or ``None`` when Discord put it away.
+
+        An archived or deleted thread is a closed session, and a restart notice
+        would un-archive it; so the session is closed to match (Discord's
+        authority, no post) and nothing is resumed. Any other fetch failure is
+        raised to the caller, whose existing handling applies.
+        """
+        raw = self.bot.get_channel(thread_id)
+        if raw is None:
+            try:
+                raw = await self.bot.fetch_channel(thread_id)
+            except discord.NotFound:
+                logger.info("Restart: thread %s is gone; closing its session", thread_id)
+                await self._close_from_discord(thread_id, "deleted")
+                return None
+        if isinstance(raw, discord.Thread) and thread_is_archived(raw):
+            logger.info("Restart: thread %s is archived; closing its session", thread_id)
+            await self._close_from_discord(thread_id, "archived")
+            return None
+        return raw
+
     @property
     def active_session_count(self) -> int:
         """Number of Claude sessions currently running in this cog."""
@@ -340,6 +428,10 @@ class ClaudeChatCog(commands.Cog):
         """Return the dashboard, resolving it from the bot if not yet set."""
         if self._dashboard is None:
             self._dashboard = getattr(self.bot, "thread_dashboard", None)
+            # The bot builds the dashboard in on_ready, after this cog loads; hand it
+            # the session store so a closing thread also skips the reply-needed ping.
+            if self._dashboard is not None and getattr(self._dashboard, "session_repo", 0) is None:
+                self._dashboard.session_repo = self.repo
         return self._dashboard
 
     def _thread_join_excluded(self, thread: discord.Thread) -> bool:
@@ -500,15 +592,54 @@ class ClaudeChatCog(commands.Cog):
 
         if not category_allowed(thread):
             return
+        await self._widen_hand_made_thread(thread)
         try:
-            await VoiceTagger(self.bot, self._settings_repo).tag_thread(thread)
+            await VoiceTagger(self.bot, self._settings_repo, session_repo=self.repo).tag_thread(
+                thread
+            )
         except Exception:
             logger.warning("Could not tag new thread %s", thread.id, exc_info=True)
+
+    async def _widen_hand_made_thread(self, thread: discord.Thread) -> None:
+        """Give a thread a person made the seven-day auto-archive window.
+
+        EBI asks for the maximum on every thread it creates, but a hand-made
+        thread keeps Discord's default of one day, and an archived thread is a
+        closed session — so it would close after a single quiet day. Only a
+        thread known to be someone else's is touched; an unknown owner is left
+        as Discord made it.
+        """
+        owner_id = getattr(thread, "owner_id", None)
+        my_id = getattr(getattr(self.bot, "user", None), "id", None)
+        if not isinstance(owner_id, int) or not isinstance(my_id, int) or owner_id == my_id:
+            return
+        window = getattr(thread, "auto_archive_duration", None)
+        if not isinstance(window, int) or window >= THREAD_AUTO_ARCHIVE_MINUTES:
+            return
+        try:
+            if await self.repo.get(thread.id) is not None:
+                return
+            await thread.edit(auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES)
+        except Exception:
+            logger.warning("Could not widen the archive window of %s", thread.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         """Handle incoming messages."""
         from ..category_scope import category_allowed
+
+        if isinstance(message.channel, discord.PartialMessageable):
+            # A message that un-archives a thread can arrive before Discord's
+            # THREAD_UPDATE, when the thread is not cached: resolve it so the
+            # reply reaches its session instead of being dropped.
+            try:
+                resolved = await self.bot.fetch_channel(message.channel.id)
+            except discord.HTTPException:
+                logger.warning(
+                    "Could not resolve channel %s for a message", message.channel.id, exc_info=True
+                )
+                return
+            message.channel = resolved  # type: ignore[assignment]
 
         if not category_allowed(message.channel):
             return
@@ -1080,6 +1211,44 @@ class ClaudeChatCog(commands.Cog):
         # _active_runners cleanup is handled by _run_claude's finally block.
         return True
 
+    async def mute_run(self, thread_id: int) -> bool:
+        """Silence the running turn in ``thread_id``; ``False`` when nothing runs.
+
+        Discord un-archives a thread the moment anything is posted in it, so a
+        turn whose thread was put away must not post another line — not its
+        reply, not its "reply needed" ping. The run itself is left alone.
+        """
+        if thread_id not in self._active_runners:
+            return False
+        self._muted_runs.add(thread_id)
+        await self._mute_surface(self._active_surfaces.get(thread_id))
+        return True
+
+    async def stop_thread_run(self, thread_id: int) -> bool:
+        """Mute, then stop, the running turn in ``thread_id``; ``False`` when nothing runs.
+
+        For a thread Discord archived or deleted mid-turn: nothing may keep
+        working out of sight. The session's close completes when the stopped
+        turn ends (``_finish_turn`` -> ``complete_pending_close``).
+        """
+        if not await self.mute_run(thread_id):
+            return False
+        await self.stop_turn(thread_id)
+        return True
+
+    @staticmethod
+    async def _mute_surface(surface: Any) -> None:
+        """Call the surface's ``mute`` when it has one (sync or async)."""
+        mute = getattr(surface, "mute", None)
+        if not callable(mute):
+            return
+        try:
+            result = mute()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.warning("Could not mute the running surface", exc_info=True)
+
     async def compact_thread(
         self, thread: discord.Thread, record: SessionRecord, seed_message: discord.Message
     ) -> None:
@@ -1598,6 +1767,7 @@ class ClaudeChatCog(commands.Cog):
         backend: str | None = None,
         model: str | None = None,
         read_only: bool = False,
+        voice_addressable: bool = True,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -1644,10 +1814,15 @@ class ClaudeChatCog(commands.Cog):
             read_only: Restrict the worker to a read-only tool set in argv
                         (a handoff with ``edit: false``). Raises before the
                         thread is created when the backend cannot honour it.
+            voice_addressable: False for workflow workers and reviewers that must
+                        never occupy a spoken tag. The choice survives restarts.
 
         Returns:
             The newly created :class:`discord.Thread`.
         """
+        if auto_start and not prompt:
+            # Reject before creating anything: no orphan thread for a bad request.
+            raise ValueError("an automatic session needs a prompt")
         if read_only and auto_start:
             await self._require_read_only_capable_backend(None, backend)
         default_working_dir = getattr(self.runner, "working_dir", None)
@@ -1655,11 +1830,15 @@ class ClaudeChatCog(commands.Cog):
             default_working_dir if isinstance(default_working_dir, str) else None
         )
         name = (thread_name or prompt)[:100]
-        thread = await channel.create_thread(
-            name=name,
-            type=discord.ChannelType.public_thread,
-            auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
-        )
+        tagger = VoiceTagger(self.bot, self._settings_repo)
+        async with tagger.lock:
+            thread = await channel.create_thread(
+                name=name,
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+            )
+            if not voice_addressable:
+                await tagger.exclude_thread(thread.id)
         # Added before the seed message so the requester sees the thread from its
         # first line, not after Claude has already been talking to itself.
         if invite_user_id:
@@ -1674,10 +1853,12 @@ class ClaudeChatCog(commands.Cog):
         # still passed to _run_claude below (the CLI has no such limit), so
         # chunking only affects what's shown in the thread, never what Claude
         # receives. The last chunk becomes the status-reaction anchor.
-        chunks = chunk_message(prompt) or [prompt]
-        seed_message = await thread.send(chunks[0])
-        for chunk in chunks[1:]:
-            seed_message = await thread.send(chunk)
+        seed_message = None
+        if prompt:
+            chunks = chunk_message(prompt) or [prompt]
+            seed_message = await thread.send(chunks[0])
+            for chunk in chunks[1:]:
+                seed_message = await thread.send(chunk)
         # Surface any caller-provided attachments in the thread so they're
         # viewable alongside the prompt (e.g. files attached to a Forgejo Issue).
         if attachments:
@@ -1690,6 +1871,8 @@ class ClaudeChatCog(commands.Cog):
             if model:
                 await settings.set_model(backend, model, thread_id=thread.id)
         if auto_start:
+            if seed_message is None:  # unreachable: a prompt was required above
+                raise ValueError("an automatic session needs a prompt")
             # Run Claude in the background so /api/spawn returns immediately.
             # The caller gets the thread reference without waiting for Claude to finish.
             asyncio.create_task(
@@ -1782,6 +1965,7 @@ class ClaudeChatCog(commands.Cog):
                 current turn to finish — the right default, because a message
                 that preempts a turn can cost the receiver uncommitted work.
         """
+        await self._reopen_for_message(thread)
         await self._ensure_thread_members(thread)
         chunks = chunk_message(text) or [text]
         seed_message = await thread.send(chunks[0])
@@ -1847,14 +2031,7 @@ class ClaudeChatCog(commands.Cog):
                     thread_id,
                     session_id=session_id,
                     reason="bot_shutdown",
-                    resume_prompt=(
-                        "The bot restarted. "
-                        "Please report what you were working on before resuming. "
-                        "⚠️ Context may have been compressed, which means the approval status of "
-                        "planned tasks could be lost. "
-                        "Before making any code changes, commits, or PRs, "
-                        "re-confirm with the user that they want you to proceed."
-                    ),
+                    resume_prompt=build_restart_resume_prompt(),
                 )
                 logger.info(
                     "Marked thread %d for restart-resume (session=%s)", thread_id, session_id
@@ -1886,6 +2063,10 @@ class ClaudeChatCog(commands.Cog):
         if not self._thread_members_backfilled and self._thread_member_ids:
             self._thread_members_backfilled = True
             asyncio.create_task(self._backfill_thread_members())
+
+        # Bring the session store in line with Discord first, so nothing below
+        # resumes into — or posts into — a thread closed while the bot was away.
+        await self._sweep_discord_threads()
 
         if self._capacity_repo is not None and not self._capacity_turns_loaded:
             self._capacity_turns_loaded = True
@@ -1920,13 +2101,13 @@ class ClaudeChatCog(commands.Cog):
 
             thread_id = entry.thread_id
             try:
-                raw = self.bot.get_channel(thread_id)
-                if raw is None:
-                    raw = await self.bot.fetch_channel(thread_id)
+                raw = await self._thread_for_restart(thread_id)
             except Exception:
                 logger.warning(
                     "Pending resume: thread %d not found, skipping", thread_id, exc_info=True
                 )
+                continue
+            if raw is None:
                 continue
 
             if not isinstance(raw, discord.Thread):
@@ -1934,6 +2115,9 @@ class ClaudeChatCog(commands.Cog):
                 continue
 
             thread = raw
+            if not await may_post_unsolicited(thread, self.repo):
+                logger.info("Pending resume: thread %d is closed or locked, skipping", thread_id)
+                continue
             parent = thread.parent
             if not isinstance(parent, discord.TextChannel):
                 logger.warning(
@@ -1941,14 +2125,7 @@ class ClaudeChatCog(commands.Cog):
                 )
                 continue
 
-            resume_prompt = entry.resume_prompt or (
-                "The bot restarted. "
-                "Please report what you were working on before resuming. "
-                "⚠️ Context may have been compressed, which means the approval status of "
-                "planned tasks could be lost. "
-                "Before making any code changes, commits, or PRs, "
-                "re-confirm with the user that they want you to proceed."
-            )
+            resume_prompt = entry.resume_prompt or build_restart_resume_prompt()
             record = await self.repo.get(thread_id)
             working_dir = getattr(record, "working_dir", None)
             if not isinstance(working_dir, str):
@@ -1975,6 +2152,20 @@ class ClaudeChatCog(commands.Cog):
             except Exception:
                 logger.error("Failed to resume session in thread %d", thread_id, exc_info=True)
 
+    async def _sweep_discord_threads(self) -> None:
+        """Run the thread-follow sweep when that cog is loaded; never fail startup."""
+        try:
+            get_cog = getattr(self.bot, "get_cog", None)
+            follow = get_cog("ThreadFollowCog") if callable(get_cog) else None
+            sweep = getattr(follow, "sweep", None) if follow is not None else None
+            if not callable(sweep):
+                return
+            result = sweep()
+            if inspect.isawaitable(result):
+                await asyncio.wait_for(result, timeout=_SWEEP_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("Discord thread sweep failed on startup")
+
     async def resume_capacity_turn(self, turn: CapacityPendingTurn) -> None:
         """Continue a turn that was waiting for model capacity when the bot stopped.
 
@@ -1983,11 +2174,14 @@ class ClaudeChatCog(commands.Cog):
         opening a new one. The run goes through ``_run_claude``, so it takes
         relay admission like any other message.
         """
-        raw = self.bot.get_channel(turn.thread_id)
+        raw = await self._thread_for_restart(turn.thread_id)
         if raw is None:
-            raw = await self.bot.fetch_channel(turn.thread_id)
+            return  # put away while the bot was down: dropped, not retried
         if not isinstance(raw, discord.Thread):
             raise RuntimeError(f"capacity recovery: channel {turn.thread_id} is not a thread")
+        if not await may_post_unsolicited(raw, self.repo):
+            logger.info("Capacity recovery: thread %s is closed or locked", turn.thread_id)
+            return
         record = await self.repo.get(turn.thread_id)
         working_dir = getattr(record, "working_dir", None)
         seed = await raw.send(
@@ -2013,6 +2207,7 @@ class ClaudeChatCog(commands.Cog):
         thread = message.channel
         assert isinstance(thread, discord.Thread)
 
+        await self._reopen_for_message(thread)
         record = await self.repo.get(thread.id)
         session_id = record.session_id if record else None
         if record is not None and session_id:
@@ -2298,6 +2493,9 @@ class ClaudeChatCog(commands.Cog):
         effective_model = model_override or self.runner.model
 
         async def _notify_stall() -> None:
+            # A post would un-archive a thread Discord put away mid-run.
+            if thread_is_archived(thread):
+                return
             threshold = status._stall_hard
             await thread.send(
                 f"-# ⚠️ No activity for {threshold}s — could be extended thinking "
@@ -2376,42 +2574,46 @@ class ClaudeChatCog(commands.Cog):
             runner = live_runner
             self._active_runners[thread.id] = live_runner
 
+        surface: Any = None
         try:
-            await run_claude_with_config(
-                RunConfig(
-                    thread=thread,
-                    runner=runner,
-                    on_runner_changed=update_active_runner,
-                    repo=self.repo,
-                    prompt=prompt,
-                    session_id=session_id,
-                    status=status,
-                    registry=self._registry,
-                    ask_repo=self._ask_repo,
-                    lounge_repo=self._lounge_repo if lounge else None,
-                    slim_context=not lounge,  # a gowork step: a slim briefing (idea 8)
-                    file_activity=getattr(self.bot, "file_activity", None),
-                    stop_view=stop_view,
-                    worktree_manager=getattr(self.bot, "worktree_manager", None),
-                    images=images,
-                    attach_on_request=wants_file_attachment(prompt),
-                    inbox_repo=getattr(self.bot, "inbox_repo", None),
-                    inbox_dashboard=dashboard,
-                    claude_command=runner.command,
-                    chat_only=chat_only,
-                    notify_user_id=self._notify_target(user_message),
-                    result_sink=result_sink,
-                    backend_settings=self._backend_settings,
-                    codex_command=(
-                        self._factory.codex_command if self._factory is not None else "codex"
-                    ),
-                    slot_kind=slot[0],
-                    slot_build_id=slot[1],
-                    slot_unblocks=slot[2],
-                    recovery_turn_key=recovery[0] if recovery else None,
-                    recovery_claim_token=recovery[1] if recovery else None,
-                )
+            config = RunConfig(
+                thread=thread,
+                runner=runner,
+                on_runner_changed=update_active_runner,
+                repo=self.repo,
+                prompt=prompt,
+                session_id=session_id,
+                status=status,
+                registry=self._registry,
+                ask_repo=self._ask_repo,
+                lounge_repo=self._lounge_repo if lounge else None,
+                slim_context=not lounge,  # a gowork step: a slim briefing (idea 8)
+                file_activity=getattr(self.bot, "file_activity", None),
+                stop_view=stop_view,
+                worktree_manager=getattr(self.bot, "worktree_manager", None),
+                images=images,
+                attach_on_request=wants_file_attachment(prompt),
+                inbox_repo=getattr(self.bot, "inbox_repo", None),
+                inbox_dashboard=dashboard,
+                claude_command=runner.command,
+                chat_only=chat_only,
+                notify_user_id=self._notify_target(user_message),
+                result_sink=result_sink,
+                backend_settings=self._backend_settings,
+                codex_command=(
+                    self._factory.codex_command if self._factory is not None else "codex"
+                ),
+                slot_kind=slot[0],
+                slot_build_id=slot[1],
+                slot_unblocks=slot[2],
+                recovery_turn_key=recovery[0] if recovery else None,
+                recovery_claim_token=recovery[1] if recovery else None,
             )
+            surface = config.surface
+            self._active_surfaces[thread.id] = surface
+            if thread.id in self._muted_runs:
+                await self._mute_surface(surface)
+            await run_claude_with_config(config)
         finally:
             if stop_view is not None:
                 await stop_view.disable()
@@ -2425,6 +2627,10 @@ class ClaudeChatCog(commands.Cog):
                 self._active_runners.pop(thread.id, None)
             if self._active_tasks.get(thread.id) is current_task:
                 self._active_tasks.pop(thread.id, None)
+            if surface is not None and self._active_surfaces.get(thread.id) is surface:
+                self._active_surfaces.pop(thread.id, None)
+            muted = thread.id in self._muted_runs
+            self._muted_runs.discard(thread.id)
 
             # The pending close, the reply-needed notice (addressed to this
             # message's author, independently of shared thread membership) and
@@ -2435,4 +2641,5 @@ class ClaudeChatCog(commands.Cog):
                 dashboard=dashboard,
                 description=description,
                 notify_user_id=user_message.author.id,
+                muted=muted,
             )

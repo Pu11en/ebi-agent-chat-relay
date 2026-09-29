@@ -8,9 +8,10 @@ thread. A blocker is also sent, as prose, to the origin conversation, because
 that is the one state where the origin's human has something to do.
 
 Posting is best-effort and never raises into the executor: a missing thread
-costs a log line, not a stuck job. The ledger write comes first, so a
-reconnecting bot can rebuild the story from the events even when a post was
-dropped.
+costs a log line, not a stuck job. A thread someone put away (archived) gets
+nothing: a post would bring it back, and only a person's message may do that.
+The ledger write comes first, so a reconnecting bot can rebuild the story from
+the events even when a post was dropped.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from claude_code_core.handoffs.state import HandoffState, HandoffTrigger, Transi
 
 from .database.handoff_repo import HandoffRepository
 from .handoff_discord import channel_in_guild, render_event_message, short_task_id
+from .thread_policy import may_post_unsolicited
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +136,14 @@ class HandoffProgressPoster:
         if thread is None:
             logger.warning("handoff %s job thread %s is unreachable", task.task_id, thread_id)
             return
+        if not await may_post_unsolicited(thread):
+            logger.info(
+                "handoff %s job thread %s is archived; %s not posted",
+                task.task_id,
+                thread_id,
+                event.kind,
+            )
+            return
         try:
             await thread.send(render_event_message(event))
         except Exception:
@@ -142,7 +152,7 @@ class HandoffProgressPoster:
     async def _post_prose_to_job_thread(self, task: HandoffTask, transition: Transition) -> None:
         thread_id = await self._repo.get_job_thread(task.task_id, self._agent)
         thread = await self._lookup(thread_id) if thread_id is not None else None
-        if thread is None:
+        if thread is None or not await may_post_unsolicited(thread):
             return
         note = " ".join((transition.note or "").split())[:MAX_ORIGIN_NOTE_CHARS]
         text = f"⚠️ Handoff `{short_task_id(task.task_id)}` is {transition.state.value}: {note}"
@@ -161,6 +171,11 @@ class HandoffProgressPoster:
                 task.task_id,
                 target_id,
                 task.reply_to.guild_id,
+            )
+            return
+        if not await may_post_unsolicited(origin):
+            logger.info(
+                "handoff %s origin %s is archived; blocker not posted", task.task_id, target_id
             )
             return
         note = " ".join((transition.note or "needs your authority").split())[:MAX_ORIGIN_NOTE_CHARS]

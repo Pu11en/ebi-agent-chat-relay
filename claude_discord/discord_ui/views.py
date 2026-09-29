@@ -42,6 +42,17 @@ class StopView(discord.ui.View):
         self._stopping = False
         self._message: discord.Message | None = None
         self._queued_task: asyncio.Task | None = None
+        self._muted = False
+
+    def mute(self) -> None:
+        """Stop touching the thread: it was archived or deleted mid-turn.
+
+        Discord un-archives a thread the moment anything is posted or edited in
+        it, so a bump or a "Turn finished" edit after the person put the thread
+        away would bring it back. The button still works locally; it simply
+        never reaches Discord again. Idempotent.
+        """
+        self._muted = True
 
     def set_queued_task(self, task: asyncio.Task | None) -> None:
         """Cancel admission on Stop when no subprocess exists yet."""
@@ -49,7 +60,7 @@ class StopView(discord.ui.View):
 
     async def set_label(self, label: str) -> None:
         """Keep the status card honest while waiting for admission."""
-        if self._message is not None and not self._stopped:
+        if self._message is not None and not self._stopped and not self._muted:
             with contextlib.suppress(discord.HTTPException, RuntimeError):
                 await self._message.edit(content=f"-# {label}", view=self)
 
@@ -76,6 +87,11 @@ class StopView(discord.ui.View):
         No-op if the session has already been stopped.
         """
         if self._stopped:
+            return
+        if self._muted:
+            logger.debug(
+                "Stop button bump dropped: thread %s is muted", getattr(thread, "id", None)
+            )
             return
 
         old_message = self._message
@@ -137,7 +153,7 @@ class StopView(discord.ui.View):
                 child.disabled = True
         self.stop()
 
-        if target:
+        if target and not self._muted:
             with contextlib.suppress(discord.HTTPException, RuntimeError):
                 await target.edit(content="-# Turn finished", view=self)
 

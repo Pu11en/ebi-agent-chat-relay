@@ -47,6 +47,11 @@ class CloseAuthority(Enum):
     USER_INSTRUCTION = "user_instruction"
     #: A preauthorized workflow completed with close-on-done enabled.
     WORKFLOW_CLOSE_ON_DONE = "workflow_close_on_done"
+    #: Discord itself put the thread out of sight — archived by hand, by its
+    #: own auto-archive, or deleted — so the session is closed to match. A
+    #: close on this authority posts, renames and locks nothing: the thread
+    #: is already gone from view, and a post would bring it straight back.
+    DISCORD_ARCHIVED = "discord_archived"
 
 
 def _coerce_authority(authority: CloseAuthority | str | None) -> CloseAuthority:
@@ -90,6 +95,8 @@ class SessionRecord:
     close_authority: str | None = None
     wrap_up: str | None = None
     closed_at: str | None = None
+    lifecycle_version: int = 0
+    archive_pending: bool = False
 
     @property
     def is_open(self) -> bool:
@@ -167,6 +174,33 @@ class SessionRepository:
             raise RuntimeError(f"Failed to retrieve session after save for thread {thread_id}")
         return record
 
+    async def save_if_current(
+        self,
+        thread_id: int,
+        session_id: str,
+        *,
+        expected: str,
+        origin: str | None = None,
+        backend: str | None = None,
+    ) -> bool:
+        """Update identity only while ``expected`` is still the stored session ID.
+
+        A run may confirm or advance the binding it established, but a late result
+        from a run that another run has since replaced must not undo that switch.
+        """
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
+            cursor = await db.execute(
+                """UPDATE sessions
+                      SET session_id = ?,
+                          origin = COALESCE(?, origin),
+                          backend = COALESCE(?, backend),
+                          last_used_at = datetime('now', 'localtime')
+                    WHERE thread_id = ? AND session_id = ?""",
+                (session_id, origin, backend, thread_id, expected),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def ensure_working_dir(
         self,
         thread_id: int,
@@ -213,7 +247,7 @@ class SessionRepository:
 
     async def list_all(
         self,
-        limit: int = 50,
+        limit: int | None = 50,
         origin: str | None = None,
         *,
         lifecycle_state: LifecycleState | str | None = None,
@@ -224,7 +258,7 @@ class SessionRepository:
         findable and reopenable, so hiding it by default would lose it.
 
         Args:
-            limit: Maximum number of records to return.
+            limit: Maximum number of records to return; ``None`` returns every match.
             origin: Optional filter by origin ('discord', 'cli'). None returns all.
             lifecycle_state: Optional filter by lifecycle state. None returns all.
         """
@@ -238,14 +272,26 @@ class SessionRepository:
             params.append(_state_value(lifecycle_state))
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        sql = f"SELECT * FROM sessions{where} ORDER BY last_used_at DESC LIMIT ?"  # noqa: S608
-        params.append(limit)
+        sql = f"SELECT * FROM sessions{where} ORDER BY last_used_at DESC"  # noqa: S608
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
 
         async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(sql, params)
             rows = await cursor.fetchall()
             return [SessionRecord(**dict(row)) for row in rows]
+
+    async def open_rows(self) -> list[SessionRecord]:
+        """Every open session, with no cap.
+
+        A sweep that compares open sessions against the threads still visible
+        in Discord has to see all of them: a row hidden behind a page limit
+        would be a session that never closes. So the uncapped read is its own
+        method, and the paged listing keeps its limit for the views that page.
+        """
+        return await self.list_all(limit=None, lifecycle_state=LifecycleState.OPEN)
 
     async def search(
         self,
@@ -346,7 +392,8 @@ class SessionRepository:
                 """UPDATE sessions
                       SET lifecycle_state = ?,
                           close_requested_at = datetime('now', 'localtime'),
-                          close_authority = ?
+                          close_authority = ?,
+                          lifecycle_version = lifecycle_version + 1
                     WHERE thread_id = ? AND lifecycle_state = ?""",
                 (
                     LifecycleState.CLOSING.value,
@@ -363,6 +410,9 @@ class SessionRepository:
         thread_id: int,
         wrap_up: str,
         authority: CloseAuthority | str | None = None,
+        *,
+        expected_version: int | None = None,
+        archive_pending: bool = False,
     ) -> SessionRecord | None:
         """Record the wrap-up and finish the close.
 
@@ -372,6 +422,9 @@ class SessionRepository:
         a conversation, it does not discard one.
 
         A second close is a no-op: the first wrap-up and ``closed_at`` stand.
+        With ``expected_version``, only that still-pending request may finish;
+        reopening or a newer request makes the old completion a no-op. Archive
+        work is recorded atomically with closure, before any surface call.
         Raises ``ValueError`` for a blank wrap-up or an unrecognized authority.
         """
         if not wrap_up or not wrap_up.strip():
@@ -387,14 +440,20 @@ class SessionRepository:
                           close_requested_at = COALESCE(
                               close_requested_at, datetime('now', 'localtime')
                           ),
-                          close_authority = COALESCE(close_authority, ?)
-                    WHERE thread_id = ? AND lifecycle_state != ?""",
+                          close_authority = COALESCE(close_authority, ?),
+                          archive_pending = ?
+                    WHERE thread_id = ? AND lifecycle_state != ?
+                      AND (? IS NULL OR (lifecycle_version = ? AND lifecycle_state = ?))""",
                 (
                     LifecycleState.CLOSED.value,
                     wrap_up,
                     source.value if source else None,
+                    int(archive_pending),
                     thread_id,
                     LifecycleState.CLOSED.value,
+                    expected_version,
+                    expected_version,
+                    LifecycleState.CLOSING.value,
                 ),
             )
             await db.commit()
@@ -414,6 +473,8 @@ class SessionRepository:
                           close_requested_at = NULL,
                           close_authority = NULL,
                           closed_at = NULL,
+                          archive_pending = 0,
+                          lifecycle_version = lifecycle_version + 1,
                           last_used_at = datetime('now', 'localtime')
                     WHERE thread_id = ?""",
                 (LifecycleState.OPEN.value, thread_id),
@@ -428,6 +489,28 @@ class SessionRepository:
         still owes a wrap-up.
         """
         return await self.list_all(limit=limit, lifecycle_state=LifecycleState.CLOSING)
+
+    async def list_pending_archives(self, limit: int = 50) -> list[SessionRecord]:
+        """Closed sessions whose surface effect has not been acknowledged."""
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """SELECT * FROM sessions
+                   WHERE lifecycle_state = ? AND archive_pending = 1
+                   ORDER BY closed_at, thread_id LIMIT ?""",
+                (LifecycleState.CLOSED.value, limit),
+            )
+            return [SessionRecord(**dict(row)) for row in await cursor.fetchall()]
+
+    async def mark_archived(self, thread_id: int, *, expected_version: int) -> None:
+        """Acknowledge only this close's archive, never work from a newer close."""
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
+            await db.execute(
+                """UPDATE sessions SET archive_pending = 0
+                   WHERE thread_id = ? AND lifecycle_state = ? AND lifecycle_version = ?""",
+                (thread_id, LifecycleState.CLOSED.value, expected_version),
+            )
+            await db.commit()
 
     async def update_context_stats(
         self,

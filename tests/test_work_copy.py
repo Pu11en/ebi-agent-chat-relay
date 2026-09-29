@@ -299,3 +299,15 @@ async def _usable_lock(integration_lock, repo: Path):  # noqa: ANN001, ANN201
     await lock.acquire()
     lock.release()
     return lock
+
+
+async def test_two_copies_started_in_the_same_second_get_distinct_names(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Names are per second; a second build in that second waits for the next one."""
+    first, second = await asyncio.gather(
+        wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "copies"),
+        wc.create_work_copy(repo, repo / "PLAN.md", root=tmp_path / "copies"),
+    )
+    assert first.branch != second.branch and first.path != second.path
+    assert wc.is_gowork_branch(first.branch) and wc.is_gowork_branch(second.branch)
