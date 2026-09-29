@@ -1,0 +1,68 @@
+# Identity, legacy recovery and spawn checks — September 29, 2026
+
+Local candidate only (`fix/harness-round-2-20260928`). No deployment, restart,
+live-row change, paid model call or worker dispatch. Each defect below was first
+reproduced by a failing offline test (temporary SQLite/Git, fake Discord/backend).
+
+## Stale result cannot undo a newer binding (task 2.3)
+
+RED: `test_late_result_from_an_evicted_run_cannot_replace_a_newer_binding`. A
+Codex run resumed `old-codex-id`; a newer Claude handoff bound `new-claude-id`;
+the old run's late *successful* result then wrote `(old-codex-id, codex)` over
+the newer binding. `save()` replaced identity unconditionally.
+
+Repair: `SessionRepository.save_if_current(..., expected=...)` updates only while
+the stored ID is still the one this run resumed or bound through its SYSTEM
+event. `EventProcessor` tracks that ID; a result that loses the compare-and-set
+is logged and ignored (the in-memory ID is not advanced either). A run with no
+resumed/bound ID keeps the old unconditional save. Control
+`test_resumed_run_may_advance_its_own_binding` proves a legitimate fork still
+persists. Identity/backend/run-helper/repository focus: **214 passed**, then the
+module **8 passed**.
+
+REL-01 relevance (not a proof of the original writer): before `bd518f5`, a
+rejected resume's error echo was saved with the *current* runner's backend, so a
+Claude runner resuming the old Codex ID would write exactly the incident pair
+`(claude, 01a0e5ff…)`. Also, `save()` keeps the stored backend when a writer omits
+it (`COALESCE`), so any backend-less writer after a switch pairs a new backend
+with an old ID. What first launched Claude with the old ID between 18:54:36 and
+19:07:19 is still UNKNOWN; candidates are a turn whose session ID was captured
+before the switch, and restart/resume paths. Both known writer mechanisms are now
+guarded (`bd518f5`, this compare-and-set).
+
+## Legacy saved loops wait instead of spending (task 4.3)
+
+RED: `TestLegacyLoopRecovery` (2 failed). A loop record saved before wait
+checkpoints existed, for a finished plan, re-entered `loop.run()` → `_wrap_up` on
+restart, re-running the checker session and the lessons AI call; an unfinished
+legacy build immediately ran another model turn. Neither had fresh authorization.
+
+Repair: records created by current code carry `checkpoints=True`. On restart, a
+record without the marker and without a saved wait is ambiguous:
+
+- finished plan → restored as a verdict wait, with a message that its checks were
+  not run again (zero model/check calls until the person replies);
+- unfinished plain plan → parked with a visible "keep going" question;
+- unfinished manifest build → resumes, because its durable ledger is the
+  evidence T17 reconciliation already uses (existing restart test unchanged).
+
+Two older tests changed deliberately: a current-code active record now declares
+`checkpoints=True`, and the migrated legacy record must hear "keep going" first.
+
+## Empty automatic spawn is rejected before creation
+
+RED: `test_automatic_spawn_without_prompt_creates_no_thread`. From review of
+`726ecaf`: `spawn_session("", auto_start=True)` created the Discord thread and its
+working-directory row, then raised. The check now runs before anything is created.
+
+## Other review notes
+
+- `48f67d5` (single-thread spawn tagging) is accepted and superseded by `8406035`;
+  its response reports the pre-tag thread name (minor).
+- The intermittent `Loop ... handles pid ... is closed` diagnostic appeared in
+  parallel (`-n 8`) runs of the Go Work suites but not in three serial passes of
+  the same ~400 tests. Still unattributed; not suppressed.
+- Rollback hazard: older code rejects `LoopRecord` rows with new fields
+  (`waiting_*`, `landed_workers`, `checkpoints`) and drops them on its next save.
+  Back up the loop store before activation. Making the loader ignore unknown
+  fields was rejected: an older loader ignoring a saved wait would resume and spend.

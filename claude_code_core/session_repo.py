@@ -169,6 +169,33 @@ class SessionRepository:
             raise RuntimeError(f"Failed to retrieve session after save for thread {thread_id}")
         return record
 
+    async def save_if_current(
+        self,
+        thread_id: int,
+        session_id: str,
+        *,
+        expected: str,
+        origin: str | None = None,
+        backend: str | None = None,
+    ) -> bool:
+        """Update identity only while ``expected`` is still the stored session ID.
+
+        A run may confirm or advance the binding it established, but a late result
+        from a run that another run has since replaced must not undo that switch.
+        """
+        async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
+            cursor = await db.execute(
+                """UPDATE sessions
+                      SET session_id = ?,
+                          origin = COALESCE(?, origin),
+                          backend = COALESCE(?, backend),
+                          last_used_at = datetime('now', 'localtime')
+                    WHERE thread_id = ? AND session_id = ?""",
+                (session_id, origin, backend, thread_id, expected),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def ensure_working_dir(
         self,
         thread_id: int,

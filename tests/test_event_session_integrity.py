@@ -134,3 +134,68 @@ async def test_success_still_persists_and_resumes_identity(
     assert (record.session_id, record.backend) == ("new-claude-id", "claude")
     assert processor.session_id == record.session_id
     assert surface.conformance_sent_text == ["Finished"]
+
+
+class CodexRunner:
+    """Named like the real runner so identity is attributed to Codex."""
+
+    def __init__(self, working_dir: str | None) -> None:
+        self.working_dir = working_dir
+        self.model = "codex-model"
+        self.interrupt = AsyncMock()
+
+
+async def test_late_result_from_an_evicted_run_cannot_replace_a_newer_binding(
+    identity_repo: SessionRepository,
+) -> None:
+    """Task 2.3: a stale success must not undo a switch that happened meanwhile."""
+    surface = MemorySurface()
+    await identity_repo.save(surface.thread_key, "old-codex-id", backend="codex")
+    stale = EventProcessor(
+        RunConfig(
+            surface=surface,
+            runner=CodexRunner(surface.working_dir),
+            prompt="Older queued reply",
+            repo=identity_repo,
+            session_id="old-codex-id",
+            chat_only=True,
+        )
+    )
+    # The newer Claude handoff binds its own conversation while the old run lingers.
+    newer = _processor(identity_repo, surface)
+    await newer.process(StreamEvent(message_type=MessageType.SYSTEM, session_id="new-claude-id"))
+    bound = await identity_repo.get(surface.thread_key)
+
+    await stale.process(
+        StreamEvent(
+            message_type=MessageType.RESULT,
+            is_complete=True,
+            session_id="old-codex-id",
+            text="Late answer",
+        )
+    )
+    await stale.finalize()
+    await newer.finalize()
+
+    record = await SessionRepository(identity_repo.db_path).get(surface.thread_key)
+    assert record is not None and bound is not None
+    assert (record.session_id, record.backend) == ("new-claude-id", "claude")
+
+
+async def test_resumed_run_may_advance_its_own_binding(identity_repo: SessionRepository) -> None:
+    """Control: the compare-and-set only rejects a binding another run replaced."""
+    surface = MemorySurface()
+    await identity_repo.save(surface.thread_key, "resumed-id", backend="claude")
+    processor = _processor(identity_repo, surface, "resumed-id")
+    await processor.process(
+        StreamEvent(
+            message_type=MessageType.RESULT,
+            is_complete=True,
+            session_id="forked-id",
+            text="Done",
+        )
+    )
+    await processor.finalize()
+    record = await identity_repo.get(surface.thread_key)
+    assert record is not None and record.session_id == "forked-id"
+    assert processor.session_id == "forked-id"
