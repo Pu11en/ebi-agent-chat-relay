@@ -26,8 +26,9 @@ import shlex
 import shutil
 import tempfile
 import time
+import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -63,6 +64,7 @@ from claude_code_core.gowork_report import render_blocker_question
 from claude_code_core.gowork_schedule import ReadyTask
 from claude_code_core.gowork_state import StaleAttemptError, open_build_state
 from claude_code_core.loop_store import LoopRecord, LoopStore
+from claude_code_core.session_repo import CloseAuthority
 from claude_code_core.task_loop import (
     LoopOutcome,
     ManifestResult,
@@ -138,7 +140,10 @@ from claude_code_core.work_copy import (
 )
 
 from ..backend_settings import ALL_BACKENDS
+from ..lifecycle_adapters import build_lifecycle_service
 from ..project_creation import ProjectRoots, configured_root_list
+from ..session_lifecycle import CloseAuthorization, CloseState, SessionLifecycleService
+from ..voice_tags import VoiceTagger
 from ._run_helper import capacity_coordinator, parallel_limit, run_capacity_ticks
 
 if TYPE_CHECKING:
@@ -542,6 +547,9 @@ class BuildAlreadyRunningError(ValueError):
         self.thread_id = running.worker_thread_id
 
 
+_STATUS_VALUES = frozenset(status.value for status in Status)
+
+
 @dataclass
 class _Running:
     loop: TaskLoop
@@ -550,6 +558,7 @@ class _Running:
     report_channel_id: int
     #: Stable identity in the LoopStore (several builds may share one project).
     build_id: str = ""
+    resume_wait: LoopRecord | None = None
     #: A manifest build's work copies of its other projects, by repository root.
     project_copies: dict[Path, WorkCopy] | None = None
     #: Git touches one copy at a time: side copies are made and merged under this.
@@ -900,6 +909,7 @@ class TaskLoopCog(commands.Cog):
                 thread_name=f"🔁 Task loop · {repo_dir.name}",
                 auto_start=False,
                 working_dir=str(work_dir),
+                voice_addressable=False,
             )
             # The harness and model picked at start stick to the worker thread for
             # every round (per-thread settings, so other threads are unaffected).
@@ -926,6 +936,7 @@ class TaskLoopCog(commands.Cog):
                 per_step_ai=per_step_ai,
                 queued=queued,
                 mode=mode if mode in MODES else "balanced",
+                checkpoints=True,
             )
             self._store.save(record)
             plan_text = copy.plan_path.read_text(encoding="utf-8", errors="replace")
@@ -1118,6 +1129,7 @@ class TaskLoopCog(commands.Cog):
             record.report_channel_id,
             build_id=record.build_id,
             copy=copy,
+            resume_wait=record if record.waiting_status else None,
             thread=thread,
             report_target=report_target,
             report=report,
@@ -1148,6 +1160,15 @@ class TaskLoopCog(commands.Cog):
             repo_dir = Path(record.repo_dir)
             if record.build_id in self._running:
                 continue
+            session = await self._chat().repo.get(record.worker_thread_id)
+            if (
+                session is not None
+                and session.is_closed
+                and session.close_authority != CloseAuthority.WORKFLOW_CLOSE_ON_DONE.value
+            ):
+                logger.info("gowork: not resuming explicitly closed build %s", record.build_id)
+                self._store.remove(record.build_id)
+                continue
             thread: Any = self.bot.get_channel(record.worker_thread_id)
             if thread is None:
                 with contextlib.suppress(Exception):
@@ -1165,10 +1186,35 @@ class TaskLoopCog(commands.Cog):
             )
             snap = await take_snapshot(Path(record.copy_path), Path(record.copy_plan))
             total = snap.checked + snap.unchecked
+            if record.waiting_status is not None and record.waiting_status not in _STATUS_VALUES:
+                # An unreadable saved wait is ambiguous, not a reason to crash or forget.
+                record = self._restore_legacy_wait(
+                    record,
+                    finished=False,
+                    detail=(
+                        "The bot restarted and couldn't read what this build was waiting "
+                        "for. Say **keep going** to carry on."
+                    ),
+                )
+            elif not record.checkpoints and record.waiting_status is None:
+                finished = snap.unchecked == 0
+                # A manifest build's ledger is evidence of what each task was doing
+                # (T17 reconciles it); a plain plan has none, so it waits.
+                evidenced = has_manifest(
+                    Path(record.copy_plan).read_text(encoding="utf-8", errors="replace")
+                )
+                if finished or not evidenced:
+                    record = self._restore_legacy_wait(record, finished=finished)
             report = self._launch(record, thread, report_target)
-            await report(
-                f"🔁 Resuming after a restart: Task {min(snap.checked + 1, total)} of {total}"
-            )
+            if record.waiting_status == Status.COMPLETE.value:
+                await report(
+                    "🔁 Back after a restart: this build is finished and waiting for your "
+                    "**looks good** (its checks were not run again)."
+                )
+            else:
+                await report(
+                    f"🔁 Resuming after a restart: Task {min(snap.checked + 1, total)} of {total}"
+                )
             resumed += 1
             running = self._running.get(record.build_id)
             if running is not None and has_manifest(
@@ -1179,6 +1225,30 @@ class TaskLoopCog(commands.Cog):
                 with contextlib.suppress(Exception):
                     await self.repost_blockers(running)
         return resumed
+
+    def _restore_legacy_wait(
+        self, record: LoopRecord, *, finished: bool, detail: str | None = None
+    ) -> LoopRecord:
+        """A record from before saved waits: wait for the person, spend nothing (4.3).
+
+        It may have been waiting for a verdict or an answer when it was stored, so
+        resuming it could repeat paid checks or a step the person had paused. A
+        finished plan waits for its verdict without rerunning the checks; an
+        unfinished plain-plan build is parked until the person says to carry on.
+        """
+        if finished:
+            status, detail = Status.COMPLETE.value, "restored after a restart"
+        else:
+            status = Status.PAUSE.value
+            detail = detail or (
+                "The bot restarted and this build's saved state predates checkpoints, "
+                "so I'm not sure it was meant to be running. Say **keep going** to "
+                "carry on."
+            )
+        logger.info("gowork: legacy build %s restored as waiting (%s)", record.build_id, status)
+        restored = replace(record, waiting_status=status, waiting_detail=detail, checkpoints=True)
+        self._store.save(restored)
+        return restored
 
     async def _tell_orphaned(self, record: LoopRecord) -> None:
         """The build's thread is gone but its copy isn't: say where the finished work is."""
@@ -1248,6 +1318,23 @@ class TaskLoopCog(commands.Cog):
 
     async def _drive(self, running: _Running, report: Any) -> LoopOutcome:
         try:
+            checkpoint = running.resume_wait
+            running.resume_wait = None
+            if checkpoint is not None:
+                if checkpoint.waiting_status == Status.COMPLETE.value:
+                    outcome = LoopOutcome(Status.COMPLETE, checkpoint.waiting_detail)
+                    decision = await self._wait_verdict(
+                        running, checkpoint.waiting_fails, checkpoint.waiting_proposed
+                    )
+                    ended = decision != "fix"
+                else:
+                    outcome = LoopOutcome(
+                        Status(checkpoint.waiting_status), checkpoint.waiting_detail
+                    )
+                    ended = await self._park(running, outcome) == "gone"
+                if ended:
+                    self._store.remove(running.build_id)
+                    return outcome
             while True:
                 outcome = await running.loop.run()
                 if outcome.status == Status.COMPLETE:
@@ -1428,7 +1515,7 @@ class TaskLoopCog(commands.Cog):
             return "kept"
         # The card and the "looks good?" wait live in the build's own thread; the
         # starting channel only gets a pointer, and the result once the thread is gone.
-        target, report, here = running.report_target, running.report, running.thread
+        target, here = running.report_target, running.thread
         plan_text = running.copy.plan_path.read_text(encoding="utf-8", errors="replace")
         checked, _ = count_tasks(plan_text)
         mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
@@ -1507,6 +1594,36 @@ class TaskLoopCog(commands.Cog):
             outcome = await self._auto_integrate(running, target, mention)
             if outcome is not None:
                 return outcome
+
+        return await self._wait_verdict(running, fails, proposed)
+
+    def _save_wait(
+        self,
+        running: _Running,
+        status: str | None,
+        detail: str = "",
+        *,
+        fails: list[str] | None = None,
+        proposed: list[str] | None = None,
+    ) -> None:
+        record = self._store.get(running.build_id)
+        if record is not None:
+            self._store.save(
+                replace(
+                    record,
+                    waiting_status=status,
+                    waiting_detail=detail,
+                    waiting_fails=list(fails or ()),
+                    waiting_proposed=list(proposed or ()),
+                )
+            )
+
+    async def _wait_verdict(self, running: _Running, fails: list[str], proposed: list[str]) -> str:
+        """Wait on the saved result; restarting does not repeat its checks or AI turns."""
+        assert running.copy is not None
+        target, report = running.report_target, running.report
+        mention = f" <@{running.notify_user_id}>" if running.notify_user_id else ""
+        self._save_wait(running, Status.COMPLETE.value, fails=fails, proposed=proposed)
 
         def is_verdict(text: str) -> bool:
             """Keep, throw away or a bare "fix". Anything else is a normal chat."""
@@ -1599,17 +1716,70 @@ class TaskLoopCog(commands.Cog):
                     continue
                 self._queue_note(running, "kept in your project ✅")
                 with contextlib.suppress(discord.HTTPException):
-                    await target.send(f"✅ Kept: {message}. I cleaned up the worker thread.")
-                with contextlib.suppress(Exception):
-                    await running.thread.delete()
+                    await target.send(f"✅ Kept: {message}. The worker conversation is preserved.")
+                await self._close_build_threads(running)
                 return "kept"
         finally:
             running.in_review = False
 
     async def _archive_finished_worker_thread(self, running: _Running) -> None:
-        """Hide a finished worker thread once its result card is in the main thread."""
-        with contextlib.suppress(Exception):
+        """Hide the build's review chat without closing it before a verdict.
+
+        The finished card still invites questions and fixes here. Only completed
+        subtasks go through `_close_worker_thread`; review is not close authority.
+        """
+        try:
             await running.thread.edit(archived=True, reason="go-work finished")
+        except Exception:
+            logger.warning("gowork: build review archive failed", exc_info=True)
+
+    def _note_landed(self, running: _Running, thread_id: int) -> None:
+        record = self._store.get(running.build_id)
+        if record is not None and thread_id not in record.landed_workers:
+            self._store.save(replace(record, landed_workers=[*record.landed_workers, thread_id]))
+
+    async def _close_build_threads(self, running: _Running) -> None:
+        """The build was kept: close its landed legacy workers, then its own thread."""
+        record = self._store.get(running.build_id)
+        for thread_id in record.landed_workers if record is not None else ():
+            await self._close_worker_thread(self.bot.get_channel(thread_id) or thread_id)
+        await self._close_worker_thread(running.thread)
+
+    async def _close_worker_thread(self, thread: Any) -> bool:
+        """Close the stored session and archive its thread; True once both are done.
+
+        Uses the shared lifecycle service, so a failed archive stays pending in the
+        session store and startup reconciliation retries it even after this build's
+        loop record is gone. Workflow closes archive without locking or deleting.
+        Failures are logged, never raised: the build's own result is already kept.
+        """
+        thread_id = thread if isinstance(thread, int) else thread.id
+        chat = self._chat()
+        lifecycle = getattr(chat, "lifecycle", None)
+        if not isinstance(lifecycle, SessionLifecycleService):
+            lifecycle = build_lifecycle_service(self.bot, chat, chat.repo)
+        try:
+            outcome = await lifecycle.close(
+                thread_id, CloseAuthorization.from_workflow("gowork", close_on_done=True)
+            )
+            if outcome.state is not CloseState.NO_SESSION and (
+                outcome.record is None or not outcome.record.is_closed
+            ):
+                logger.info("gowork: worker %s is not closed yet; retry later", thread_id)
+                return False
+            # Only a stored closure gives up the spoken tag.
+            tagger = VoiceTagger(self.bot, getattr(chat, "_settings_repo", None))
+            async with tagger.lock:
+                await tagger.exclude_thread(thread_id)
+            if outcome.record is None:  # a legacy thread with no session row to close
+                if isinstance(thread, int):
+                    return False
+                await thread.edit(archived=True)
+                return True
+        except Exception:
+            logger.warning("gowork: closing worker %s failed; will retry", thread_id, exc_info=True)
+            return False
+        return not outcome.record.archive_pending
 
     async def _park(self, running: _Running, outcome: LoopOutcome) -> str:
         """A build that stopped short waits for the person. Returns "again" or "gone"."""
@@ -1631,12 +1801,14 @@ class TaskLoopCog(commands.Cog):
         )
         with contextlib.suppress(discord.HTTPException):
             await running.thread.send(ask[:1900])
+        self._save_wait(running, outcome.status.value, outcome.detail)
         self._queue_waiting(running, why.splitlines()[0].replace("**", "")[:200])
         running.parked = True
         try:
             reply = await self._wait_parked(running, ask)
         finally:
             running.parked = False
+        self._save_wait(running, None)
         running.waiting_for_person = False
         if reply is None:  # a new plan was started in this project
             return await self._finish_early(running)
@@ -1770,8 +1942,7 @@ class TaskLoopCog(commands.Cog):
         except Exception:
             return None
         if state.integrated_commit:
-            with contextlib.suppress(Exception):
-                await running.thread.delete()
+            await self._close_build_threads(running)
             return "kept"
         ok, message = await self._keep_build(running)
         if not ok:
@@ -1786,9 +1957,8 @@ class TaskLoopCog(commands.Cog):
             state.mark_integrated(message)
         self._queue_note(running, "kept in your project ✅")
         with contextlib.suppress(discord.HTTPException):
-            await target.send(f"✅ Kept{mention}: {message}. I cleaned up the worker thread.")
-        with contextlib.suppress(Exception):
-            await running.thread.delete()
+            await target.send(f"✅ Kept{mention}: {message}. The worker conversation is preserved.")
+        await self._close_build_threads(running)
         return "kept"
 
     async def _keep_build(
@@ -1859,10 +2029,9 @@ class TaskLoopCog(commands.Cog):
         with contextlib.suppress(discord.HTTPException):
             await target.send(
                 f"✅ Wrapped up: kept {checked} finished step{'s' if checked != 1 else ''} in "
-                f"the project ({unchecked} not done). I cleaned up the worker thread."
+                f"the project ({unchecked} not done). The worker conversation is preserved."
             )
-        with contextlib.suppress(Exception):
-            await running.thread.delete()
+        await self._close_build_threads(running)
         return "gone"
 
     async def _close_for_switch(self, plan_path: str, report_to: Any) -> None:
@@ -2483,6 +2652,7 @@ class TaskLoopCog(commands.Cog):
 
     def _back_to_work(self, running: _Running) -> None:
         """The finished build got more steps: it's building again, not waiting."""
+        self._save_wait(running, None)
         running.finished = False
         running.waiting_for_person = False
         self._queue_note(running, "running")
@@ -2965,12 +3135,8 @@ class TaskLoopCog(commands.Cog):
                     thread = await self.bot.fetch_channel(thread_id)
             if thread is None:
                 continue  # gone or unreachable: the ledger keeps it for the next try
-            try:
-                await thread.edit(archived=True)
-            except Exception:
-                logger.info("gowork: archiving thread %s failed; will retry", thread_id)
-                continue
-            state.mark_archived(task_id, thread_id=thread_id)
+            if await self._close_worker_thread(thread):
+                state.mark_archived(task_id, thread_id=thread_id)
 
     async def retry_archives(self, running: _Running) -> int:
         """Archive every settled worker thread still open (after a restart, or at the end)."""
@@ -2979,11 +3145,11 @@ class TaskLoopCog(commands.Cog):
         except Exception:
             return 0
         done = 0
-        before = {task_id for task_id, _ in state.unarchived_threads()}
-        for task_id in before:
+        before = set(state.unarchived_threads())
+        for task_id in dict.fromkeys(task_id for task_id, _ in before):
             await self._archive_worker_thread(running, task_id)
         with contextlib.suppress(Exception):
-            done = len(before) - len(self._build_state(running).unarchived_threads())
+            done = len(before - set(self._build_state(running).unarchived_threads()))
         return done
 
     async def _combined_checks(
@@ -3158,6 +3324,7 @@ class TaskLoopCog(commands.Cog):
                 thread_name=f"⚡ {assignment.outcome[:80]}",
                 auto_start=False,
                 working_dir=str(cwd),
+                voice_addressable=False,
             )
             self._quiet(sub.id)
             with contextlib.suppress(Exception):  # the ledger knows where to archive later
@@ -3281,7 +3448,9 @@ class TaskLoopCog(commands.Cog):
             )
 
         async def one(index: int, step: str) -> tuple[str, bool, str, Any, Any, str, float]:
-            side = await create_side_copy(copy, f"p{index + 1}")
+            # The old p1/p2 names recycled a failed attempt's checkout on retry.
+            # Every invocation owns a new copy; unsuccessful evidence stays put.
+            side = await create_side_copy(copy, f"p{index + 1}-{uuid.uuid4().hex[:12]}")
             sub: Any = await chat.spawn_session(
                 parent,
                 f"⚡ One step of the {running.repo_dir.name} build, running alongside "
@@ -3289,6 +3458,7 @@ class TaskLoopCog(commands.Cog):
                 thread_name=f"⚡ {short_label(step)[:80]}",
                 auto_start=False,
                 working_dir=str(side.path),
+                voice_addressable=False,
             )
             self._quiet(sub.id)
             if settings is not None:
@@ -3339,7 +3509,11 @@ class TaskLoopCog(commands.Cog):
                 continue
             _step, ok, detail, side, sub, ai, seconds = outcome
             landed = ok and await side_has_new_work(copy, side)
-            landed = landed and await merge_side_copy(copy, side)
+            landed = landed and await merge_side_copy(copy, side, keep_on_clash=True)
+            if not landed:
+                detail = (detail or "it didn't combine with the others") + (
+                    f" (work kept at {side.path}; thread {sub.jump_url})"
+                )
             await self._record(
                 running,
                 step,
@@ -3348,8 +3522,6 @@ class TaskLoopCog(commands.Cog):
                 ai=ai,
                 seconds=seconds,
             )
-            if not landed:
-                await remove_side_copy(copy, side)
             if landed and tick_task(copy.plan_path, step):
                 with progress.open("a", encoding="utf-8") as fh:
                     fh.write(f"\n## {step} (built alongside other steps)\n- {detail}\n")
@@ -3361,8 +3533,13 @@ class TaskLoopCog(commands.Cog):
                 results.append((step, True, detail))
             else:
                 results.append((step, False, detail or "it didn't combine with the others"))
-            with contextlib.suppress(Exception):
-                await sub.delete()
+            if landed:
+                # Merged into the build copy is not accepted: the worker stays open
+                # until the build is kept, then closes with the build's own thread.
+                self._note_landed(running, sub.id)
+            else:
+                with contextlib.suppress(discord.HTTPException):
+                    await running.thread.send(f"⚠️ {short_label(step)}: {detail}"[:1900])
         return results
 
     def _capacity_waits(self) -> dict[int, _CapacityWait]:

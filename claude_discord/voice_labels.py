@@ -120,52 +120,47 @@ def aliases_for(label: str | None) -> tuple[str, ...]:
 def assign_labels(
     thread_ids: list[int],
     existing: dict[int, str],
+    *,
+    released_ids: set[int] | None = None,
 ) -> tuple[dict[int, str], dict[int, str], set[int]]:
     """Give every thread in ``thread_ids`` a tag, keeping the ones it has.
 
     A tag is a word the speaker has learned, so it is held for as long as it can
-    be: a thread keeps its tag after it scrolls out of the visible set, and gets
-    the same one back if it comes round again.  Only when all 26 are spoken for
-    does one get taken away, and then from the *oldest* thread that is not
-    currently visible — Discord IDs are snowflakes, so the smallest id is the
-    thread whose tag the speaker is least likely to still have in mind.
+    be: a thread keeps its tag after it scrolls out of the visible set. Absence
+    and age do not prove closure. Only holders explicitly released by the caller
+    give up a word; unused words precede just-released ones to avoid immediately
+    changing what a recently spoken name means.
 
     Args:
         thread_ids: The visible threads, in the order tags should be handed out
             (most relevant first — those are the ones most likely to be spoken).
         existing: Stored thread_id → tag, including threads no longer visible.
+        released_ids: Holders whose release has already succeeded in storage.
+            Never infer these from a page boundary or Discord archive state.
 
     Returns:
         ``(labels, new, released)`` — the mapping for the visible threads, the
-        assignments that were not already stored, and the threads whose tag was
-        taken away, so the caller writes and deletes only what changed.
+        assignments still to persist, and the previously stored holders whose
+        explicit release was honored. Unlisted holders are never reclaimed.
     """
-    visible = set(thread_ids)
+    released = set(existing) & (released_ids or set())
+    visible = set(thread_ids) - released
     # A tag that is no longer in the pool is not held. Without this, changing
     # the pool would leave every already-tagged thread on the old naming scheme
     # for as long as it lives, and the two schemes would coexist indefinitely.
     existing = {tid: label for tid, label in existing.items() if label in _POOL}
     labels = {tid: label for tid, label in existing.items() if tid in visible}
-    taken = dict(existing)  # every tag still promised to some thread
-    free = [label for label in SPOKEN_LABELS if label not in set(taken.values())]
-    released: set[int] = set()
-
-    # Oldest first: the thread least likely to be spoken to gives up its tag.
-    reclaimable = sorted(tid for tid in taken if tid not in visible)
+    taken = {tid: label for tid, label in existing.items() if tid not in released}
+    previous_words, held_words = set(existing.values()), set(taken.values())
+    free = [label for label in SPOKEN_LABELS if label not in previous_words]
+    free += [label for label in SPOKEN_LABELS if label in previous_words - held_words]
 
     for thread_id in thread_ids:
-        if thread_id in labels:
+        if thread_id in labels or thread_id in released:
             continue
         if not free:
-            if not reclaimable:
-                # Every tag belongs to a thread that is visible right now. The
-                # remainder stay untagged and are still reachable by name;
-                # reusing a live tag would send a command to the wrong thread,
-                # which is the one unacceptable outcome here.
-                break
-            donor = reclaimable.pop(0)
-            free.append(taken.pop(donor))
-            released.add(donor)
+            # All words are still promised, including off-page holders.
+            break
         label = free.pop(0)
         labels[thread_id] = label
         taken[thread_id] = label

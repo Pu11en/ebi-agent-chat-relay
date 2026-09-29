@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     close_requested_at TEXT,
     close_authority TEXT,      -- which authority source asked (never model intent)
     wrap_up TEXT,              -- summary written once, at the moment of closing
-    closed_at TEXT
+    closed_at TEXT,
+    lifecycle_version INTEGER NOT NULL DEFAULT 0,
+    archive_pending INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_last_used ON sessions(last_used_at);
@@ -386,6 +388,10 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN close_authority TEXT",
     "ALTER TABLE sessions ADD COLUMN wrap_up TEXT",
     "ALTER TABLE sessions ADD COLUMN closed_at TEXT",
+    # New close work is generation-bound; existing closed sessions are not
+    # retroactively archived just because this migration ran.
+    "ALTER TABLE sessions ADD COLUMN lifecycle_version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE sessions ADD COLUMN archive_pending INTEGER NOT NULL DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS idx_sessions_lifecycle ON sessions(lifecycle_state)",
     # Trusted agent handoffs added in v3.4. Every statement is CREATE IF NOT
     # EXISTS, so replaying the whole handoff schema is how an older database

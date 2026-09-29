@@ -25,7 +25,11 @@ from claude_discord.lifecycle_adapters import (
     DiscordThreadSurface,
     build_lifecycle_service,
 )
-from claude_discord.session_lifecycle import CloseState, SessionLifecycleService
+from claude_discord.session_lifecycle import (
+    CloseAuthorization,
+    CloseState,
+    SessionLifecycleService,
+)
 
 CONTROL = 100
 THREAD = 555
@@ -160,6 +164,23 @@ class TestAdapters:
         assert await DiscordThreadSurface(bot, repo).archive(THREAD) is True
         assert order == ["send", "edit"]
         assert "Shipped the fix." in thread.send.call_args.args[0]
+
+    async def test_workflow_close_archives_worker_without_lock_or_note(self, repo, chat):
+        """Retried by any process, a finished worker is never locked (task 3.1)."""
+        bot = MagicMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "worker"
+        thread.send, thread.edit = AsyncMock(), AsyncMock()
+        bot.get_channel.return_value = thread
+        chat._active_runners[THREAD] = object()  # the worker's turn is still running
+        lifecycle = build_lifecycle_service(bot, chat, repo)
+        authorization = CloseAuthorization.from_workflow("gowork", close_on_done=True)
+        assert (await lifecycle.close(THREAD, authorization)).is_pending
+        chat._active_runners.clear()
+        # Run finalization in the chat cog completes it with the same shared service.
+        assert (await lifecycle.complete_pending_close(THREAD)).archived
+        thread.edit.assert_awaited_once_with(archived=True)
+        thread.send.assert_not_awaited()
 
     async def test_thread_surface_reports_false_for_missing_or_non_threads(self):
         bot = MagicMock()

@@ -106,9 +106,21 @@ class TaskAttempt:
     rework_reason: str | None = None
     #: The previous attempt's result commit, so a rework adjusts instead of restarting.
     previous_commit: str | None = None
-    #: Worker threads of earlier attempts that were never archived (T14 across a repair,
-    #: rework or retry): still to be archived, whatever this attempt's status.
+    #: Earlier unarchived attempt threads, retained even when they need attention.
     earlier_threads: tuple[int, ...] = ()
+    #: The subset whose accepted result authorized archival before a new attempt.
+    #: Legacy records without this evidence retain their threads without closing them.
+    earlier_accepted_threads: tuple[int, ...] = ()
+
+    @property
+    def can_archive(self) -> bool:
+        """Only accepted, evidenced results authorize automatic worker closure."""
+        return (
+            self.status is TaskStatus.ACCEPTED
+            and self.accepted
+            and bool(self.result_commit)
+            and bool(self.checks)
+        )
 
     def to_json(self) -> dict:
         return {
@@ -135,6 +147,7 @@ class TaskAttempt:
             "rework_reason": self.rework_reason,
             "previous_commit": self.previous_commit,
             "earlier_threads": list(self.earlier_threads),
+            "earlier_accepted_threads": list(self.earlier_accepted_threads),
         }
 
     @classmethod
@@ -164,6 +177,9 @@ class TaskAttempt:
                 rework_reason=value.get("rework_reason"),
                 previous_commit=value.get("previous_commit"),
                 earlier_threads=tuple(int(t) for t in value.get("earlier_threads") or ()),
+                earlier_accepted_threads=tuple(
+                    int(t) for t in value.get("earlier_accepted_threads") or ()
+                ),
             )
         except (KeyError, ValueError, TypeError) as exc:
             raise StaleAttemptError(f"unreadable task attempt in the build state: {value}") from exc
@@ -366,6 +382,12 @@ class BuildState:
             previous_failure=record.reason,
             earlier_threads=record.earlier_threads
             + ((record.thread_id,) if record.thread_id is not None and not record.archived else ()),
+            earlier_accepted_threads=record.earlier_accepted_threads
+            + (
+                (record.thread_id,)
+                if record.thread_id is not None and not record.archived and record.can_archive
+                else ()
+            ),
         )
 
     def retry_after_block(self, task_id: str, reason: str) -> TaskAttempt:
@@ -397,7 +419,12 @@ class BuildState:
         record = self[task_id]
         if thread_id is not None and thread_id in record.earlier_threads:
             left = tuple(t for t in record.earlier_threads if t != thread_id)
-            return self._apply(task_id, replace(record, earlier_threads=left), "archived")
+            eligible = tuple(t for t in record.earlier_accepted_threads if t != thread_id)
+            return self._apply(
+                task_id,
+                replace(record, earlier_threads=left, earlier_accepted_threads=eligible),
+                "archived",
+            )
         if thread_id is not None and thread_id != record.thread_id:
             return record  # not a thread this task knows about
         if record.archived:
@@ -405,13 +432,13 @@ class BuildState:
         return self._apply(task_id, replace(record, archived=True), "archived")
 
     def unarchived_threads(self) -> tuple[tuple[str, int], ...]:
-        """Worker threads still awaiting their archive: every earlier attempt's, and the
-        current attempt's once the task has settled."""
-        settled = (TaskStatus.FINISHED, TaskStatus.ACCEPTED, TaskStatus.BLOCKED)
+        """Accepted workers still owing an archive; attention-needed threads stay open."""
         pending: list[tuple[str, int]] = []
         for r in self.records:
-            pending.extend((r.task_id, t) for t in r.earlier_threads)
-            if r.thread_id is not None and not r.archived and r.status in settled:
+            pending.extend(
+                (r.task_id, t) for t in r.earlier_threads if t in r.earlier_accepted_threads
+            )
+            if r.thread_id is not None and not r.archived and r.can_archive:
                 pending.append((r.task_id, r.thread_id))
         return tuple(pending)
 

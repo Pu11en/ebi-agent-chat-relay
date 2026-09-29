@@ -39,6 +39,7 @@ from claude_code_core.frontend import (
     OutboundFile,
     StatusKind,
 )
+from claude_code_core.session_repo import SessionRepository
 from claude_code_core.types import ElicitationRequest
 
 from ..claude.types import AskQuestion, MessageType, SessionState, StreamEvent, ToolUseEvent
@@ -199,6 +200,8 @@ class EventProcessor:
             session_id=config.session_id,
             thread_id=config.surface.thread_key,
         )
+        # The stored identity this run resumed or bound; results may only advance it.
+        self._bound_session_id: str | None = config.session_id or None
         self._streamer = config.surface.open_stream()
         self._interrupt = None
 
@@ -437,6 +440,7 @@ class EventProcessor:
                     summary=summary,
                     backend=backend,
                 )
+            self._bound_session_id = self._state.session_id
 
         # Guard: post session_start_embed only once (Claude can emit multiple SYSTEM events).
         # Skip in chat_only mode — no session start embed.
@@ -580,6 +584,31 @@ class EventProcessor:
             return
         await self._config.usage_repo.upsert(event.rate_limit_info)
 
+    async def _save_result_identity(self, repo: SessionRepository, session_id: str) -> bool:
+        """Persist a successful result's ID unless a newer run replaced this binding."""
+        backend = _backend_name_from_runner(self._config.runner)
+        thread_key = self._config.surface.thread_key
+        if self._bound_session_id is None:
+            await repo.save(
+                thread_key, session_id, origin=self._config.session_origin, backend=backend
+            )
+            return True
+        if await repo.save_if_current(
+            thread_key,
+            session_id,
+            expected=self._bound_session_id,
+            origin=self._config.session_origin,
+            backend=backend,
+        ):
+            self._bound_session_id = session_id
+            return True
+        logger.info(
+            "Thread %s: ignoring result identity %s; a newer run replaced the binding",
+            thread_key,
+            session_id,
+        )
+        return False
+
     async def _on_complete(self, event: StreamEvent) -> None:
         """Handle RESULT events — finalize streaming and post a summary notice."""
         import asyncio
@@ -693,15 +722,15 @@ class EventProcessor:
                         name=f"inbox-classify-{self._config.surface.thread_key}",
                     )
 
-        if event.session_id:
+        # An error may echo a rejected resume ID, including one owned by another
+        # backend. Only a successful result can establish/update native identity;
+        # keep any binding already verified by SYSTEM rather than poisoning it.
+        if event.session_id and not event.error:
+            current = True
             if self._config.repo:
-                await self._config.repo.save(
-                    self._config.surface.thread_key,
-                    event.session_id,
-                    origin=self._config.session_origin,
-                    backend=_backend_name_from_runner(self._config.runner),
-                )
-            self._state.session_id = event.session_id
+                current = await self._save_result_identity(self._config.repo, event.session_id)
+            if current:
+                self._state.session_id = event.session_id
 
         # Persist context window stats (requires repo + context_window in event).
         if self._config.repo and event.context_window is not None:

@@ -55,6 +55,7 @@ from ..handoff_config import HandoffConfig, legacy_sender_trusted
 from ..handoff_executor import execute_ready_handoff_tasks
 from ..handoff_sender import build_project_lookup_handoff_event, send_project_lookup_handoff
 from ..handoff_triggers import parse_drewai_lookup_trigger
+from ..resume_prompt import build_restart_resume_prompt
 from ..session_request import SessionRequest, mentions_a_session, read_session_request
 from ..thread_policy import THREAD_AUTO_ARCHIVE_MINUTES
 from ..voice_labels import tagged_title, title_tag
@@ -501,7 +502,9 @@ class ClaudeChatCog(commands.Cog):
         if not category_allowed(thread):
             return
         try:
-            await VoiceTagger(self.bot, self._settings_repo).tag_thread(thread)
+            await VoiceTagger(self.bot, self._settings_repo, session_repo=self.repo).tag_thread(
+                thread
+            )
         except Exception:
             logger.warning("Could not tag new thread %s", thread.id, exc_info=True)
 
@@ -1598,6 +1601,7 @@ class ClaudeChatCog(commands.Cog):
         backend: str | None = None,
         model: str | None = None,
         read_only: bool = False,
+        voice_addressable: bool = True,
     ) -> discord.Thread:
         """Create a new thread and optionally start a Claude Code session.
 
@@ -1644,10 +1648,15 @@ class ClaudeChatCog(commands.Cog):
             read_only: Restrict the worker to a read-only tool set in argv
                         (a handoff with ``edit: false``). Raises before the
                         thread is created when the backend cannot honour it.
+            voice_addressable: False for workflow workers and reviewers that must
+                        never occupy a spoken tag. The choice survives restarts.
 
         Returns:
             The newly created :class:`discord.Thread`.
         """
+        if auto_start and not prompt:
+            # Reject before creating anything: no orphan thread for a bad request.
+            raise ValueError("an automatic session needs a prompt")
         if read_only and auto_start:
             await self._require_read_only_capable_backend(None, backend)
         default_working_dir = getattr(self.runner, "working_dir", None)
@@ -1655,11 +1664,15 @@ class ClaudeChatCog(commands.Cog):
             default_working_dir if isinstance(default_working_dir, str) else None
         )
         name = (thread_name or prompt)[:100]
-        thread = await channel.create_thread(
-            name=name,
-            type=discord.ChannelType.public_thread,
-            auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
-        )
+        tagger = VoiceTagger(self.bot, self._settings_repo)
+        async with tagger.lock:
+            thread = await channel.create_thread(
+                name=name,
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=THREAD_AUTO_ARCHIVE_MINUTES,
+            )
+            if not voice_addressable:
+                await tagger.exclude_thread(thread.id)
         # Added before the seed message so the requester sees the thread from its
         # first line, not after Claude has already been talking to itself.
         if invite_user_id:
@@ -1692,7 +1705,7 @@ class ClaudeChatCog(commands.Cog):
             if model:
                 await settings.set_model(backend, model, thread_id=thread.id)
         if auto_start:
-            if seed_message is None:
+            if seed_message is None:  # unreachable: a prompt was required above
                 raise ValueError("an automatic session needs a prompt")
             # Run Claude in the background so /api/spawn returns immediately.
             # The caller gets the thread reference without waiting for Claude to finish.
@@ -1851,14 +1864,7 @@ class ClaudeChatCog(commands.Cog):
                     thread_id,
                     session_id=session_id,
                     reason="bot_shutdown",
-                    resume_prompt=(
-                        "The bot restarted. "
-                        "Please report what you were working on before resuming. "
-                        "⚠️ Context may have been compressed, which means the approval status of "
-                        "planned tasks could be lost. "
-                        "Before making any code changes, commits, or PRs, "
-                        "re-confirm with the user that they want you to proceed."
-                    ),
+                    resume_prompt=build_restart_resume_prompt(),
                 )
                 logger.info(
                     "Marked thread %d for restart-resume (session=%s)", thread_id, session_id
@@ -1945,14 +1951,7 @@ class ClaudeChatCog(commands.Cog):
                 )
                 continue
 
-            resume_prompt = entry.resume_prompt or (
-                "The bot restarted. "
-                "Please report what you were working on before resuming. "
-                "⚠️ Context may have been compressed, which means the approval status of "
-                "planned tasks could be lost. "
-                "Before making any code changes, commits, or PRs, "
-                "re-confirm with the user that they want you to proceed."
-            )
+            resume_prompt = entry.resume_prompt or build_restart_resume_prompt()
             record = await self.repo.get(thread_id)
             working_dir = getattr(record, "working_dir", None)
             if not isinstance(working_dir, str):

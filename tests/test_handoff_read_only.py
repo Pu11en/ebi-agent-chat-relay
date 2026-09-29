@@ -257,6 +257,8 @@ class TestHandoffEntryPointsCarryReadOnly:
         channel.create_thread = AsyncMock(return_value=thread)
         settings = SimpleNamespace(set_backend=AsyncMock(), set_model=AsyncMock())
         cog = SimpleNamespace(
+            bot=MagicMock(),
+            _settings_repo=None,
             runner=ClaudeRunner(command="claude"),
             repo=SimpleNamespace(ensure_working_dir=AsyncMock()),
             _backend_settings=settings,

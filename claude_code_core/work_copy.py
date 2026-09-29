@@ -79,6 +79,31 @@ async def _git(cwd: Path, *args: str) -> str:
     return out.decode(errors="replace")
 
 
+_NAME_ATTEMPTS = 5
+
+
+async def _add_stamped_worktree(repo: Path, slug: str, root: Path | None) -> tuple[str, Path]:
+    """Add a worktree named by the current second; if that name is taken, use the next.
+
+    The per-second name is part of the saved record's validated shape, so a clash
+    waits for a new second rather than inventing a different format.
+    """
+    for attempt in range(_NAME_ATTEMPTS):
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        branch = f"gowork/{slug}-{stamp}"
+        path = (root or DEFAULT_ROOT) / f"{repo.name}-{slug}-{stamp}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await _git(repo, "worktree", "add", "-q", "-b", branch, str(path), "HEAD")
+        except WorkCopyError as exc:
+            if "already exists" not in str(exc) or attempt == _NAME_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(1.0 - datetime.datetime.now().microsecond / 1_000_000)
+            continue
+        return branch, path
+    raise WorkCopyError("no free work-copy name")  # pragma: no cover - loop always returns
+
+
 async def create_work_copy(
     repo_dir: Path, plan_path: Path, *, root: Path | None = None
 ) -> WorkCopy:
@@ -90,12 +115,8 @@ async def create_work_copy(
     except ValueError as exc:
         raise WorkCopyError(f"the plan is not inside {repo}") from exc
 
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     slug = _SLUG_RE.sub("-", plan.stem.lower()).strip("-")[:40] or "plan"
-    branch = f"gowork/{slug}-{stamp}"
-    path = (root or DEFAULT_ROOT) / f"{repo.name}-{slug}-{stamp}"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    await _git(repo, "worktree", "add", "-q", "-b", branch, str(path), "HEAD")
+    branch, path = await _add_stamped_worktree(repo, slug, root)
 
     copy_plan = path / rel
     content = plan.read_bytes()
@@ -114,12 +135,8 @@ async def create_project_copy(repo_dir: Path, *, label: str, root: Path | None =
     still have a path; nothing is written into the project.
     """
     repo = Path((await _git(repo_dir, "rev-parse", "--show-toplevel")).strip()).resolve()
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     slug = _SLUG_RE.sub("-", label.lower()).strip("-")[:40] or "project"
-    branch = f"gowork/{slug}-{stamp}"
-    path = (root or DEFAULT_ROOT) / f"{repo.name}-{slug}-{stamp}"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    await _git(repo, "worktree", "add", "-q", "-b", branch, str(path), "HEAD")
+    branch, path = await _add_stamped_worktree(repo, slug, root)
     return WorkCopy(source_repo=repo, path=path, branch=branch, plan_path=path)
 
 

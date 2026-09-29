@@ -54,6 +54,7 @@ from ..project_lookup_worker import (
     resolve_project_lookup_root,
 )
 from ..relay import MODE_INTERRUPT, MODE_QUEUE, VALID_MODES, RelayGuard, build_relay_prompt
+from ..runtime_identity import BOOT_IDENTITY, UNKNOWN, RuntimeIdentity, disk_revision
 from ..session_lifecycle import (
     CloseAuthorization,
     CloseState,
@@ -428,6 +429,8 @@ class ApiServer:
                 raise ValueError("A non-loopback control-plane bind requires an API secret")
         self.repo = repo
         self.bot = bot
+        self.runtime_identity: RuntimeIdentity = BOOT_IDENTITY
+        self.disk_revision: Callable[[], Awaitable[str]] = disk_revision
         self.default_channel_id = default_channel_id
         self.host = host
         self.port = port
@@ -754,11 +757,18 @@ class ApiServer:
             # A liveness probe must answer even when the store is unreadable.
             logger.exception("Health check could not read the notification backlog")
 
+        # What is running is fixed at startup; the checkout on disk may have moved.
+        running = self.runtime_identity
+        on_disk = await self.disk_revision()
+        known = UNKNOWN not in (running.commit, on_disk)
         return web.json_response(
             {
                 "status": "degraded" if overdue else "ok",
                 "overdue_notifications": overdue,
                 "timestamp": datetime.now().isoformat(),
+                "runtime": running.as_dict(),
+                "disk_commit": on_disk,
+                "running_matches_disk": (running.commit == on_disk) if known else None,
             }
         )
 
@@ -2212,7 +2222,8 @@ class ApiServer:
 
         Lets a session discover its peers before touching a shared repository:
         which threads are alive, where they are working, and what they last
-        announced in the AI Lounge.  Read-only.
+        announced in the AI Lounge. This also maintains spoken tags and titles;
+        use the session_snapshot endpoint for a read-only snapshot.
 
         Query params:
             limit: Max persisted sessions to consider (default 20, max 100).
@@ -2395,7 +2406,7 @@ class ApiServer:
         ever be tagged, which made the tag depend on something polling this
         endpoint — see that module's docstring.
         """
-        await VoiceTagger(self.bot, self.settings_repo).apply(views)
+        await VoiceTagger(self.bot, self.settings_repo, session_repo=self.session_repo).apply(views)
 
     async def search_sessions(self, request: web.Request) -> web.Response:
         """GET /api/search — find a past thread by keyword.
@@ -2582,9 +2593,16 @@ class ApiServer:
 
         empty = data.get("empty") is True
         prompt = (data.get("prompt") or "").strip()
-        if empty and (data.get("auto_start", True) is not False or not isinstance(data.get("thread_name"), str) or
-                      not data["thread_name"].strip() or prompt):
-            return web.json_response({"error": "empty spawn needs auto_start=false, a thread_name, and no prompt"}, status=400)
+        if empty and (
+            data.get("auto_start", True) is not False
+            or not isinstance(data.get("thread_name"), str)
+            or not data["thread_name"].strip()
+            or prompt
+        ):
+            return web.json_response(
+                {"error": "empty spawn needs auto_start=false, a thread_name, and no prompt"},
+                status=400,
+            )
         if not empty and not prompt:
             return web.json_response({"error": "prompt is required"}, status=400)
 
@@ -2692,9 +2710,11 @@ class ApiServer:
 
         logger.info("Spawned new Claude session in thread %s (%s)", thread.id, thread.name)
         await self._record_thread_metadata(thread.id, parent_thread_id, correlation_id)
-        # A single-thread bulk pass treats every other thread as absent and
-        # can steal a live voice tag. Mint only a genuinely free word here.
-        label = await VoiceTagger(self.bot, self.settings_repo).tag_thread(thread)
+        # Make the new thread addressable using the same ownership and lifecycle
+        # checks as the roster; no free word means explicitly untagged.
+        label = await VoiceTagger(
+            self.bot, self.settings_repo, session_repo=self.session_repo
+        ).tag_thread(thread)
         return web.json_response(
             {
                 "status": "spawned",

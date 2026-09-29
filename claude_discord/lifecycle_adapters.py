@@ -16,10 +16,14 @@ from typing import Any
 
 import discord
 
+from claude_code_core.session_repo import CloseAuthority
+
 from .session_lifecycle import SessionLifecycleService
 from .voice_labels import strip_title_tag, title_tag
 
 logger = logging.getLogger(__name__)
+
+_WORKFLOW_CLOSE = CloseAuthority.WORKFLOW_CLOSE_ON_DONE.value
 
 
 class ChatTurnActivity:
@@ -64,6 +68,12 @@ class DiscordThreadSurface:
         thread = await self._thread(thread_id)
         if thread is None:
             return False
+        record = await self.repo.get(thread_id) if self.repo is not None else None
+        if record is not None and record.close_authority == _WORKFLOW_CLOSE:
+            # A workflow's finished worker: it already posted its outcome, and its
+            # thread must stay unlocked so its history can still be read and linked.
+            await self._drop_spoken_tag(thread)
+            return await self._set_archived(thread, True, lock=False)
         note = await self._closing_note(thread_id)
         if note:
             with contextlib.suppress(discord.HTTPException):
@@ -117,10 +127,13 @@ class DiscordThreadSurface:
         return thread if isinstance(thread, discord.Thread) else None
 
     @staticmethod
-    async def _set_archived(thread: discord.Thread, archived: bool) -> bool:
+    async def _set_archived(thread: discord.Thread, archived: bool, *, lock: bool = True) -> bool:
         """Archive and lock together, or unarchive and unlock together."""
         try:
-            await thread.edit(archived=archived, locked=archived)
+            if lock or not archived:
+                await thread.edit(archived=archived, locked=archived)
+            else:
+                await thread.edit(archived=True)
         except discord.HTTPException:
             logger.warning("Could not set archived=%s on thread %s", archived, thread.id)
             return False

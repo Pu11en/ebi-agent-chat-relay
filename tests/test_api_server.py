@@ -684,8 +684,11 @@ class TestSpawn:
     async def test_spawn_uses_single_thread_tagger_so_live_tags_are_not_stolen(
         self, spawn_client: TestClient
     ) -> None:
-        with patch("claude_discord.ext.api_server.VoiceTagger.tag_thread",
-                   new_callable=AsyncMock, return_value=None) as tag_thread:
+        with patch(
+            "claude_discord.ext.api_server.VoiceTagger.tag_thread",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as tag_thread:
             resp = await spawn_client.post("/api/spawn", json={"prompt": "Check the backlog"})
         assert resp.status == 201
         assert (await resp.json())["voice_label"] is None
@@ -919,10 +922,16 @@ class TestSpawn:
     async def test_explicit_empty_spawn_creates_a_thread_without_a_task(
         self, spawn_client: TestClient, mock_cog: MagicMock
     ) -> None:
-        resp = await spawn_client.post("/api/spawn", json={
-            "empty": True, "thread_name": "Jobs", "auto_start": False,
-            "working_dir": "/projects/jobs", "backend": "codex",
-        })
+        resp = await spawn_client.post(
+            "/api/spawn",
+            json={
+                "empty": True,
+                "thread_name": "Jobs",
+                "auto_start": False,
+                "working_dir": "/projects/jobs",
+                "backend": "codex",
+            },
+        )
         assert resp.status == 201
         assert mock_cog.spawn_session.await_args.args[1] == ""
         assert mock_cog.spawn_session.await_args.kwargs["auto_start"] is False
@@ -931,10 +940,11 @@ class TestSpawn:
     async def test_empty_spawn_requires_a_title_and_no_automatic_task(
         self, spawn_client: TestClient, mock_cog: MagicMock
     ) -> None:
-        for body in ({"empty": True},
-                     {"empty": True, "thread_name": "Jobs"},
-                     {"empty": True, "thread_name": "Jobs", "auto_start": False,
-                      "prompt": "run this"}):
+        for body in (
+            {"empty": True},
+            {"empty": True, "thread_name": "Jobs"},
+            {"empty": True, "thread_name": "Jobs", "auto_start": False, "prompt": "run this"},
+        ):
             resp = await spawn_client.post("/api/spawn", json=body)
             assert resp.status == 400
         mock_cog.spawn_session.assert_not_awaited()
@@ -967,6 +977,7 @@ class TestSpawnMetadata:
         thread = MagicMock()
         thread.id = 999888777
         thread.name = "Test thread"
+        thread.edit = AsyncMock()
         cog = MagicMock()
         cog.spawn_session = AsyncMock(return_value=thread)
         return cog

@@ -232,7 +232,8 @@ async def test_the_cog_briefs_each_parallel_worker_with_its_own_context(tmp_path
     thread.parent = MagicMock()
     side_threads: list[MagicMock] = []
 
-    async def spawn(channel, text, *, thread_name, auto_start, working_dir):  # noqa: ANN001
+    async def spawn(channel, text, *, thread_name, auto_start, working_dir, voice_addressable):  # noqa: ANN001
+        assert voice_addressable is False
         if not side_threads and "Task loop" in thread_name:
             side_threads.append(thread)
             return thread
