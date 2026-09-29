@@ -83,3 +83,50 @@ Limits that must remain visible:
 The parent preservation and earlier legacy-worker changes remain in the broader
 dirty task-loop candidate. Preserve those tests/edits, but do not present this
 shared-boundary commit or a full dirty-tree test run as a release integration.
+
+## Go Work adoption of the durable archive (September 29, continued)
+
+RED first: `test_whole_build_archive_failure_converges_after_process_reconstruction`
+drives a real `_drive` build (temporary SQLite, real Git copy, fake Discord) to
+"looks good" and a successful keep while Discord rejects the archive. Before the
+fix the build was reported as `💥 The build crashed` (the raise escaped
+`_close_worker_thread`), the loop record was removed, and nothing durable owed the
+archive. `retry_archives` also counted tasks before and threads after; a new
+regression reported 1 archive where 2 threads were archived.
+
+Repair:
+
+- `_close_worker_thread` uses the chat cog's shared lifecycle service (or builds
+  the same one), so a failed archive is stored as `archive_pending` and is retried
+  by the chat cog's startup/reconnect reconciliation after the loop record is gone.
+  It returns whether close and archive both finished and never raises into the
+  build: the keep/auto-integrate/early-finish result already happened.
+- The spoken tag is released (`exclude_thread`) only after the stored close.
+  A failed exclusion write keeps the ledger entry owed for retry.
+- `DiscordThreadSurface.archive` never locks and posts no closing note for a
+  session closed by workflow authority (`workflow_close_on_done`), whichever
+  process retries it. User closes still archive+lock with the wrap-up note.
+- A worker thread without any session row keeps the old archive-only behavior.
+- `retry_archives` counts (task, thread) pairs consistently.
+
+The whole-build test then reconstructs a new process: new repositories, new chat
+stand-in, new `TaskLoopCog` over the same loop store (resumes 0 builds) and the
+setup-wired `build_lifecycle_service(...).reconcile_pending_closes()` (the call
+`ClaudeChatCog.on_ready` makes). The archive converges unlocked, the session
+keeps its native ID, the tag stays released, nothing is deleted, and neither
+`spawn_session` nor `run_fresh_turn` is called.
+
+Checks: worker/lifecycle/wiring focus **24 + 15 passed**; related parallel suite
+(lifecycle wiring, worker sessions/integrity, archive recovery, task-loop cog,
+all Go Work upgrade tests) **419 passed in 61.05s**; changed-file pyright clean;
+Ruff S counts unchanged from the documented baseline (19 S101, 1 S110, 1 S112);
+full `make verify` exit 0: **6,204 passed, five known warnings, zero errors in
+495.74s**. The 419-test run printed the known `Loop ... handles pid ... is
+closed` diagnostic once more; it is still unattributed and was not suppressed.
+
+Still open: legacy group workers are closed right after merging into the build
+copy, before the build is accepted (next batch); the chat cog's reconciliation
+is bounded to 50 rows per pass and runs on ready/reconnect, not periodically;
+cross-process ordering and old live rows are unchanged. Deployment rollback
+note: `LoopRecord` rows written by this candidate carry `waiting_*` fields that
+older code rejects as malformed; see the rollback checklist before activation.

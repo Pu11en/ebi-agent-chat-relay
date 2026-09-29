@@ -140,9 +140,9 @@ from claude_code_core.work_copy import (
 )
 
 from ..backend_settings import ALL_BACKENDS
-from ..lifecycle_adapters import ChatTurnActivity
+from ..lifecycle_adapters import build_lifecycle_service
 from ..project_creation import ProjectRoots, configured_root_list
-from ..session_lifecycle import CloseAuthorization, SessionLifecycleService
+from ..session_lifecycle import CloseAuthorization, CloseState, SessionLifecycleService
 from ..voice_tags import VoiceTagger
 from ._run_helper import capacity_coordinator, parallel_limit, run_capacity_ticks
 
@@ -1680,22 +1680,38 @@ class TaskLoopCog(commands.Cog):
         except Exception:
             logger.warning("gowork: build review archive failed", exc_info=True)
 
-    async def _close_worker_thread(self, thread: Any, *, reason: str | None = None) -> None:
-        """Finish the stored session before archiving; retries preserve its history."""
+    async def _close_worker_thread(self, thread: Any) -> bool:
+        """Close the stored session and archive its thread; True once both are done.
+
+        Uses the shared lifecycle service, so a failed archive stays pending in the
+        session store and startup reconciliation retries it even after this build's
+        loop record is gone. Workflow closes archive without locking or deleting.
+        Failures are logged, never raised: the build's own result is already kept.
+        """
         chat = self._chat()
-        lifecycle = SessionLifecycleService(chat.repo, turns=ChatTurnActivity(chat))
-        outcome = await lifecycle.close(
-            thread.id, CloseAuthorization.from_workflow("gowork", close_on_done=True)
-        )
-        if outcome.is_pending:
-            raise RuntimeError(f"worker {thread.id} is still running; retry its archive later")
-        tagger = VoiceTagger(self.bot, getattr(chat, "_settings_repo", None))
-        async with tagger.lock:
-            await tagger.exclude_thread(thread.id)
-        if reason is None:
-            await thread.edit(archived=True)
-        else:
-            await thread.edit(archived=True, reason=reason)
+        lifecycle = getattr(chat, "lifecycle", None)
+        if not isinstance(lifecycle, SessionLifecycleService):
+            lifecycle = build_lifecycle_service(self.bot, chat, chat.repo)
+        try:
+            outcome = await lifecycle.close(
+                thread.id, CloseAuthorization.from_workflow("gowork", close_on_done=True)
+            )
+            if outcome.state is not CloseState.NO_SESSION and (
+                outcome.record is None or not outcome.record.is_closed
+            ):
+                logger.info("gowork: worker %s is not closed yet; retry later", thread.id)
+                return False
+            # Only a stored closure gives up the spoken tag.
+            tagger = VoiceTagger(self.bot, getattr(chat, "_settings_repo", None))
+            async with tagger.lock:
+                await tagger.exclude_thread(thread.id)
+            if outcome.record is None:  # a legacy thread with no session row to close
+                await thread.edit(archived=True)
+                return True
+        except Exception:
+            logger.warning("gowork: closing worker %s failed; will retry", thread.id, exc_info=True)
+            return False
+        return not outcome.record.archive_pending
 
     async def _park(self, running: _Running, outcome: LoopOutcome) -> str:
         """A build that stopped short waits for the person. Returns "again" or "gone"."""
@@ -3051,12 +3067,8 @@ class TaskLoopCog(commands.Cog):
                     thread = await self.bot.fetch_channel(thread_id)
             if thread is None:
                 continue  # gone or unreachable: the ledger keeps it for the next try
-            try:
-                await self._close_worker_thread(thread)
-            except Exception:
-                logger.info("gowork: archiving thread %s failed; will retry", thread_id)
-                continue
-            state.mark_archived(task_id, thread_id=thread_id)
+            if await self._close_worker_thread(thread):
+                state.mark_archived(task_id, thread_id=thread_id)
 
     async def retry_archives(self, running: _Running) -> int:
         """Archive every settled worker thread still open (after a restart, or at the end)."""
@@ -3065,11 +3077,11 @@ class TaskLoopCog(commands.Cog):
         except Exception:
             return 0
         done = 0
-        before = {task_id for task_id, _ in state.unarchived_threads()}
-        for task_id in before:
+        before = set(state.unarchived_threads())
+        for task_id in dict.fromkeys(task_id for task_id, _ in before):
             await self._archive_worker_thread(running, task_id)
         with contextlib.suppress(Exception):
-            done = len(before) - len(self._build_state(running).unarchived_threads())
+            done = len(before - set(self._build_state(running).unarchived_threads()))
         return done
 
     async def _combined_checks(
@@ -3454,10 +3466,7 @@ class TaskLoopCog(commands.Cog):
             else:
                 results.append((step, False, detail or "it didn't combine with the others"))
             if landed:
-                try:
-                    await self._close_worker_thread(sub)
-                except Exception:
-                    logger.warning("gowork: worker %s close failed", sub.id, exc_info=True)
+                await self._close_worker_thread(sub)
             else:
                 with contextlib.suppress(discord.HTTPException):
                     await running.thread.send(f"⚠️ {short_label(step)}: {detail}"[:1900])

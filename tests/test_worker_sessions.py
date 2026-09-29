@@ -110,3 +110,46 @@ async def test_failed_worker_close_does_not_claim_archive_complete(stores):
     await cog._archive_worker_thread(SimpleNamespace(worker_thread_id=999), "task")
     state.mark_archived.assert_not_called()
     thread.edit.assert_not_awaited()
+
+
+async def test_failed_tag_exclusion_keeps_the_worker_owed_for_retry(stores):
+    """The ledger may only forget a worker once its tag is released and it is archived."""
+    repo, settings = stores
+    await repo.save(123, "abc-def")
+    thread = thread_at()
+    chat = SimpleNamespace(repo=repo, _settings_repo=settings, _active_runners={})
+    bot = MagicMock(cogs={"ClaudeChatCog": chat})
+    bot.get_channel.return_value = thread
+    cog = TaskLoopCog(bot)
+    state = MagicMock()
+    state.unarchived_threads.return_value = [("task", 123)]
+    cog._build_state = MagicMock(return_value=state)
+    real_set = settings.set
+    settings.set = AsyncMock(side_effect=OSError("settings unavailable"))
+    await cog._archive_worker_thread(SimpleNamespace(worker_thread_id=999), "task")
+    state.mark_archived.assert_not_called()
+    settings.set = real_set
+    await cog._archive_worker_thread(SimpleNamespace(worker_thread_id=999), "task")
+    state.mark_archived.assert_called_once_with("task", thread_id=123)
+    assert (await repo.get(123)).is_closed
+
+
+async def test_retry_archives_counts_threads_not_tasks(stores):
+    """One task with several owed threads reports each archived thread once."""
+    repo, settings = stores
+    threads = {tid: thread_at(tid) for tid in (201, 202, 203)}
+    for tid in threads:
+        await repo.save(tid, f"s-{tid}")
+    chat = SimpleNamespace(repo=repo, _settings_repo=settings, _active_runners={})
+    bot = MagicMock(cogs={"ClaudeChatCog": chat})
+    bot.get_channel.side_effect = threads.get
+    threads[203].edit.side_effect = discord.HTTPException(
+        MagicMock(status=503, reason="down"), "down"
+    )
+    cog = TaskLoopCog(bot)
+    owed = [("a", 201), ("a", 202), ("b", 203)]
+    state = MagicMock()
+    state.unarchived_threads.side_effect = lambda: list(owed)
+    state.mark_archived.side_effect = lambda task, thread_id: owed.remove((task, thread_id))
+    cog._build_state = MagicMock(return_value=state)
+    assert await cog.retry_archives(SimpleNamespace(worker_thread_id=999)) == 2
