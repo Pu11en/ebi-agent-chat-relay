@@ -56,6 +56,8 @@ def repo(tmp_path: Path) -> Path:
 def _cog() -> tuple[TaskLoopCog, MagicMock, list[MagicMock]]:
     bot = MagicMock()
     chat = MagicMock()
+    chat.repo.get = AsyncMock(return_value=None)
+    chat._settings_repo = None
     threads: list[MagicMock] = []
 
     async def spawn(*_a, **_k) -> MagicMock:

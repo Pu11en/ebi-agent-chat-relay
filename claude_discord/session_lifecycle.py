@@ -26,10 +26,13 @@ Discord objects, so Teams, the API, or a test can drive the same lifecycle.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Protocol
+from weakref import WeakValueDictionary
 
 from claude_code_core.session_repo import (
     CloseAuthority,
@@ -40,6 +43,10 @@ from claude_code_core.session_repo import (
 from .backend_settings import session_is_resumable
 
 logger = logging.getLogger(__name__)
+
+# Independent service instances share the same external-effect ordering. Weak
+# values keep this bounded; a held/waited-on lock remains strongly referenced.
+_surface_locks: WeakValueDictionary[tuple[str, int], asyncio.Lock] = WeakValueDictionary()
 
 
 class CloseAuthorityError(PermissionError):
@@ -256,11 +263,7 @@ class SessionLifecycleService:
         if record is None:
             return CloseOutcome(state=CloseState.NO_SESSION)
         if record.is_closed:
-            return CloseOutcome(
-                state=CloseState.ALREADY_CLOSED,
-                record=record,
-                wrap_up=record.wrap_up,
-            )
+            return await self._retry_archive(thread_id)
 
         # Persist the request before doing anything else: a crash between here
         # and the wrap-up must leave evidence that a close was asked for.
@@ -302,11 +305,7 @@ class SessionLifecycleService:
         if record is None:
             return CloseOutcome(state=CloseState.NO_SESSION)
         if record.is_closed:
-            return CloseOutcome(
-                state=CloseState.ALREADY_CLOSED,
-                record=record,
-                wrap_up=record.wrap_up,
-            )
+            return await self._retry_archive(thread_id)
         if not record.close_pending:
             return CloseOutcome(state=CloseState.NOT_REQUESTED, record=record)
         if await self._is_active(thread_id):
@@ -321,7 +320,10 @@ class SessionLifecycleService:
         states forever.
         """
         pending = await self.repo.list_pending_closes(limit=limit)
-        return [await self.complete_pending_close(record.thread_id) for record in pending]
+        archives = await self.repo.list_pending_archives(limit=limit)
+        # Snapshot before processing so a failed archive is tried once per pass.
+        ids = dict.fromkeys(record.thread_id for record in [*pending, *archives])
+        return [await self.complete_pending_close(thread_id) for thread_id in ids]
 
     async def reopen(self, thread_id: int, *, backend: str | None = None) -> ReopenOutcome:
         """Return a closed session to open and unarchive its conversation.
@@ -330,6 +332,10 @@ class SessionLifecycleService:
         was closed: the outcome then says whether the stored session id can
         still be resumed, rather than letting an incompatible id reach a CLI.
         """
+        async with self._surface_lock(thread_id):
+            return await self._reopen(thread_id, backend=backend)
+
+    async def _reopen(self, thread_id: int, *, backend: str | None) -> ReopenOutcome:
         record = await self.repo.get(thread_id)
         if record is None:
             return ReopenOutcome(state=ReopenState.NO_SESSION)
@@ -361,18 +367,74 @@ class SessionLifecycleService:
 
     async def _finalize(self, record: SessionRecord) -> CloseOutcome:
         """Write the wrap-up, mark the record closed, archive the thread."""
+        if not record.close_pending:
+            return self._current_outcome(record)
+        # Slow summary work must not block a person cancelling the close.
         wrap_up = await self._write_wrap_up(record)
-        closed = await self.repo.mark_closed(record.thread_id, wrap_up)
-        archived = False
-        if self.surface is not None:
-            archived = bool(await self.surface.archive(record.thread_id))
-        logger.info("Closed session for thread %s (archived=%s)", record.thread_id, archived)
-        return CloseOutcome(
-            state=CloseState.CLOSED,
-            record=closed,
-            wrap_up=(closed.wrap_up if closed is not None else wrap_up),
-            archived=archived,
+        async with self._surface_lock(record.thread_id):
+            closed = await self.repo.mark_closed(
+                record.thread_id,
+                wrap_up,
+                expected_version=record.lifecycle_version,
+                archive_pending=self.surface is not None,
+            )
+            if (
+                closed is None
+                or not closed.is_closed
+                or closed.lifecycle_version != record.lifecycle_version
+            ):
+                return self._current_outcome(closed)
+            archived = await self._archive(closed)
+            logger.info("Closed session for thread %s (archived=%s)", record.thread_id, archived)
+            return CloseOutcome(
+                state=CloseState.CLOSED,
+                record=closed,
+                wrap_up=closed.wrap_up,
+                archived=archived,
+            )
+
+    def _surface_lock(self, thread_id: int) -> asyncio.Lock:
+        key = (str(Path(self.repo.db_path).resolve()), thread_id)
+        return _surface_locks.setdefault(key, asyncio.Lock())
+
+    async def _retry_archive(self, thread_id: int) -> CloseOutcome:
+        async with self._surface_lock(thread_id):
+            record = await self.repo.get(thread_id)
+            archived = await self._archive(record) if record is not None else False
+            return self._current_outcome(record, archived=archived)
+
+    async def _archive(self, record: SessionRecord) -> bool:
+        """Apply the durable effect while the per-session surface lock is held."""
+        if not record.is_closed or not record.archive_pending or self.surface is None:
+            return False
+        try:
+            if not await self.surface.archive(record.thread_id):
+                return False
+            await self.repo.mark_archived(
+                record.thread_id, expected_version=record.lifecycle_version
+            )
+        except Exception:
+            logger.warning(
+                "Archive pending for closed thread %s; retry on reconciliation",
+                record.thread_id,
+                exc_info=True,
+            )
+            return False
+        record.archive_pending = False
+        return True
+
+    @staticmethod
+    def _current_outcome(record: SessionRecord | None, *, archived: bool = False) -> CloseOutcome:
+        if record is None:
+            return CloseOutcome(state=CloseState.NO_SESSION)
+        state = (
+            CloseState.ALREADY_CLOSED
+            if record.is_closed
+            else CloseState.PENDING
+            if record.close_pending
+            else CloseState.NOT_REQUESTED
         )
+        return CloseOutcome(state=state, record=record, wrap_up=record.wrap_up, archived=archived)
 
     async def _write_wrap_up(self, record: SessionRecord) -> str:
         """Ask the writer for a summary, falling back rather than failing."""

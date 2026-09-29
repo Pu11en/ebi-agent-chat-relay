@@ -78,6 +78,17 @@ changes and `test_worker_lifecycle_integrity.py` / `test_worker_sessions.py` rem
 uncommitted candidate work. Preserve them; do not treat this commit or the full
 candidate run as a verified release integration.
 
+## September 29 continuation
+
+The new session/archive slice is documented in
+`docs/session-close-recovery-2026-09-29.md`. Its eight baseline failures and the
+additional surface-ordering failure are covered, and full `make verify` passed
+with **6,200 tests, five known warnings, zero errors in 557.98s**. This was run
+on the dirty candidate. The Go Work closure caller is still not wired through the
+durable archive outbox, and whole-build completion followed by actual cog
+reconstruction remains untested. Do not mark tasks 3.1/3.4 complete or treat the
+passing suite as activation approval.
+
 ## Still required
 
 - Legacy group closure still follows successful merge without a durable per-worker
