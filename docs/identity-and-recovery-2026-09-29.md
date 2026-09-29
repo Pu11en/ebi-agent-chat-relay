@@ -83,3 +83,32 @@ startup; modules imported lazily later could come from a newer checkout, so a
 mismatch proves drift but a match does not prove every module is from one commit.
 `/api/health` bypasses API auth, so the commit hash, pid and start time are visible
 to anyone who can reach the (normally loopback-only) API port.
+
+## Read-only consistency diagnostic and live-check profiles (tasks 5.1, 5.3)
+
+`claude_discord/consistency_check.py` enumerates every session row and every
+tag/eligibility setting through a read-only SQLite URI: `immutable=1` when no WAL
+exists (a plain `mode=ro` connection created `-wal`/`-shm` files in the first RED
+run), `mode=ro` when a live WAL exists (only SQLite's shared reader index is
+touched). It starts no process and calls no model. Tests prove byte-identical
+database/WAL files (including a live writer), a monkeypatched `subprocess` that
+fails if called, a missing database reported unavailable without being created,
+legitimate pool exhaustion not reported as a problem, untagged workers not
+failing, and an older schema without `archive_pending` still inspected.
+
+`scripts/live-check.py` no longer calls `/api/sessions` (listing there can
+allocate tags) or the `sqlite3` CLI. Units, log and runtime paths come from the
+environment, with profiles `none` (default), `jester` and `legacy-voice`; nothing
+personal is built in. Unconfigured or unreadable checks print SKIP, never PASS.
+Its evaluation is separated from observation and covered offline by
+`tests/test_live_check.py` (7 tests, including a proof that only
+`/api/health` and `/api/jester/sessions` are read).
+
+Live read-only run, September 29 ~01:40 CDT, profile `jester`, database opened
+read-only: bot and Jester services active, API and Jester snapshot answer; running
+revision SKIP (the deployed health has no runtime identity yet); **363 session
+rows**, no duplicate tags, 0 free words with 16 open untagged sessions, and
+**FAIL: two closed sessions still hold tags** — `1553779983158349925` (the REL-01
+Zoro thread) and `1553899450227757156`. Nothing was repaired. Coverage limit:
+legacy workers created before explicit ineligibility have no marker, so they are
+counted as user sessions; the check cannot tell them apart from the database alone.
