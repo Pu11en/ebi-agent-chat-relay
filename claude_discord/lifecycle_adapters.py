@@ -19,11 +19,13 @@ import discord
 from claude_code_core.session_repo import CloseAuthority
 
 from .session_lifecycle import SessionLifecycleService
+from .thread_policy import thread_is_archived
 from .voice_labels import strip_title_tag, title_tag
 
 logger = logging.getLogger(__name__)
 
 _WORKFLOW_CLOSE = CloseAuthority.WORKFLOW_CLOSE_ON_DONE.value
+_DISCORD_ARCHIVED = CloseAuthority.DISCORD_ARCHIVED.value
 
 
 class ChatTurnActivity:
@@ -58,6 +60,18 @@ class DiscordThreadSurface:
     manage_threads, :meth:`unarchive` clears both flags, and every reopen path
     (Sessions -> Open, `/resume`) goes through it. Nothing is deleted, and the
     conversation is still there when it is reopened.
+
+    Two closes never reach Discord at all. A close Discord itself started —
+    the thread archived by hand, by the seven-day auto-archive, or deleted —
+    is only recorded: a note would un-archive the thread it is meant to close,
+    a rename is refused once a thread is archived, and a lock would stop the
+    person typing their way back in. And a thread that no longer exists counts
+    as archived for every authority, because there is nothing left to do and
+    reporting failure kept the close pending, retried on every restart against
+    a thread that was gone. A fetch the bot is refused is not that: the thread
+    may well still be there, so that stays pending. A thread Discord already
+    shows as archived is treated the same way whoever closes it: posting the
+    note into it would bring it straight back into view.
     """
 
     def __init__(self, bot: Any, repo: Any | None = None) -> None:
@@ -65,11 +79,28 @@ class DiscordThreadSurface:
         self.repo = repo
 
     async def archive(self, thread_id: int) -> bool:
-        thread = await self._thread(thread_id)
-        if thread is None:
-            return False
         record = await self.repo.get(thread_id) if self.repo is not None else None
-        if record is not None and record.close_authority == _WORKFLOW_CLOSE:
+        authority = record.close_authority if record is not None else None
+        if authority == _DISCORD_ARCHIVED:
+            # Discord did the archiving; the close only records it. Not even a
+            # fetch: the thread may already be deleted, and nothing here needs it.
+            return True
+        try:
+            thread = await self._thread(thread_id)
+        except discord.HTTPException:
+            logger.warning(
+                "Could not reach thread %s to archive it; retry on reconciliation", thread_id
+            )
+            return False
+        if thread is None:
+            return True
+        if thread_is_archived(thread):
+            # Already out of sight — by hand, or by Discord's own sweep while a
+            # close waited for a restart. The note would un-archive the very
+            # thread it closes, and Discord refuses a rename or a lock on an
+            # archived thread, so the close stands as it is.
+            return True
+        if authority == _WORKFLOW_CLOSE:
             # A workflow's finished worker: it already posted its outcome, and its
             # thread must stay unlocked so its history can still be read and linked.
             await self._drop_spoken_tag(thread)
@@ -101,7 +132,11 @@ class DiscordThreadSurface:
             await thread.edit(name=strip_title_tag(name))
 
     async def unarchive(self, thread_id: int) -> bool:
-        thread = await self._thread(thread_id)
+        try:
+            thread = await self._thread(thread_id)
+        except discord.HTTPException:
+            logger.warning("Could not reach thread %s to unarchive it", thread_id)
+            return False
         if thread is None:
             return False
         return await self._set_archived(thread, False)
@@ -118,12 +153,20 @@ class DiscordThreadSurface:
         )
 
     async def _thread(self, thread_id: int) -> discord.Thread | None:
+        """The live thread, or ``None`` when Discord no longer has one to edit.
+
+        ``None`` means gone for good — deleted, or never a thread — and the
+        callers treat that as already archived. A fetch that fails for now
+        (refused, rate limited, an outage) raises instead, so a passing
+        failure is never mistaken for a deletion and acknowledged as done.
+        """
         thread = self.bot.get_channel(thread_id)
-        if not isinstance(thread, discord.Thread):
-            try:
-                thread = await self.bot.fetch_channel(thread_id)
-            except discord.HTTPException:
-                return None
+        if isinstance(thread, discord.Thread):
+            return thread
+        try:
+            thread = await self.bot.fetch_channel(thread_id)
+        except discord.NotFound:
+            return None
         return thread if isinstance(thread, discord.Thread) else None
 
     @staticmethod

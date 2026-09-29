@@ -47,6 +47,11 @@ class CloseAuthority(Enum):
     USER_INSTRUCTION = "user_instruction"
     #: A preauthorized workflow completed with close-on-done enabled.
     WORKFLOW_CLOSE_ON_DONE = "workflow_close_on_done"
+    #: Discord itself put the thread out of sight — archived by hand, by its
+    #: own auto-archive, or deleted — so the session is closed to match. A
+    #: close on this authority posts, renames and locks nothing: the thread
+    #: is already gone from view, and a post would bring it straight back.
+    DISCORD_ARCHIVED = "discord_archived"
 
 
 def _coerce_authority(authority: CloseAuthority | str | None) -> CloseAuthority:
@@ -242,7 +247,7 @@ class SessionRepository:
 
     async def list_all(
         self,
-        limit: int = 50,
+        limit: int | None = 50,
         origin: str | None = None,
         *,
         lifecycle_state: LifecycleState | str | None = None,
@@ -253,7 +258,7 @@ class SessionRepository:
         findable and reopenable, so hiding it by default would lose it.
 
         Args:
-            limit: Maximum number of records to return.
+            limit: Maximum number of records to return; ``None`` returns every match.
             origin: Optional filter by origin ('discord', 'cli'). None returns all.
             lifecycle_state: Optional filter by lifecycle state. None returns all.
         """
@@ -267,14 +272,26 @@ class SessionRepository:
             params.append(_state_value(lifecycle_state))
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        sql = f"SELECT * FROM sessions{where} ORDER BY last_used_at DESC LIMIT ?"  # noqa: S608
-        params.append(limit)
+        sql = f"SELECT * FROM sessions{where} ORDER BY last_used_at DESC"  # noqa: S608
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
 
         async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(sql, params)
             rows = await cursor.fetchall()
             return [SessionRecord(**dict(row)) for row in rows]
+
+    async def open_rows(self) -> list[SessionRecord]:
+        """Every open session, with no cap.
+
+        A sweep that compares open sessions against the threads still visible
+        in Discord has to see all of them: a row hidden behind a page limit
+        would be a session that never closes. So the uncapped read is its own
+        method, and the paged listing keeps its limit for the views that page.
+        """
+        return await self.list_all(limit=None, lifecycle_state=LifecycleState.OPEN)
 
     async def search(
         self,

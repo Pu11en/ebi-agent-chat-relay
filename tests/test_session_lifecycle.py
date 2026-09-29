@@ -152,6 +152,16 @@ class TestRequestClose:
         assert record is not None
         assert record.close_authority == CloseAuthority.WORKFLOW_CLOSE_ON_DONE.value
 
+    async def test_a_discord_archive_is_a_storable_authority(self, repo):
+        """Discord archiving or deleting the thread closes the session, auditably."""
+        await repo.save(thread_id=15, session_id="sess-15")
+
+        record = await repo.request_close(15, "discord_archived")
+
+        assert record is not None
+        assert record.close_pending
+        assert record.close_authority == CloseAuthority.DISCORD_ARCHIVED.value
+
     async def test_list_pending_closes_returns_only_closing_sessions(self, repo):
         await repo.save(thread_id=20, session_id="a")
         await repo.save(thread_id=21, session_id="b")
@@ -340,6 +350,25 @@ class TestQueries:
 
         assert record.lifecycle_state == LifecycleState.OPEN.value
 
+    async def test_open_rows_returns_every_open_session_with_no_cap(self, repo):
+        """A sweep that compares open rows with Discord must see all of them.
+
+        A row hidden behind a page limit would be a session that never closes,
+        so the uncapped query is its own method rather than a bigger number.
+        """
+        for thread_id in range(1000, 1120):
+            await repo.save(thread_id=thread_id, session_id=f"sess-{thread_id}")
+        for thread_id in (1000, 1001, 1002):
+            await repo.mark_closed(thread_id, wrap_up="done")
+
+        open_rows = await repo.open_rows()
+
+        assert len(open_rows) == 117
+        assert all(r.is_open for r in open_rows)
+        # The paged listing keeps its default cap and its filter for existing callers.
+        assert len(await repo.list_all(lifecycle_state=LifecycleState.OPEN)) == 50
+        assert len(await repo.list_all(limit=None)) == 120
+
 
 # --------------------------------------------------------------------------
 # The close/reopen service
@@ -359,13 +388,14 @@ class FakeSurface:
     reaches for them: closing must leave the thread readable and reopenable.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, archive_result: bool = True) -> None:
         self.archived: list[int] = []
         self.unarchived: list[int] = []
+        self.archive_result = archive_result
 
     async def archive(self, thread_id: int) -> bool:
         self.archived.append(thread_id)
-        return True
+        return self.archive_result
 
     async def unarchive(self, thread_id: int) -> bool:
         self.unarchived.append(thread_id)
@@ -486,6 +516,26 @@ class TestCloseAuthorization:
         # "The model decided it was done" is not a value this type accepts.
         with pytest.raises(CloseAuthorityError):
             CloseAuthorization(source="model_finished", actor="assistant")  # type: ignore[arg-type]
+
+    def test_discord_archiving_the_thread_is_its_own_authority(self):
+        """Discord closing the thread is neither a person nor a workflow, and says so."""
+        auth = CloseAuthorization.from_discord()
+
+        assert auth.source is CloseAuthority.DISCORD_ARCHIVED
+        assert auth.is_discord
+        assert not auth.is_human
+        assert not auth.is_workflow
+        assert auth.workflow_id is None
+        assert auth.actor == "discord:archived"
+        assert CloseAuthorization.from_discord("deleted").actor == "discord:deleted"
+
+    def test_a_discord_authority_must_say_what_discord_reported(self):
+        with pytest.raises(CloseAuthorityError):
+            CloseAuthorization.from_discord("   ")
+
+    def test_the_other_authorities_are_not_discord(self):
+        assert not HUMAN.is_discord
+        assert not CloseAuthorization.from_workflow("nightly", close_on_done=True).is_discord
 
 
 class TestCloseAnIdleSession:
@@ -775,6 +825,232 @@ class TestCloseIsIdempotent:
         assert outcome.state is CloseState.ALREADY_CLOSED
         assert writer.calls == [33]
         assert surface.archived == [33]
+
+
+DISCORD = CloseAuthorization.from_discord()
+
+
+class TestDiscordArchivedClose:
+    """Discord archived or deleted the thread: the session closes to match.
+
+    The thread is already out of sight, so there is nobody to read a wrap-up
+    and nothing for the surface to do. A model call here would be spend with
+    no reader, and a post would un-archive the very thread Discord just put
+    away. Everything else about a close still holds: the row survives, the
+    request is durable, and a second close rewrites nothing.
+    """
+
+    async def test_close_records_a_deterministic_wrap_up_and_never_asks_the_writer(
+        self, guarded_repo
+    ):
+        await guarded_repo.save(thread_id=60, session_id="sess-60", working_dir="/home/drew/app")
+        surface, writer = FakeSurface(), FakeWriter()
+        service = make_service(guarded_repo, surface=surface, writer=writer)
+
+        outcome = await service.close(60, DISCORD)
+
+        assert outcome.state is CloseState.CLOSED
+        assert writer.calls == []
+        assert (outcome.wrap_up or "").strip()
+        assert "/home/drew/app" in (outcome.wrap_up or "")
+        assert surface.archived == [60]
+        stored = await guarded_repo.get(60)
+        assert stored is not None
+        assert stored.is_closed
+        assert stored.close_authority == CloseAuthority.DISCORD_ARCHIVED.value
+        assert stored.wrap_up == outcome.wrap_up
+        assert not stored.archive_pending
+        assert stored.session_id == "sess-60"
+
+    async def test_close_during_a_turn_is_pending_and_completes_without_the_writer(
+        self, guarded_repo
+    ):
+        await guarded_repo.save(thread_id=61, session_id="sess-61")
+        surface, writer, turns = FakeSurface(), FakeWriter(), FakeTurns(61)
+        service = make_service(guarded_repo, surface=surface, writer=writer, turns=turns)
+
+        pending = await service.close(61, DISCORD)
+
+        assert pending.state is CloseState.PENDING
+        assert surface.archived == []
+        stored = await guarded_repo.get(61)
+        assert stored is not None
+        assert stored.close_pending
+        assert stored.close_authority == CloseAuthority.DISCORD_ARCHIVED.value
+
+        turns.active.discard(61)
+        outcome = await service.complete_pending_close(61)
+
+        assert outcome.state is CloseState.CLOSED
+        assert writer.calls == []
+        assert surface.archived == [61]
+        stored = await guarded_repo.get(61)
+        assert stored is not None
+        assert stored.is_closed
+        assert not stored.archive_pending
+
+    async def test_a_discord_close_on_a_closed_session_rewrites_nothing(self, guarded_repo):
+        await guarded_repo.save(thread_id=62, session_id="sess-62")
+        surface, writer = FakeSurface(), FakeWriter()
+        service = make_service(guarded_repo, surface=surface, writer=writer)
+        first = await service.close(62, HUMAN)
+        assert first.record is not None
+
+        second = await service.close(62, DISCORD)
+
+        assert second.state is CloseState.ALREADY_CLOSED
+        assert second.wrap_up == first.wrap_up
+        assert writer.calls == [62]
+        assert surface.archived == [62]
+        stored = await guarded_repo.get(62)
+        assert stored is not None
+        assert stored.closed_at == first.record.closed_at
+        assert stored.close_authority == CloseAuthority.DIRECT_INTERACTION.value
+        assert stored.lifecycle_version == first.record.lifecycle_version
+
+    async def test_a_repeated_discord_close_is_a_no_op(self, guarded_repo):
+        await guarded_repo.save(thread_id=63, session_id="sess-63")
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface)
+        first = await service.close(63, DISCORD)
+
+        second = await service.close(63, DISCORD)
+
+        assert second.state is CloseState.ALREADY_CLOSED
+        assert second.wrap_up == first.wrap_up
+        assert surface.archived == [63]
+
+    async def test_a_discord_close_settles_an_archive_the_surface_never_managed(self, guarded_repo):
+        """Discord did the archiving itself, so the pending retry is over.
+
+        Left pending, the next reconciliation would push the note and the lock
+        into a thread that is already archived — un-archiving it to do so.
+        """
+        await guarded_repo.save(thread_id=64, session_id="sess-64")
+        surface = FakeSurface(archive_result=False)
+        service = make_service(guarded_repo, surface=surface)
+        first = await service.close(64, HUMAN)
+        assert first.state is CloseState.CLOSED and first.archived is False
+        before = await guarded_repo.get(64)
+        assert before is not None and before.archive_pending
+
+        outcome = await service.close(64, DISCORD)
+
+        assert outcome.state is CloseState.ALREADY_CLOSED
+        assert outcome.archived is True
+        assert surface.archived == [64]
+        after = await guarded_repo.get(64)
+        assert after is not None
+        assert not after.archive_pending
+        assert after.close_authority == CloseAuthority.DIRECT_INTERACTION.value
+        assert after.wrap_up == before.wrap_up
+        assert after.closed_at == before.closed_at
+        assert await guarded_repo.list_pending_archives() == []
+
+    async def test_a_discord_close_without_a_surface_still_closes(self, guarded_repo):
+        await guarded_repo.save(thread_id=65, session_id="sess-65")
+        service = SessionLifecycleService(guarded_repo, turns=FakeTurns())
+
+        outcome = await service.close(65, DISCORD)
+
+        assert outcome.state is CloseState.CLOSED
+        assert outcome.archived is False
+
+
+class TestReopenFromDiscord:
+    """A person speaking in a closed thread reopens it — and only that reopens it.
+
+    The message path calls this before running. It must never cancel a close
+    EBI itself is in the middle of on a person's or a workflow's authority: the
+    wrap-up note EBI posts during that close is itself a message in the thread.
+    """
+
+    async def test_reopens_a_closed_session_with_its_memory(self, guarded_repo):
+        await guarded_repo.save(
+            thread_id=70, session_id="sess-70", working_dir="/home/drew/app", backend="codex"
+        )
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface)
+        await service.close(70, HUMAN)
+
+        assert await service.reopen_from_discord(70) is True
+
+        stored = await guarded_repo.get(70)
+        assert stored is not None
+        assert stored.is_open
+        assert stored.session_id == "sess-70"
+        assert stored.backend == "codex"
+        assert stored.working_dir == "/home/drew/app"
+        assert stored.close_authority is None
+        assert surface.unarchived == [70]
+
+    async def test_reopens_a_session_discord_closed(self, guarded_repo):
+        await guarded_repo.save(thread_id=71, session_id="sess-71")
+        service = make_service(guarded_repo)
+        await service.close(71, DISCORD)
+
+        assert await service.reopen_from_discord(71) is True
+
+        stored = await guarded_repo.get(71)
+        assert stored is not None
+        assert stored.is_open
+        assert stored.session_id == "sess-71"
+
+    async def test_an_open_session_is_left_alone(self, guarded_repo):
+        await guarded_repo.save(thread_id=72, session_id="sess-72")
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface)
+        before = await guarded_repo.get(72)
+        assert before is not None
+
+        assert await service.reopen_from_discord(72) is False
+
+        after = await guarded_repo.get(72)
+        assert after is not None
+        assert after.lifecycle_version == before.lifecycle_version
+        assert surface.unarchived == []
+
+    async def test_a_missing_session_reports_false(self, guarded_repo):
+        service = make_service(guarded_repo)
+
+        assert await service.reopen_from_discord(404) is False
+
+    @pytest.mark.parametrize(
+        "authorization",
+        [HUMAN, CloseAuthorization.from_workflow("gowork", close_on_done=True)],
+        ids=["human", "workflow"],
+    )
+    async def test_never_cancels_a_close_ebi_is_still_finishing(self, guarded_repo, authorization):
+        await guarded_repo.save(thread_id=73, session_id="sess-73")
+        surface = FakeSurface()
+        service = make_service(guarded_repo, surface=surface, turns=FakeTurns(73))
+        pending = await service.close(73, authorization)
+        assert pending.state is CloseState.PENDING and pending.record is not None
+
+        assert await service.reopen_from_discord(73) is False
+
+        stored = await guarded_repo.get(73)
+        assert stored is not None
+        assert stored.close_pending
+        assert stored.close_authority == authorization.source.value
+        assert stored.close_requested_at == pending.record.close_requested_at
+        assert stored.lifecycle_version == pending.record.lifecycle_version
+        assert surface.unarchived == []
+
+    async def test_cancels_a_pending_close_that_discord_started(self, guarded_repo):
+        """The person is back in the thread; a close nobody in EBI asked for gives way."""
+        await guarded_repo.save(thread_id=74, session_id="sess-74")
+        turns = FakeTurns(74)
+        service = make_service(guarded_repo, turns=turns)
+        assert (await service.close(74, DISCORD)).state is CloseState.PENDING
+
+        assert await service.reopen_from_discord(74) is True
+
+        stored = await guarded_repo.get(74)
+        assert stored is not None
+        assert stored.is_open
+        turns.active.discard(74)
+        assert (await service.complete_pending_close(74)).state is CloseState.NOT_REQUESTED
 
 
 class TestReopenService:

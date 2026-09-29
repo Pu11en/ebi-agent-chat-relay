@@ -182,12 +182,118 @@ class TestAdapters:
         thread.edit.assert_awaited_once_with(archived=True)
         thread.send.assert_not_awaited()
 
-    async def test_thread_surface_reports_false_for_missing_or_non_threads(self):
+    async def test_thread_surface_counts_a_gone_thread_as_archived(self):
+        """A deleted thread has nothing left to archive, so the close is acknowledged.
+
+        Reporting False kept the archive pending for ever, retried on every
+        restart against a thread that no longer existed. A refusal is different:
+        the thread may well still be there, so that stays pending.
+        """
         bot = MagicMock()
         bot.fetch_channel = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "x"))
-        assert await DiscordThreadSurface(bot).archive(THREAD) is False
+        assert await DiscordThreadSurface(bot).archive(THREAD) is True
         bot.fetch_channel = AsyncMock(return_value=MagicMock(spec=discord.TextChannel))
+        assert await DiscordThreadSurface(bot).archive(THREAD) is True
+        bot.fetch_channel = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "x"))
         assert await DiscordThreadSurface(bot).archive(THREAD) is False
+        bot.fetch_channel = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "x"))
+        assert await DiscordThreadSurface(bot).archive(THREAD) is False
+
+    async def test_thread_surface_cannot_unarchive_a_thread_it_cannot_reach(self):
+        bot = MagicMock()
+        bot.fetch_channel = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "x"))
+        assert await DiscordThreadSurface(bot).unarchive(THREAD) is False
+        bot.fetch_channel = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "x"))
+        assert await DiscordThreadSurface(bot).unarchive(THREAD) is False
+
+    async def test_a_discord_archived_close_makes_no_discord_call(self, repo, chat):
+        """Discord archived the thread itself: the close only records that.
+
+        A post would un-archive the thread Discord just put away, a rename is
+        refused on an archived thread, and a lock would stop the person typing
+        their way back in. So nothing is sent, edited or even fetched.
+        """
+        bot = MagicMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "[bravo] 📂 project"
+        thread.send, thread.edit = AsyncMock(), AsyncMock()
+        bot.get_channel.return_value = thread
+        bot.fetch_channel = AsyncMock(return_value=thread)
+        lifecycle = build_lifecycle_service(bot, chat, repo)
+
+        outcome = await lifecycle.close(THREAD, CloseAuthorization.from_discord())
+
+        assert outcome.state is CloseState.CLOSED
+        assert outcome.archived is True
+        record = await repo.get(THREAD)
+        assert record is not None and record.is_closed
+        assert record.close_authority == "discord_archived"
+        assert not record.archive_pending
+        assert record.wrap_up
+        thread.send.assert_not_awaited()
+        thread.edit.assert_not_awaited()
+        bot.fetch_channel.assert_not_awaited()
+        bot.get_channel.assert_not_called()
+
+    async def test_a_discord_archived_close_during_a_turn_completes_with_no_discord_call(
+        self, repo, chat
+    ):
+        bot = MagicMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "[bravo] 📂 project"
+        thread.send, thread.edit = AsyncMock(), AsyncMock()
+        bot.get_channel.return_value = thread
+        bot.fetch_channel = AsyncMock(return_value=thread)
+        chat._active_runners[THREAD] = object()
+        lifecycle = build_lifecycle_service(bot, chat, repo)
+
+        assert (await lifecycle.close(THREAD, CloseAuthorization.from_discord())).is_pending
+        record = await repo.get(THREAD)
+        assert record is not None and record.close_pending
+        assert record.close_authority == "discord_archived"
+
+        chat._active_runners.clear()
+        # Run finalization in the chat cog completes it with the same shared service.
+        outcome = await lifecycle.complete_pending_close(THREAD)
+
+        assert outcome.state is CloseState.CLOSED and outcome.archived
+        record = await repo.get(THREAD)
+        assert record is not None and record.is_closed and not record.archive_pending
+        thread.send.assert_not_awaited()
+        thread.edit.assert_not_awaited()
+        bot.fetch_channel.assert_not_awaited()
+
+    @pytest.mark.parametrize("authority", ["direct_interaction", "workflow_close_on_done"])
+    async def test_a_close_posts_nothing_into_a_thread_discord_already_archived(
+        self, repo, chat, authority
+    ):
+        """Whoever closed the session, a thread already out of sight is left there.
+
+        Discord un-archives a thread the moment anything is posted in it, so the
+        closing note — retried by a restart's reconcile, or sent when a thread
+        archived by hand is closed from the Sessions browser — would bring back
+        the conversation it closes. Discord refuses a rename or a lock on an
+        archived thread anyway, so the close is acknowledged with no edit at all.
+        """
+        await repo.request_close(THREAD, authority)
+        await repo.mark_closed(THREAD, "Shipped the fix.", archive_pending=True)
+        bot = MagicMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "[bravo] 📂 project"
+        thread.archived = True
+        thread.send, thread.edit = AsyncMock(), AsyncMock()
+        bot.get_channel.return_value = None  # discord.py drops archived threads from its cache
+        bot.fetch_channel = AsyncMock(return_value=thread)
+        lifecycle = build_lifecycle_service(bot, chat, repo)
+
+        outcomes = await lifecycle.reconcile_pending_closes()
+
+        assert [outcome.archived for outcome in outcomes] == [True]
+        record = await repo.get(THREAD)
+        assert record is not None and record.is_closed and not record.archive_pending
+        assert record.close_authority == authority
+        thread.send.assert_not_awaited()
+        thread.edit.assert_not_awaited()
 
     def test_build_lifecycle_service_wires_both_adapters(self, repo, chat):
         service = build_lifecycle_service(MagicMock(), chat, repo)
@@ -283,6 +389,28 @@ class TestRestartAndReopen:
         assert outcome.is_reopened
         assert outcome.requires_fresh_session is True
         assert outcome.resume_session_id is None
+
+    async def test_typing_in_a_closed_thread_reopens_it_through_the_discord_surface(
+        self, repo, chat
+    ):
+        """A message in an archived thread brings the session back, unarchived and unlocked."""
+        await repo.save(THREAD, "sess-1", working_dir="/tmp/project", backend="claude")
+        bot = MagicMock()
+        thread = MagicMock(spec=discord.Thread)
+        thread.name = "📂 project"
+        thread.send, thread.edit = AsyncMock(), AsyncMock()
+        bot.get_channel.return_value = thread
+        lifecycle = build_lifecycle_service(bot, chat, repo)
+        assert (await lifecycle.close(THREAD, CloseAuthorization.from_discord())).is_closed
+        thread.edit.assert_not_awaited()
+
+        assert await lifecycle.reopen_from_discord(THREAD) is True
+
+        record = await repo.get(THREAD)
+        assert record is not None and record.is_open
+        assert (record.session_id, record.backend) == ("sess-1", "claude")
+        thread.edit.assert_awaited_once_with(archived=False, locked=False)
+        assert await lifecycle.reopen_from_discord(THREAD) is False
 
 
 class TestTheTagLeavesWithTheSession:

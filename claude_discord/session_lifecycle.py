@@ -12,9 +12,11 @@ Three deliberate constraints shape it:
 * **Nothing is destroyed.** The service can archive and unarchive. It has no
   path to delete or lock, so no caller can discover one.
 * **Authority is inherited, never minted.** Every close carries a typed
-  :class:`CloseAuthorization` naming a person or a preauthorized workflow. A
-  model's own sense that it has finished is not representable here, so an
-  agent closing a session is always traceable to someone who allowed it.
+  :class:`CloseAuthorization` naming a person, a preauthorized workflow, or
+  Discord itself when it archived or deleted the thread out from under the
+  session. A model's own sense that it has finished is not representable
+  here, so an agent closing a session is always traceable to someone who
+  allowed it.
 * **A running turn is waited out, not killed.** A close asked for mid-turn is
   written down as `closing` before anything is acknowledged, so the wrap-up
   still happens once the turn ends — even if the bot restarts in between, via
@@ -44,6 +46,8 @@ from .backend_settings import session_is_resumable
 
 logger = logging.getLogger(__name__)
 
+_DISCORD_ARCHIVED = CloseAuthority.DISCORD_ARCHIVED.value
+
 # Independent service instances share the same external-effect ordering. Weak
 # values keep this bounded; a held/waited-on lock remains strongly referenced.
 _surface_locks: WeakValueDictionary[tuple[str, int], asyncio.Lock] = WeakValueDictionary()
@@ -62,7 +66,8 @@ class CloseAuthorization:
     """Who allowed this close, in a form that cannot be faked.
 
     ``actor`` is the audit string for whoever carries the authority — a user
-    id for the two human sources, the operator of a workflow otherwise. The
+    id for the two human sources, the operator of a workflow, or what Discord
+    reported (``discord:archived``) when the thread was closed there. The
     constructors below are the intended entry points; constructing the
     dataclass directly is still validated so a stray string cannot slip in.
     """
@@ -114,6 +119,19 @@ class CloseAuthorization:
             workflow_id=workflow_id.strip(),
         )
 
+    @classmethod
+    def from_discord(cls, reason: str = "archived") -> CloseAuthorization:
+        """Discord put the thread out of sight, so the session closes to match.
+
+        Whether a person archived it by hand, Discord's auto-archive did after
+        a week of quiet, or the thread was deleted, the bot only ever learns
+        the fact, not who — so ``reason`` is what Discord reported and becomes
+        the audit string, and this authority is neither human nor workflow.
+        """
+        if not reason or not reason.strip():
+            raise CloseAuthorityError("A Discord close must say what Discord reported.")
+        return cls(source=CloseAuthority.DISCORD_ARCHIVED, actor=f"discord:{reason.strip()}")
+
     @property
     def is_human(self) -> bool:
         """Did a person ask for this close, directly or in their request?"""
@@ -125,6 +143,11 @@ class CloseAuthorization:
     @property
     def is_workflow(self) -> bool:
         return self.source is CloseAuthority.WORKFLOW_CLOSE_ON_DONE
+
+    @property
+    def is_discord(self) -> bool:
+        """Did Discord close the thread itself, rather than anyone in EBI?"""
+        return self.source is CloseAuthority.DISCORD_ARCHIVED
 
 
 class CloseState(Enum):
@@ -263,6 +286,8 @@ class SessionLifecycleService:
         if record is None:
             return CloseOutcome(state=CloseState.NO_SESSION)
         if record.is_closed:
+            if authorization.is_discord:
+                return await self._acknowledge_archive(thread_id)
             return await self._retry_archive(thread_id)
 
         # Persist the request before doing anything else: a crash between here
@@ -335,6 +360,30 @@ class SessionLifecycleService:
         async with self._surface_lock(thread_id):
             return await self._reopen(thread_id, backend=backend)
 
+    async def reopen_from_discord(self, thread_id: int) -> bool:
+        """Reopen ``thread_id``'s session because a person spoke in its thread.
+
+        A user message is the one thing that brings a closed session back,
+        so the message path calls this before it runs anything: the row goes
+        back to open with its stored session id and backend, and the surface
+        is asked to unarchive so the reply can land. Nothing else changes.
+
+        It refuses when the session is open or unknown, and — the case that
+        matters — while EBI's own close is still finishing on a person's or a
+        workflow's authority: the wrap-up note EBI posts during that close is
+        itself a message in the thread, and must not cancel the close it
+        belongs to. Only a close that Discord itself started gives way, since
+        the person being back in the thread is exactly what undoes it.
+        """
+        async with self._surface_lock(thread_id):
+            record = await self.repo.get(thread_id)
+            if record is None or record.is_open:
+                return False
+            if record.close_pending and record.close_authority != _DISCORD_ARCHIVED:
+                return False
+            outcome = await self._reopen(thread_id, backend=None)
+            return outcome.is_reopened
+
     async def _reopen(self, thread_id: int, *, backend: str | None) -> ReopenOutcome:
         record = await self.repo.get(thread_id)
         if record is None:
@@ -403,6 +452,26 @@ class SessionLifecycleService:
             archived = await self._archive(record) if record is not None else False
             return self._current_outcome(record, archived=archived)
 
+    async def _acknowledge_archive(self, thread_id: int) -> CloseOutcome:
+        """Discord reports a closed session's thread archived or gone: nothing is left to do.
+
+        The close itself is not touched — not its wrap-up, its authority or
+        its ``closed_at``. Only an archive the surface never managed is
+        settled, because Discord has done that part for us: retrying it
+        through the surface would post the note and the lock into a thread
+        that is already archived, un-archiving it to do so.
+        """
+        async with self._surface_lock(thread_id):
+            record = await self.repo.get(thread_id)
+            if record is None:
+                return CloseOutcome(state=CloseState.NO_SESSION)
+            archived = False
+            if record.is_closed and record.archive_pending:
+                await self.repo.mark_archived(thread_id, expected_version=record.lifecycle_version)
+                record.archive_pending = False
+                archived = True
+            return self._current_outcome(record, archived=archived)
+
     async def _archive(self, record: SessionRecord) -> bool:
         """Apply the durable effect while the per-session surface lock is held."""
         if not record.is_closed or not record.archive_pending or self.surface is None:
@@ -437,8 +506,13 @@ class SessionLifecycleService:
         return CloseOutcome(state=state, record=record, wrap_up=record.wrap_up, archived=archived)
 
     async def _write_wrap_up(self, record: SessionRecord) -> str:
-        """Ask the writer for a summary, falling back rather than failing."""
-        if self.wrap_up_writer is None:
+        """Ask the writer for a summary, falling back rather than failing.
+
+        A close Discord started never asks the writer: the thread is already
+        out of sight, so a model call would be spend with no reader, for a
+        close nobody in EBI decided on. The stored summary says enough.
+        """
+        if self.wrap_up_writer is None or record.close_authority == _DISCORD_ARCHIVED:
             return deterministic_wrap_up(record)
         try:
             written = await self.wrap_up_writer.summarize(record)
