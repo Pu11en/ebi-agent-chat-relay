@@ -441,6 +441,8 @@ class TestResume:
         on_disk = json.loads(cog._store.path.read_text(encoding="utf-8"))
         assert on_disk[0]["build_id"] == f"thread-{thread.id}"
         assert cog.running[0].build_id == f"thread-{thread.id}"
+        # Saved before wait checkpoints, so it waits for the person first (4.3).
+        await _type_when_asked(cog, thread.id, "keep going")
         await _type_when_asked(cog, 1, "looks good")
         await asyncio.wait_for(cog.running[0].task, 10) if cog.running else None
         assert cog._store.all() == []  # forgotten by build id, not by repo
@@ -459,6 +461,7 @@ class TestResume:
                 branch=copy.branch,
                 worker_thread_id=thread.id,
                 report_channel_id=1,
+                checkpoints=True,  # saved by current code: no wait recorded = running
             )
         )
         report_channel = MagicMock()
@@ -2427,3 +2430,78 @@ class TestCodexPerStep:
         options = await cog._family_options(running)  # type: ignore[arg-type]
         assert [m for _h, m, _n in options][0] == "gpt-5.6-luna"  # cheapest first
         assert {m for _h, m, _n in options} == {m for _h, m, _n in self._CODEX}
+
+
+class TestLegacyLoopRecovery:
+    """Task 4.3: a record saved before wait checkpoints existed is ambiguous."""
+
+    async def _legacy(self, repo: Path, plan: str) -> tuple[TaskLoopCog, MagicMock, MagicMock]:
+        from claude_code_core.loop_store import LoopRecord
+
+        (repo / "PLAN.md").write_text(plan)
+        _git(repo, "commit", "-q", "--allow-empty", "-am", "plan state")
+        cog, chat, thread = _cog_with_chat()
+        cog._check_it_myself = AsyncMock(return_value=[])
+        copy = await create_work_copy(repo, repo / "PLAN.md", root=cog._work_root)
+        cog._store.save(
+            LoopRecord(
+                repo_dir=str(repo),
+                plan_path=str(repo / "PLAN.md"),
+                copy_path=str(copy.path),
+                copy_plan=str(copy.plan_path),
+                branch=copy.branch,
+                worker_thread_id=thread.id,
+                report_channel_id=1,
+            )
+        )
+        report_channel = MagicMock()
+        report_channel.id = 1
+        report_channel.send = AsyncMock()
+        cog.bot.get_channel = MagicMock(
+            side_effect=lambda cid: thread if cid == thread.id else report_channel
+        )
+        return cog, chat, thread
+
+    async def test_finished_legacy_build_waits_without_rerunning_paid_checks(
+        self, repo: Path
+    ) -> None:
+        cog, chat, thread = await self._legacy(repo, "Try: inspect it\n\n- [x] Task 1: a\n")
+        try:
+            assert await cog.resume_all() == 1
+            for _ in range(500):
+                if cog._waiters:
+                    break
+                await asyncio.sleep(0.01)
+            assert cog._waiters, "the restored build waits for the person"
+            chat.run_fresh_turn.assert_not_awaited()
+            cog._quick_ai.assert_not_awaited()
+            cog._check_it_myself.assert_not_awaited()
+            saved = cog._store.all()[0]
+            assert saved.waiting_status == "COMPLETE" and saved.checkpoints
+            posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+            assert "were not run again" in posted
+        finally:
+            await cog.cog_unload()
+
+    async def test_unfinished_legacy_build_is_parked_until_the_person_continues(
+        self, repo: Path
+    ) -> None:
+        cog, chat, thread = await self._legacy(repo, "- [ ] Task 1: a\n")
+        try:
+            assert await cog.resume_all() == 1
+            for _ in range(500):
+                if cog._waiters:
+                    break
+                await asyncio.sleep(0.01)
+            assert cog._waiters, "an ambiguous build pauses visibly"
+            chat.run_fresh_turn.assert_not_awaited()
+            asked = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+            assert "Paused" in asked
+            await _type_when_asked(cog, 555, "keep going")
+            for _ in range(500):
+                if chat.run_fresh_turn.await_count:
+                    break
+                await asyncio.sleep(0.01)
+            assert chat.run_fresh_turn.await_count == 1, "continues once the person says so"
+        finally:
+            await cog.cog_unload()

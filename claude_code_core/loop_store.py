@@ -62,6 +62,12 @@ class LoopRecord:
     waiting_detail: str = ""
     waiting_fails: list[str] = field(default_factory=list)
     waiting_proposed: list[str] = field(default_factory=list)
+    #: Legacy parallel workers merged into the build copy. They are accepted, and
+    #: closed, only when the build itself is kept.
+    landed_workers: list[int] = field(default_factory=list)
+    #: Written by code that saves every wait. Without it, a record with no saved
+    #: wait may have been waiting for the person when it was stored.
+    checkpoints: bool = False
 
     def __post_init__(self) -> None:
         if not self.build_id:

@@ -113,3 +113,33 @@ passing suite as activation approval.
   `communicate()` without cancellation cleanup; this is a lead, not a proven cause.
 - Jester's full requirement ledger/review and real microphone trial remain separate
   required work. These fake-boundary tests are not live voice evidence.
+
+## Legacy group acceptance (September 29, continued)
+
+Contract (parallel-task-loop spec): a worker is archived only after its commit is
+integrated *and* the combined check passes; verified-but-not-integrated workers
+stay open. The legacy `_run_group` path closed a worker as soon as its side copy
+merged into the build copy, before any whole-build check or person/auto
+acceptance. The rewritten regression
+`test_integrated_legacy_worker_closes_only_when_the_build_is_kept` failed against
+that behavior by construction (the old test asserted immediate closure).
+
+Repair: a landed legacy worker is recorded durably in the loop record's additive
+`landed_workers` list and stays open. When the build is kept — "looks good",
+auto-integration, already-integrated recovery or early wrap-up — `_close_build_threads`
+closes those workers and then the build's own thread through the durable outbox
+(no lock, no delete, tag released after the stored close). The test reloads the
+loop store from disk before the verdict to prove the obligation survives a new
+store instance. A thrown-away build leaves its landed workers open
+(`test_thrown_away_build_leaves_landed_legacy_workers_open`); throw-away keeps its
+existing, explicitly requested deletion of the build thread and copy.
+
+Checks: integrity module **11 passed**; related parallel suites **423 passed in
+69.18s** plus task-loop/group suites **128 passed in 14.09s**.
+
+Limits: a restart that loses the loop record before the keep (e.g. an orphaned
+build) leaves landed workers open; that is visible, not destructive. Workers
+landed before this change in live builds are not migrated. Rollback: back up
+`~/.local/state/ccdb/gowork-loops.json` before activation — older code treats
+records carrying `waiting_*`/`landed_workers` as malformed and drops them on its
+next save.

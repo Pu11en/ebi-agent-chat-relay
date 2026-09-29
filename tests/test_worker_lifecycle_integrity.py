@@ -129,6 +129,22 @@ async def test_finished_build_remains_runnable_while_waiting_for_verdict(build: 
     running.thread.delete.assert_not_awaited()
 
 
+def save_loop_record(build: Build) -> None:
+    running = build.running
+    build.cog._store.save(
+        LoopRecord(
+            repo_dir=str(running.repo_dir),
+            plan_path=str(running.repo_dir / "PLAN.md"),
+            copy_path=str(build.copy.path),
+            copy_plan=str(build.copy.plan_path),
+            branch=build.copy.branch,
+            worker_thread_id=100,
+            report_channel_id=200,
+            build_id="build",
+        )
+    )
+
+
 async def run_group(build: Build, outcome: str) -> list[tuple[str, bool, str]]:
     async def turn(*args: object, working_dir: str, result_sink, **kwargs: object) -> None:
         path = Path(working_dir)
@@ -145,11 +161,26 @@ async def run_group(build: Build, outcome: str) -> list[tuple[str, bool, str]]:
     return await build.cog._run_group(build.running, ["implement task"])
 
 
-async def test_integrated_legacy_worker_closes_without_deleting_history(build: Build) -> None:
+async def test_integrated_legacy_worker_closes_only_when_the_build_is_kept(
+    build: Build,
+) -> None:
+    """Merged into the build copy is not accepted (spec: combined check first)."""
+    save_loop_record(build)
     result = await run_group(build, "accepted")
     thread = build.threads[0]
-    record = await build.sessions.get(thread.id)
     assert result[0][1] is True
+    waiting = await build.sessions.get(thread.id)
+    assert waiting is not None and waiting.is_open, "not accepted until the build is kept"
+    thread.edit.assert_not_awaited()
+    stored = build.cog._store.get("build")
+    assert stored is not None and stored.landed_workers == [thread.id]
+
+    # A restarted process still knows which workers the build owes a close.
+    build.cog._store = LoopStore(build.cog._store.path)
+    build.cog._keep_build = AsyncMock(return_value=(True, "integrated locally"))
+    build.cog._wait_or_wake = AsyncMock(return_value=("looks good", False))
+    assert await build.cog._wait_verdict(build.running, [], []) == "kept"
+    record = await build.sessions.get(thread.id)
     assert record is not None and record.is_closed
     assert record.session_id == f"worker-{thread.id}"
     assert await build.settings.get(f"voice_label:{thread.id}") is None
@@ -236,18 +267,7 @@ async def test_whole_build_archive_failure_converges_after_process_reconstructio
     carry it, through new repositories, services and cogs, without any work.
     """
     cog, running = build.cog, build.running
-    cog._store.save(
-        LoopRecord(
-            repo_dir=str(running.repo_dir),
-            plan_path=str(running.repo_dir / "PLAN.md"),
-            copy_path=str(build.copy.path),
-            copy_plan=str(build.copy.plan_path),
-            branch=build.copy.branch,
-            worker_thread_id=100,
-            report_channel_id=200,
-            build_id="build",
-        )
-    )
+    save_loop_record(build)
     running.loop.run = AsyncMock(return_value=LoopOutcome(Status.COMPLETE, "done"))
     cog._check_it_myself = AsyncMock(return_value=[])
     cog._missing_steps = AsyncMock(return_value=[])
@@ -295,3 +315,14 @@ async def test_whole_build_archive_failure_converges_after_process_reconstructio
     fresh.delete.assert_not_awaited()
     chat.spawn_session.assert_not_awaited()
     chat.run_fresh_turn.assert_not_awaited()
+
+
+async def test_thrown_away_build_leaves_landed_legacy_workers_open(build: Build) -> None:
+    save_loop_record(build)
+    await run_group(build, "accepted")
+    thread = build.threads[0]
+    build.cog._wait_or_wake = AsyncMock(return_value=("throw it away", False))
+    await build.cog._wait_verdict(build.running, [], [])
+    record = await build.sessions.get(thread.id)
+    assert record is not None and record.is_open, "never accepted, so never closed"
+    thread.delete.assert_not_awaited()
