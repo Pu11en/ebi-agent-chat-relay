@@ -13,6 +13,7 @@ def _make_bot() -> MagicMock:
     bot = MagicMock()
     bot.loop = MagicMock()
     bot.add_cog = AsyncMock()
+    bot.wait_until_ready = AsyncMock()
     return bot
 
 

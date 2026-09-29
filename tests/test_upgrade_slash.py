@@ -19,7 +19,6 @@ from discord.ext import commands
 from claude_discord.cogs.auto_upgrade import AutoUpgradeCog, UpgradeConfig
 
 _PATCH_EXEC = "asyncio.create_subprocess_exec"
-_PATCH_WAIT = "asyncio.wait_for"
 
 
 def _make_bot() -> MagicMock:
@@ -90,10 +89,7 @@ class TestUpgradeSlashCommandEnabled:
         interaction = _make_interaction()
 
         proc = _make_process(returncode=0)
-        with (
-            patch(_PATCH_EXEC, return_value=proc),
-            patch(_PATCH_WAIT, new=AsyncMock(return_value=(b"ok", b""))),
-        ):
+        with patch(_PATCH_EXEC, return_value=proc):
             await cog.upgrade_command.callback(cog, interaction)
 
         # Thread should have been created in the channel
@@ -124,10 +120,7 @@ class TestUpgradeSlashCommandEnabled:
         interaction = _make_interaction()
 
         proc = _make_process(returncode=0)
-        with (
-            patch(_PATCH_EXEC, return_value=proc),
-            patch(_PATCH_WAIT, new=AsyncMock(return_value=(b"ok", b""))),
-        ):
+        with patch(_PATCH_EXEC, return_value=proc):
             await cog.upgrade_command.callback(cog, interaction)
 
         interaction.response.defer.assert_awaited_once()
@@ -140,10 +133,7 @@ class TestUpgradeSlashCommandEnabled:
         interaction = _make_interaction()
 
         proc = _make_process(returncode=0)
-        with (
-            patch(_PATCH_EXEC, return_value=proc),
-            patch(_PATCH_WAIT, new=AsyncMock(return_value=(b"ok", b""))),
-        ):
+        with patch(_PATCH_EXEC, return_value=proc):
             await cog.upgrade_command.callback(cog, interaction)
 
         call_args = interaction.channel.create_thread.call_args
@@ -178,10 +168,7 @@ class TestUpgradeSlashCommandFromThread:
         interaction = self._make_thread_interaction()
 
         proc = _make_process(returncode=0)
-        with (
-            patch(_PATCH_EXEC, return_value=proc),
-            patch(_PATCH_WAIT, new=AsyncMock(return_value=(b"ok", b""))),
-        ):
+        with patch(_PATCH_EXEC, return_value=proc):
             await cog.upgrade_command.callback(cog, interaction)
 
         # Thread created in the parent channel, not in the sub-thread
@@ -195,10 +182,7 @@ class TestUpgradeSlashCommandFromThread:
         interaction = self._make_thread_interaction()
 
         proc = _make_process(returncode=0)
-        with (
-            patch(_PATCH_EXEC, return_value=proc),
-            patch(_PATCH_WAIT, new=AsyncMock(return_value=(b"ok", b""))),
-        ):
+        with patch(_PATCH_EXEC, return_value=proc):
             await cog.upgrade_command.callback(cog, interaction)
 
         interaction.response.defer.assert_awaited_once()

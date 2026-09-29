@@ -6,8 +6,12 @@ Class-level fixtures with the same name take precedence (pytest scoping rules).
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import sys
-from collections.abc import Iterator
+import traceback
+from collections.abc import Coroutine, Iterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -23,6 +27,50 @@ from claude_discord.claude.types import MessageType, StreamEvent
 #: monkeypatch.setenv.
 _LEAKY_PREFIXES = ("CCDB_", "DISCORD_", "CLAUDE_", "ANTHROPIC_", "CODEX_", "ZAI_", "DEEPSEEK_")
 _KEPT = frozenset({"CLAUDE_CODE_ENTRYPOINT"})
+
+
+@pytest.fixture(autouse=True)
+def _async_failure_guard(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Attribute unhandled asyncio failures to the test that created them.
+
+    Keep task references until teardown: otherwise a retained failed task can
+    escape detection until process exit, after pytest has reported success.
+    The task's _log_traceback flag is asyncio's own unhandled-exception marker;
+    awaiting a failure or reading its exception clears it. Do not fail expected
+    errors that the test/application actually retrieved.
+    """
+    tasks: list[asyncio.Task[Any]] = []
+    errors: list[str] = []
+    original_create = asyncio.BaseEventLoop.create_task
+    original_handler = asyncio.BaseEventLoop.call_exception_handler
+
+    def create_task(
+        loop: asyncio.BaseEventLoop, coro: Coroutine[Any, Any, Any], **kwargs: Any
+    ) -> asyncio.Task[Any]:
+        task = original_create(loop, coro, **kwargs)
+        tasks.append(task)
+        return task
+
+    def handle_exception(loop: asyncio.BaseEventLoop, context: dict[str, Any]) -> None:
+        error = context.get("exception")
+        detail = "".join(traceback.format_exception(error)) if error else repr(context)
+        errors.append(f"{context.get('message', 'Asyncio failure')}: {detail}")
+        original_handler(loop, context)
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "create_task", create_task)
+    monkeypatch.setattr(asyncio.BaseEventLoop, "call_exception_handler", handle_exception)
+    yield
+    for task in tasks:
+        if task.done() and not task.cancelled() and getattr(task, "_log_traceback", False):
+            error = task.exception()
+            if error is not None:
+                errors.append(f"{task.get_name()}: {''.join(traceback.format_exception(error))}")
+    tasks.clear()
+    # Flush fixture/mock cycles while pytest's warning/unraisable hooks are still
+    # installed. The warning policy below does not suppress unrelated warnings.
+    gc.collect()
+    if errors:
+        pytest.fail("Unexpected asynchronous failure(s):\n" + "\n".join(errors), pytrace=False)
 
 
 @pytest.fixture(autouse=True)
