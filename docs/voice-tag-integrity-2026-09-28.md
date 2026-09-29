@@ -11,7 +11,9 @@ Fourteen regression cases failed before implementation (3.56s):
 - A real temporary-SQLite API page with `limit=1` took an open off-page holder's
   name. With a different holder closed, it still took the open holder's name.
 - An off-page closed holder retained its name without a new allocation; an
-  ordinary archived-but-open holder lost its name when the pool was full.
+  ordinary archived-but-open holder lost its name when the pool was full. (Under
+  the September 29 owner rule below an archived thread is closed, so it now gives
+  its word back — through its lifecycle close, never through the pool filling.)
 - Single/bulk assignment reported names despite injected storage-write failures.
 - Failed deletion could give a closed holder's still-stored name to a new holder.
 - A failed settings read removed a valid existing title prefix.
@@ -32,7 +34,8 @@ Single and bulk allocation now use the same path in `VoiceTagger`. It reads all
 stored tag holders, plus requested targets, against the supplied session repository
 (or the bot's actual repository). It does not enumerate every historical session.
 Explicit worker exclusions and confirmed closure allow release. Unknown holders
-and archived-but-open sessions retain their names. Current repository state takes
+retain their names; a Discord-archived thread releases its name once its session
+is closed (see the September 29 update). Current repository state takes
 precedence over a stale view after reopening.
 
 Deletion must succeed before a word is reusable; assignment must succeed before
@@ -67,8 +70,9 @@ remain unchanged. The actual Go Work call-site changes are a separate pending sl
 ## Security and limits
 
 Tagging adds no command/model invocation, schema/dependency, credential handling,
-or new close authority. It reads lifecycle evidence, not Discord visibility, before
-releasing a stored name. The two tag modules pass Ruff's optional security rules.
+or new close authority. It reads lifecycle evidence before releasing a stored name;
+since September 29 a Discord archive becomes that evidence through a
+`discord_archived` close, not through the allocator reading Discord directly. The two tag modules pass Ruff's optional security rules.
 The API also passes the optional security scan; the chat cog has the same one
 pre-existing internal-state assertion (S101) as HEAD. Manual diff review found no
 new command, authorization or secret boundary. The strict full gate passed without
@@ -96,3 +100,17 @@ never stored is unknown to the allocator again (it has no session row and no
 marker); the live check reports it only as an untagged/tagged thread.
 Focused checks: worker sessions **8 passed**; voice/tag/worker/spawn selection
 **399 passed**.
+
+## Update: open means visible in Discord (September 29)
+
+The owner replaced the "Discord archive is not closure" rule
+(`docs/usable-product-decisions-2026-09-29.md`). A thread archived in Discord (by
+hand, by EBI, or by Discord's 7-day auto-archive) or deleted is a closed session:
+`ThreadFollowCog` listeners plus a 5-minute sweep stop any running turn, close it
+with the `discord_archived` authority, and release its word. Un-archiving, or a
+new typed or spoken message, reopens it with its stored native session and
+backend, and it gets a tag again. The owner's own threads get words first;
+workflow helper threads only get leftovers and give theirs up when the owner opens
+a thread on a full pool. Following is on by default;
+`CCDB_FOLLOW_DISCORD_THREADS=false` opts an instance out. `assign_labels` is
+unchanged: it still releases only holders the caller has already closed.

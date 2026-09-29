@@ -111,6 +111,21 @@ class TestDispatch:
         assert rows[0]["status"] == "failed"
         assert rows[0]["error_message"]
 
+    async def test_never_posts_into_an_archived_thread(self, repo: NotificationRepository) -> None:
+        """A reminder would un-archive a finished conversation; it is skipped instead."""
+        await repo.create(message="archived", scheduled_at=_ago(minutes=1), channel_id=42)
+        channel = _messageable()
+        channel.archived = True
+        cog = NotificationDispatchCog(_bot_with_channel(channel), repo=repo)
+
+        await cog.dispatch_due()
+
+        channel.send.assert_not_awaited()
+        assert await repo.get_pending() == [], "skipped once, not retried every tick"
+        rows = await _all_rows(repo)
+        assert rows[0]["status"] == "failed"
+        assert "archived" in rows[0]["error_message"]
+
     async def test_marks_failed_when_send_raises(self, repo: NotificationRepository) -> None:
         await repo.create(message="送信失敗", scheduled_at=_ago(minutes=1), channel_id=42)
         channel = _messageable()

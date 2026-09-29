@@ -211,15 +211,33 @@ async def test_a_title_that_already_shows_its_tag_is_left_alone(api: ApiServer) 
     thread.edit.assert_not_awaited()
 
 
-async def test_an_archived_thread_keeps_its_title(api: ApiServer) -> None:
-    thread = _thread(1, "📂 repo", archived=True)
-    api.bot.get_channel.return_value = thread
-    views = [{"thread_id": 1, "thread_name": "📂 repo"}]
+async def test_an_archived_thread_is_not_addressable_by_tag(api: ApiServer) -> None:
+    """Archived in Discord means closed: the sweep frees the word, the title is untouched."""
+    from types import SimpleNamespace
 
+    from claude_code_core.session_repo import SessionRepository
+    from claude_discord.cogs.thread_follow import ThreadFollowCog
+    from claude_discord.lifecycle_adapters import build_lifecycle_service
+
+    sessions = SessionRepository(api.settings_repo.db_path)
+    await sessions.save(1, "native-1")
+    await api.settings_repo.set("voice_label:1", FIRST)
+    api.session_repo = sessions
+    thread = _thread(1, f"[{FIRST}] 📂 repo", archived=True)
+    thread.send = AsyncMock()
+    api.bot.get_channel.return_value = thread
+    lifecycle = build_lifecycle_service(api.bot, SimpleNamespace(), sessions)
+    cog = ThreadFollowCog(
+        api.bot, repo=sessions, settings_repo=api.settings_repo, lifecycle=lifecycle
+    )
+
+    await cog.sweep()
+    views = [{"thread_id": 1, "thread_name": thread.name}]
     await api._apply_voice_labels(views)
 
+    assert views[0]["voice_label"] is None  # no longer addressable by tag
     thread.edit.assert_not_awaited()
-    assert views[0]["voice_label"] == FIRST  # still addressable by tag
+    thread.send.assert_not_awaited()
 
 
 async def test_a_rename_failure_never_fails_the_request(api: ApiServer) -> None:

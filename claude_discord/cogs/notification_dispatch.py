@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord.ext import commands, tasks
 
+from ..thread_policy import may_post_unsolicited
+
 if TYPE_CHECKING:
     from ..database.notification_repo import NotificationRepository
 
@@ -115,6 +117,13 @@ class NotificationDispatchCog(commands.Cog):
             if channel is None:
                 logger.warning("No channel for notification %d", notification_id)
                 await self.repo.mark_failed(notification_id, "No channel ID")
+                return
+
+            if not await may_post_unsolicited(channel):
+                # A reminder would un-archive a conversation the person put
+                # away; only their own message brings it back. Spent, not retried.
+                logger.info("Notification %d skipped: its thread is archived", notification_id)
+                await self.repo.mark_failed(notification_id, "skipped: thread is archived")
                 return
 
             await channel.send(embed=self._build_embed(notification))

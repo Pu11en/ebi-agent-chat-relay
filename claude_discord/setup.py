@@ -159,6 +159,7 @@ async def setup_bridge(
     thread_context_days: int | None = None,
     context_links_config: str | None = None,
     backend_factory: BackendFactory | None = None,
+    follow_discord_threads: bool | None = None,
 ) -> BridgeComponents:
     """Initialize and register all ccdb Cogs in one call.
 
@@ -247,6 +248,14 @@ async def setup_bridge(
                               external resource links (Obsidian notes, GitHub repos,
                               etc.).  Defaults to CONTEXT_LINKS_CONFIG env var, or
                               ``context_links.json`` in the working directory.
+        follow_discord_threads: When True (default), a session is open exactly while
+                                Discord shows its thread: archiving or deleting a
+                                thread closes its session (stopping any run in it
+                                and freeing its spoken tag), and unarchiving it
+                                reopens the session with its memory.  A sweep checks
+                                every open session at startup and every five minutes.
+                                Defaults to the CCDB_FOLLOW_DISCORD_THREADS env var
+                                (on unless "false", "0" or "no").
 
     Returns:
         BridgeComponents with references to initialized repositories.
@@ -374,6 +383,16 @@ async def setup_bridge(
         )
     if not mention_anywhere:
         logger.info("Mention-anywhere disabled — bot only listens in configured channels")
+
+    # Follow Discord's archive state — CCDB_FOLLOW_DISCORD_THREADS (on by default)
+    if follow_discord_threads is None:
+        follow_discord_threads = os.getenv("CCDB_FOLLOW_DISCORD_THREADS", "true").lower() not in (
+            "false",
+            "0",
+            "no",
+        )
+    if not follow_discord_threads:
+        logger.info("Following Discord thread archive state disabled")
 
     # Thread context window — fall back to CCDB_THREAD_CONTEXT_DAYS env var, then 7 days.
     if thread_context_days is None:
@@ -593,6 +612,23 @@ async def setup_bridge(
     )
     await bot.add_cog(surface_cog)
     logger.info("Registered SurfaceCommandsCog")
+
+    # --- ThreadFollowCog: "open" means visible in Discord (CCDB_FOLLOW_DISCORD_THREADS) ---
+    # An archived or deleted thread closes its session; an unarchived one reopens
+    # it. The chat cog awaits its sweep on startup, before anything resumes.
+    if follow_discord_threads:
+        from .cogs.thread_follow import ThreadFollowCog
+
+        await bot.add_cog(
+            ThreadFollowCog(
+                bot,  # type: ignore[arg-type]  # consumers pass their own Bot subclass
+                repo=session_repo,
+                settings_repo=settings_repo,
+                lifecycle=lifecycle,
+                chat=chat_cog,
+            )
+        )
+        logger.info("Registered ThreadFollowCog")
 
     # --- AgentHandoffCog (enabled only by a complete CCDB_HANDOFF_* configuration) ---
     from .cogs.agent_handoff import AgentHandoffCog

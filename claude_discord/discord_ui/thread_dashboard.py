@@ -19,7 +19,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import discord
 
@@ -88,8 +88,13 @@ class ThreadStatusDashboard:
         owner_id: int | None = None,
         mention_user_ids: set[int] | None = None,
         muted_user_ids: set[int] | None = None,
+        session_repo: Any | None = None,
     ) -> None:
         self._channel = channel
+        #: The session store, when wired: the reply-needed ping is skipped for a
+        #: thread whose row is closing or closed. Optional so existing callers
+        #: keep working; Discord's own archived/locked flags are checked either way.
+        self.session_repo: Any | None = session_repo
         self._owner_id = owner_id
         # Fallback recipients for callers without an explicit run requester.
         # Interactive turns supply their own author instead of this group.
@@ -176,6 +181,15 @@ class ThreadStatusDashboard:
             )
 
             await self._refresh_dashboard()
+
+        # A thread put away — archived, locked, or its session closing — must not
+        # get the ping: Discord un-archives a thread the moment anything posts in it.
+        if should_mention and thread is not None:
+            from ..thread_policy import may_post_unsolicited
+
+            if not await may_post_unsolicited(thread, self.session_repo):
+                logger.debug("Reply-needed ping dropped: thread %d is put away", thread_id)
+                should_mention = False
 
         # Send mention outside the lock to avoid holding it during an HTTP call
         if should_mention and thread is not None:

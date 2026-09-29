@@ -299,3 +299,29 @@ async def test_posting_survives_a_missing_thread(repo: HandoffRepository) -> Non
     await poster(task, transition)  # no thread known, no exception
     events = await repo.list_events(TASK_ID)
     assert [e.kind for e in events] == [p.HandoffEventKind.STATE], "the ledger still has it"
+
+
+@pytest.mark.asyncio
+async def test_progress_skips_an_archived_job_thread(repo: HandoffRepository) -> None:
+    """A progress line would un-archive a job thread someone put away."""
+    task = _task()
+    await repo.record_task(task, now=NOW)
+    await repo.set_job_thread(TASK_ID, "drewai", 777)
+    job_thread = FakeThread(777)
+    job_thread.archived = True  # type: ignore[attr-defined]
+    origin = FakeThread(333)
+    origin.archived = True  # type: ignore[attr-defined]
+
+    async def lookup(thread_id: int) -> FakeThread | None:
+        return {777: job_thread, 333: origin}.get(thread_id)
+
+    poster = HandoffProgressPoster(repo=repo, local_agent_id="drewai", thread_lookup=lookup)
+    job = await repo.get_job(TASK_ID, "drewai")
+    assert job is not None
+    await poster(task, apply(job, HandoffTrigger.CAPACITY_WAIT, now=NOW))
+    await poster.announce_accepted(task, now=NOW)
+    await poster._post_prose_to_job_thread(task, apply(job, HandoffTrigger.CAPACITY_WAIT, now=NOW))
+    await poster._post_blocker_to_origin(task, apply(job, HandoffTrigger.CAPACITY_WAIT, now=NOW))
+    assert job_thread.sent == []
+    assert origin.sent == []
+    assert len(await repo.list_events(TASK_ID)) == 2, "the ledger still records both events"

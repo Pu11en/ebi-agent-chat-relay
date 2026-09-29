@@ -192,9 +192,9 @@ async def test_worker_threads_are_archived_after_the_save_never_deleted_and_retr
 
     assert set(archived_after.values()) == {"accepted", "failed"}  # saved before archived
     assert failures == [threads[2].id, threads[2].id]  # the hook, then the end-of-build retry
-    # Review hides the parent without closing it; integration later closes it.
+    # The finished card puts the parent away properly (workflow close: row closed,
+    # archived, never locked); integration's own close later repeats harmlessly.
     # The planning channel and every conversation's history stay intact.
-    worker.edit.assert_any_await(archived=True, reason="go-work finished")
     worker.edit.assert_any_await(archived=True)
     worker.delete.assert_not_awaited()
     assert not hasattr(channel, "edit") or not channel.edit.called

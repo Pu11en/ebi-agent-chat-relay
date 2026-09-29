@@ -5,13 +5,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
 
 from claude_code_core.session_repo import CloseAuthority, SessionRepository
 from claude_discord.database.models import init_db
-from claude_discord.session_lifecycle import CloseAuthorization, SessionLifecycleService
+from claude_discord.lifecycle_adapters import DiscordThreadSurface
+from claude_discord.session_lifecycle import (
+    CloseAuthorization,
+    CloseState,
+    SessionLifecycleService,
+)
 
 HUMAN = CloseAuthorization.from_interaction("owner")
 
@@ -98,6 +104,66 @@ async def test_close_without_a_surface_does_not_schedule_an_external_archive(
     surface = AsyncMock()
     await SessionLifecycleService(repo, surface=surface).reconcile_pending_closes()
     surface.archive.assert_not_awaited()
+
+
+async def test_a_deleted_thread_settles_its_pending_archive_in_one_pass(
+    repo: SessionRepository,
+) -> None:
+    """Nothing is left to archive, so the close is acknowledged instead of retried for ever."""
+    await repo.mark_closed(1, "closed while Discord was down", HUMAN.source, archive_pending=True)
+    bot = MagicMock()
+    bot.fetch_channel = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "gone"))
+    service = SessionLifecycleService(repo, surface=DiscordThreadSurface(bot, repo))
+
+    outcomes = await service.reconcile_pending_closes()
+
+    assert [(o.state, o.archived) for o in outcomes] == [(CloseState.ALREADY_CLOSED, True)]
+    after = await repo.get(1)
+    assert after is not None and after.is_closed
+    assert not after.archive_pending
+    await service.reconcile_pending_closes()
+    bot.fetch_channel.assert_awaited_once()
+
+
+async def test_a_thread_the_bot_may_not_read_keeps_its_archive_pending(
+    repo: SessionRepository,
+) -> None:
+    await repo.mark_closed(1, "closed while Discord was down", HUMAN.source, archive_pending=True)
+    bot = MagicMock()
+    bot.fetch_channel = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no"))
+    service = SessionLifecycleService(repo, surface=DiscordThreadSurface(bot, repo))
+
+    await service.reconcile_pending_closes()
+
+    after = await repo.get(1)
+    assert after is not None and after.is_closed
+    assert after.archive_pending
+    await service.reconcile_pending_closes()
+    assert bot.fetch_channel.await_count == 2
+
+
+async def test_a_discord_close_interrupted_by_a_restart_finishes_without_discord(
+    repo: SessionRepository,
+) -> None:
+    """The thread was archived out from under a run and the bot died before wrapping up."""
+    await repo.request_close(1, CloseAuthority.DISCORD_ARCHIVED)
+    bot, writer = MagicMock(), AsyncMock()
+    bot.fetch_channel = AsyncMock()
+    service = SessionLifecycleService(
+        repo, surface=DiscordThreadSurface(bot, repo), wrap_up_writer=writer
+    )
+
+    outcomes = await service.reconcile_pending_closes()
+
+    assert [o.state for o in outcomes] == [CloseState.CLOSED]
+    after = await repo.get(1)
+    assert after is not None and after.is_closed
+    assert not after.archive_pending
+    assert after.close_authority == CloseAuthority.DISCORD_ARCHIVED.value
+    assert after.wrap_up and after.session_id == "native-id"
+    writer.summarize.assert_not_awaited()
+    bot.fetch_channel.assert_not_awaited()
+    bot.get_channel.assert_not_called()
 
 
 @pytest.mark.parametrize("new_close", [False, True])

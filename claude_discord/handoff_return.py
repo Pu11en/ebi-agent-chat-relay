@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +22,8 @@ from claude_code_core.handoffs.state import HandoffTrigger, Transition, apply
 
 from .database.handoff_repo import HandoffRepository
 from .handoff_discord import channel_in_guild
+from .session_lifecycle import CloseAuthorization, CloseState, SessionLifecycleService
+from .thread_policy import may_post_unsolicited, thread_is_archived
 
 logger = logging.getLogger(__name__)
 
@@ -117,19 +119,30 @@ async def deliver_pending_handoff_results(
     for entry in await repo.pending_deliveries(now=stamp, limit=limit):
         try:
             target = await _resolve_destination(bot, entry.destination)
-            await target.send(_render_result_message(entry.to_event()))
+            origin_open = await may_post_unsolicited(target)
+            if origin_open:
+                await target.send(_render_result_message(entry.to_event()))
         except Exception as exc:
             logger.warning("Could not deliver handoff result %s", entry.event_id, exc_info=True)
             await repo.record_delivery_failure(entry.id, now=stamp, error=str(exc))
             continue
-        await repo.mark_delivered(entry.id, now=stamp)
-        await _archive_worker_thread(
+        if not origin_open:
+            # The person put the origin conversation away; a post would bring
+            # it back. The result waits in the outbox (bounded retries) in case
+            # they reopen it, and the finished job's own thread still closes.
+            logger.info("handoff result %s held: its origin is archived", entry.event_id)
+            await repo.record_delivery_failure(
+                entry.id, now=stamp, error="origin conversation is archived; not posted"
+            )
+        else:
+            await repo.mark_delivered(entry.id, now=stamp)
+            delivered_any = True
+        await _close_worker_thread(
             repo,
             bot=bot,
             task_id=entry.task_id,
             recipient=entry.recipient,
         )
-        delivered_any = True
     return delivered_any
 
 
@@ -174,28 +187,57 @@ async def _resolve_destination(bot: Any, destination: ConversationCoordinate) ->
     return target
 
 
-async def _archive_worker_thread(
+async def _close_worker_thread(
     repo: HandoffRepository,
     *,
     bot: Any,
     task_id: str,
     recipient: str,
 ) -> None:
+    """Close the finished job's session so its row and its thread agree.
+
+    A bare archive left the row open — a ghost that kept a spoken tag and
+    counted as a live session. The lifecycle service closes the row on the
+    workflow's authority and archives the thread (without locking it, so the
+    job's history can still be read). Only a thread with no session row falls
+    back to the plain archive, and never one that is already out of sight.
+    """
     thread_id = await repo.get_job_thread(task_id, recipient)
     if thread_id is None:
         return
+
+    lifecycle = _lifecycle(bot)
+    if lifecycle is not None:
+        try:
+            outcome = await lifecycle.close(
+                thread_id, CloseAuthorization.from_workflow("handoff", close_on_done=True)
+            )
+        except Exception:
+            logger.warning("Could not close handoff worker session %s", thread_id, exc_info=True)
+            return
+        if outcome.state is not CloseState.NO_SESSION:
+            return
 
     thread = bot.get_channel(thread_id)
     if thread is None:
         with contextlib.suppress(Exception):
             thread = await bot.fetch_channel(thread_id)
-    if thread is None or not hasattr(thread, "edit"):
+    if thread is None or not hasattr(thread, "edit") or thread_is_archived(thread):
         return
 
     try:
         await thread.edit(archived=True, reason="handoff completed")
     except Exception:
         logger.warning("Could not archive handoff worker thread %s", thread_id, exc_info=True)
+
+
+def _lifecycle(bot: Any) -> SessionLifecycleService | None:
+    """The chat cog's lifecycle service, when this bot runs one."""
+    cogs = getattr(bot, "cogs", None)
+    # discord.py hands out a read-only mapping proxy, not a dict.
+    chat = cogs.get("ClaudeChatCog") if isinstance(cogs, Mapping) else None
+    lifecycle = getattr(chat, "lifecycle", None)
+    return lifecycle if isinstance(lifecycle, SessionLifecycleService) else None
 
 
 def _render_result_message(event: HandoffEvent) -> str:

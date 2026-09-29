@@ -43,6 +43,7 @@ from ..handoff_executor import HandoffExecutor, build_handoff_executor
 from ..handoff_messages import HandoffEnvelopeError
 from ..handoff_progress import HandoffProgressPoster
 from ..handoff_return import deliver_pending_handoff_results
+from ..session_lifecycle import SessionLifecycleService
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -339,7 +340,9 @@ class AgentHandoffCog(commands.Cog):
             await self._repo.set_job_thread(task.task_id, local, int(channel.id))
             return
         try:
-            thread = await ensure_job_thread(message, task.task_id, fetch_channel=self._fetch)
+            thread = await ensure_job_thread(
+                message, task.task_id, fetch_channel=self._fetch, lifecycle=self._lifecycle()
+            )
         except Exception:
             logger.warning("could not open the job thread for %s", task.task_id, exc_info=True)
             return
@@ -347,6 +350,11 @@ class AgentHandoffCog(commands.Cog):
 
     async def _fetch(self, channel_id: int) -> Any:
         return await self.bot.fetch_channel(channel_id)
+
+    def _lifecycle(self) -> SessionLifecycleService | None:
+        """The chat cog's session lifecycle, so an un-archived job thread reopens its row."""
+        lifecycle = getattr(self.bot.cogs.get("ClaudeChatCog"), "lifecycle", None)
+        return lifecycle if isinstance(lifecycle, SessionLifecycleService) else None
 
     # -- reconnect -----------------------------------------------------------
 

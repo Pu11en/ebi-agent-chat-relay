@@ -17,7 +17,7 @@ import discord
 from .edit_budget import budget_for
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,15 @@ class StreamingMessageManager:
     When text exceeds Discord's limit, starts a new message.
     """
 
-    def __init__(self, thread: discord.Thread | discord.TextChannel) -> None:
+    def __init__(
+        self,
+        thread: discord.Thread | discord.TextChannel,
+        *,
+        is_muted: Callable[[], bool] | None = None,
+    ) -> None:
         self._thread = thread
+        self._is_muted = is_muted
+        self._muted = False
         self._current_message: discord.Message | None = None
         self._buffer: str = ""
         self._last_edit_time: float = 0
@@ -46,6 +53,23 @@ class StreamingMessageManager:
     @property
     def has_content(self) -> bool:
         return bool(self._buffer)
+
+    @property
+    def muted(self) -> bool:
+        """True once the thread must not be touched again.
+
+        Either this manager was muted directly or its owner (the surface) says
+        the thread was archived or deleted. The text still accumulates, so the
+        caller gets the whole answer back from :meth:`finalize`; it just never
+        reaches Discord, which would un-archive the thread on the first edit.
+        """
+        return self._muted or (self._is_muted is not None and self._is_muted())
+
+    def mute(self) -> None:
+        """Drop every later send and edit, including ones already queued. Idempotent."""
+        self._muted = True
+        if self._pending_edit and not self._pending_edit.done():
+            self._pending_edit.cancel()
 
     async def append(self, text: str) -> None:
         """Append text to the streaming buffer and schedule an edit."""
@@ -104,7 +128,7 @@ class StreamingMessageManager:
                 self._buffer = first
                 await self._flush()
                 # Post overflow chunks
-                while overflow:
+                while overflow and not self.muted:
                     chunk = overflow[:STREAM_MAX_CHARS]
                     overflow = overflow[STREAM_MAX_CHARS:]
                     await self._thread.send(chunk)
@@ -131,6 +155,9 @@ class StreamingMessageManager:
         """
         if not self._buffer:
             return
+        if self.muted:
+            logger.debug("Streaming flush dropped: thread %s is muted", self._thread.id)
+            return
 
         display_text = self._buffer[:STREAM_MAX_CHARS]
 
@@ -144,10 +171,24 @@ class StreamingMessageManager:
                 # (discord_ui/edit_budget.py).
                 message = self._current_message
                 await budget_for(self._thread.id).submit(
-                    lambda: message.edit(content=display_text), key=("stream", message.id)
+                    self._guarded_edit(message, display_text), key=("stream", message.id)
                 )
             self._last_edit_time = time.monotonic()
         except Exception:
             # Catch all exceptions including aiohttp.ClientError (e.g. ServerDisconnectedError
             # on bot shutdown) which is not a subclass of discord.HTTPException.
             logger.debug("Failed to send/edit streaming message", exc_info=True)
+
+    def _guarded_edit(self, message: discord.Message, text: str) -> Callable[[], Awaitable[None]]:
+        """An edit re-checked when the budget runs it, not when it was queued.
+
+        A paced edit can sit in the thread's queue for seconds; the thread may
+        be archived in between, and the edit would then un-archive it.
+        """
+
+        async def edit() -> None:
+            if self.muted:
+                return
+            await message.edit(content=text)
+
+        return edit
