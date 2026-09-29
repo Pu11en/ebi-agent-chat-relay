@@ -129,3 +129,12 @@ counted as user sessions; the check cannot tell them apart from the database alo
   The log records no identity writes, so the writer is still UNKNOWN; the two
   mechanisms that can produce the pair are guarded, and a 19:07:20 error echo in
   the live code would then have re-persisted it on every later attempt.
+
+## Invalid saved wait (task 4.3)
+
+RED: `test_invalid_saved_wait_is_parked_not_crashed`. A loop record whose
+`waiting_status` is not a known status made `_drive` raise, report "💥 The build
+crashed", remove the record and leave a crashed task (caught by the async gate).
+An unreadable saved wait is now treated as ambiguous: the build is parked with a
+visible "keep going" question, the record is kept, and nothing runs until the
+person answers. Resume/legacy suites **11 passed**; full gate **6,233 passed, five known warnings, zero errors in 533.93s**.

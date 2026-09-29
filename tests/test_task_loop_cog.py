@@ -2529,3 +2529,25 @@ class TestLegacyLoopRecovery:
             cog.bot.get_channel = MagicMock(
                 side_effect=lambda cid: thread if cid == thread.id else report_channel
             )
+
+    async def test_invalid_saved_wait_is_parked_not_crashed(self, repo: Path) -> None:
+        """Task 4.3: an unreadable checkpoint pauses visibly; it never deletes the build."""
+        import json
+
+        cog, chat, thread = await self._legacy(repo, "- [ ] Task 1: a\n")
+        raw = json.loads(cog._store.path.read_text())
+        raw[0].update(checkpoints=True, waiting_status="NOT-A-STATUS", waiting_detail="?")
+        cog._store.path.write_text(json.dumps(raw))
+        try:
+            assert await cog.resume_all() == 1
+            for _ in range(500):
+                if cog._waiters:
+                    break
+                await asyncio.sleep(0.01)
+            assert cog._waiters, "an invalid checkpoint waits for the person"
+            chat.run_fresh_turn.assert_not_awaited()
+            assert cog._store.all(), "the saved build is kept"
+            posted = " ".join(str(c.args[0]) for c in thread.send.call_args_list if c.args)
+            assert "crashed" not in posted
+        finally:
+            await cog.cog_unload()

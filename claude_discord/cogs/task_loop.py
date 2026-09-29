@@ -547,6 +547,9 @@ class BuildAlreadyRunningError(ValueError):
         self.thread_id = running.worker_thread_id
 
 
+_STATUS_VALUES = frozenset(status.value for status in Status)
+
+
 @dataclass
 class _Running:
     loop: TaskLoop
@@ -1183,7 +1186,17 @@ class TaskLoopCog(commands.Cog):
             )
             snap = await take_snapshot(Path(record.copy_path), Path(record.copy_plan))
             total = snap.checked + snap.unchecked
-            if not record.checkpoints and record.waiting_status is None:
+            if record.waiting_status is not None and record.waiting_status not in _STATUS_VALUES:
+                # An unreadable saved wait is ambiguous, not a reason to crash or forget.
+                record = self._restore_legacy_wait(
+                    record,
+                    finished=False,
+                    detail=(
+                        "The bot restarted and couldn't read what this build was waiting "
+                        "for. Say **keep going** to carry on."
+                    ),
+                )
+            elif not record.checkpoints and record.waiting_status is None:
                 finished = snap.unchecked == 0
                 # A manifest build's ledger is evidence of what each task was doing
                 # (T17 reconciles it); a plain plan has none, so it waits.
@@ -1213,7 +1226,9 @@ class TaskLoopCog(commands.Cog):
                     await self.repost_blockers(running)
         return resumed
 
-    def _restore_legacy_wait(self, record: LoopRecord, *, finished: bool) -> LoopRecord:
+    def _restore_legacy_wait(
+        self, record: LoopRecord, *, finished: bool, detail: str | None = None
+    ) -> LoopRecord:
         """A record from before saved waits: wait for the person, spend nothing (4.3).
 
         It may have been waiting for a verdict or an answer when it was stored, so
@@ -1225,7 +1240,7 @@ class TaskLoopCog(commands.Cog):
             status, detail = Status.COMPLETE.value, "restored after a restart"
         else:
             status = Status.PAUSE.value
-            detail = (
+            detail = detail or (
                 "The bot restarted and this build's saved state predates checkpoints, "
                 "so I'm not sure it was meant to be running. Say **keep going** to "
                 "carry on."
