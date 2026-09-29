@@ -1654,6 +1654,9 @@ class ClaudeChatCog(commands.Cog):
         Returns:
             The newly created :class:`discord.Thread`.
         """
+        if auto_start and not prompt:
+            # Reject before creating anything: no orphan thread for a bad request.
+            raise ValueError("an automatic session needs a prompt")
         if read_only and auto_start:
             await self._require_read_only_capable_backend(None, backend)
         default_working_dir = getattr(self.runner, "working_dir", None)
@@ -1702,7 +1705,7 @@ class ClaudeChatCog(commands.Cog):
             if model:
                 await settings.set_model(backend, model, thread_id=thread.id)
         if auto_start:
-            if seed_message is None:
+            if seed_message is None:  # unreachable: a prompt was required above
                 raise ValueError("an automatic session needs a prompt")
             # Run Claude in the background so /api/spawn returns immediately.
             # The caller gets the thread reference without waiting for Claude to finish.
