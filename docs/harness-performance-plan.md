@@ -2,11 +2,13 @@
 
 ## Goal and status
 
-Research completed 2026-10-19. Improve verified task completion, continuity and
-response time in Discord, with fewer repeated instructions from the operator.
-Implementation is in progress; no improvement is claimed as deployed. No model
-settings, live service, provider route or other computer changed during research.
-The earlier diagnostic fixes at `c8be866` remain undeployed.
+Improve verified task completion, continuity and response time in Discord, with
+fewer repeated instructions from the operator. Research completed 2026-10-19;
+the scoped source changes were reviewed and pushed. On 2026-10-20, deployment
+failed its import deadline and rolled back to `1514f26`. The reviewed improvements,
+including the earlier diagnostics at `c8be866`, remain undeployed. Live release
+acceptance is pending; later sections distinguish current evidence from earlier
+research and implementation checkpoints.
 
 The operator has already supplied the useful requirements: short replies, work
 in the right project, preserve decisions, finish authorized work, and demonstrate
@@ -287,3 +289,86 @@ projects. Removing either scope without a supported scoped loading mechanism
 would remove functionality. These files remain. No unmeasured speed or token
 saving is claimed from deleting them. Scenario and post-deployment measurements
 remain required before reporting an overall performance change.
+
+### Deployment rollback and maintenance evidence
+
+The attempted deployment of `f1372cf` installed the candidate, then exceeded the
+30-second deadline for its public-import smoke check. The worker restored the
+previous package and reverted its runtime pin change. The candidate is **not**
+running and has not passed live release acceptance.
+
+An independent follow-up compared all 257 restored package files with the
+known-good `1514f26` wheel: no mismatches. The runtime pin is restored, the private
+environment is unchanged, and the restarted service reports healthy. The
+installed distribution now identifies the local rollback wheel; its revision is
+established by exact file comparison, not by nonexistent VCS metadata.
+
+New diagnostic imports passed for the restored package in 10.461 seconds and
+the candidate source using runtime dependencies in 20.340 seconds. These probes
+did not install a package or restart the service. They do not reproduce or
+explain the original timeout, prove a safe cold-start deadline, or establish a
+candidate production pass. A future deployment should diagnose imports before
+service interruption and preserve stack/timing evidence on timeout.
+
+Post-restart logs also show 226 member-enrollment calls across 33 active and
+193 archived Discord threads, with 45 rate-limit retries in the inspected log
+tail. The backfill finished about four minutes after login. This is a separate
+measured startup overhead finding; it is not evidence that Discord caused the
+earlier import timeout. Changing membership behavior requires its own scoped
+compatibility checks.
+
+The maintenance follow-up explicitly prohibits redeployment and repeating
+completed tests. Live scenario observations therefore describe the restored
+revision only. They cannot satisfy the candidate's post-deployment context,
+continuation, folder recovery or delivery acceptance criteria. Existing source
+verification and independent review remain recorded above; neither is
+represented as a successful deployment.
+
+### Restored-version live scenario measurements
+
+Five Codex scenario types completed on the restored revision, with six successful
+turns because continuation includes handoff preparation and a fresh-session turn.
+Each final result was verified in actual Discord messages. The selected and native
+model was `gpt-6-astra` with native `high` effort. Same-provider resume kept its native
+session; the fresh continuation used a different native session while preserving
+the fixture folder, selected model/effort, accepted decision and verification state.
+
+| Scenario | Submission to final Discord result |
+| --- | ---: |
+| Known-project catalog lookup | 59.443 s |
+| Small code fix with failing-then-passing tests | 60.838 s |
+| Research using the supplied local corpus | 42.940 s |
+| Resume with the accepted decision | 39.745 s |
+| Fresh-context continuation | 45.511 s preparation + 34.427 s fresh turn |
+
+These are individual diagnostic observations, not an overall speed improvement,
+native time-to-first-token measurement or provider ranking. Driver waits and relay
+cooldowns are outside those per-turn durations. One attempted next-turn submission
+was correctly rejected by the relay's 60-second pair cooldown; the measurement
+driver was adjusted to respect it. It did not require a model-task correction.
+
+The first three consecutive Codex turns ended with native last-input counts of
+30,295, 39,087 and 41,206 tokens, each with a 258,400-token native window. The
+restored relay saved neither count nor window for all three; the remaining three
+successful turns also saved no context measurement. This reproduces the live
+baseline defect, rather than validating the undeployed fix.
+
+The fixture's original tests, instructions and sources remained byte-identical.
+Independent extra checks confirmed exact-boolean counting, including rejection of
+integer `1` and string `"true"`. Saved research, resume and continuation artifacts
+retained the accepted constraint without requiring the operator to repeat it.
+
+The handoff file passed the reviewed source validator. The fresh session was
+created through the existing REST control plane with an explicit route/model.
+This is not a live test of the candidate's Continue-button callback or automatic
+source-closing behavior.
+
+The explicit switch to Claude created a different Claude-native session and
+delivered the backend-change notice. Claude then returned a native session-limit
+error, reporting a reset at 01:00 America/Chicago on October 20. No switched-task
+artifact or successful Claude inference was produced. Its synthetic zero-token
+error record is not a context measurement. Claude's six scenarios and the pending
+switch completion therefore remain unverified. A single follow-up is scheduled
+for 01:02 after the reported reset; it must retain this failed attempt, avoid
+repeating completed scenarios and stop if the limit remains. No redeployment is
+scheduled or authorized by that follow-up.
