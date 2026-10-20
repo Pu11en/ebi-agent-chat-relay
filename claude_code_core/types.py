@@ -236,3 +236,8 @@ class StreamEvent:
     rate_limit_info: RateLimitInfo | None = None
     hook_event: HookEvent | None = None
     stop_hook_has_output: bool = False
+    #: Last model request's input context; independent of cumulative usage counters.
+    context_used: int | None = None
+    #: None keeps legacy provider handling; "unknown" explicitly invalidates old stats.
+    context_source: str | None = None
+    context_observed_at: float | None = None

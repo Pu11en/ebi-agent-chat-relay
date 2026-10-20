@@ -12,11 +12,13 @@ import logging
 import os
 import re
 import signal
+import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from urllib.parse import urlparse
 
 from .child_env import STRIPPED_ENV_KEYS
+from .codex_context import read_codex_context
 from .types import (
     ImageData,
     MessageType,
@@ -122,6 +124,9 @@ def _fold_token_count(completed: StreamEvent, token_count: StreamEvent) -> None:
     """
     if completed.context_window is None:
         completed.context_window = token_count.context_window
+    completed.context_used = token_count.input_tokens
+    completed.context_source = "codex_event"
+    completed.context_observed_at = time.time()
     if completed.input_tokens is None:
         completed.input_tokens = token_count.input_tokens
         completed.output_tokens = token_count.output_tokens
@@ -174,6 +179,9 @@ def parse_codex_line(line: str) -> StreamEvent | None:
         last = info.get("last_token_usage")
         last = last if isinstance(last, dict) else {}
         window = info.get("model_context_window")
+        used = last.get("input_tokens")
+        if type(window) is not int or window <= 0 or type(used) is not int or used < 0:
+            return None
         return StreamEvent(
             raw=data,
             message_type=MessageType.SYSTEM,
@@ -183,12 +191,17 @@ def parse_codex_line(line: str) -> StreamEvent | None:
             cache_read_tokens=last.get("cached_input_tokens"),
         )
 
-    if event_type == "error":
+    if event_type in {"error", "turn.failed"}:
+        error = data.get("error") if event_type == "turn.failed" else data
         return StreamEvent(
             raw=data,
             message_type=MessageType.RESULT,
             is_complete=True,
-            error=data.get("message", "Unknown error"),
+            error=error.get("message", "Unknown error")
+            if isinstance(error, dict)
+            else "Unknown error",
+            context_source="unknown",
+            context_observed_at=time.time(),
         )
 
     item = data.get("item", {})
@@ -398,6 +411,9 @@ class CodexRunner:
         self.images = images
         self._process: asyncio.subprocess.Process | None = None
         self._interrupt_requested = False
+        self._context_home: Path | None = None
+        self._context_session_id: str | None = None
+        self._context_started_at = 0.0
 
     async def run(
         self,
@@ -427,6 +443,9 @@ class CodexRunner:
             self._interrupt_requested = False
             args = self._build_args(attempt_prompt, attempt_session_id)
             env = self._build_env()
+            self._context_home = Path(env.get("CODEX_HOME") or Path.home() / ".codex")
+            self._context_session_id = attempt_session_id
+            self._context_started_at = time.time()
             cwd = self.working_dir or os.getcwd()
             should_retry_without_resume = False
             saw_progress = False
@@ -491,6 +510,8 @@ class CodexRunner:
                     message_type=MessageType.RESULT,
                     is_complete=True,
                     error=f"Timed out after {self.timeout_seconds} seconds",
+                    context_source="unknown",
+                    context_observed_at=time.time(),
                 )
             finally:
                 await self._cleanup()
@@ -677,6 +698,7 @@ class CodexRunner:
         # terminal event has no usage of its own, its token counts) go onto
         # turn.completed, which is the event the processor persists.
         last_token_count: StreamEvent | None = None
+        completed: StreamEvent | None = None
         while True:
             line = await asyncio.wait_for(
                 self._process.stdout.readline(), timeout=self.timeout_seconds or None
@@ -686,11 +708,21 @@ class CodexRunner:
             decoded = line.decode("utf-8", errors="replace")
             event = parse_codex_line(decoded)
             if event:
+                if event.session_id:
+                    self._context_session_id = event.session_id
                 if event.raw.get("type") == "token_count":
                     last_token_count = event
                     continue
                 if event.is_complete and last_token_count is not None:
                     _fold_token_count(event, last_token_count)
+                if event.raw.get("type") == "turn.completed":
+                    # Drain until natural exit before reading the native store:
+                    # the stdout terminal event can precede its final disk flush.
+                    completed = event
+                    continue
+                if event.error:
+                    event.context_source = "unknown"
+                    event.context_observed_at = time.time()
                 yield event
                 # ``turn.completed`` can arrive before the CLI process exits.
                 # Keep draining stdout so ``wait()`` below observes the natural
@@ -705,6 +737,26 @@ class CodexRunner:
 
         if self._process.returncode is None:
             await asyncio.wait_for(self._process.wait(), timeout=10)
+
+        if completed is not None and self._process.returncode == 0:
+            if last_token_count is None:
+                measurement = None
+                if self._context_home is not None and self._context_session_id:
+                    measurement = await asyncio.to_thread(
+                        read_codex_context,
+                        self._context_home,
+                        self._context_session_id,
+                        self._context_started_at,
+                        completed.raw.get("usage", {}),
+                    )
+                completed.context_source = "unknown"
+                completed.context_observed_at = time.time()
+                if measurement is not None:
+                    completed.context_used = measurement.used
+                    completed.context_window = measurement.window
+                    completed.context_source = "codex_rollout"
+                    completed.context_observed_at = measurement.observed_at
+            yield completed
 
         if self._process.returncode is not None and self._process.returncode > 0:
             if self._interrupt_requested:
@@ -730,6 +782,8 @@ class CodexRunner:
                 message_type=MessageType.RESULT,
                 is_complete=True,
                 error=error,
+                context_source="unknown",
+                context_observed_at=time.time(),
             )
 
     async def _cleanup(self) -> None:

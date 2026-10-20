@@ -62,6 +62,8 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN summary TEXT",
     "ALTER TABLE sessions ADD COLUMN context_window INTEGER",
     "ALTER TABLE sessions ADD COLUMN context_used INTEGER",
+    "ALTER TABLE sessions ADD COLUMN context_source TEXT",
+    "ALTER TABLE sessions ADD COLUMN context_observed_at REAL",
     # Which CLI produced this session ID. Claude and Codex session stores are not
     # interoperable, so a stored ID is only resumable by the backend that made it.
     "ALTER TABLE sessions ADD COLUMN backend TEXT",

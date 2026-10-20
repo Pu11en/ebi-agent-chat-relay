@@ -1142,6 +1142,36 @@ class TestToolUseCount:
 class TestContextStatsPersistence:
     """context_window / context_used are saved to DB on session complete."""
 
+    @pytest.mark.parametrize(
+        "used,window,source", [(6000, 258400, "codex_rollout"), (None, None, "unknown")]
+    )
+    async def test_explicit_context_replaces_cumulative_or_stale_stats(
+        self, thread, runner, tmp_path, used, window, source
+    ):
+        from claude_discord.database.models import init_db
+        from claude_discord.database.repository import SessionRepository
+
+        db_path = str(tmp_path / "sessions.db")
+        await init_db(db_path)
+        repo = SessionRepository(db_path)
+        await repo.save(thread.id, "s-ctx")
+        await repo.update_context_stats(thread.id, 1000000, 999999)
+        processor = EventProcessor(_make_config(thread, runner, repo=repo))
+        result = _make_result_event(
+            input_tokens=90000,
+            cache_read_tokens=40000,
+            context_used=used,
+            context_window=window,
+            context_source=source,
+            context_observed_at=123.0,
+        )
+        await processor.process(result)
+        record = await repo.get(thread.id)
+        assert record.context_used == used
+        assert record.context_window == window
+        assert record.context_source == source
+        assert record.context_observed_at == 123.0
+
     @pytest.mark.asyncio
     async def test_context_stats_saved_on_complete(
         self, thread: MagicMock, runner: MagicMock, tmp_path

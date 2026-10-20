@@ -355,6 +355,8 @@ _MIGRATIONS = [
     # context stats columns added in v2.0
     "ALTER TABLE sessions ADD COLUMN context_window INTEGER",
     "ALTER TABLE sessions ADD COLUMN context_used INTEGER",
+    "ALTER TABLE sessions ADD COLUMN context_source TEXT",
+    "ALTER TABLE sessions ADD COLUMN context_observed_at REAL",
     # usage_stats table added in v2.0
     (
         "CREATE TABLE IF NOT EXISTS usage_stats ("
