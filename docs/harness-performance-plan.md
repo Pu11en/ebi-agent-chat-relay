@@ -1,0 +1,152 @@
+# Codex and Claude harness improvement plan
+
+## Goal and status
+
+Research completed 2026-10-19. Improve verified task completion, continuity and
+response time in Discord, with fewer repeated instructions from the operator.
+This is a proposed implementation sequence, not a claim of deployed improvements.
+No model settings, live service, provider route or other computer changed during
+this research. The earlier diagnostic fixes at `c8be866` remain undeployed.
+
+The operator has already supplied the useful requirements: short replies, work
+in the right project, preserve decisions, finish authorized work, and demonstrate
+results. They should choose user-visible tradeoffs, not debug the implementation.
+
+## Findings that determine the order
+
+| Finding | Evidence | Implication |
+| --- | --- | --- |
+| Codex context tracking is unreliable | Eight recent completed sessions: seven saved zero/missing usage, one stale; none matched final native usage. | Fix measurement before changing context thresholds. This does not prove Codex lost memory. |
+| Claude usage tracking matched the sample | Eight saved usage counts matched final input plus cache usage. | Preserve that path; this does not validate its configured window size or prove task quality. |
+| Codex output surfaces differ | Installed CLI reports 0.160.1. Its upstream JSON processor consumes token notifications internally, emits total usage on completion, and does not forward the raw token-count event expected here. | Do not treat cumulative usage as current context or assume rollout JSON equals CLI stdout JSON. |
+| A second counting flaw exists | Read-only parser reproduction: completion input 9,000 plus last-request input 6,000 persists a reconstructed 9,000. | Even with a token notification, `_fold_token_count` prefers completion totals over last-request context. |
+| Continuation explicitly asks again | `claude_code_core/context_nudge.py::starter_prompt` tells the new session to ask before starting. | For already authorized work, the harness itself can cause an avoidable extra question. |
+| Handoff route needs verification | `ContextNudger.hand_off` supplies the folder but no explicit backend/model to `spawn_session`. | Test continuation after a provider switch; a default route may differ from the source thread. This is a code-path risk, not yet an observed wrong-provider handoff. |
+| Folder recovery caused repeated corrections | A reviewed Discord thread repeatedly clarified the project and received refresh advice without an accessible control. Catalog logs separately rejected an alias outside an approved root. | Fix the actual catalog binding and usable recovery action, not just wording. |
+| Prompt inventory is incomplete | A captured Codex startup advertised 123 skill entries with nine repeated names; the existing audit scans fewer items. | Measure loaded instructions separately from skill metadata before removing anything. |
+
+The earlier runtime snapshot showed a responsive relay, low bot CPU and healthy
+databases. Spotlight was busy and Discord message edits sometimes rate-limited.
+Neither observation establishes the cause of long agent turns. Mixed historical
+tasks do not provide a fair Codex-versus-Claude speed or quality ranking.
+
+OpenAI's [non-interactive documentation](https://learn.chatgpt.com/docs/non-interactive-mode)
+documents the exec JSON event surface. The version-specific
+[0.160.1 JSON processor](https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs)
+establishes the total-usage behavior above. Source inspection explains the mismatch;
+a captured live stdout fixture is still needed before implementing the adapter.
+
+## Proposed fixes, in order
+
+### 1. Make context measurements honest
+
+Keep the current runner initially. Separate current input context, model window,
+cumulative usage and cache counters. Store measurement source and freshness; show
+unknown when measurement is missing instead of presenting zero or an inherited
+window as current. Never estimate current context from cumulative billing usage.
+
+First capture a sanitized real event sequence from the installed CLI. Prefer an
+existing structured provider surface. If exec lacks current context, evaluate a
+bounded adapter reading the matching native session's latest token metadata.
+Require exact session identity, a current-turn timestamp, bounded reading, no
+prompt-body retention, and graceful unknown behavior on missing/malformed files.
+Do not scan every transcript on each message. If those guarantees cannot be met,
+keep unknown and investigate the documented
+[app-server token-usage notifications](https://learn.chatgpt.com/docs/app-server)
+as a separate integration change. A full transport migration is not the first fix.
+
+Acceptance: regressions cover missing events, distinct total/last usage, cache
+counting, resumed turns, compaction, stale records, and model/provider changes.
+Compare three consecutive real turns per backend against their matching native
+records after deployment. No claimed improvement until that comparison succeeds.
+
+### 2. Stop avoidable repetition and folder dead ends
+
+Use existing handoff machinery. Preserve goal, decisions, current branch/commit,
+unfinished changes, verification results, constraints and next authorized action.
+Carry the selected provider/model and project explicitly. Continuing approved
+work should not generate a second permission question; unresolved scope decisions
+must remain unresolved. Validate a newly written handoff, not merely an old file
+at the expected path. Keep the original thread usable if continuation fails.
+
+The current nudge displays a crossed threshold rather than necessarily the actual
+percentage, and promises no information loss. Replace those with measured usage
+and accurate wording. Context percentage is a capacity signal, not a diagnosis of
+forgetting. Keep native compaction; do not force resets at an arbitrary percentage.
+
+Reproduce project recovery through the same Discord picker/catalog paths the
+operator uses. Register a legitimate canonical project location or approved root
+where appropriate; retain root validation. Never recommend an unavailable refresh
+button or substitute a same-named project on another computer.
+
+Acceptance: a fresh continuation retains known decisions, route and folder,
+resumes approved work, and stops for a genuinely missing decision. A known project
+opens through Discord without repeating its name or moving to a desktop interface.
+
+### 3. Reduce measured overhead, then compare real outcomes
+
+Inventory actual injected instructions, skill metadata, loaded skill bodies,
+conversation history and tool output separately. Remove proven duplicate entries
+and stale conflicting rules; move task-specific detail to on-demand references.
+Preserve required preferences and useful skills. OpenAI documents
+[on-demand loading of skill bodies](https://learn.chatgpt.com/docs/build-skills),
+so installed skill count alone is not the context cost. Claude recommends concise
+[project instructions and scoped rules](https://code.claude.com/docs/en/memory).
+
+Instrument comparable timestamps for both providers: message received, run start,
+first useful visible response, tool time, final result and delivery. Identify
+queueing, provider latency and Discord rate-limit waits separately. Debounce status
+edits only if measured delivery waits justify it; preserve final-result delivery.
+
+Start with six scenario types drawn from observed work: known-project lookup,
+small verified code fix, research with a saved decision, same-provider resume,
+fresh-context continuation, and explicit provider handoff. Expand to 20 cases,
+with repeats, before drawing broad performance conclusions. Use isolated fixtures
+and the same pinned task state, model configuration and success criteria.
+
+Score completed outcome, verification evidence, repeated requests for known facts,
+wrong-project actions, time to useful response and total completion time. Record
+unnecessary retries only after reviewing why they happened. Do not optimize token
+count or test totals as substitutes for successful work. This follows Anthropic's
+[outcome-based evaluation guidance](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents).
+Keep a change only if it preserves correctness and improves the targeted behavior;
+report a latency result as inconclusive when the sample is too small or variable.
+
+## Decision for the operator
+
+One question is pending: when a long session needs a fresh start, should the bot
+offer a Continue button, continue automatically in a new thread, or stay in the
+same thread until asked? Recommendation: save a validated handoff and offer one
+Continue button. This is a proposal, not a preference inferred from silence.
+
+No need to ask the operator for examples already present in session history or
+to choose telemetry plumbing. Later speed-versus-depth choices should use a
+measured comparison rather than an abstract questionnaire. Keep current model
+choices until there is evidence for changing them.
+
+## Implementation and release checks
+
+Make separate small changes for telemetry, continuation and project recovery.
+Each bug needs a failing regression first. Run focused tests, the repository's
+parallel `make verify`, and the required boundary security review. Preserve public
+defaults and optional providers; personal catalog configuration stays external.
+
+Source commits do not update the installed iMac service. Before activation, check
+the exact deployed package, active sessions and claims; coordinate a restart and
+keep the known-good package available. Verify health and complete one Discord
+workflow per provider, including route/folder continuity and final delivery.
+Record installed revision separately from source revision. Observe the next normal
+work sessions before claiming reduced repetition or better performance.
+
+The MacBook crawler endpoint was reachable and fetched official OpenAI docs plus
+the version-specific source using its first fetch tier. No crawler installation,
+configuration change, recipe execution or model job was needed. Private metadata
+and reproducible review notes remain in the local ignored planning directory;
+this plan contains no raw conversation transcripts or credentials.
+
+Validation for this documentation-only change: `make verify` exited 0 on
+2026-10-19; formatting, lint and type checks passed; 6,133 tests passed, 12
+Linux-specific tests skipped, and 18 warnings were reported. The warnings include
+existing asynchronous mock cleanup noise. This is not a live acceptance test of
+the proposed fixes. The parser reproduction above confirms a defect; it does not
+repair it.
