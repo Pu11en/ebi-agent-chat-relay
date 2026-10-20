@@ -112,12 +112,18 @@ count or test totals as substitutes for successful work. This follows Anthropic'
 Keep a change only if it preserves correctness and improves the targeted behavior;
 report a latency result as inconclusive when the sample is too small or variable.
 
-## Decision for the operator
+## Accepted operator decision
 
-One question is pending: when a long session needs a fresh start, should the bot
-offer a Continue button, continue automatically in a new thread, or stay in the
-same thread until asked? Recommendation: save a validated handoff and offer one
-Continue button. This is a proposal, not a preference inferred from silence.
+On 2026-10-19 the operator accepted the recommendation: save a validated handoff
+and offer one Continue button when a fresh session is appropriate. Do not
+automatically create a new thread merely because a context threshold was crossed.
+The user-visible choice is settled; implementation and live verification remain
+outstanding.
+
+The operator also rejected the long plan attachment. Keep supporting documents
+in the project and default to short plain-text chat replies. Research or planning
+requests do not by themselves request a card or attachment. The standing Caveman
+preference remains active for both Codex and Claude Code.
 
 No need to ask the operator for examples already present in session history or
 to choose telemetry plumbing. Later speed-versus-depth choices should use a
