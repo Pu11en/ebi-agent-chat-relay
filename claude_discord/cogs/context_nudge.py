@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import datetime
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,7 @@ from claude_code_core.context_nudge import (
     next_thread_name,
     nudge_step,
     starter_prompt,
+    valid_handoff,
 )
 from claude_code_core.frontend import Choice, ChoicePrompt
 
@@ -56,6 +58,7 @@ class ContextNudger:
         #: Threads that must never be nudged (task-loop workers start fresh anyway).
         self.skip_thread_ids: set[int] = set()
         self._tasks: set[asyncio.Task[None]] = set()
+        self._handing_off: set[int] = set()
 
     def after_turn(self, thread: discord.Thread | discord.TextChannel) -> None:
         """Schedule the check so a waiting nudge never blocks the next message."""
@@ -67,6 +70,8 @@ class ContextNudger:
 
     async def _check(self, thread: discord.Thread) -> None:
         try:
+            if thread.id in self._handing_off:
+                return
             record = await self._chat.repo.get(thread.id)
             if record is None:
                 return
@@ -76,27 +81,26 @@ class ContextNudger:
             if step is None:
                 return
             self._offered[thread.id] = step
-            yes = await self._ask(thread, step, getattr(record, "backend", None))
+            pct = (record.context_used or 0) * 100 / (record.context_window or 1)
+            yes = await self._ask(thread, pct, getattr(record, "backend", None))
             if yes:
                 await self.hand_off(thread)
         except Exception:
             logger.warning("context nudge failed for thread %s", thread.id, exc_info=True)
 
-    async def _ask(self, thread: discord.Thread, step: int, backend: str | None = None) -> bool:
+    async def _ask(self, thread: discord.Thread, pct: float, backend: str | None = None) -> bool:
         # "Yes" runs a model turn and opens a thread, so only the people allowed
         # to talk to the bot may press it — the same set the chat cog enforces.
         surface = DiscordSurface(thread, allowed_user_ids=self._chat._allowed_user_ids)
         answer = await surface.prompt_choice(
             ChoicePrompt(
                 question=(
-                    f"This session is about {context_label(step, backend)} full. "
-                    "Long sessions get slower and "
-                    "start forgetting early details. Continue in a fresh session? "
-                    "I'll save a handoff first, so nothing is lost."
+                    f"This session is about {context_label(pct, backend)} full. "
+                    "Continue in a fresh session with a saved handoff?"
                 ),
                 header="🧹 Start fresh?",
                 choices=(
-                    Choice(value=_YES, label="Yes, start fresh", style="positive"),
+                    Choice(value=_YES, label="Continue", style="positive"),
                     Choice(value=_NO, label="Not now"),
                 ),
                 timeout_seconds=NUDGE_TIMEOUT_SECONDS,
@@ -106,6 +110,15 @@ class ContextNudger:
 
     async def hand_off(self, thread: discord.Thread) -> discord.Thread | None:
         """Write the handoff in this session, then open the fresh thread from it."""
+        if thread.id in self._handing_off:
+            return None
+        self._handing_off.add(thread.id)
+        try:
+            return await self._hand_off(thread)
+        finally:
+            self._handing_off.discard(thread.id)
+
+    async def _hand_off(self, thread: discord.Thread) -> discord.Thread | None:
         record = await self._chat.repo.get(thread.id)
         workdir = (record.working_dir if record else None) or getattr(
             self._chat.runner, "working_dir", None
@@ -115,19 +128,53 @@ class ContextNudger:
             await thread.send("-# Couldn't hand off: this thread has no project folder.")
             return None
         path = handoff_path(Path(workdir), thread.name, datetime.date.today().isoformat())
+        path = path.with_name(f"{path.stem}-{uuid.uuid4().hex}.md")
+        if path.exists() or not path.resolve().is_relative_to(Path(workdir).resolve()):
+            await thread.send("Couldn't create a fresh handoff inside this project. Staying here.")
+            return None
         seed = await thread.send("-# 📝 Saving a handoff for the fresh session…")
         await self._chat.run_resumed_turn(seed, thread, handoff_prompt(path))
-        if not path.is_file():
+        if not valid_handoff(path, Path(workdir)):
             await thread.send(
-                f"-# ⚠️ The handoff file wasn't written ({path}). Staying in this session."
+                "The handoff wasn't saved with the required details. Staying in this session."
             )
             return None
+        settings = self._chat._backend_settings
+        backend = record.backend if record else None
+        model = record.model if record else None
+        effort = None
+        if settings is not None:
+            backend = await settings.current_backend(thread.id)
+            model = await settings.current_model(backend, thread.id)
+            effort = await settings.current_effort(backend, thread.id)
+        prompt = starter_prompt(path, thread.mention)
         new = await self._chat.spawn_session(
             parent,
-            starter_prompt(path, thread.mention),
+            prompt,
             thread_name=next_thread_name(thread.name),
             working_dir=workdir,
+            backend=backend,
+            model=model,
+            auto_start=False,
         )
+        if settings is not None and backend and effort:
+            await settings.set_effort(backend, effort, thread_id=new.id)
+        await thread.send(
+            f"Continuing in {new.mention}. This session stays open until it succeeds."
+        )
+        outcome: tuple[str | None, str | None] | None = None
+
+        async def capture(text: str | None, error: str | None) -> None:
+            nonlocal outcome
+            outcome = (text, error)
+
+        seed = await new.send("Reading the handoff and continuing approved work.")
+        await self._chat.run_resumed_turn(seed, new, prompt, result_sink=capture)
+        if outcome is None or outcome[1] or not outcome[0]:
+            await thread.send(
+                "The new session couldn't complete its first turn. This one stays open."
+            )
+            return None
         await self._carry_spoken_tag(thread, new)
         with contextlib.suppress(discord.HTTPException):
             await thread.send(f"➡️ Continued in {new.mention}. Handoff saved at `{path}`.")

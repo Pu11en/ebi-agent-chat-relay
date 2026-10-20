@@ -45,6 +45,17 @@ class TestHandoff:
         text = cn.starter_prompt(tmp_path / "handoffs" / "x.md", "<#1>")
         assert "x.md" in text and "<#1>" in text
 
+    def test_continuation_keeps_existing_authority_and_unresolved_choices(self, tmp_path):
+        text = cn.starter_prompt(tmp_path / "handoff.md", "<#1>")
+        assert "ask before starting" not in text
+        assert "already authorized" in text
+        assert "unresolved" in text
+
+    def test_handoff_captures_working_state_and_verification(self, tmp_path):
+        text = cn.handoff_prompt(tmp_path / "handoff.md")
+        assert "## Working state" in text
+        assert "## Verification" in text
+
 
 class TestNextThreadName:
     @pytest.mark.parametrize(

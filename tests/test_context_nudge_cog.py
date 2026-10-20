@@ -12,6 +12,21 @@ import pytest
 from claude_discord.cogs.context_nudge import ContextNudger
 
 
+def _handoff_text() -> str:
+    return "\n".join(
+        f"## {name}\nRecorded facts.\n"
+        for name in [
+            "Goal",
+            "Where things stand",
+            "Decisions",
+            "Next steps",
+            "Key files",
+            "Working state",
+            "Verification",
+        ]
+    )
+
+
 def _thread(name: str = "realpage") -> MagicMock:
     thread = MagicMock(spec=discord.Thread)
     thread.id = 42
@@ -32,11 +47,16 @@ def _chat(
         working_dir=str(workdir),
         session_id="s",
         backend=backend,
+        model=None,
     )
     chat.repo.get = AsyncMock(return_value=record)
     new = MagicMock(spec=discord.Thread)
     new.mention = "<#43>"
     chat.spawn_session = AsyncMock(return_value=new)
+    new.send = AsyncMock(return_value=MagicMock())
+    chat.close_session = AsyncMock()
+    chat._backend_settings = None
+    chat._settings_repo = None
     return chat
 
 
@@ -60,7 +80,7 @@ class TestCheck:
         with _answer("no") as surface_cls:
             await nudger._check(_thread())
         question = surface_cls.return_value.prompt_choice.await_args.args[0].question
-        assert "50%" in question and "estimate" in question.lower()
+        assert "60%" in question and "estimate" in question.lower()
 
         nudger = ContextNudger(_chat(tmp_path, backend="claude"))
         with _answer("no") as surface_cls:
@@ -89,10 +109,13 @@ class TestCheck:
     async def test_yes_writes_handoff_then_opens_the_next_part(self, tmp_path: Path) -> None:
         chat = _chat(tmp_path)
 
-        async def write_handoff(seed, thread, prompt):  # noqa: ANN001
+        async def write_handoff(seed, thread, prompt, *, result_sink=None):  # noqa: ANN001
+            if result_sink is not None:
+                await result_sink("Continued.", None)
+                return
             path = Path(prompt.split("Write a handoff file at ")[1].split(" (create")[0])
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("## Goal\n")
+            path.write_text(_handoff_text())
 
         chat.run_resumed_turn = AsyncMock(side_effect=write_handoff)
         nudger = ContextNudger(chat)
@@ -103,6 +126,40 @@ class TestCheck:
         assert kwargs["thread_name"] == "realpage · part 2"
         assert kwargs["working_dir"] == str(tmp_path)
         assert "handoffs" in chat.spawn_session.await_args.args[1]
+
+    async def test_question_is_factual_and_continue_is_one_tap(self, tmp_path):
+        nudger = ContextNudger(_chat(tmp_path, used=830))
+        with _answer("no") as surface_cls:
+            await nudger._check(_thread())
+        prompt = surface_cls.return_value.prompt_choice.await_args.args[0]
+        assert "83%" in prompt.question
+        assert "nothing is lost" not in prompt.question
+        assert "forgetting" not in prompt.question
+        assert prompt.choices[0].label == "Continue"
+
+    async def test_old_handoff_cannot_satisfy_a_failed_write(self, tmp_path):
+        old = tmp_path / "handoffs" / "2026-10-19-realpage.md"
+        old.parent.mkdir()
+        old.write_text(_handoff_text())
+        chat = _chat(tmp_path)
+        chat.run_resumed_turn = AsyncMock()
+        with patch("claude_discord.cogs.context_nudge.handoff_path", return_value=old):
+            await ContextNudger(chat).hand_off(_thread())
+        chat.spawn_session.assert_not_awaited()
+        chat.close_session.assert_not_awaited()
+
+    async def test_empty_handoff_does_not_close_source(self, tmp_path):
+        chat = _chat(tmp_path)
+
+        async def empty(seed, thread, prompt):
+            path = Path(prompt.split("Write a handoff file at ")[1].split(" (create")[0])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("## Goal\n")
+
+        chat.run_resumed_turn = AsyncMock(side_effect=empty)
+        await ContextNudger(chat).hand_off(_thread())
+        chat.spawn_session.assert_not_awaited()
+        chat.close_session.assert_not_awaited()
 
     async def test_missing_handoff_stays_put(self, tmp_path: Path) -> None:
         chat = _chat(tmp_path)
@@ -138,12 +195,40 @@ class TestHandoffIsClean:
 
     @staticmethod
     def _writes_handoff(chat: MagicMock) -> None:
-        async def write_handoff(seed, thread, prompt):  # noqa: ANN001
+        async def write_handoff(seed, thread, prompt, *, result_sink=None):  # noqa: ANN001
+            if result_sink is not None:
+                await result_sink("Continued.", None)
+                return
             path = Path(prompt.split("Write a handoff file at ")[1].split(" (create")[0])
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("## Goal\n")
+            path.write_text(_handoff_text())
 
         chat.run_resumed_turn = AsyncMock(side_effect=write_handoff)
+
+    async def test_handoff_preserves_selected_provider_and_model(self, tmp_path):
+        chat = _chat(tmp_path, backend="codex")
+        chat.repo.get.return_value.model = "selected-model"
+        self._writes_handoff(chat)
+        await ContextNudger(chat).hand_off(_thread())
+        kwargs = chat.spawn_session.await_args.kwargs
+        assert kwargs.get("backend") == "codex"
+        assert kwargs.get("model") == "selected-model"
+        assert kwargs.get("auto_start") is False
+
+    async def test_failed_first_turn_keeps_original_session(self, tmp_path):
+        chat = _chat(tmp_path)
+        self._writes_handoff(chat)
+        writer = chat.run_resumed_turn.side_effect
+
+        async def fail_new(seed, thread, prompt, *, result_sink=None):
+            if result_sink is not None:
+                await result_sink(None, "provider unavailable")
+            else:
+                await writer(seed, thread, prompt)
+
+        chat.run_resumed_turn = AsyncMock(side_effect=fail_new)
+        await ContextNudger(chat).hand_off(_thread())
+        chat.close_session.assert_not_awaited()
 
     async def test_the_spoken_tag_moves_to_the_new_thread(self, tmp_path: Path) -> None:
         chat = _chat(tmp_path)

@@ -4,9 +4,9 @@
 
 Research completed 2026-10-19. Improve verified task completion, continuity and
 response time in Discord, with fewer repeated instructions from the operator.
-This is a proposed implementation sequence, not a claim of deployed improvements.
-No model settings, live service, provider route or other computer changed during
-this research. The earlier diagnostic fixes at `c8be866` remain undeployed.
+Implementation is in progress; no improvement is claimed as deployed. No model
+settings, live service, provider route or other computer changed during research.
+The earlier diagnostic fixes at `c8be866` remain undeployed.
 
 The operator has already supplied the useful requirements: short replies, work
 in the right project, preserve decisions, finish authorized work, and demonstrate
@@ -156,3 +156,49 @@ Linux-specific tests skipped, and 18 warnings were reported. The warnings includ
 existing asynchronous mock cleanup noise. This is not a live acceptance test of
 the proposed fixes. The parser reproduction above confirms a defect; it does not
 repair it.
+
+## Implementation progress
+
+Context tracking now separates last-request input from cumulative CLI usage. The
+optional native adapter queries the matching session ID in Codex's read-only
+SQLite index, validates the rollout identity and current completed turn, and
+reads at most a 256 KiB first record plus a 1 MiB tail. Cumulative counters must
+match stdout. Missing, stale, malformed or mismatched data becomes unknown.
+No prompt text is returned or persisted by the adapter. The runner waits for
+natural process exit before reading, allowing native records to flush.
+
+Context source and observation time are persisted. Unknown readings replace old
+ones, and changing native session, provider or an explicitly saved model clears
+the previous measurement. Claude's existing per-request usage path is retained.
+Codex `turn.failed` now surfaces a terminal error instead of being ignored.
+
+Two real pre-deployment runner probes succeeded on the same native session:
+first request 16,993 context tokens; resumed request 17,185 context tokens versus
+34,178 cumulative input tokens. Both reported a 258,400-token window and
+`codex_rollout` provenance. These establish local runner behavior, not deployed
+Discord acceptance. Focused context tests: 200 passed after observed red tests.
+
+Continuation now uses a unique handoff file, validates content in all required
+sections, pins the selected route/model and configured effort, and waits for a
+successful first turn before closing the source session. Missing/empty/stale
+handoffs and failed starts leave the source open. The prompt resumes already
+authorized work and preserves unresolved decisions. The Continue button displays
+the measured percentage without claiming that context size proves forgetting.
+Focused continuation tests: 34 passed after eight reproduced failures.
+
+Release checks also cover existing message-delivery, queued-work, stop/recovery
+and restart behavior. Their tests are part of full verification; live installed
+revision and Discord acceptance still need separate evidence. Project recovery,
+overhead measurements, independent review, push and deployment remain outstanding.
+
+Full verification for this implementation slice exited 0: 6,171 passed, 12
+Linux-only skips, 18 warnings; format, lint and type checks passed. Additional
+type checks covering the new core adapter also passed, as did public imports.
+Security lint found nine S101 assertions already present in the baseline; a
+statement-level comparison found no new findings. These assertions narrow
+internal types/state, not new authorization boundaries. Existing asynchronous
+mock cleanup warnings and a collision-watch mock teardown exception remain
+visible in the log; verification is not described as warning-free.
+
+An independent read-only Claude/Opus review was started against an immutable
+patch. Its result is pending, so it is not yet a passed review or release gate.
