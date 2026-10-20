@@ -108,6 +108,22 @@ async def test_find_revalidates_and_refuses_anything_outside_its_root(service, t
     assert stale is not None and not stale.is_available and stale.working_directory is None
 
 
+async def test_external_link_has_consistent_resolve_search_and_open_results(service, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (tmp_path / "main" / "linked").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable on this host")
+    result = await service.resolve("linked")
+    assert result.kind is ResolutionKind.LOCAL_UNAVAILABLE
+    snapshot = await service.search("linked", include_unavailable=True)
+    assert len(snapshot.projects) == 1 and not snapshot.projects[0].is_available
+    opened = await service.find(snapshot.projects[0].identity.key)
+    assert opened is not None and opened.working_directory is None
+    assert (await service.search("linked")).projects == ()
+
+
 async def test_resolve_and_search_share_the_resolver_and_serialize_without_paths_for_remote(
     service,
 ):

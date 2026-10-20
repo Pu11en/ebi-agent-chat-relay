@@ -240,3 +240,29 @@ the fix; 190 focused tests and full verification now pass (6,188 passed, 12 skip
 19 warnings). Nonzero exits deliberately leave context unknown even after a
 completion event. The nullable health count is documented; no internal numeric
 consumer was found beyond its endpoint and tests. Follow-up review is running.
+
+The follow-up review completed on `claude-opus-4-8`: PASS for the implementation
+through `edbbb16`, including all five earlier findings. Catalog changes below
+are a separate review scope.
+
+### Project discovery and opening agree
+
+A direct-child symlink could previously be advertised as available even though
+opening it correctly rejected a canonical target outside its approved root.
+Discovery and resolution now apply that same canonical boundary. The identity
+remains discoverable as unavailable; links inside the root remain available,
+and retargeting a link after discovery is rejected at revalidation. The catalog
+does not silently broaden approved roots to repair a local shortcut.
+
+Existing explicit-path recovery remains supported: `/cd <absolute folder>` or
+the folder browser's Favorites/Add by path and Start here controls can open an
+authorized folder outside catalog roots. They do not require moving the project
+or expanding catalog access to a home directory. Three reproduced failures now
+pass; catalog/service/launcher suites pass 201 tests. Across twelve local uncached
+scans of 29 projects, the median rose from 3.614 ms to 6.250 ms for the extra
+canonical checks. This is a small correctness cost, not a speed improvement or
+an agent-latency benchmark. Live folder recovery remains a deployment check.
+
+Full verification for the catalog correction exited 0: 6,192 passed, 12 skipped,
+19 warnings; formatting, lint and type checks passed. Separate catalog review
+is pending. No deployment or live acceptance is claimed.
