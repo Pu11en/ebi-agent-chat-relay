@@ -363,12 +363,69 @@ created through the existing REST control plane with an explicit route/model.
 This is not a live test of the candidate's Continue-button callback or automatic
 source-closing behavior.
 
-The explicit switch to Claude created a different Claude-native session and
-delivered the backend-change notice. Claude then returned a native session-limit
-error, reporting a reset at 01:00 America/Chicago on October 20. No switched-task
-artifact or successful Claude inference was produced. Its synthetic zero-token
-error record is not a context measurement. Claude's six scenarios and the pending
-switch completion therefore remain unverified. A single follow-up is scheduled
-for 01:02 after the reported reset; it must retain this failed attempt, avoid
-repeating completed scenarios and stop if the limit remains. No redeployment is
-scheduled or authorized by that follow-up.
+The first explicit switch to Claude created a different Claude-native session,
+but inference hit a session limit. That failed attempt remains separate from
+the successful retry after the reported 01:00 reset. Its synthetic zero-token
+record is not a context measurement. The queued follow-up was disabled when
+the operator resumed this session, avoiding duplicate execution.
+
+### Baseline completion and Claude window correction
+
+All six scenario types now completed on both routes, including provider switches
+in both directions. Each route has seven successful measured turns because
+continuation includes preparation and a fresh turn. Actual Discord final delivery
+and expected artifacts were verified. Original fixture instructions, tests and
+source corpus stayed byte-identical; independent exact-boolean checks passed.
+This completes baseline measurement on `1514f26`, not candidate acceptance.
+
+| Remaining baseline scenario | Submission to final Discord result |
+| --- | ---: |
+| Codex route switching to Claude, successful retry | 93.207 s |
+| Claude catalog lookup | 28.291 s |
+| Claude small verified code fix | 113.974 s |
+| Claude supplied-corpus research | 13.816 s |
+| Claude same-provider resume | 51.118 s |
+| Claude fresh continuation | 17.539 s preparation + 19.717 s fresh turn |
+| Claude route switching to Codex | 41.345 s |
+
+The switch retry excludes the earlier quota failure and reset wait. A later
+submission hit the relay's five-messages-per-ten-minutes sender limit before
+starting inference. The driver waited for that window and resumed only the
+pending turn. No completed scenario was repeated, and no rate guard was bypassed.
+
+Claude's first three request counts matched saved counts: 33,440 / 37,637 / 40,338.
+All six Claude turns matched counts, but fresh sessions saved a 200,000-token
+window while resumed sessions saved 1,000,000. Captured CLI result metadata
+explains a parser defect: a Haiku helper's 200,000-token entry precedes the primary
+Opus entry reporting 1,000,000. The parser previously selected the first entry.
+The reverse switch also retained Claude's stale 200,000 window on the old relay
+while Codex's native record reported 258,400; candidate route invalidation already
+has regression coverage but still needs deployed acceptance.
+
+The Claude correction tracks the observed primary model within each stream,
+ignores child-agent and synthetic model identities, and selects that model's
+reported limit. Without an identity it accepts only valid, unanimous limits.
+Missing, ambiguous or invalid metadata explicitly clears stale context state.
+Model identity resets between streams; no raw prompt data is retained.
+Twelve new failing regressions reproduced the issue before the fix; all fifteen
+new cases and 227 existing focused tests then passed.
+
+Fresh `make verify` passed after this source change: 6,207 tests passed, 12 skipped,
+20 warnings; formatting, lint and type checks passed. Additional core type checks
+and public imports passed. Security comparison found no new findings and retained
+one pre-existing S101 assertion in the runner. Three captured mixed-model CLI
+results also selected the primary model's reported window with the corrected parser.
+Independent Claude Opus 4.8 review passed the code. Its patch-export path finding
+was corrected in the final review artifact; an init-alias docstring was clarified.
+Clearing prior readings on unresolved or failed turns is intentional: an old
+measurement must not appear to describe the current turn.
+
+The private deployment helper now checks the exact candidate wheel's public
+imports before stopping the healthy service. It records import timings and
+periodic stack traces with a bounded 120-second deadline. Two new regressions
+failed before the change; the three affected checks then passed. The updated
+candidate wheel matched all 258 source package files and passed isolated imports
+in 3.699 seconds while the old service remained running. The installed package
+still matched all 257 rollback files and reported healthy. This does not explain
+the original timeout or establish deployed acceptance. No redeployment occurred;
+both release PRs remain drafts.

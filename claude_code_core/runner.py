@@ -411,6 +411,7 @@ class ClaudeRunner:
             raise RuntimeError("Process not started")
 
         line_count = 0
+        context_model: str | None = None
         while True:
             # Each line is progress, not a fresh total runtime budget. Long
             # active sessions may run indefinitely; silent streams cannot.
@@ -424,8 +425,10 @@ class ClaudeRunner:
             decoded = line.decode("utf-8", errors="replace")
             if line_count <= 3:
                 logger.info("Claude CLI stdout line %d: %.100s", line_count, decoded.strip())
-            event = parse_line(decoded)
+            event = parse_line(decoded, context_model=context_model)
             if event:
+                if event.model_id is not None:
+                    context_model = event.model_id
                 yield event
                 if event.is_complete:
                     return

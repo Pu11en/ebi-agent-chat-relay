@@ -241,3 +241,5 @@ class StreamEvent:
     #: None keeps legacy provider handling; "unknown" explicitly invalidates old stats.
     context_source: str | None = None
     context_observed_at: float | None = None
+    #: Primary Claude model observed in init/assistant events, excluding helpers.
+    model_id: str | None = None
