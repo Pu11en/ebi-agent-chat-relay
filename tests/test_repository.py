@@ -16,6 +16,31 @@ async def repo(tmp_path):
 
 
 class TestSessionRepository:
+    async def test_context_provenance_and_unknown_replace_old_reading(self, repo):
+        await repo.save(33, "native", backend="codex")
+        await repo.update_context_stats(
+            33, 258400, 6000, context_source="codex_rollout", context_observed_at=123.0
+        )
+        record = await repo.get(33)
+        assert record.context_source == "codex_rollout"
+        assert record.context_observed_at == 123.0
+        await repo.update_context_stats(33, None, None, context_source="unknown")
+        record = await repo.get(33)
+        assert record.context_used is None and record.context_window is None
+        assert record.context_source == "unknown"
+
+    @pytest.mark.parametrize(
+        "changes",
+        [{"session_id": "new"}, {"backend": "codex"}, {"model": "different-model"}],
+    )
+    async def test_identity_changes_invalidate_context(self, repo, changes):
+        args = {"thread_id": 33, "session_id": "native", "backend": "claude", "model": "old"}
+        await repo.save(**args)
+        await repo.update_context_stats(33, 200000, 90000)
+        await repo.save(**(args | changes))
+        record = await repo.get(33)
+        assert record.context_used is None and record.context_window is None
+
     async def test_save_and_get(self, repo):
         record = await repo.save(thread_id=12345, session_id="session-abc")
         assert record.thread_id == 12345

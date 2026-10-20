@@ -673,6 +673,33 @@ class TestDiscoveryRefresh:
 class TestDiscoveryRevalidation:
     """Pre-launch revalidation refuses to hand out a stale working directory."""
 
+    def test_external_symlink_is_listed_but_never_advertised_as_openable(self, tmp_path):
+        root = make_tree(tmp_path / "projects", "alpha")
+        outside = make_tree(tmp_path / "outside", "work")
+        _symlink_dir(root / "linked", outside)
+        discovery = ProjectDiscovery([make_fs_root(root)])
+        linked = next(p for p in discovery.snapshot().projects if p.identity.name == "linked")
+        assert linked.availability is Availability.UNREADABLE
+        assert linked.working_directory is None
+        assert discovery.revalidate(linked).availability is Availability.UNREADABLE
+
+    def test_internal_symlink_remains_available(self, tmp_path):
+        make_tree(tmp_path, "alpha")
+        _symlink_dir(tmp_path / "linked", tmp_path / "alpha")
+        discovery = ProjectDiscovery([make_fs_root(tmp_path)])
+        linked = next(p for p in discovery.snapshot().projects if p.identity.name == "linked")
+        assert linked.is_available
+
+    def test_retargeted_symlink_is_rejected_before_open(self, tmp_path):
+        root = make_tree(tmp_path / "projects", "alpha")
+        outside = make_tree(tmp_path / "outside", "work")
+        _symlink_dir(root / "linked", root / "alpha")
+        discovery = ProjectDiscovery([make_fs_root(root)])
+        linked = next(p for p in discovery.snapshot().projects if p.identity.name == "linked")
+        (root / "linked").unlink()
+        _symlink_dir(root / "linked", outside)
+        assert discovery.revalidate(linked).working_directory is None
+
     def test_an_existing_project_stays_available(self, tmp_path: Path) -> None:
         make_tree(tmp_path, "alpha")
         discovery = ProjectDiscovery([make_fs_root(tmp_path)])

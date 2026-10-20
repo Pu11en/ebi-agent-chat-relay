@@ -28,10 +28,11 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
-def parse_line(line: str) -> StreamEvent | None:
+def parse_line(line: str, *, context_model: str | None = None) -> StreamEvent | None:
     """Parse a single line of stream-json output into a StreamEvent.
 
-    Returns None if the line is empty or unparseable.
+    Returns None if the line is empty or unparseable. ``context_model`` is the
+    primary model identity observed in this stream, excluding helper models.
     """
     line = line.strip()
     if not line:
@@ -59,7 +60,7 @@ def parse_line(line: str) -> StreamEvent | None:
     elif msg_type == MessageType.USER:
         _parse_user(data, event)
     elif msg_type == MessageType.RESULT:
-        _parse_result(data, event)
+        _parse_result(data, event, context_model=context_model)
     elif msg_type == MessageType.PROGRESS:
         _parse_progress(data, event)
     elif msg_type == MessageType.RATE_LIMIT_EVENT:
@@ -75,6 +76,7 @@ def _parse_system(data: dict[str, Any], event: StreamEvent) -> None:
     event.session_id = data.get("session_id")
     subtype = data.get("subtype", "")
     if subtype == "init":
+        event.model_id = _model_id(data.get("model"))
         logger.info("Session initialized: %s", event.session_id)
     elif subtype == "compact_boundary":
         event.is_compact = True
@@ -162,6 +164,8 @@ def _parse_assistant(data: dict[str, Any], event: StreamEvent) -> None:
     when present, is still respected as a completion signal.
     """
     message = data.get("message", {})
+    if data.get("parent_tool_use_id") is None:
+        event.model_id = _model_id(message.get("model"))
     content = message.get("content", [])
     event.is_partial = False
 
@@ -241,7 +245,32 @@ def _parse_user(data: dict[str, Any], event: StreamEvent) -> None:
             break
 
 
-def _parse_result(data: dict[str, Any], event: StreamEvent) -> None:
+def _model_id(value: Any) -> str | None:
+    """Keep model identity only; synthetic error messages have no model."""
+    if isinstance(value, str) and value.strip() and value != "<synthetic>":
+        return value
+    return None
+
+
+def _context_window(model_usage: Any, context_model: str | None) -> int | None:
+    """Attribute the limit to the primary model, or require an agreed limit."""
+    if not isinstance(model_usage, dict) or not model_usage:
+        return None
+    entries = (
+        [model_usage.get(context_model)] if context_model is not None else model_usage.values()
+    )
+    windows: set[int] = set()
+    for entry in entries:
+        window = entry.get("contextWindow") if isinstance(entry, dict) else None
+        if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
+            return None
+        windows.add(window)
+    return next(iter(windows)) if len(windows) == 1 else None
+
+
+def _parse_result(
+    data: dict[str, Any], event: StreamEvent, *, context_model: str | None = None
+) -> None:
     """Parse result message (session complete)."""
     event.is_complete = True
     event.session_id = data.get("session_id")
@@ -255,12 +284,10 @@ def _parse_result(data: dict[str, Any], event: StreamEvent) -> None:
         event.cache_read_tokens = usage.get("cache_read_input_tokens")
         event.cache_creation_tokens = usage.get("cache_creation_input_tokens")
 
-    # Extract context window size from modelUsage (any model key).
-    model_usage = data.get("modelUsage", {})
-    for model_info in model_usage.values():
-        if isinstance(model_info, dict) and "contextWindow" in model_info:
-            event.context_window = model_info["contextWindow"]
-            break
+    # Helper models can precede the primary model and have different limits.
+    event.context_window = _context_window(data.get("modelUsage"), context_model)
+    if event.context_window is None:
+        event.context_source = "unknown"
 
     # Final text from result
     result_text = data.get("result", "")

@@ -7,6 +7,7 @@ Teams conversation ID, etc.).
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -90,6 +91,8 @@ class SessionRecord:
     close_authority: str | None = None
     wrap_up: str | None = None
     closed_at: str | None = None
+    context_source: str | None = None
+    context_observed_at: float | None = None
 
     @property
     def is_open(self) -> bool:
@@ -146,6 +149,16 @@ class SessionRepository:
         before passing it to ``--resume`` / ``codex exec resume``.
         """
         async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
+            # A native ID, provider or explicitly selected model change makes the
+            # previous window/usage invalid. Clear inside the same transaction.
+            await db.execute(
+                """UPDATE sessions SET context_window = NULL, context_used = NULL,
+                          context_source = NULL, context_observed_at = NULL
+                   WHERE thread_id = ? AND (session_id != ?
+                     OR (? IS NOT NULL AND backend IS NOT ?)
+                     OR (? IS NOT NULL AND model IS NOT ?))""",
+                (thread_id, session_id, backend, backend, model, model),
+            )
             await db.execute(
                 """INSERT INTO sessions
                      (thread_id, session_id, working_dir, model, origin, summary, backend)
@@ -432,14 +445,24 @@ class SessionRepository:
     async def update_context_stats(
         self,
         thread_id: int,
-        context_window: int,
-        context_used: int,
+        context_window: int | None,
+        context_used: int | None,
+        *,
+        context_source: str | None = None,
+        context_observed_at: float | None = None,
     ) -> None:
         """Persist context window stats for a session."""
         async with aiosqlite.connect(self.db_path, timeout=DB_BUSY_TIMEOUT_SECONDS) as db:
             await db.execute(
-                "UPDATE sessions SET context_window = ?, context_used = ? WHERE thread_id = ?",
-                (context_window, context_used, thread_id),
+                """UPDATE sessions SET context_window = ?, context_used = ?,
+                       context_source = ?, context_observed_at = ? WHERE thread_id = ?""",
+                (
+                    context_window,
+                    context_used,
+                    context_source or "provider_usage",
+                    context_observed_at if context_observed_at is not None else time.time(),
+                    thread_id,
+                ),
             )
             await db.commit()
 

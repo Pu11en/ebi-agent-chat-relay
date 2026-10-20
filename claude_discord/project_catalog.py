@@ -534,7 +534,29 @@ class ProjectDiscovery:
         that has since been deleted or replaced comes back unavailable, and
         :attr:`CatalogProject.working_directory` then returns ``None``.
         """
-        return project.with_availability(self._availability_of(Path(project.path)))
+        availability = self._availability_of(Path(project.path))
+        if availability is Availability.AVAILABLE:
+            root = next(
+                (
+                    root
+                    for root in self._roots
+                    if (root.owner, root.computer, root.key)
+                    == (
+                        project.identity.owner,
+                        project.identity.computer,
+                        project.identity.root_key,
+                    )
+                ),
+                None,
+            )
+            try:
+                if root is None or not Path(project.path).resolve(strict=True).is_relative_to(
+                    Path(root.path).resolve(strict=True)
+                ):
+                    availability = Availability.UNREADABLE
+            except (OSError, RuntimeError, ValueError):
+                availability = Availability.UNREADABLE
+        return project.with_availability(availability)
 
     def _scan(self) -> CatalogSnapshot:
         statuses: list[RootStatus] = []
@@ -576,7 +598,9 @@ class ProjectDiscovery:
             return RootStatus(root, Availability.UNREADABLE, reason), []
 
         found = [
-            CatalogProject(identity=root.child_identity(name), path=root.child_path(name))
+            self.revalidate(
+                CatalogProject(identity=root.child_identity(name), path=root.child_path(name))
+            )
             for name in names
         ]
         return RootStatus(root, Availability.AVAILABLE), found
@@ -593,6 +617,8 @@ class ProjectDiscovery:
             # Follows symlinks: a symlinked project folder is still a direct
             # child, and its catalog path stays inside the approved root.  A
             # dangling symlink is not a directory and is skipped.
+            # Revalidation also checks the canonical target before advertising
+            # availability, using the same boundary enforced when opening it.
             return entry.is_dir() and not is_linked_worktree(Path(entry.path))
         except OSError:
             return False

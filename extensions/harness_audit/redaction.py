@@ -201,7 +201,8 @@ _RULES: tuple[_Rule, ...] = (
         "credential-shape",
         re.compile(
             r"(?P<value>"
-            r"sk-[A-Za-z0-9_\-]{16,}"
+            # A key starts at a word boundary, not inside "task-coordination".
+            r"\bsk-[A-Za-z0-9_\-]{16,}"
             r"|gh[pousr]_[A-Za-z0-9]{20,}"
             r"|github_pat_[A-Za-z0-9_]{20,}"
             r"|xox[abposr]-[A-Za-z0-9\-]{10,}"

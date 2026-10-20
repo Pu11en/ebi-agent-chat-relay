@@ -1742,7 +1742,12 @@ class ClaudeChatCog(commands.Cog):
         )
 
     async def run_resumed_turn(
-        self, seed_message: discord.Message, thread: discord.Thread, prompt: str
+        self,
+        seed_message: discord.Message,
+        thread: discord.Thread,
+        prompt: str,
+        *,
+        result_sink: Callable[[str | None, str | None], Awaitable[None]] | None = None,
     ) -> None:
         """Run one turn that continues *thread*'s current session, and wait for it."""
         record = await self.repo.get(thread.id)
@@ -1755,6 +1760,7 @@ class ClaudeChatCog(commands.Cog):
             prompt,
             session_id=session_id,
             working_dir_override=record.working_dir if record else None,
+            result_sink=result_sink,
         )
 
     async def deliver_relayed_message(

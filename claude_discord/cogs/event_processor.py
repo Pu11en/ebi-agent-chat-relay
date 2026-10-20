@@ -128,13 +128,24 @@ def _completion_fields(event: StreamEvent, runner: object) -> tuple[tuple[str, s
         fields.append(("Cost", f"${event.cost_usd:.4f}"))
     if event.input_tokens is not None and event.output_tokens is not None:
         fields.append(("Tokens", f"{event.input_tokens} in · {event.output_tokens} out"))
-    if event.context_window and event.input_tokens is not None:
-        used = (
-            event.input_tokens + (event.cache_read_tokens or 0) + (event.cache_creation_tokens or 0)
-        )
+    used = _context_tokens(event)
+    if event.context_window and used is not None:
         pct = min(100.0, used * 100 / event.context_window)
         fields.append(("Context", context_label(pct, backend, estimated=event.context_estimated)))
+    elif event.context_source == "unknown":
+        fields.append(("Context", "Unknown"))
     return tuple(fields)
+
+
+def _context_tokens(event: StreamEvent) -> int | None:
+    """Prefer explicit native context; legacy Claude input counters are disjoint."""
+    if event.context_source == "unknown":
+        return None
+    if event.context_used is not None:
+        return event.context_used
+    if event.input_tokens is None:
+        return None
+    return event.input_tokens + (event.cache_read_tokens or 0) + (event.cache_creation_tokens or 0)
 
 
 _TIMEOUT_PATTERN = re.compile(r"Timed out after (\d+) seconds")
@@ -667,9 +678,18 @@ class EventProcessor:
                             working_dir=self._config.runner.working_dir,
                             model=self._config.runner.model,
                             context_window=event.context_window,
-                            input_tokens=event.input_tokens,
-                            cache_creation_tokens=event.cache_creation_tokens,
-                            cache_read_tokens=event.cache_read_tokens,
+                            input_tokens=(
+                                event.context_used
+                                if event.context_used is not None
+                                else event.input_tokens
+                            ),
+                            cache_creation_tokens=(
+                                0 if event.context_used is not None else event.cache_creation_tokens
+                            ),
+                            cache_read_tokens=(
+                                0 if event.context_used is not None else event.cache_read_tokens
+                            ),
+                            context_source=event.context_source,
                             api_label=api_label,
                             backend_settings=self._config.backend_settings,
                             codex_command=self._config.codex_command,
@@ -703,17 +723,17 @@ class EventProcessor:
                 )
             self._state.session_id = event.session_id
 
-        # Persist context window stats (requires repo + context_window in event).
-        if self._config.repo and event.context_window is not None:
-            context_used = (
-                (event.input_tokens or 0)
-                + (event.cache_read_tokens or 0)
-                + (event.cache_creation_tokens or 0)
-            )
+        # An explicit unknown must clear the previous turn's reading too.
+        if self._config.repo and (
+            event.context_window is not None or event.context_source is not None
+        ):
             await self._config.repo.update_context_stats(
                 thread_id=self._config.surface.thread_key,
                 context_window=event.context_window,
-                context_used=context_used,
+                context_used=_context_tokens(event),
+                context_source=event.context_source
+                or ("estimate" if event.context_estimated else "provider_usage"),
+                context_observed_at=event.context_observed_at,
             )
 
         # Reset for potential next streamer
@@ -1143,6 +1163,7 @@ async def _post_engine_status_footer(
     backend_settings: object | None,
     codex_command: str,
     thread_id: int | None,
+    context_source: str | None = None,
 ) -> None:
     """Post the per-turn engine status footer (Claude statusLine + Codex line).
 
@@ -1176,7 +1197,9 @@ async def _post_engine_status_footer(
     # Render the Claude statusLine on Claude turns, or whenever the Codex line
     # is being shown (so both engines appear together). On non-Claude turns the
     # session model id is not a Claude model, so suppress the model label.
-    render_claude_sl = backend == "claude" or codex_line is not None
+    render_claude_sl = (
+        backend == "claude" or codex_line is not None
+    ) and context_source != "unknown"
     statusline_text: str | None = None
     if render_claude_sl:
         statusline_text = await _render_claude_statusline_text(

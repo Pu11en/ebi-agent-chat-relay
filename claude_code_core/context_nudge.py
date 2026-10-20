@@ -1,10 +1,7 @@
-"""Suggest a fresh session before a long one goes bad.
+"""Offer a fresh session as context grows, preserving the working state.
 
-A session that has filled half its context window is slower, costs more per
-turn and starts losing track of early details — but it is also where the
-person's whole working state lives, so "just start over" is not free. The
-nudge makes the healthy move one tap: the old session writes a handoff file
-while it still remembers everything, and a new thread starts from that file.
+Capacity is a useful signal, not proof of forgetting or a guaranteed slowdown.
+The nudge offers a choice: write a handoff, then continue from it in a new thread.
 
 Frontend-agnostic rules live here; the Discord flow is
 ``claude_discord/cogs/context_nudge.py``.
@@ -25,6 +22,15 @@ ESTIMATED_CONTEXT_BACKENDS = frozenset({"dsh"})
 _PART_RE = re.compile(r"^(.*?) · part (\d+)$")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MAX_THREAD_NAME = 100
+_HANDOFF_SECTIONS = (
+    "Goal",
+    "Where things stand",
+    "Decisions",
+    "Next steps",
+    "Key files",
+    "Working state",
+    "Verification",
+)
 
 
 def nudge_step(used: int | None, window: int | None, already: int) -> int | None:
@@ -62,6 +68,10 @@ def handoff_prompt(path: Path) -> str:
             "## Decisions — what was decided and why (so it is not re-asked)",
             "## Next steps — the very next thing to do, then the ones after",
             "## Key files — absolute paths worth reading first",
+            "## Working state — branch, commit, changed files and unfinished work",
+            "## Verification — checks run, actual results and remaining checks",
+            "Put substantive content below every heading; say none when appropriate. "
+            "Preserve constraints, accepted authority and unresolved choices in Decisions.",
             "Write it for someone smart who was not here. Do not do any other work. "
             "When the file is saved, reply with one short sentence.",
         ]
@@ -72,9 +82,34 @@ def starter_prompt(path: Path, previous: str) -> str:
     """The first message of the fresh session."""
     return (
         f"Continuing from {previous}. Read {path} first — it is the handoff from the "
-        "previous session. Then tell me in a few plain sentences where we are and "
-        "what the next step is, and ask before starting it."
+        "previous session. Verify the current workspace, preserve its decisions and constraints, "
+        "and continue the next action already authorized. Ask only for an unresolved decision, "
+        "missing information or required authority. Keep updates short."
     )
+
+
+def valid_handoff(path: Path, workdir: Path) -> bool:
+    """Require a bounded project-local file with usable content in every section."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        if not path.resolve().is_relative_to(workdir.resolve()):
+            return False
+        with path.open("rb") as stream:
+            data = stream.read(128 * 1024 + 1)
+        if len(data) > 128 * 1024:
+            return False
+        text = data.decode("utf-8")
+    except (OSError, UnicodeError, RuntimeError):
+        return False
+    sections = re.split(r"(?m)^##\s+", text)[1:]
+    present = set()
+    for section in sections:
+        title, _, body = section.partition("\n")
+        for name in _HANDOFF_SECTIONS:
+            if re.fullmatch(re.escape(name) + r"(?:\s*[—:-].*)?\s*", title) and body.strip():
+                present.add(name)
+    return present == set(_HANDOFF_SECTIONS)
 
 
 def next_thread_name(name: str) -> str:

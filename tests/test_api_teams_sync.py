@@ -38,7 +38,7 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 @pytest.fixture
 def vault() -> Iterator[Path]:
     with tempfile.TemporaryDirectory() as tmp:
-        yield Path(tmp)
+        yield Path(tmp).resolve()
 
 
 @pytest.fixture

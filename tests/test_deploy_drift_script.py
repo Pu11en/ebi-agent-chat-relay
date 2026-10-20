@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "check-deploy-drift.sh"
 
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Linux ops script: bash shebang stubs and executable bits"
+    sys.platform != "linux", reason="Linux ops script requires systemd and GNU date/stat"
 )
 
 

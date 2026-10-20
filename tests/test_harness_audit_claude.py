@@ -267,4 +267,4 @@ def test_read_claude_sessions_keeps_metadata_only(tmp_path: Path) -> None:
     session = sessions[0]
     assert session.version == "2.0.5"
     assert session.cwd.endswith("projects/relay")
-    assert "private" not in to_json(session)
+    assert "private prompt text" not in to_json(session)

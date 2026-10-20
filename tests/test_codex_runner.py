@@ -342,6 +342,71 @@ class TestCodexRunnerClone:
 
 
 class TestCodexRunnerRun:
+    @pytest.mark.parametrize("usage", [None, [], "invalid"])
+    def test_malformed_completed_usage_does_not_crash(self, usage):
+        event = parse_codex_line(json.dumps({"type": "turn.completed", "usage": usage}))
+        assert event is not None and event.is_complete
+        assert event.input_tokens is None
+
+    @pytest.mark.asyncio
+    async def test_failed_turn_cannot_be_overridden_by_later_completion(self, monkeypatch):
+        process = _FakeProcess(
+            stdout_lines=[
+                b'{"type":"turn.failed","error":{"message":"quota exhausted"}}',
+                b'{"type":"turn.completed","usage":{}}',
+            ]
+        )
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=process),
+        )
+        events = [event async for event in CodexRunner().run("continue")]
+        assert [e.error for e in events if e.is_complete] == ["quota exhausted"]
+
+    @pytest.mark.asyncio
+    async def test_native_failure_is_used_when_stdout_has_no_error(self, monkeypatch):
+        process = _FakeProcess(
+            stdout_lines=[b'{"type":"thread.started","thread_id":"native-session"}'],
+            stderr=b"write_stdin failed: Unknown process id 65970",
+            returncode=1,
+        )
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=process),
+        )
+        with patch(
+            "claude_code_core.codex_runner.read_codex_failure",
+            return_value="You’ve hit your usage limit.",
+            create=True,
+        ) as read_failure:
+            events = [event async for event in CodexRunner().run("continue")]
+        assert [e.error for e in events if e.error] == ["You’ve hit your usage limit."]
+        assert read_failure.call_args.args[1] == "native-session"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stderr", [b"", b"write_stdin failed: Unknown process id 65970"])
+    async def test_quota_failure_is_not_overwritten_by_process_exit(self, monkeypatch, stderr):
+        from claude_code_core.capacity import BackendFailure, CapacityCategory, classify_failure
+
+        message = "You’ve hit your usage limit. Try again at Oct 26th, 2026 11:01 AM."
+        process = _FakeProcess(
+            stdout_lines=[
+                json.dumps({"type": "turn.failed", "error": {"message": message}}).encode()
+            ],
+            stderr=stderr,
+            returncode=1,
+        )
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=process),
+        )
+        events = [event async for event in CodexRunner().run("continue")]
+        failures = [event.error for event in events if event.error]
+        assert failures == [message]
+        outcome = classify_failure(BackendFailure(error=failures[-1], backend="codex"))
+        assert outcome.category is CapacityCategory.QUOTA_EXHAUSTED
+        assert outcome.retryable is False
+
     @pytest.mark.asyncio
     async def test_turn_completed_waits_for_natural_process_exit(self, monkeypatch) -> None:
         """A terminal event must not release the session while Codex still owns it."""
@@ -856,6 +921,20 @@ class TestContextWindowFromTokenCount:
     def test_token_count_without_info_is_ignored(self) -> None:
         assert parse_codex_line(json.dumps({"type": "token_count"})) is None
 
+    @pytest.mark.parametrize("input_count", [None, -1, True, "6000"])
+    def test_invalid_last_input_does_not_make_totals_look_like_context(self, input_count):
+        data = json.loads(json.dumps(self.TOKEN_COUNT))
+        data["info"]["last_token_usage"]["input_tokens"] = input_count
+        assert parse_codex_line(json.dumps(data)) is None
+
+    def test_failed_turn_is_a_terminal_error_with_unknown_context(self):
+        event = parse_codex_line(
+            '{"type":"turn.failed","error":{"message":"provider unavailable"}}'
+        )
+        assert event is not None and event.is_complete
+        assert event.error == "provider unavailable"
+        assert event.context_source == "unknown"
+
     @pytest.mark.asyncio
     async def test_turn_completed_carries_the_window_and_used_tokens(self, monkeypatch) -> None:
         lines = [
@@ -909,6 +988,55 @@ class TestContextWindowFromTokenCount:
         )
         events = [event async for event in CodexRunner(command="codex").run("hello")]
         assert events[-1].context_window is None
+
+    def test_last_request_context_is_not_overwritten_by_total_usage(self) -> None:
+        from claude_code_core.codex_runner import _fold_token_count
+
+        token = parse_codex_line(json.dumps(self.TOKEN_COUNT))
+        completed = parse_codex_line(
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 9000}})
+        )
+        assert token is not None and completed is not None
+        _fold_token_count(completed, token)
+        assert getattr(completed, "context_used", None) == 6000
+
+    async def test_exec_stdout_gets_context_from_matching_native_record(self, monkeypatch) -> None:
+        from claude_code_core.codex_context import CodexContext
+
+        lines = [
+            b'{"type":"thread.started","thread_id":"native-id"}',
+            b'{"type":"turn.completed","usage":{"input_tokens":9000}}',
+        ]
+        process = _FakeProcess(stdout_lines=lines)
+
+        async def create(*args, **kwargs):
+            return process
+
+        calls = []
+
+        def read(home, session, started_at, usage):
+            calls.append((session, usage))
+            return CodexContext(used=6000, window=258400, observed_at=123.0)
+
+        monkeypatch.setattr("claude_code_core.codex_runner.asyncio.create_subprocess_exec", create)
+        monkeypatch.setattr("claude_code_core.codex_runner.read_codex_context", read, raising=False)
+        events = [e async for e in CodexRunner(command="codex").run("hello")]
+        done = events[-1]
+        assert getattr(done, "context_used", None) == 6000
+        assert done.context_window == 258400
+        assert done.context_source == "codex_rollout"
+        assert done.context_observed_at == 123.0
+        assert calls == [("native-id", {"input_tokens": 9000})]
+
+    async def test_missing_native_measurement_explicitly_invalidates_context(self, monkeypatch):
+        process = _FakeProcess(stdout_lines=[b'{"type":"turn.completed","usage":{}}'])
+
+        async def create(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr("claude_code_core.codex_runner.asyncio.create_subprocess_exec", create)
+        events = [e async for e in CodexRunner(command="codex").run("hello")]
+        assert getattr(events[-1], "context_source", None) == "unknown"
 
 
 class TestCodexRunnerArgvStructure:

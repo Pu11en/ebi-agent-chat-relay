@@ -561,7 +561,7 @@ class TestContextWindow:
         assert event.context_window is None
 
     def test_context_window_multiple_models(self) -> None:
-        """First model with contextWindow wins."""
+        """An agreed window remains usable without a primary model identity."""
         line = json.dumps(
             {
                 "type": "result",

@@ -527,6 +527,8 @@ def _describe(
     except DiscoveryError as error:
         excluded.append(ExcludedPath(display, str(error)))
         return None
+    # A file can be an alias through a linked parent directory as well.
+    is_link = is_link or resolved != path.absolute()
     if not roots.is_approved(resolved):
         excluded.append(
             ExcludedPath(display, f"resolves outside the approved roots to {resolved.as_posix()}")
@@ -590,13 +592,12 @@ def _resolve(path: Path, roots: DiscoveryRoots) -> Path:
         if declared is not None:
             current = declared if declared.is_absolute() else current.parent / declared
             continue
-        if current.is_symlink():
-            try:
-                current = current.resolve(strict=True)
-            except OSError as error:
-                raise DiscoveryError(f"broken link: {type(error).__name__}") from error
-            continue
-        return current
+        try:
+            # Resolve every component before checking approved roots; a regular
+            # SKILL.md inside a symlinked directory is not itself a symlink.
+            return current.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise DiscoveryError(f"broken link: {type(error).__name__}") from error
     raise DiscoveryError("link chain too deep")
 
 
