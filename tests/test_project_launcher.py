@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -13,6 +15,17 @@ import pytest
 from claude_discord.cogs.project_launcher import LauncherView, ProjectLauncherCog
 from claude_discord.database.models import init_db
 from claude_discord.database.settings_repo import SettingsRepository
+
+
+@pytest.fixture
+def short_project_root() -> Iterator[Path]:
+    """Keep real autocomplete values within Discord's 100-character ceiling.
+
+    Pytest's test-named directories under macOS's /private/var/folders already
+    exceed that limit before a project name is appended.
+    """
+    with tempfile.TemporaryDirectory(prefix="ccdb-") as directory:
+        yield Path(directory).resolve()
 
 
 def interaction(user: int = 42, channel: int = 100) -> MagicMock:
@@ -1217,8 +1230,9 @@ async def test_suggestions_come_from_the_catalog_when_present(catalog_cog, tmp_p
 
 
 async def test_folder_autocomplete_offers_recents_before_anything_is_typed(
-    cog, tmp_path, monkeypatch
+    cog, short_project_root, monkeypatch
 ):
+    tmp_path = short_project_root
     monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
     for name in ("alpha", "beta", "gamma"):
         (tmp_path / name).mkdir()
@@ -1230,12 +1244,15 @@ async def test_folder_autocomplete_offers_recents_before_anything_is_typed(
     assert all(len(choice.name) <= 100 for choice in choices)
 
 
-async def test_folder_autocomplete_filters_as_the_user_types(cog, tmp_path, monkeypatch):
+async def test_folder_autocomplete_ranks_matching_name_first(cog, short_project_root, monkeypatch):
+    tmp_path = short_project_root
     monkeypatch.setenv("CCDB_PROJECT_ROOTS", str(tmp_path))
     (tmp_path / "ebi-agent-chat-relay").mkdir()
     (tmp_path / "unrelated").mkdir()
     choices = await cog.folder_autocomplete(interaction(), "echat")
-    assert [choice.value for choice in choices] == [str(tmp_path / "ebi-agent-chat-relay")]
+    # Parent paths are also fuzzy-searchable, so a macOS temporary parent may
+    # match "echat". The project-name match must still rank ahead of it.
+    assert choices[0].value == str(tmp_path / "ebi-agent-chat-relay")
 
 
 async def test_folder_autocomplete_never_raises_and_never_replies(cog, tmp_path, monkeypatch):

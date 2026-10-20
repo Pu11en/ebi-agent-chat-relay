@@ -81,6 +81,19 @@ class TestHealth:
         assert (await resp.json())["overdue_notifications"] == 0
 
     @pytest.mark.asyncio
+    async def test_health_reports_unknown_backlog_when_database_read_fails(
+        self, client: TestClient, repo: NotificationRepository
+    ) -> None:
+        with patch.object(repo, "get_pending", side_effect=RuntimeError("database unavailable")):
+            resp = await client.get("/api/health")
+
+        assert resp.status == 200  # The process still answers its liveness probe.
+        data = await resp.json()
+        assert data["status"] == "degraded"
+        assert data["overdue_notifications"] is None
+        assert "database unavailable" not in str(data)
+
+    @pytest.mark.asyncio
     async def test_health_counts_overdue_notifications(
         self, client: TestClient, repo: NotificationRepository
     ) -> None:

@@ -746,17 +746,17 @@ class ApiServer:
         backlog is therefore part of "healthy" — a row whose time has passed
         and is still pending means the dispatcher is not draining the queue.
         """
-        overdue = 0
+        overdue: int | None = None
         try:
             now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
             overdue = len(await self.repo.get_pending(before=now))
         except Exception:
-            # A liveness probe must answer even when the store is unreadable.
+            # Answer liveness, but do not report an unreadable backlog as empty.
             logger.exception("Health check could not read the notification backlog")
 
         return web.json_response(
             {
-                "status": "degraded" if overdue else "ok",
+                "status": "ok" if overdue == 0 else "degraded",
                 "overdue_notifications": overdue,
                 "timestamp": datetime.now().isoformat(),
             }

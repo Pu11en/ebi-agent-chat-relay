@@ -82,6 +82,25 @@ COLLECTED_AT = datetime(2026, 9, 20, 2, 30, tzinfo=UTC)
 DREWAI_CLAUDE = AuditTarget(Machine.DREWAI, Harness.CLAUDE)
 DREWAI_CODEX = AuditTarget(Machine.DREWAI, Harness.CODEX)
 
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "~/.codex/skills/task-coordination-strategies/SKILL.md",
+        "task-coordination-strategies",
+        "risk-assessment-checklist",
+    ],
+)
+def test_ordinary_words_ending_in_sk_are_not_credentials(text: str) -> None:
+    assert not scan(text)
+    assert_no_secrets(text)
+
+
+@pytest.mark.parametrize("prefix", ["", " ", "/", '"', "=", ":", "("])
+def test_standalone_api_key_prefix_still_detected(prefix: str) -> None:
+    assert scan(prefix + "sk-fake12345678901234567890")
+
+
 # Fake credentials. None of these is a real secret; they exist so the tests can
 # assert that these exact strings never appear in a serialized bundle.
 FAKE_API_KEY = "sk-ant-api03-ZZZZfakefakefakefake1234567890"

@@ -128,6 +128,39 @@ def test_symlinks_are_resolved_and_share_the_canonical_hash(tmp_path: Path) -> N
     assert claude_link.content_hash == canonical.content_hash == codex_link.content_hash
 
 
+def test_skill_directory_symlink_resolves_to_canonical_file(tmp_path: Path) -> None:
+    roots = fake_home(tmp_path)
+    canonical = roots.codex_home / "skills" / "shared" / "SKILL.md"
+    write(canonical, "---\nname: shared\n---\nShared instructions.\n")
+    alias = roots.claude_home / "skills" / "shared"
+    try:
+        alias.symlink_to(canonical.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+
+    result = discover(roots)
+
+    linked = by_path(result.files, "~/.claude/skills/shared/SKILL.md")
+    assert linked.is_symlink
+    assert linked.resolved_path == "~/.codex/skills/shared/SKILL.md"
+
+
+def test_skill_directory_symlink_cannot_escape_approved_roots(tmp_path: Path) -> None:
+    roots = fake_home(tmp_path)
+    outside = tmp_path / "outside" / "SKILL.md"
+    write(outside, "must not be inspected")
+    alias = roots.claude_home / "skills" / "outside"
+    try:
+        alias.symlink_to(outside.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+
+    result = discover(roots)
+
+    assert all(entry.path != "~/.claude/skills/outside/SKILL.md" for entry in result.files)
+    assert any(entry.path == "~/.claude/skills/outside/SKILL.md" for entry in result.excluded)
+
+
 def test_hash_is_salted_and_deterministic(tmp_path: Path) -> None:
     roots = fake_home(tmp_path)
     first = by_path(discover(roots, salt="a").files, "~/AGENTS.md")

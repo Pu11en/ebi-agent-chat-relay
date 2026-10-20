@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -85,6 +86,7 @@ def test_restart_is_detached_from_the_bots_own_cgroup(config: Any) -> None:
     assert config.restart_command[0].endswith("systemd-run")
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Example deploys a Linux systemd user service")
 def test_every_command_names_a_real_executable(config: Any) -> None:
     for command in (config.upgrade_command, config.sync_command, config.restart_command):
         assert command is not None
