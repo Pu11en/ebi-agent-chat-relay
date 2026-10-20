@@ -4,11 +4,14 @@
 
 Improve verified task completion, continuity and response time in Discord, with
 fewer repeated instructions from the operator. Research completed 2026-10-19;
-the scoped source changes were reviewed and pushed. On 2026-10-20, deployment
-failed its import deadline and rolled back to `1514f26`. The reviewed improvements,
-including the earlier diagnostics at `c8be866`, remain undeployed. Live release
-acceptance is pending; later sections distinguish current evidence from earlier
-research and implementation checkpoints.
+the scoped source changes were reviewed and pushed. After an initial import-timeout
+rollback, the operator authorized the corrected deployment on 2026-10-20.
+Revision `0267b68` is now installed and healthy; all 258 installed package files
+match the reviewed candidate. Native context comparisons passed for three
+consecutive turns on each provider. Installed continuation, folder recovery,
+provider switching and final-delivery checks passed. The scoped iMac goal is
+complete. Later sections distinguish current evidence from earlier research,
+baseline measurements and implementation checkpoints.
 
 The operator has already supplied the useful requirements: short replies, work
 in the right project, preserve decisions, finish authorized work, and demonstrate
@@ -429,3 +432,73 @@ in 3.699 seconds while the old service remained running. The installed package
 still matched all 257 rollback files and reported healthy. This does not explain
 the original timeout or establish deployed acceptance. No redeployment occurred;
 both release PRs remain drafts.
+
+### Installed release and live acceptance
+
+The operator authorized the corrected deployment. Runtime pin `97fcc68` selects
+source `0267b68`; only the relay revision changed in the manifest and lockfile.
+All 45 kit checks against the new candidate source passed, along with lock,
+formatting, lint and type checks. Remote source CI passed on Python 3.12 and 3.13,
+with package, container and CodeQL checks; runtime CI passed on Linux and macOS.
+
+The supervised restart succeeded. An independent check matched all 258 installed
+package files to the prepared wheel and verified the exact installed VCS revision.
+The new process reported healthy with zero overdue notifications. Both selected
+instance add-ons loaded; the duplicate legacy `/cd` add-on is no longer active.
+The known-good rollback remains available. No other computer was deployed.
+
+Three consecutive new Discord turns per provider matched native last-request
+input counts, retained the same native session within each route, and delivered
+the expected artifacts and final replies:
+
+| Provider | Native and saved input counts | Saved window | Provenance |
+| --- | --- | ---: | --- |
+| Codex, `gpt-6-astra` | 30,716 / 33,640 / 37,488 | 258,400 | `codex_rollout` |
+| Claude, `claude-opus-4-8` | 30,465 / 35,834 / 40,778 | 1,000,000 | `provider_usage` |
+
+Codex's window also matched its native records on every turn. Claude's transcript
+contains input/cache usage but no `contextWindow`; its window is the installed
+parser's primary-model result, supported separately by captured CLI result
+metadata and attribution regressions. Do not describe that as an independent
+per-turn window comparison against Claude's transcript. All six context percentages
+actually displayed in Discord matched the saved measurements.
+
+The first Codex validation prompt led it to assume a nonempty relay secret was
+required for catalog access. A clarification of this instance's configured
+loopback access completed the lookup on the next turn. No credentials were passed
+to the agent and authentication was not changed. Preserve this correction in
+the results; it is not a zero-correction run. The original context measurement
+was valid and was not repeated.
+
+Canonical folder recovery passed through the installed `/cd` callback with a
+test interaction adapter and real Discord objects, messages and session storage.
+The catalog consistently rejected an out-of-root alias; explicitly supplying its
+legitimate canonical path created a correctly bound idle thread and visible folder
+notice. No model started or project file changed. The temporary test session was
+closed afterward. This was programmatic callback verification, not a claimed
+human slash-command click.
+
+The installed `ContextNudger.hand_off` flow passed with actual Discord thread
+objects, session/settings repositories and real model turns through the relay's
+existing API. The source stayed open while the fresh turn waited for the relay's
+sender limit. The fresh turn preserved the accepted choice, constraint, nonce,
+folder, `gpt-6-astra` model and `high` effort, used a new native session, and
+delivered its result. Only then did the installed close method archive the source
+test thread and remove its binding. Fresh context also matched native usage.
+This was a programmatic invocation of the installed continuation callback, not a
+human button click; button presentation and dispatch retain the existing tested
+coverage. The original operator conversation was not closed.
+
+The fresh test thread then explicitly switched to `claude-opus-4-8`. The runtime
+control reports that changes apply to the next turn: it preserves the previous
+turn's reading until the new native session binds, at which point all old context
+fields were observed clearing. The new Claude session retained the task and
+folder, delivered its final result, and saved exactly 34,156 native input/cache
+tokens with a 1,000,000-token primary-model window and `provider_usage` provenance.
+
+The six old-version baseline scenarios were not repeated. No overall speed or
+cost improvement is claimed from these individual measurements. Other machine
+settings and channels were preserved; the private environment changed only the
+selected add-on directory. Source and runtime changes are pushed. Their PRs remain
+drafts to avoid invoking repository-wide merge/upgrade automation beyond this
+scoped iMac deployment. No additional deployment is needed for this documentation.
