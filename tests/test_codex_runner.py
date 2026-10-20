@@ -343,6 +343,30 @@ class TestCodexRunnerClone:
 
 class TestCodexRunnerRun:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stderr", [b"", b"write_stdin failed: Unknown process id 65970"])
+    async def test_quota_failure_is_not_overwritten_by_process_exit(self, monkeypatch, stderr):
+        from claude_code_core.capacity import BackendFailure, CapacityCategory, classify_failure
+
+        message = "You’ve hit your usage limit. Try again at Oct 26th, 2026 11:01 AM."
+        process = _FakeProcess(
+            stdout_lines=[
+                json.dumps({"type": "turn.failed", "error": {"message": message}}).encode()
+            ],
+            stderr=stderr,
+            returncode=1,
+        )
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=process),
+        )
+        events = [event async for event in CodexRunner().run("continue")]
+        failures = [event.error for event in events if event.error]
+        assert failures == [message]
+        outcome = classify_failure(BackendFailure(error=failures[-1], backend="codex"))
+        assert outcome.category is CapacityCategory.QUOTA_EXHAUSTED
+        assert outcome.retryable is False
+
+    @pytest.mark.asyncio
     async def test_turn_completed_waits_for_natural_process_exit(self, monkeypatch) -> None:
         """A terminal event must not release the session while Codex still owns it."""
         completed_line = json.dumps({"type": "turn.completed", "usage": {}}).encode()

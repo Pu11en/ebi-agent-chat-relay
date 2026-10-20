@@ -699,6 +699,7 @@ class CodexRunner:
         # turn.completed, which is the event the processor persists.
         last_token_count: StreamEvent | None = None
         completed: StreamEvent | None = None
+        reported_failure = False
         while True:
             line = await asyncio.wait_for(
                 self._process.stdout.readline(), timeout=self.timeout_seconds or None
@@ -721,6 +722,7 @@ class CodexRunner:
                     completed = event
                     continue
                 if event.error:
+                    reported_failure = True
                     event.context_source = "unknown"
                     event.context_observed_at = time.time()
                 yield event
@@ -774,6 +776,11 @@ class CodexRunner:
                 self._process.returncode,
                 stderr_text[:200],
             )
+            if reported_failure:
+                # The structured provider failure is authoritative. A generic
+                # exit or unrelated tool stderr must not replace quota/auth
+                # details already delivered to the recovery policy.
+                return
             error = f"CLI exited with code {self._process.returncode}"
             if stderr_text:
                 error = f"{error}: {stderr_text[:1000]}"

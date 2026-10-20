@@ -202,3 +202,24 @@ visible in the log; verification is not described as warning-free.
 
 An independent read-only Claude/Opus review was started against an immutable
 patch. Its result is pending, so it is not yet a passed review or release gate.
+
+### Interrupted-turn error reporting
+
+Native records for two interrupted October 19 turns report
+`usage_limit_exceeded`. The installed relay instead classified them as permanent
+generic CLI failures, once quoting an unrelated expired tool-process handle.
+Parsing `turn.failed` fixes the missing signal, but a regression reproduced a
+second problem: a later nonzero process exit overwrote that structured failure.
+The runner now retains the provider error and uses stderr as a fallback only
+when stdout supplied no failure. Two failing regression cases (empty stderr and
+an unrelated tool error) now pass; the runner and capacity suites pass all 158
+tests. This improves diagnosis; it cannot increase an account's usage allowance.
+Full `make verify` exited 0 for this fix: 6,173 passed, 12 skipped, 18 warnings;
+format, lint and type checks passed. The same existing asynchronous mock warnings
+remain. The touched runner has one baseline security-lint assertion and no new
+security findings.
+
+The original independent review process ended without a saved result. It has
+been relaunched with a detached supervisor, direct output files and durable
+completion/timeout status, so a fresh agent process does not need a stale tool
+handle to recover it. Review remains pending until its actual result is read.
