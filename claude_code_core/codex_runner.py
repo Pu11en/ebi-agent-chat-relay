@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .child_env import STRIPPED_ENV_KEYS
-from .codex_context import read_codex_context
+from .codex_context import read_codex_context, read_codex_failure
 from .types import (
     ImageData,
     MessageType,
@@ -160,6 +160,7 @@ def parse_codex_line(line: str) -> StreamEvent | None:
 
     if event_type == "turn.completed":
         usage = data.get("usage", {})
+        usage = usage if isinstance(usage, dict) else {}
         return StreamEvent(
             raw=data,
             message_type=MessageType.SYSTEM,
@@ -740,7 +741,7 @@ class CodexRunner:
         if self._process.returncode is None:
             await asyncio.wait_for(self._process.wait(), timeout=10)
 
-        if completed is not None and self._process.returncode == 0:
+        if completed is not None and self._process.returncode == 0 and not reported_failure:
             if last_token_count is None:
                 measurement = None
                 if self._context_home is not None and self._context_session_id:
@@ -784,6 +785,15 @@ class CodexRunner:
             error = f"CLI exited with code {self._process.returncode}"
             if stderr_text:
                 error = f"{error}: {stderr_text[:1000]}"
+            if self._context_home is not None and self._context_session_id:
+                native_error = await asyncio.to_thread(
+                    read_codex_failure,
+                    self._context_home,
+                    self._context_session_id,
+                    self._context_started_at,
+                )
+                if native_error:
+                    error = native_error
             yield StreamEvent(
                 raw={},
                 message_type=MessageType.RESULT,

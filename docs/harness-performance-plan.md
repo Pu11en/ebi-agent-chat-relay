@@ -223,3 +223,20 @@ The original independent review process ended without a saved result. It has
 been relaunched with a detached supervisor, direct output files and durable
 completion/timeout status, so a fresh agent process does not need a stale tool
 handle to recover it. Review remains pending until its actual result is read.
+
+The independent review ran on `claude-opus-4-8` and returned FIX FIRST: the
+original incident had captured a native failure, not stdout, so the stdout-only
+regression was insufficient evidence. A bounded fallback now reads the latest
+current-run native `task_complete.error` after a failed process without a stdout
+failure. It shares the context adapter's identity, path, size and freshness
+checks. An isolated copy of the actual failed native completion reproduces exact
+message recovery and `quota_exhausted` classification through the runner, with
+subprocess I/O stubbed and no stdout error. This does not claim a new live quota
+failure; the operator reports that their limit is cleared.
+
+The review also prompted malformed-usage guards and a check preventing a later
+completion from overriding a reported failure. Fifteen new cases failed before
+the fix; 190 focused tests and full verification now pass (6,188 passed, 12 skips,
+19 warnings). Nonzero exits deliberately leave context unknown even after a
+completion event. The nullable health count is documented; no internal numeric
+consumer was found beyond its endpoint and tests. Follow-up review is running.

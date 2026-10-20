@@ -56,6 +56,58 @@ def test_real_rollout_envelope(tmp_path: Path) -> None:
     assert measurement.window == 258400
 
 
+def _failed_records() -> list[dict]:
+    records = _records()
+    # Captured task_complete.error from codex-cli 0.160.1, 2026-10-19.
+    # Identity/timestamps use this fixture's session; no conversation is copied.
+    records[-1]["payload"]["error"] = {
+        "message": "You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+        "to purchase more credits or try again at Oct 26th, 2026 11:01 AM.",
+        "codex_error_info": "usage_limit_exceeded",
+    }
+    return records
+
+
+def test_captured_native_failure_without_stdout_error(tmp_path: Path) -> None:
+    from claude_code_core.codex_context import read_codex_failure
+
+    records = _failed_records()
+    _store(tmp_path, records)
+    assert (
+        read_codex_failure(tmp_path, SESSION, START) == records[-1]["payload"]["error"]["message"]
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", ["stale", "wrong_id", "unfinished", "partial", "no_error", "malformed_error"]
+)
+def test_native_failure_never_reuses_unverified_records(tmp_path: Path, failure: str) -> None:
+    from claude_code_core.codex_context import read_codex_failure
+
+    records = _failed_records()
+    if failure == "stale":
+        records[-1]["payload"]["started_at"] = START - 60
+    elif failure == "wrong_id":
+        records[0]["payload"]["id"] = "another-session"
+    elif failure == "unfinished":
+        records.append(_event("task_started", started_at=START + 10))
+    elif failure == "no_error":
+        records[-1]["payload"].pop("error")
+    elif failure == "malformed_error":
+        records[-1]["payload"]["error"] = {"message": ["not text"]}
+    path = _store(tmp_path, records)
+    if failure == "partial":
+        with path.open("ab") as stream:
+            stream.write(b'{"type":')
+    assert read_codex_failure(tmp_path, SESSION, START) is None
+
+
+@pytest.mark.parametrize("usage", [None, [], "invalid"])
+def test_malformed_completed_usage_is_unknown(tmp_path: Path, usage) -> None:
+    _store(tmp_path, _records())
+    assert read_codex_context(tmp_path, SESSION, START, usage) is None
+
+
 def test_resumed_turn_uses_last_request_not_cumulative_usage(tmp_path: Path) -> None:
     records = _records()
     records[-2]["payload"]["info"]["last_token_usage"] = {

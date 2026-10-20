@@ -342,6 +342,47 @@ class TestCodexRunnerClone:
 
 
 class TestCodexRunnerRun:
+    @pytest.mark.parametrize("usage", [None, [], "invalid"])
+    def test_malformed_completed_usage_does_not_crash(self, usage):
+        event = parse_codex_line(json.dumps({"type": "turn.completed", "usage": usage}))
+        assert event is not None and event.is_complete
+        assert event.input_tokens is None
+
+    @pytest.mark.asyncio
+    async def test_failed_turn_cannot_be_overridden_by_later_completion(self, monkeypatch):
+        process = _FakeProcess(
+            stdout_lines=[
+                b'{"type":"turn.failed","error":{"message":"quota exhausted"}}',
+                b'{"type":"turn.completed","usage":{}}',
+            ]
+        )
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=process),
+        )
+        events = [event async for event in CodexRunner().run("continue")]
+        assert [e.error for e in events if e.is_complete] == ["quota exhausted"]
+
+    @pytest.mark.asyncio
+    async def test_native_failure_is_used_when_stdout_has_no_error(self, monkeypatch):
+        process = _FakeProcess(
+            stdout_lines=[b'{"type":"thread.started","thread_id":"native-session"}'],
+            stderr=b"write_stdin failed: Unknown process id 65970",
+            returncode=1,
+        )
+        monkeypatch.setattr(
+            "claude_code_core.codex_runner.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=process),
+        )
+        with patch(
+            "claude_code_core.codex_runner.read_codex_failure",
+            return_value="You’ve hit your usage limit.",
+            create=True,
+        ) as read_failure:
+            events = [event async for event in CodexRunner().run("continue")]
+        assert [e.error for e in events if e.error] == ["You’ve hit your usage limit."]
+        assert read_failure.call_args.args[1] == "native-session"
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stderr", [b"", b"write_stdin failed: Unknown process id 65970"])
     async def test_quota_failure_is_not_overwritten_by_process_exit(self, monkeypatch, stderr):

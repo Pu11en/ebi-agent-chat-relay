@@ -1,8 +1,9 @@
-"""Bounded, read-only context metadata from an indexed Codex native session.
+"""Bounded, read-only metadata from an indexed Codex native session.
 
 Exec stdout exposes cumulative usage, not the last model request's context.
 The native store is an optional, version-dependent source: failures mean unknown,
 never a failed agent turn. No conversation text leaves this adapter.
+Provider failure messages may be recovered when exec stdout omits the reason.
 """
 
 from __future__ import annotations
@@ -64,15 +65,8 @@ def _indexed_rollout(home: Path, session_id: str) -> Path | None:
     return None
 
 
-def read_codex_context(
-    home: Path, session_id: str, started_at: float, completed_usage: dict
-) -> CodexContext | None:
-    """Match a completed run to its own last input count, including cached input.
-
-    Validate native identity, current-run completion, and cumulative stdout usage.
-    Looking backward must reach a token count before another turn or compaction
-    boundary. A bounded tail can therefore yield unknown, but never old context.
-    """
+def _rollout_tail(home: Path, session_id: str, started_at: float) -> list[bytes] | None:
+    """Read a bounded, complete tail only after verifying identity and freshness."""
     if not _SESSION_ID.fullmatch(session_id):
         return None
     try:
@@ -97,8 +91,70 @@ def read_codex_context(
         if not tail.endswith(b"\n"):
             # A writer is still appending; do not silently reuse a prior turn.
             return None
+        return tail.splitlines()
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _current_completion(payload: dict, started_at: float) -> bool:
+    start = payload.get("started_at")
+    return (
+        isinstance(start, (int, float))
+        and not isinstance(start, bool)
+        and started_at - 1 <= start <= time.time() + 5
+    )
+
+
+def read_codex_failure(home: Path, session_id: str, started_at: float) -> str | None:
+    """Recover only the latest current-run provider failure, never agent/tool text."""
+    tail = _rollout_tail(home, session_id, started_at)
+    if tail is None:
+        return None
+    for line in reversed(tail):
+        if len(line) > _HEAD_BYTES:
+            continue
+        try:
+            record = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") == "compacted":
+            return None
+        if record.get("type") != "event_msg":
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        kind = payload.get("type")
+        if kind in {"task_started", "context_compacted", "turn_aborted", "token_count"}:
+            return None
+        if kind == "task_complete":
+            if not _current_completion(payload, started_at):
+                return None
+            error = payload.get("error")
+            message = error.get("message") if isinstance(error, dict) else None
+            return message[:2000] if isinstance(message, str) and message.strip() else None
+    return None
+
+
+def read_codex_context(
+    home: Path, session_id: str, started_at: float, completed_usage: dict
+) -> CodexContext | None:
+    """Match a completed run to its own last input count, including cached input.
+
+    Validate native identity, current-run completion, and cumulative stdout usage.
+    Looking backward must reach a token count before another turn or compaction
+    boundary. A bounded tail can therefore yield unknown, but never old context.
+    """
+    if not isinstance(completed_usage, dict):
+        return None
+    tail = _rollout_tail(home, session_id, started_at)
+    if tail is None:
+        return None
+    try:
         complete = False
-        for line in reversed(tail.splitlines()):
+        for line in reversed(tail):
             if len(line) > _HEAD_BYTES:
                 continue
             try:
@@ -118,13 +174,7 @@ def read_codex_context(
             if kind in {"task_started", "context_compacted", "turn_aborted"}:
                 return None
             if kind == "task_complete":
-                start = payload.get("started_at")
-                if (
-                    complete
-                    or not isinstance(start, (int, float))
-                    or isinstance(start, bool)
-                    or not started_at - 1 <= start <= time.time() + 5
-                ):
+                if complete or not _current_completion(payload, started_at):
                     return None
                 complete = True
             elif kind == "token_count":
