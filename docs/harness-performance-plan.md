@@ -265,4 +265,25 @@ an agent-latency benchmark. Live folder recovery remains a deployment check.
 
 Full verification for the catalog correction exited 0: 6,192 passed, 12 skipped,
 19 warnings; formatting, lint and type checks passed. Separate catalog review
-is pending. No deployment or live acceptance is claimed.
+completed on `claude-opus-4-8`: PASS. Security lint's existing S105 finding is
+the literal colon used as an identity separator, not a credential; comparison
+with the prior source found zero new findings. No deployment or live acceptance
+is claimed.
+
+### Instruction overhead evidence
+
+The first completed native runner probe stored 15,073 UTF-8 bytes in three
+developer messages and 4,588 bytes in two user messages. Its catalog-bearing
+message listed 28 entries; the broader active conversation catalog observed
+during research differed. This is stored-message evidence, not an exact token
+count or a full inventory of tool schemas. The probe did not load the Caveman
+skill body as message text. Installed skill-body sizes therefore cannot be
+counted as mandatory startup context.
+
+Nine workflow names occur in both global and project skill directories. Eight
+bodies are byte-identical; the Lockin workflow differs. The project copies keep
+this reusable repository self-contained, while global copies serve other
+projects. Removing either scope without a supported scoped loading mechanism
+would remove functionality. These files remain. No unmeasured speed or token
+saving is claimed from deleting them. Scenario and post-deployment measurements
+remain required before reporting an overall performance change.
